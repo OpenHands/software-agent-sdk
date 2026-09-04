@@ -134,6 +134,29 @@ def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
             )
 
 
+def test_agent_server_node_pin_clears_every_declared_engine_floor() -> None:
+    """The acp-providers stage installs every selected provider under one Node,
+    so its pin must satisfy the highest `engines.node` any of them declares.
+
+    Below the floor a CLI can still *start* and fail much later inside its own
+    dependencies, so npm's EBADENGINE warning is the only build-time signal —
+    and warnings do not fail a build.
+    """
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    match = re.search(r"nodejs\.org/dist/v(\d+\.\d+\.\d+)/", dockerfile_text)
+    assert match, f"{AGENT_SERVER_DOCKERFILE}: no pinned Node download URL found"
+    pinned = tuple(int(part) for part in match.group(1).split("."))
+
+    for spec in ACP_INSTALL_CATALOG.values():
+        if spec.min_node_version is None:
+            continue
+        required = tuple(int(part) for part in spec.min_node_version.split("."))
+        assert pinned >= required, (
+            f"{AGENT_SERVER_DOCKERFILE}: pins Node {match.group(1)}, but provider "
+            f"{spec.key!r} declares engines.node >={spec.min_node_version}"
+        )
+
+
 def test_agent_server_dockerfile_acp_stage_uses_install_catalog() -> None:
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
 

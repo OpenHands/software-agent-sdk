@@ -42,8 +42,9 @@ from openhands.sdk.agent.acp_agent import (
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
-    _npx_package,
+    _npx_packages,
     _OpenHandsACPBridge,
+    _preconfigured_credentials,
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
@@ -76,6 +77,11 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.settings.acp_install_catalog import (
+    ACPInstallSpec,
+    ACPPackagePin,
+)
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.utils.cipher import Cipher
@@ -183,13 +189,29 @@ def test_warns_when_acp_provider_version_differs_from_pin(caplog):
     assert "probably installed at runtime via the npx fallback" in caplog.text
 
 
-def test_npx_package_skips_prefer_offline():
-    assert (
-        _npx_package(
-            ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
-        )
-        == "@agentclientprotocol/codex-acp@1.1.7"
+def test_npx_packages_skips_prefer_offline():
+    assert _npx_packages(
+        ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
+    ) == ["@agentclientprotocol/codex-acp@1.1.7"]
+
+
+def test_npx_packages_prefers_pinned_package_flags():
+    """A multi-package spec's positional argument is the bare binary name;
+    warming that would fetch an unpinned package, so the ``--package=`` pins
+    win. ``npx_command`` emits that form whenever a provider pins more than one
+    package (an adapter plus the engine it spawns)."""
+    spec = ACPInstallSpec(
+        key="two-package",
+        packages=(
+            ACPPackagePin("adapter-acp", "1.2.3"),
+            ACPPackagePin("@scope/engine", "4.5.6"),
+        ),
+        binary_name="adapter-acp",
     )
+    assert _npx_packages(list(spec.npx_command())) == [
+        "adapter-acp@1.2.3",
+        "@scope/engine@4.5.6",
+    ]
 
 
 def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
@@ -198,6 +220,36 @@ def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
     state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
 
     assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+
+
+async def test_warm_npx_cache_passes_every_pinned_package(tmp_path):
+    agent = _make_agent()
+    process = MagicMock()
+    process.returncode = 0
+    process.wait = AsyncMock(return_value=0)
+
+    with patch(
+        "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=process),
+    ) as create_process:
+        await agent._warm_npx_cache(
+            ["adapter-acp@1.2.3", "@scope/engine@4.5.6"],
+            "two-package",
+            {},
+            str(tmp_path),
+        )
+
+    assert create_process.await_args is not None
+    assert create_process.await_args.args[:8] == (
+        "npx",
+        "--yes",
+        "--prefer-offline",
+        "--package",
+        "adapter-acp@1.2.3",
+        "--package",
+        "@scope/engine@4.5.6",
+        "--",
+    )
 
 
 async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
@@ -212,7 +264,7 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
         new=AsyncMock(return_value=process),
     ) as create_process:
         await agent._warm_npx_cache(
-            "@agentclientprotocol/codex-acp@1.1.7", "codex", env, str(tmp_path)
+            ["@agentclientprotocol/codex-acp@1.1.7"], "codex", env, str(tmp_path)
         )
 
     create_process.assert_awaited_once_with(
@@ -3128,6 +3180,20 @@ class TestACPAgentAstep:
 # ---------------------------------------------------------------------------
 
 
+def _own_finalize_calls(finalize_mock, agent) -> list:
+    """Calls to an autospec'd ACPAgent._finalize made by *agent* itself.
+
+    ``_finalize`` must be patched on the class (ACPAgent is a frozen pydantic
+    model, so the instance attribute cannot be replaced), which means the mock
+    also records calls from *other* agents. Unrelated tests leave agents
+    holding MagicMock executors/connections; when one of those is collected,
+    ``__del__`` calls ``_finalize`` on it, and with a plain class patch that
+    lands on this mock at an unpredictable point in the run. ``autospec=True``
+    records ``self``, so the caller can count only its own.
+    """
+    return [c for c in finalize_mock.call_args_list if c.args[:1] == (agent,)]
+
+
 class TestACPAgentCleanup:
     def test_close_during_credential_materialization_discards_lifecycle(
         self, tmp_path, monkeypatch
@@ -3418,11 +3484,11 @@ class TestACPAgentCleanup:
 
         with (
             patch.object(threading.Thread, "start", side_effect=RuntimeError),
-            patch.object(ACPAgent, "_finalize") as finalize,
+            patch.object(ACPAgent, "_finalize", autospec=True) as finalize,
         ):
             agent.__del__()
 
-        finalize.assert_called_once_with()
+        assert _own_finalize_calls(finalize, agent) == [call(agent)]
         agent._executor = None
 
     def test_atexit_cleanup_is_weak_and_inline(self):
@@ -3431,14 +3497,14 @@ class TestACPAgentCleanup:
         with (
             patch.object(acp_agent_module.atexit, "register") as register,
             patch.object(acp_agent_module.atexit, "unregister") as unregister,
-            patch.object(ACPAgent, "_finalize") as finalize,
+            patch.object(ACPAgent, "_finalize", autospec=True) as finalize,
         ):
             agent._register_atexit_cleanup()
             callback = register.call_args.args[0]
             callback()
             agent._unregister_atexit_cleanup()
 
-        finalize.assert_called_once_with()
+        assert _own_finalize_calls(finalize, agent) == [call(agent)]
         unregister.assert_called_once_with(callback)
 
     def test_atexit_callback_does_not_retain_agent(self):
@@ -5323,6 +5389,24 @@ class TestMaybeSetSessionModel:
             ]
         )
         assert conn.set_config_option.await_count == 2
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_pi_model_switch_mechanism(self):
+        """pi-acp applies the model through set_config_option(config_id='model')."""
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn,
+            "pi-acp",
+            "session-1",
+            "anthropic/claude-sonnet-4-6",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="anthropic/claude-sonnet-4-6",
+            session_id="session-1",
+        )
         assert applied is True
 
     @pytest.mark.asyncio
@@ -7873,6 +7957,40 @@ class TestACPEnvConflictSuppression:
         assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-isolated"
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
 
+    def test_rule_does_not_reach_another_provider(self, tmp_path):
+        """A provider that did not declare the conflict keeps the variable.
+
+        The rule belongs to claude-code, but the loop used to run for every
+        provider — so an ambient Claude subscription token deleted
+        ANTHROPIC_API_KEY out of any ACP subprocess. For a provider whose own
+        ``api_key_env_var`` is ANTHROPIC_API_KEY that is its only credential.
+        """
+        agent = _make_agent(acp_server="gemini-cli")
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok",
+                "ANTHROPIC_API_KEY": "sk-this-providers-credential",
+            },
+        )
+
+        assert env.get("ANTHROPIC_API_KEY") == "sk-this-providers-credential"
+
+    def test_claude_code_key_still_applies_the_rule(self, tmp_path):
+        """The declaring provider is unaffected by the scoping."""
+        agent = _make_agent(acp_server="claude-code")
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok",
+                "ANTHROPIC_API_KEY": "sk-leaked",
+            },
+        )
+
+        assert "ANTHROPIC_API_KEY" not in env
+
 
 class TestACPAgentCurrentModelIdProperty:
     """``current_model_id`` is a read-only property backed by a PrivateAttr.
@@ -8702,7 +8820,12 @@ class TestACPFileSecretMaterialisation:
     """
 
     @staticmethod
-    def _make_conn(*, agent_name: str = "codex-acp", auth_method: str | None = None):
+    def _make_conn(
+        *,
+        agent_name: str = "codex-acp",
+        auth_method: str | None = None,
+        auth_method_type: str | None = None,
+    ):
         conn = MagicMock()
         init_response = MagicMock()
         init_response.agent_info = MagicMock()
@@ -8712,6 +8835,7 @@ class TestACPFileSecretMaterialisation:
         # MagicMock(id=...) doesn't set .id; assign explicitly.
         for m in init_response.auth_methods:
             m.id = auth_method
+            m.type = auth_method_type
         conn.initialize = AsyncMock(return_value=init_response)
         new_response = MagicMock()
         new_response.session_id = "sess-new"
@@ -8867,6 +8991,143 @@ class TestACPFileSecretMaterialisation:
         assert gac.stat().st_mode & 0o777 == 0o600
         assert gac.parent.stat().st_mode & 0o777 == 0o700
         assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_pi_auth_json_materialises_into_the_agent_config_dir(self, tmp_path):
+        """PI_AUTH_JSON lands as auth.json with PI_CODING_AGENT_DIR on the dir."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {
+                "PI_AUTH_JSON": StaticSecret(
+                    value=SecretStr('{"anthropic": {"type": "api_key", "key": "k"}}')
+                )
+            }
+        )
+
+        env = self._run_start(
+            agent,
+            state,
+            conn=self._make_conn(
+                agent_name="pi-acp",
+                auth_method="pi_terminal_login",
+                auth_method_type="terminal",
+            ),
+        )
+
+        auth_file = Path(persist) / "acp" / "pi" / "auth.json"
+        assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
+        assert (
+            auth_file.read_text(encoding="utf-8")
+            == '{"anthropic": {"type": "api_key", "key": "k"}}'
+        )
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert "PI_AUTH_JSON" not in env
+
+    def test_terminal_only_auth_with_seeded_file_does_not_warn(self, tmp_path):
+        """pi-acp offers only an interactive login; a seeded auth.json is the
+        credential, so startup must not call authenticate() or warn."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr('{"anthropic": {}}'))}
+        )
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            self._run_start(agent, state, conn=conn)
+
+        conn.authenticate.assert_not_called()
+        mock_warn.assert_not_called()
+        conn.new_session.assert_called_once()
+
+    def test_terminal_only_auth_with_the_provider_api_key_does_not_warn(self, tmp_path):
+        """pi authenticates from ANTHROPIC_API_KEY in its own environment even
+        though the server advertises only an interactive login, so the
+        no-credential warning would fire on a working configuration."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-ant-test"))}
+        )
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            env = self._run_start(agent, state, conn=conn)
+
+        assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
+        conn.authenticate.assert_not_called()
+        mock_warn.assert_not_called()
+        conn.new_session.assert_called_once()
+
+    def test_terminal_only_auth_without_seeded_file_warns(self, tmp_path):
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            self._run_start(agent, state, conn=conn)
+
+        conn.authenticate.assert_not_called()
+        mock_warn.assert_called_once()
+
+    def test_non_terminal_auth_still_warns_with_a_seeded_file(self, tmp_path):
+        """The suppression is scoped to terminal-only servers: codex with an
+        auth.json that isn't ChatGPT auth must keep warning."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": null}'))}
+        )
+        conn = self._make_conn(agent_name="codex-acp", auth_method="chat-gpt")
+
+        with patch(
+            "openhands.sdk.agent.acp_agent._warn_auth_selection_failure"
+        ) as mock_warn:
+            self._run_start(agent, state, conn=conn)
+
+        mock_warn.assert_called_once()
+
+    def test_pi_initialization_skips_set_session_mode(self, tmp_path):
+        """Pi has default_session_mode=None, so set_session_mode is not called."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        conn = self._make_conn(
+            agent_name="pi-acp",
+            auth_method="pi_terminal_login",
+            auth_method_type="terminal",
+        )
+
+        self._run_start(agent, state, conn=conn)
+
+        conn.set_session_mode.assert_not_called()
 
     def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
         """A non-empty existing credential file (e.g. a token the CLI refreshed)
@@ -9273,6 +9534,33 @@ class TestACPDataDirIsolation:
             )
         assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
 
+    def test_pi_isolates_data_dir(self, tmp_path):
+        """pi-acp's session map follows HOME; pi's own config dir follows
+        PI_CODING_AGENT_DIR, which only the file secret sets."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "pi-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "pi"
+        assert "PI_CODING_AGENT_DIR" not in env
+
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "pi"
+        assert Path(env["PI_CODING_AGENT_DIR"]) == Path(persist) / "acp" / "pi"
+
 
 # ---------------------------------------------------------------------------
 # Secret masking (#1023)
@@ -9588,3 +9876,138 @@ class TestACPStepMasksPersistedTurn:
         )
         assert "supersecret" not in finish.action.message
         assert finish.action.message == "the value is <secret-hidden> now"
+
+
+class TestPreconfiguredCredentials:
+    """A server whose advertised auth methods we cannot perform may still be
+    authenticated out of band, so the SDK must be able to tell "we could not
+    authenticate" from "we did not need to".
+
+    Sourced from the provider's registry record rather than provider names, so
+    it holds for a provider added later without touching this code.
+    """
+
+    def test_reports_the_provider_api_key_when_present(self):
+        provider = ACP_PROVIDERS["gemini-cli"]
+        assert _preconfigured_credentials(provider, (), {"GEMINI_API_KEY": "k"}) == [
+            "GEMINI_API_KEY"
+        ]
+
+    def test_ignores_another_providers_key(self):
+        provider = ACP_PROVIDERS["gemini-cli"]
+        assert _preconfigured_credentials(provider, (), {"OPENAI_API_KEY": "k"}) == []
+
+    def test_reports_a_materialised_file_secret_pointed_at_a_directory(self, tmp_path):
+        spec = ACP_PROVIDERS["codex"].file_secrets[0]
+        (tmp_path / spec.filename).write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
+        env = {spec.env_var: str(tmp_path)}
+        assert _preconfigured_credentials(None, (spec,), env) == [spec.secret_name]
+
+    def test_ignores_a_file_secret_that_cannot_authenticate(self, tmp_path):
+        """Present but unusable is the case that most needs the warning: the
+        server offered a method that consumes this very file and declined it."""
+        spec = ACP_PROVIDERS["codex"].file_secrets[0]
+        (tmp_path / spec.filename).write_text('{"tokens": null}', encoding="utf-8")
+        env = {spec.env_var: str(tmp_path)}
+        assert _preconfigured_credentials(None, (spec,), env) == []
+
+    def test_ignores_a_file_secret_whose_file_is_absent(self, tmp_path):
+        spec = ACP_PROVIDERS["codex"].file_secrets[0]
+        env = {spec.env_var: str(tmp_path)}
+        assert _preconfigured_credentials(None, (spec,), env) == []
+
+    def test_no_provider_and_no_specs_reports_nothing(self):
+        assert _preconfigured_credentials(None, (), {"ANTHROPIC_API_KEY": "k"}) == []
+
+
+class TestAuthSelectionFailureReason:
+    """The reason line must name what is actually missing.
+
+    Two shapes it could not describe before: a provider whose own key var is
+    unset, and a login only an interactive terminal can complete — which is
+    what every recently added harness advertises, so the old text ("no
+    supported credential source is available") implied a missing credential
+    where none was ever expected.
+    """
+
+    @staticmethod
+    def _method(method_id: str, method_type: str | None = None) -> MagicMock:
+        m = MagicMock()
+        m.id = method_id
+        m.type = method_type
+        return m
+
+    def test_names_the_providers_unset_key_var(self):
+        reason = _auth_selection_failure_reason(
+            [self._method("some-login")], {}, ACP_PROVIDERS["gemini-cli"]
+        )
+        assert "GEMINI_API_KEY is unset" in reason
+
+    def test_names_a_terminal_only_login(self):
+        reason = _auth_selection_failure_reason(
+            [self._method("login", "terminal")], {}, None
+        )
+        assert "login needs an interactive terminal" in reason
+
+    def test_falls_back_to_the_generic_reason(self):
+        assert (
+            _auth_selection_failure_reason([self._method("mystery")], {}, None)
+            == "no supported credential source is available"
+        )
+
+
+class TestUnperformableAuthMethodLogging:
+    """What the log says when the server's only auth method is one the runtime
+    cannot perform — an interactive login, which is what every recently added
+    harness advertises.
+
+    The session still starts, because these CLIs read their key from the
+    environment at generation time, so warning "no matching credential is
+    available ... session creation may fail" on every start was both alarming
+    and wrong.
+    """
+
+    @staticmethod
+    def _start_with_auth_method(agent, tmp_path, *, method_id: str, registry_secrets):
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        state = _make_state(tmp_path)
+        for name, value in registry_secrets.items():
+            state.secret_registry.update_secrets(
+                {name: StaticSecret(value=SecretStr(value))}
+            )
+        conn = TestACPFileSecretMaterialisation._make_conn(
+            agent_name="gemini-cli", auth_method=method_id
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            TestACPFileSecretMaterialisation._run_start(agent, state, conn=conn)
+
+    def test_reports_the_credential_in_use_instead_of_warning(self, tmp_path, caplog):
+        agent = _make_agent(acp_server="gemini-cli")
+        with caplog.at_level("INFO"):
+            self._start_with_auth_method(
+                agent,
+                tmp_path,
+                method_id="some-interactive-login",
+                registry_secrets={"GEMINI_API_KEY": "k"},
+            )
+
+        assert "using the already-configured credential(s) ['GEMINI_API_KEY']" in (
+            caplog.text
+        )
+        assert "session creation may fail" not in caplog.text
+
+    def test_still_warns_when_nothing_is_configured(self, tmp_path, caplog):
+        agent = _make_agent(acp_server="gemini-cli")
+        with caplog.at_level("INFO"):
+            self._start_with_auth_method(
+                agent,
+                tmp_path,
+                method_id="some-interactive-login",
+                registry_secrets={},
+            )
+
+        assert "session creation may fail" in caplog.text
+        assert "GEMINI_API_KEY is unset" in caplog.text

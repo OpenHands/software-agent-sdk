@@ -63,6 +63,18 @@ class ACPInstallSpec:
     gemini-cli's ``--acp``, opencode's ``acp``). Empty for CLIs that need no
     subcommand to enter ACP mode."""
 
+    min_node_version: str | None = None
+    """Highest ``engines.node`` floor across this provider's packages, when it
+    exceeds the ecosystem baseline of ``>=20``.
+
+    The agent-server image installs every selected provider under one Node, so
+    the Dockerfile's pin has to clear the highest floor here (asserted by
+    ``tests/cross/test_agent_server_build_metadata.py``). The ``npx`` fallback
+    runs on the *host's* Node instead, where a floor that isn't met surfaces
+    only as a cryptic mid-handshake error from the CLI's own dependencies —
+    which is what this field exists to name.
+    """
+
     def npx_command(self) -> tuple[str, ...]:
         """The default ``npx``-based launch command for this provider.
 
@@ -93,6 +105,14 @@ class ACPInstallSpec:
 CLAUDE_AGENT_ACP_VERSION = "0.63.0"
 CODEX_ACP_VERSION = "1.1.7"
 GEMINI_CLI_VERSION = "0.46.0"
+KIMI_CODE_VERSION = "0.38.0"
+
+# Pi is the one provider with two independent pins: pi-acp only adapts ACP and
+# spawns a separately installed `pi` engine off PATH.
+PI_ACP_VERSION = "0.0.33"
+PI_CODING_AGENT_VERSION = "0.83.0"
+
+OPENCODE_VERSION = "1.18.23"
 
 
 ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
@@ -115,6 +135,46 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         packages=(ACPPackagePin("@google/gemini-cli", GEMINI_CLI_VERSION),),
         binary_name="gemini",
         trailing_args=("--acp",),
+    ),
+    "kimi-code": ACPInstallSpec(
+        key="kimi-code",
+        # Scoped package only: the unscoped npm ``kimi-code`` is an unrelated
+        # third-party tool that also ships a ``kimi`` bin.
+        packages=(ACPPackagePin("@moonshot-ai/kimi-code", KIMI_CODE_VERSION),),
+        binary_name="kimi",
+        trailing_args=("acp",),
+        # @moonshot-ai/kimi-code declares `node >=22.19.0`.
+        min_node_version="22.19.0",
+    ),
+    "pi": ACPInstallSpec(
+        key="pi",
+        # Adapter first: the live conformance probe compares ``packages[0]``'s
+        # version against the ``agentInfo.version`` the server reports, which
+        # is pi-acp's, not the engine's.
+        packages=(
+            ACPPackagePin("pi-acp", PI_ACP_VERSION),
+            ACPPackagePin("@earendil-works/pi-coding-agent", PI_CODING_AGENT_VERSION),
+        ),
+        binary_name="pi-acp",
+        # @earendil-works/pi-coding-agent (and its undici dependency) declare
+        # `node >=22.19.0`. Below it the pi-acp adapter still starts, so the
+        # ACP handshake succeeds and the failure only lands at `session/new`
+        # as "Cannot call write after a stream was destroyed" — the engine
+        # having already died on `webidl.util.markAsUncloneable is not a
+        # function`.
+        min_node_version="22.19.0",
+    ),
+    "opencode": ACPInstallSpec(
+        key="opencode",
+        # The npm package is a 7.8KB shim whose postinstall pulls the matching
+        # per-platform compiled binary (~184MB unpacked) from an
+        # optionalDependency, so `--ignore-scripts` leaves a stub that errors.
+        packages=(ACPPackagePin("opencode-ai", OPENCODE_VERSION),),
+        # The shim's npm bin is ``opencode``, not the package basename.
+        binary_name="opencode",
+        trailing_args=("acp",),
+        # No `engines` field on opencode-ai or its platform packages: the CLI
+        # is a compiled Bun binary and only its postinstall runs on Node.
     ),
 }
 """Every ACP provider installable via npm. Registry membership only makes a

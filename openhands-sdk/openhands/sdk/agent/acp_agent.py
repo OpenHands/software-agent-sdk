@@ -27,7 +27,14 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable, Collection, Generator, Iterable
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Generator,
+    Iterable,
+    Sequence,
+)
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -69,6 +76,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     codex_auth_file,
     codex_auth_file_is_chatgpt,
     create_file_credential_lifecycle,
+    file_credential_looks_usable,
     write_secret_file,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
@@ -94,11 +102,15 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.settings.acp_providers import (
+    ACP_PROVIDERS,
+    ACPEnvConflictSpec,
     ACPFileSecretSpec,
+    ACPProviderInfo,
     build_session_model_meta,
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
+    get_acp_provider,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -173,26 +185,6 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
 _ACP_SUBPROCESS_LOG_LINE_CHARS = 4_000
-
-# Env vars that must be removed from the subprocess environment when a
-# particular "dominant" env var is present.
-#
-# Rationale: Claude Code's subscription auth uses CLAUDE_CODE_OAUTH_TOKEN, a
-# bearer validated against api.anthropic.com. A co-present ANTHROPIC_API_KEY
-# would take precedence over the token (silently bypassing the subscription),
-# and an ANTHROPIC_BASE_URL would route the bearer to a proxy that rejects it —
-# either silently breaks the intended OAuth auth. When the OAuth token is the
-# active credential we strip both so the subprocess authenticates with the
-# token against api.anthropic.com.
-#
-# Keyed on the credential itself (CLAUDE_CODE_OAUTH_TOKEN), NOT on
-# CLAUDE_CONFIG_DIR: the config dir is a *location* lever (data-dir isolation,
-# #1019) that is orthogonal to which credential is active. Keying the strip on
-# it wrongly fired during API-key isolation and missed the conflict when the
-# token arrived via env without isolation (#3588).
-_ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
-    "CLAUDE_CODE_OAUTH_TOKEN": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
-}
 
 # Number of trailing characters of an ACP session id retained in log lines
 # for correlation.  ACP session ids are server-issued tokens whose possession
@@ -296,6 +288,44 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
 _GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
+def _preconfigured_credentials(
+    provider: ACPProviderInfo | None,
+    specs: Sequence[ACPFileSecretSpec],
+    env: dict[str, str],
+) -> list[str]:
+    """Credential sources already in place, named as they were supplied.
+
+    A server whose advertised auth methods we cannot perform may still be
+    authenticated out of band — from a credential file seeded onto disk, or
+    from the provider key it reads straight out of its environment. Both make
+    "no credential is available" the wrong thing to say. Read off the registry
+    record rather than provider names, so this holds for any provider.
+    """
+    present: list[str] = []
+    for spec in specs:
+        location = env.get(spec.env_var)
+        if not location:
+            continue
+        path = Path(location)
+        if spec.env_points_to == "dir":
+            path = path / spec.filename
+        if not path.is_file():
+            continue
+        # A file that exists but cannot authenticate is the case that most
+        # needs the warning, so presence alone is not enough where the SDK
+        # knows the format.
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        if file_credential_looks_usable(spec.secret_name, text):
+            present.append(spec.secret_name)
+    api_key_var = provider.api_key_env_var if provider is not None else None
+    if api_key_var and env.get(api_key_var):
+        present.append(api_key_var)
+    return present
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -341,7 +371,11 @@ def _select_auth_method(
     return None
 
 
-def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str]) -> str:
+def _auth_selection_failure_reason(
+    auth_methods: list[Any],
+    env: dict[str, str],
+    provider: ACPProviderInfo | None = None,
+) -> str:
     method_ids = {m.id for m in auth_methods}
     reasons: list[str] = []
     if "chat-gpt" in method_ids:
@@ -354,15 +388,33 @@ def _auth_selection_failure_reason(auth_methods: list[Any], env: dict[str, str])
         env.get(name) for name in ("CODEX_API_KEY", "OPENAI_API_KEY")
     ):
         reasons.append("CODEX_API_KEY and OPENAI_API_KEY are unset")
+    if provider is not None and provider.api_key_env_var:
+        if not env.get(provider.api_key_env_var):
+            reasons.append(f"{provider.api_key_env_var} is unset")
+    # ``type: "terminal"`` marks a login only an interactive TTY can complete,
+    # which the runtime does not have. Named so the log says why the method was
+    # never a candidate rather than implying a missing credential.
+    terminal_ids = sorted(
+        m.id for m in auth_methods if getattr(m, "type", None) == "terminal"
+    )
+    if terminal_ids:
+        reasons.append(
+            f"{', '.join(terminal_ids)} needs an interactive terminal, which the "
+            "headless runtime cannot provide"
+        )
     return "; ".join(reasons) or "no supported credential source is available"
 
 
-def _warn_auth_selection_failure(auth_methods: list[Any], env: dict[str, str]) -> None:
+def _warn_auth_selection_failure(
+    auth_methods: list[Any],
+    env: dict[str, str],
+    provider: ACPProviderInfo | None = None,
+) -> None:
     logger.warning(
         "ACP server offers auth methods %s but no matching credential is available "
         "(%s) — session creation may fail",
         [m.id for m in auth_methods],
-        _auth_selection_failure_reason(auth_methods, env),
+        _auth_selection_failure_reason(auth_methods, env, provider),
     )
 
 
@@ -420,13 +472,27 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
         )
 
 
-def _npx_package(command: list[str]) -> str | None:
+def _npx_packages(command: list[str]) -> list[str]:
+    """Pinned npm specs an ``npx`` command installs, for the cache warm.
+
+    ``--package=<spec>`` flags when present — pi pins its ACP adapter and the
+    engine it spawns separately, and its positional argument is the bare binary
+    name, which would warm an unpinned package. Otherwise the first positional,
+    which is the package for the single-package providers.
+    """
     if not command or command[0] != "npx":
-        return None
+        return []
+    pinned = [
+        arg.removeprefix("--package=")
+        for arg in command[1:]
+        if arg.startswith("--package=")
+    ]
+    if pinned:
+        return pinned
     for arg in command[1:]:
         if not arg.startswith("-"):
-            return arg
-    return None
+            return [arg]
+    return []
 
 
 def _with_codex_base_url(
@@ -1620,8 +1686,8 @@ class ACPAgent(AgentBase):
         default=None,
         description=(
             "Provider registry key identifying which ACP CLI this agent runs "
-            "('claude-code', 'codex', 'gemini-cli', or 'custom'); None when the "
-            "agent is built directly rather than via ACPAgentSettings. Set by "
+            "(any ACP_PROVIDERS key, or 'custom'); None when the agent is "
+            "built directly rather than via ACPAgentSettings. Set by "
             "ACPAgentSettings.create_agent() from ACPAgentSettings.acp_server so "
             "the authoritative key survives onto the agent — and thus onto "
             "ConversationInfo.agent — because the launch command in acp_command "
@@ -1640,7 +1706,8 @@ class ACPAgent(AgentBase):
             "Session mode ID to set after creating a session. "
             "If None (default), auto-detected from the ACP server type: "
             "'bypassPermissions' for claude-agent-acp, "
-            "'agent-full-access' for codex-acp."
+            "'agent-full-access' for codex-acp; a provider with no such mode "
+            "(pi-acp) skips the call."
         ),
     )
     acp_prompt_timeout: float = Field(
@@ -2419,23 +2486,23 @@ class ACPAgent(AgentBase):
 
     async def _warm_npx_cache(
         self,
-        package: str,
+        packages: Sequence[str],
         provider_key: str,
         env: dict[str, str],
         cwd: str,
     ) -> None:
         logger.info(
-            "Warming ACP provider npx cache: provider=%s, package=%s; "
+            "Warming ACP provider npx cache: provider=%s, packages=%s; "
             "first use may download the provider before session startup",
             provider_key,
-            package,
+            list(packages),
         )
+        package_args = [arg for package in packages for arg in ("--package", package)]
         process = await asyncio.create_subprocess_exec(
             "npx",
             "--yes",
             "--prefer-offline",
-            "--package",
-            package,
+            *package_args,
             "--",
             "node",
             "-e",
@@ -2487,8 +2554,9 @@ class ACPAgent(AgentBase):
         ``ANTHROPIC_API_KEY`` — API-key Claude gets the same per-conversation
         isolation (and pause/resume continuity) as OAuth Claude (#3588).
 
-        ``HOME`` (gemini-cli's only lever — it hard-codes ``~/.gemini`` and
-        ignores ``XDG``) has a wider blast radius than the surgical
+        ``HOME`` (the only lever for gemini-cli, which hard-codes ``~/.gemini``
+        and ignores ``XDG``, and for pi-acp, whose session map is hard-coded to
+        ``~/.pi/pi-acp``) has a wider blast radius than the surgical
         ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``: it also relocates the home dir
         seen by anything the CLI subprocess itself spawns (``git``, ``npm``,
         ``node``, shells — e.g. ``~/.gitconfig``, ``~/.npmrc``, the npm cache).
@@ -2507,6 +2575,42 @@ class ACPAgent(AgentBase):
         data_dir = self._acp_file_secret_dir(state, provider.key)
         data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         env[env_var] = str(data_dir)
+
+    def _resolved_provider(self) -> ACPProviderInfo | None:
+        """The provider this agent runs, preferring the authoritative key.
+
+        ``acp_server`` is set by ``ACPAgentSettings.create_agent()`` and is the
+        only identity that survives a custom or aliased ``acp_command``; the
+        command is the fallback for an agent constructed directly.
+        """
+        return get_acp_provider(
+            self.acp_server or ""
+        ) or detect_acp_provider_by_command(self.acp_command)
+
+    def _strip_conflicting_env(self, env: dict[str, str]) -> None:
+        """Remove env vars that would defeat this provider's own credential.
+
+        Scoped to the resolved provider's :attr:`ACPProviderInfo.env_conflicts`:
+        the same variable is another provider's *credential* (a provider whose
+        ``api_key_env_var`` is ``ANTHROPIC_API_KEY``), and stripping it there
+        leaves it with nothing to authenticate with.
+
+        An unrecognised server keeps the conservative union: without an identity
+        we cannot tell whose credential a dominant variable belongs to, and a
+        directly-constructed ``ACPAgent`` running Claude Code is the case the
+        rule was written for (#3588).
+        """
+        provider = self._resolved_provider()
+        if provider is not None:
+            specs: tuple[ACPEnvConflictSpec, ...] = provider.env_conflicts
+        else:
+            specs = tuple(
+                spec for info in ACP_PROVIDERS.values() for spec in info.env_conflicts
+            )
+        for spec in specs:
+            if spec.dominant in env:
+                for name in spec.strip:
+                    env.pop(name, None)
 
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
@@ -2770,13 +2874,7 @@ class ACPAgent(AgentBase):
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
-        # Strip env vars that conflict with an active auth mechanism: an active
-        # CLAUDE_CODE_OAUTH_TOKEN must not coexist with ANTHROPIC_API_KEY (which
-        # takes precedence) or ANTHROPIC_BASE_URL (proxies the bearer). See #3588.
-        for dominant, conflicts in _ENV_CONFLICT_MAP.items():
-            if dominant in env:
-                for conflict in conflicts:
-                    env.pop(conflict, None)
+        self._strip_conflicting_env(env)
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
@@ -2787,12 +2885,12 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
         provider = detect_acp_provider_by_command(self.acp_command)
-        package = _npx_package(self.acp_command)
-        if provider is not None and package is not None:
+        packages = _npx_packages(self.acp_command)
+        if provider is not None and packages:
             env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
             try:
                 self._executor.run_async(
-                    self._warm_npx_cache(package, provider.key, env, working_dir),
+                    self._warm_npx_cache(packages, provider.key, env, working_dir),
                     timeout=_ACP_NPX_CACHE_WARM_TIMEOUT + 5,
                 )
             except Exception as error:
@@ -2983,7 +3081,28 @@ class ACPAgent(AgentBase):
                         ) from exc
                     await self._flush_file_credentials()
                 else:
-                    _warn_auth_selection_failure(auth_methods, env)
+                    # A server whose advertised methods we cannot perform may
+                    # still be authenticated out of band — from a seeded
+                    # credential file or the provider key it reads out of the
+                    # environment — so warning about a login we cannot do
+                    # would be noise whenever either is present.
+                    auth_provider = (
+                        self._resolved_provider()
+                        or detect_acp_provider_by_agent_name(agent_name)
+                    )
+                    configured = _preconfigured_credentials(
+                        auth_provider, self.acp_file_secrets, env
+                    )
+                    if configured:
+                        logger.info(
+                            "ACP server offers auth methods %s that cannot be "
+                            "performed here; using the already-configured "
+                            "credential(s) %s instead",
+                            [m.id for m in auth_methods],
+                            configured,
+                        )
+                    else:
+                        _warn_auth_selection_failure(auth_methods, env, auth_provider)
 
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to

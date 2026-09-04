@@ -17,6 +17,10 @@ env:
     AGENT_SERVER_PORT: 8010
     HOST_WORKSPACE_DIR: /tmp/agent-workspace
     AGENT_WORKSPACE_DIR: /workspace
+    # integration-test builds this from the branch and loads it straight into the
+    # runner's daemon, never pushing, so fork PRs need no registry credentials.
+    # smoke-test deliberately stays on the pinned release image.
+    BRANCH_AGENT_SERVER_IMAGE: agent-server:branch-build
 
 defaults:
     run:
@@ -25,7 +29,8 @@ defaults:
 jobs:
     integration-test:
         runs-on: ubuntu-latest
-        timeout-minutes: 30
+        # Raised from 30: this job now builds the agent-server image itself.
+        timeout-minutes: 45
 
         steps:
             - name: Checkout code
@@ -38,12 +43,17 @@ jobs:
                   cache: npm
                   cache-dependency-path: clients/typescript/package-lock.json
 
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
             - name: Install dependencies
               run: npm ci
-
-            - name: Resolve agent-server image
-              run: |
-                  echo "AGENT_SERVER_IMAGE=$(node -p 'require("./package.json").config.agentServerImage')" >> "$GITHUB_ENV"
 
             - name: Build package
               run: npm run build
@@ -53,10 +63,38 @@ jobs:
                   mkdir -p ${{ env.HOST_WORKSPACE_DIR }}
                   chmod 777 ${{ env.HOST_WORKSPACE_DIR }}
 
-            - name: Pull agent-server Docker image
+            - name: Prepare agent-server build context
+              id: agent_server_ctx
+              working-directory: .
               run: |
-                  docker pull ${{ env.AGENT_SERVER_IMAGE }}
-                  docker images
+                  uv sync --frozen
+                  uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
+                      --build-ctx-only --arch amd64 \
+                      --base-image nikolaik/python-nodejs:python3.13-nodejs22-slim
+
+            - name: Build agent-server image from this branch
+              uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+              with:
+                  context: ${{ steps.agent_server_ctx.outputs.build_context }}
+                  file: ${{ steps.agent_server_ctx.outputs.dockerfile }}
+                  # `source` skips the pyinstaller stage that `binary` needs. Every
+                  # layer beneath it is shared, so the cache below still applies.
+                  target: source
+                  platforms: linux/amd64
+                  push: false
+                  load: true
+                  tags: ${{ env.BRANCH_AGENT_SERVER_IMAGE }}
+                  # Scope server.yml populates with mode=max on push to main.
+                  cache-from: type=gha,scope=agent-server-python-amd64
+                  build-args: |
+                      BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      OPENHANDS_BUILD_GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
+                      OPENHANDS_BUILD_GIT_REF=${{ github.head_ref != '' && format('refs/heads/{0}', github.head_ref) || github.ref }}
+                      INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
+                      INSTALL_CAPABILITIES=vscode,browser,docker
+
+            - name: Show built image
+              run: docker images ${{ env.BRANCH_AGENT_SERVER_IMAGE }}
 
             - name: Start agent-server container
               run: |
@@ -65,7 +103,7 @@ jobs:
                     -p 127.0.0.1:${{ env.AGENT_SERVER_PORT }}:8000 \
                     -v ${{ env.HOST_WORKSPACE_DIR }}:${{ env.AGENT_WORKSPACE_DIR }} \
                     -e LOG_JSON=true \
-                    ${{ env.AGENT_SERVER_IMAGE }} --host 0.0.0.0
+                    ${{ env.BRANCH_AGENT_SERVER_IMAGE }} --host 0.0.0.0
 
                   # Wait for container to start
                   sleep 5
