@@ -22,6 +22,12 @@ logger = get_logger(__name__)
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
 
+# Marker naming the number of events on disk. The count is in the name rather than
+# the contents because FileStore.read is cached (LocalFileStore states that the cache
+# assumes exclusive access) while FileStore.exists goes to the filesystem, and this
+# has to see writes from other processes.
+COUNT_MARKER_PATTERN = ".eventlog-count-{count}.marker"
+
 # ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
 # below in _effective_parent_id and re-exported here so existing
 # ``from event_store import ROOT_PARENT_ID`` importers keep working.
@@ -196,10 +202,14 @@ class EventLog(EventsListBase):
 
         try:
             with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
-                # Sync with disk in case another process wrote while we waited
-                disk_length = self._count_events_on_disk()
-                if disk_length > self._length:
-                    self._sync_from_disk(disk_length)
+                # Sync with disk in case another process wrote while we waited.
+                # Counting means listing the whole directory, which grows with the
+                # conversation, so skip it when the marker proves the count is still
+                # what we think it is.
+                if not self._disk_length_is_known():
+                    disk_length = self._count_events_on_disk()
+                    if disk_length > self._length:
+                        self._sync_from_disk(disk_length)
 
                 if evt_id in self._id_to_idx:
                     existing_idx = self._id_to_idx[evt_id]
@@ -229,6 +239,7 @@ class EventLog(EventsListBase):
                 self._id_to_idx[evt_id] = idx
                 self._event_cache[idx] = event
                 self._length += 1
+                self._advance_count_marker(idx, self._length)
                 return idx
         except TimeoutError:
             logger.error(
@@ -236,6 +247,36 @@ class EventLog(EventsListBase):
                 f"for event {evt_id}"
             )
             raise
+
+    def _count_marker_path(self, count: int) -> str:
+        return f"{self._dir}/{COUNT_MARKER_PATTERN.format(count=count)}"
+
+    def _disk_length_is_known(self) -> bool:
+        """True when the marker proves nothing has been appended since we last looked.
+
+        Only the exact match is a proof. Every other outcome -- no marker, a marker for
+        a different count, a store that cannot answer -- returns False and leaves the
+        caller on the authoritative counting path.
+        """
+        try:
+            return self._fs.exists(self._count_marker_path(self._length))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Error probing event count marker in %s: %s", self._dir, e)
+            return False
+
+    def _advance_count_marker(self, previous: int, current: int) -> None:
+        """Move the marker from ``previous`` to ``current``.
+
+        Called with the lock held, after the event file is written. An append
+        interrupted anywhere in the critical section leaves no marker at all, which
+        costs the next writer a full count rather than letting it trust a stale one.
+        """
+        try:
+            self._fs.write(self._count_marker_path(current), "")
+            if previous != current:
+                self._fs.delete(self._count_marker_path(previous))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Error updating event count marker in %s: %s", self._dir, e)
 
     def _count_events_on_disk(self) -> int:
         """Count event files on disk."""
@@ -296,6 +337,10 @@ class EventLog(EventsListBase):
         by_idx: dict[int, EventID] = {}
         for p in paths:
             name = posix_path_name(p)
+            if name.startswith("."):
+                # Bookkeeping files (the lock, the count marker) live alongside the
+                # events and are not malformed event files.
+                continue
             m = EVENT_NAME_RE.match(name)
             if m:
                 idx = int(m.group("idx"))

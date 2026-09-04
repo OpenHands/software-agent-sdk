@@ -110,7 +110,12 @@ class LocalFileStore(FileStore):
 
             if os.path.isfile(full_path):
                 os.remove(full_path)
-                del self.cache[full_path]
+                # The cache only holds what this process read or wrote, so a file
+                # written by anyone else is not in it. Deleting one used to raise
+                # KeyError here, after the removal had already succeeded, and the
+                # handler below logged it as a failure.
+                if full_path in self.cache:
+                    del self.cache[full_path]
                 logger.debug(f"Removed local file: {full_path}")
             elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)

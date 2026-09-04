@@ -312,3 +312,53 @@ def test_cache_with_evict_correct():
     total_len = len(cache["key2"]) + len(cache["key3"])
     # Verify memory statistics match the total size of key2 and key3
     assert total_len == cache.current_memory
+
+
+def test_delete_does_not_report_a_failure_for_an_uncached_file(tmp_path, caplog):
+    """The cache only holds what this process read or wrote.
+
+    Deleting a file written by anyone else removed it and then raised KeyError on
+    the cache eviction, which the handler logged as "Error clearing local file
+    store" even though the delete itself had already succeeded.
+    """
+    import logging
+
+    store = LocalFileStore(str(tmp_path))
+    external = tmp_path / "written-by-someone-else.json"
+    external.write_text("{}")
+
+    with caplog.at_level(logging.ERROR):
+        store.delete("written-by-someone-else.json")
+
+    assert not external.exists()
+    assert "Error clearing local file store" not in caplog.text
+
+
+def test_delete_still_evicts_a_cached_file(tmp_path):
+    """The guard must not skip eviction for files the store does hold."""
+    store = LocalFileStore(str(tmp_path))
+    store.write("cached.json", '{"a": 1}')
+    full = store.get_full_path("cached.json")
+    assert full in store.cache
+
+    store.delete("cached.json")
+
+    assert full not in store.cache
+    assert store.cache.current_memory == 0
+
+
+def test_exists_sees_an_external_write_but_read_does_not(tmp_path):
+    """Pins the asymmetry the event log's append marker relies on.
+
+    ``read`` is served from the cache, which the class documents as assuming
+    exclusive access, so it cannot be used to detect another writer. ``exists`` goes
+    to the filesystem, so a marker that carries its value in the filename can.
+    """
+    store = LocalFileStore(str(tmp_path))
+    store.write("marker.json", "written-by-this-process")
+
+    (tmp_path / "marker.json").write_text("written-by-someone-else")
+    (tmp_path / "appeared.json").write_text("{}")
+
+    assert store.read("marker.json") == "written-by-this-process"
+    assert store.exists("appeared.json")

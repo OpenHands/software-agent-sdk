@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import LOCK_FILE_NAME, EventLog
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
     EVENT_NAME_RE,
@@ -14,6 +14,7 @@ from openhands.sdk.conversation.persistence_const import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.utils.path import posix_path_name
 
 
 def create_test_event(event_id: str, content: str = "Test content") -> MessageEvent:
@@ -424,7 +425,9 @@ def test_event_log_concurrent_writes_serialized():
         assert log1._length == 1
         assert log2._length == 2
 
-        files = [f for f in fs.list("events") if not f.endswith(".lock")]
+        # The events directory also holds bookkeeping files -- the lock and the
+        # append count marker -- which are dotfiles rather than event files.
+        files = [f for f in fs.list("events") if not posix_path_name(f).startswith(".")]
         assert len(files) == 2
 
 
@@ -555,3 +558,116 @@ def test_event_log_cold_reload_past_100k_events():
     # Appending after reload keeps length accounting consistent.
     log.append(create_test_event("after-reload", "after"))
     assert len(log) == n + 1
+
+
+# --- append count marker -------------------------------------------------------
+#
+# append() used to list the whole events directory on every call to notice writes
+# from other processes, so its cost grew with the conversation. The marker names the
+# count in its filename -- FileStore.read is cached, FileStore.exists is not -- and is
+# only ever trusted as proof that nothing changed.
+
+
+def test_append_does_not_count_the_directory_on_the_fast_path():
+    """The listing is what made append cost grow; the marker has to remove it."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+
+    calls = 0
+    real_count = log._count_events_on_disk
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_count(*args, **kwargs)
+
+    log._count_events_on_disk = counting  # type: ignore[method-assign]
+    for i in range(2, 12):
+        log.append(create_test_event(f"00000000-0000-0000-0000-{i:012d}"))
+
+    assert calls == 0, f"append counted the directory {calls} times on the fast path"
+    assert len(log) == 11
+
+
+def test_a_second_instance_still_sees_events_written_by_the_first():
+    """The marker must not cost us the multi-writer sync it replaces."""
+    fs = InMemoryFileStore()
+    first = EventLog(fs)
+    second = EventLog(fs)
+
+    first.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+    first.append(create_test_event("00000000-0000-0000-0000-000000000002"))
+
+    # `second` was opened when the log was empty and has no marker of its own to
+    # trust, so it must fall back to counting and pick both events up.
+    second.append(create_test_event("00000000-0000-0000-0000-000000000003"))
+
+    assert len(second) == 3
+    assert [e.id for e in second][-1].endswith("3")
+
+
+def test_a_missing_marker_falls_back_to_counting():
+    """An append interrupted mid-critical-section leaves no marker."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+
+    for path in [p for p in fs.list(EVENTS_DIR) if "count" in p]:
+        fs.delete(path)
+
+    counted = False
+    real_count = log._count_events_on_disk
+
+    def counting(*args, **kwargs):
+        nonlocal counted
+        counted = True
+        return real_count(*args, **kwargs)
+
+    log._count_events_on_disk = counting  # type: ignore[method-assign]
+    log.append(create_test_event("00000000-0000-0000-0000-000000000002"))
+
+    assert counted, "a missing marker must not be treated as proof"
+    assert len(log) == 2
+
+
+def test_a_stale_marker_is_not_treated_as_proof():
+    """Only the marker for our own length is a proof; any other value is not."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+
+    # Someone else appended and moved the marker past us.
+    for path in [p for p in fs.list(EVENTS_DIR) if "count" in p]:
+        fs.delete(path)
+    fs.write(f"{EVENTS_DIR}/.eventlog-count-7.marker", "")
+
+    assert not log._disk_length_is_known()
+
+
+def test_marker_names_do_not_prefix_one_another():
+    """InMemoryFileStore.delete matches by prefix, so 1 must not delete 10."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    for i in range(1, 13):
+        log.append(create_test_event(f"00000000-0000-0000-0000-{i:012d}"))
+
+    markers = [p for p in fs.list(EVENTS_DIR) if "count" in p]
+    assert markers == [f"{EVENTS_DIR}/.eventlog-count-12.marker"], markers
+
+
+def test_bookkeeping_files_are_not_reported_as_malformed(caplog):
+    """The lock and the marker sit in the events directory by design."""
+    import logging
+
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+    fs.write(f"{EVENTS_DIR}/{LOCK_FILE_NAME}", "")
+
+    with caplog.at_level(logging.WARNING):
+        reopened = EventLog(fs)
+
+    assert len(reopened) == 1
+    assert "Unrecognized event file name" not in caplog.text
