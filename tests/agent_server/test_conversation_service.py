@@ -50,7 +50,8 @@ from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
-from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -4164,3 +4165,96 @@ async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
             holder.join(timeout=2)
 
     assert [item.id for item in page.items] == [conversation_info.id]
+
+
+# --- API mutations have to reach meta.json -------------------------------------
+#
+# set_confirmation_policy / set_security_analyzer / update_secrets write through
+# the conversation to base_state.json, but startup reads all three off
+# StoredConversation, so a mutation that never reaches meta.json is reverted on the
+# next load.
+
+
+async def _start_one(
+    conversations_dir: Path, workspace_dir: Path, cipher: Cipher | None
+):
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+        event_service = await service.get_event_service(info.id)
+        assert event_service is not None
+        await event_service.set_confirmation_policy(AlwaysConfirm())
+        await event_service.set_security_analyzer(LLMSecurityAnalyzer())
+        await event_service.update_secrets({"MY_TOKEN": "shh"})
+    return info.id
+
+
+async def test_api_mutations_survive_a_server_restart(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("mutation-persistence-test-key")
+
+    conv_id = await _start_one(conversations_dir, workspace_dir, cipher)
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as restarted:
+        event_service = await restarted._get_or_load_event_service(conv_id)
+        stored = event_service.stored
+
+        assert isinstance(stored.confirmation_policy, AlwaysConfirm)
+        assert isinstance(stored.security_analyzer, LLMSecurityAnalyzer)
+        assert sorted(stored.secrets) == ["MY_TOKEN"]
+        assert stored.secrets["MY_TOKEN"].get_value() == "shh"
+
+
+async def test_mutations_are_written_to_meta_json(tmp_path):
+    """meta.json is what startup reads, so the assertion is on the file."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    conv_id = await _start_one(
+        conversations_dir, workspace_dir, Cipher("meta-json-test-key")
+    )
+
+    raw = (conversations_dir / conv_id.hex / "meta.json").read_text()
+    meta = json.loads(raw)
+
+    assert meta["confirmation_policy"]["kind"] == "AlwaysConfirm"
+    assert meta["security_analyzer"]["kind"] == "LLMSecurityAnalyzer"
+    assert sorted(meta["secrets"]) == ["MY_TOKEN"]
+    # Encrypted at rest, as the resume path already does.
+    assert "shh" not in raw
+    assert meta["secrets"]["MY_TOKEN"]["value"] not in (None, "shh")
+
+
+async def test_a_plain_string_secret_is_stored_as_a_secret_source(tmp_path):
+    """update_secrets takes SecretValue (str | SecretSource); stored takes the latter.
+
+    model_copy does not validate, so a raw string would only fail later, when
+    meta.json is serialised.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    conv_id = await _start_one(
+        conversations_dir, workspace_dir, Cipher("string-secret-test-key")
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=Cipher("string-secret-test-key")
+    ) as restarted:
+        event_service = await restarted._get_or_load_event_service(conv_id)
+        source = event_service.stored.secrets["MY_TOKEN"]
+
+    assert not isinstance(source, str)
+    assert source.get_value() == "shh"

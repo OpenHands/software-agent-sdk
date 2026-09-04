@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID, uuid4
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -75,6 +75,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -108,6 +109,22 @@ def _without_agent_context_secret(
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"secrets": secrets})}
     )
+
+
+def _as_secret_sources(
+    secrets: Mapping[str, SecretValue],
+) -> dict[str, SecretSource]:
+    """Normalise a SecretValue mapping for storage.
+
+    ``EventService.update_secrets`` accepts ``SecretValue`` (``str | SecretSource``)
+    while ``StoredConversation.secrets`` is ``dict[str, SecretSource]``, and
+    ``model_copy`` does not validate, so a plain string would only fail later when
+    meta.json is serialised.
+    """
+    return {
+        name: StaticSecret(value=SecretStr(value)) if isinstance(value, str) else value
+        for name, value in secrets.items()
+    }
 
 
 @dataclass
@@ -188,6 +205,16 @@ class EventService:
                     }
                 )
             )
+
+    async def _persist_stored(self, **updates) -> None:
+        """Apply updates to the stored conversation and write meta.json.
+
+        ``model_copy`` rather than in-place mutation, matching
+        ``apply_resume_secrets``. Rollback when ``save_meta`` itself fails is
+        tracked separately in #4800 and is not changed here.
+        """
+        self.stored = self.stored.model_copy(update=updates)
+        await self.save_meta()
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
         # meta.json (StoredConversation) no longer carries the agent, so there is
@@ -1679,6 +1706,12 @@ class EventService:
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.update_secrets, secrets)
+        # The conversation writes base_state.json, but startup reads these three
+        # fields off StoredConversation, so meta.json has to carry them too or the
+        # change is reverted on the next load.
+        await self._persist_stored(
+            secrets={**self.stored.secrets, **_as_secret_sources(secrets)}
+        )
 
     async def set_confirmation_policy(self, policy: ConfirmationPolicyBase):
         """Set the confirmation policy for the conversation."""
@@ -1688,6 +1721,7 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
         )
+        await self._persist_stored(confirmation_policy=policy)
 
     async def set_security_analyzer(
         self, security_analyzer: SecurityAnalyzerBase | None
@@ -1699,6 +1733,7 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_security_analyzer, security_analyzer
         )
+        await self._persist_stored(security_analyzer=security_analyzer)
 
     async def load_plugin(self, plugin_ref: str) -> None:
         """Load a marketplace plugin into the active conversation."""
