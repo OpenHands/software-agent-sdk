@@ -17,6 +17,7 @@ from openhands.sdk.subagent.registry import (
     register_agent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 from openhands.tools.delegate import (
     DelegateExecutor,
     DelegateObservation,
@@ -264,6 +265,8 @@ def test_spawn_disables_streaming_for_sub_agents():
     parent_conversation.state.workspace.working_dir = "/tmp"
     parent_conversation.state.persistence_dir = None
     parent_conversation._visualizer = None
+    cipher = Cipher("test-secret")
+    parent_conversation._cipher = cipher
 
     executor = DelegateExecutor()
 
@@ -279,6 +282,7 @@ def test_spawn_disables_streaming_for_sub_agents():
     sub_conversation = executor._sub_agents["test_agent"]
     sub_llm = sub_conversation.agent.llm
     assert sub_llm.stream is False, "Sub-agent LLM should have streaming disabled"
+    assert sub_conversation._cipher is cipher
 
     # Verify parent LLM still has streaming enabled (wasn't mutated)
     assert parent_llm.stream is True, "Parent LLM should still have streaming enabled"

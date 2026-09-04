@@ -220,6 +220,7 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
+                    "cipher": parent_conversation._cipher,
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

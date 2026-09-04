@@ -42,6 +42,7 @@ from openhands.sdk.utils.deprecation import warn_deprecated
 if TYPE_CHECKING:
     from openhands.sdk.agent.agent import Agent
     from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.utils.cipher import Cipher
 
 logger = get_logger(__name__)
 
@@ -132,7 +133,9 @@ def register_agent_if_absent(
     no-ops when an agent with *name* is already registered, instead of
     raising `ValueError`.  This is used by file-based and plugin-based
     agent loading to gracefully skip conflicts with programmatically
-    registered agents.
+    registered agents. Because the first registration wins, values captured
+    by ``factory_func`` (including a profile cipher) are pinned by the first
+    caller for that name.
 
     See `register_agent` for full parameter documentation.
 
@@ -160,6 +163,8 @@ def _get_profile_store(profile_store_dir: str | None) -> LLMProfileStore:
 def agent_definition_to_factory(
     agent_def: AgentDefinition,
     work_dir: str | Path | None = None,
+    *,
+    cipher: "Cipher | None" = None,
 ) -> Callable[["LLM"], "Agent"]:
     """Create an agent factory closure from an `AgentDefinition`.
 
@@ -181,6 +186,7 @@ def agent_definition_to_factory(
         agent_def: The agent definition to convert.
         work_dir: Project directory for resolving skill names. If None,
             only user-level skills are searched.
+        cipher: Cipher for decrypting secrets in the selected LLM profile.
 
     Raises:
         ValueError: If a tool or skill is not found.
@@ -225,7 +231,7 @@ def agent_definition_to_factory(
                     f"Available profiles: {available_profiles}"
                 )
 
-            llm = store.load(profile_name)
+            llm = store._load_for_execution(profile_name, cipher=cipher)
 
         # the system prompt of the subagent is added as a suffix of the
         # main system prompt
@@ -285,7 +291,11 @@ def agent_definition_to_factory(
     return _factory
 
 
-def register_file_agents(work_dir: str | Path) -> list[str]:
+def register_file_agents(
+    work_dir: str | Path,
+    *,
+    cipher: "Cipher | None" = None,
+) -> list[str]:
     """Load and register file-based agents from project-level `.agents/agents` and
     `.openhands/agents`, and user-level `~/.agents/agents` and `~/.openhands/agents`
     directories.
@@ -294,6 +304,10 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
     each level `.agents/` takes priority over `.openhands/`.
 
     Does not overwrite agents already registered programmatically or by plugins.
+
+    Args:
+        work_dir: Project directory used to discover agent definitions.
+        cipher: Cipher for decrypting secrets in selected LLM profiles.
 
     Returns:
         List of agent names that were actually registered.
@@ -317,7 +331,11 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 
     registered: list[str] = []
     for agent_def in deduplicated:
-        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
+        factory = agent_definition_to_factory(
+            agent_def,
+            work_dir=work_dir,
+            cipher=cipher,
+        )
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,
@@ -336,6 +354,8 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 def register_plugin_agents(
     agents: list[AgentDefinition],
     work_dir: str | Path | None = None,
+    *,
+    cipher: "Cipher | None" = None,
 ) -> list[str]:
     """Register plugin-provided agent definitions into the delegate registry.
 
@@ -348,13 +368,18 @@ def register_plugin_agents(
         agents: Agent definitions collected from loaded plugins.
         work_dir: Project directory for resolving skill names in agent
             definitions. If None, only user-level skills are searched.
+        cipher: Cipher for decrypting secrets in selected LLM profiles.
 
     Returns:
         List of agent names that were actually registered.
     """
     registered: list[str] = []
     for agent_def in agents:
-        factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
+        factory = agent_definition_to_factory(
+            agent_def,
+            work_dir=work_dir,
+            cipher=cipher,
+        )
         was_registered = register_agent_if_absent(
             name=agent_def.name,
             factory_func=factory,

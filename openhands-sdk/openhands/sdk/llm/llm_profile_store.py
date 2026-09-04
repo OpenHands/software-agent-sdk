@@ -16,6 +16,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -38,6 +39,10 @@ logger = get_logger(__name__)
 
 class ProfileLimitExceeded(Exception):
     """Raised when saving would exceed the configured profile limit."""
+
+
+class ProfileDecryptionError(ValueError):
+    """Raised when an encrypted profile secret cannot be decrypted."""
 
 
 def _api_key_present(llm: LLM) -> bool:
@@ -357,6 +362,39 @@ class LLMProfileStore:
 
             updates["api_key"] = SecretStr(api_key)
         return llm.model_copy(update=updates)
+
+    def _load_for_execution(
+        self,
+        name: str,
+        *,
+        cipher: Cipher | None = None,
+    ) -> LLM:
+        """Load a profile and reject any secret that remained encrypted."""
+        from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
+
+        profile_path = self._get_profile_path(name)
+        llm = self.load(name, cipher=cipher)
+        profile_name = name.removesuffix(".json")
+        with self._acquire_lock():
+            stored_profile = json.loads(profile_path.read_text())
+
+        loaded_profile = llm.model_dump(mode="json", context={"expose_secrets": True})
+        for field in LLM_SECRET_FIELDS:
+            stored_value = stored_profile.get(field)
+            loaded_value = loaded_profile[field]
+            if (
+                isinstance(loaded_value, str)
+                and loaded_value.startswith(FERNET_TOKEN_PREFIX)
+            ) or (
+                isinstance(stored_value, str)
+                and stored_value.startswith(FERNET_TOKEN_PREFIX)
+                and loaded_value is None
+            ):
+                raise ProfileDecryptionError(
+                    f"Could not decrypt secret '{field}' for profile "
+                    f"'{profile_name}'. Use the cipher that encrypted the profile."
+                )
+        return llm
 
     def delete(self, name: str) -> None:
         """Delete an existing profile.

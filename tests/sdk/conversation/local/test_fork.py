@@ -16,6 +16,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _agent() -> Agent:
@@ -72,12 +73,19 @@ class ForkCopyNonPicklableTool(
 
 def test_fork_creates_new_id():
     """Forked conversation must have a distinct ID."""
+    cipher = Cipher("test-secret")
     with tempfile.TemporaryDirectory() as tmpdir:
-        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src = LocalConversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            cipher=cipher,
+        )
         fork = src.fork()
 
         assert fork.id != src.id
         assert isinstance(fork.id, uuid.UUID)
+        assert fork._cipher is cipher
 
 
 def test_fork_with_explicit_id():

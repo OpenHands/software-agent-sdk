@@ -15,13 +15,17 @@ from litellm.exceptions import (
 from pydantic import BaseModel, Field, PrivateAttr
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.llm_profile_store import (
+    LLMProfileStore,
+    ProfileDecryptionError,
+)
 from openhands.sdk.logger import get_logger
 
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm_response import LLMResponse
     from openhands.sdk.llm.utils.metrics import Metrics
+    from openhands.sdk.utils.cipher import Cipher
 
 logger = get_logger(__name__)
 
@@ -55,6 +59,11 @@ class FallbackStrategy(BaseModel):
 
     # Private: lazily resolved LLM instances
     _resolved: list[Any] | None = PrivateAttr(default=None)
+    _cipher: Cipher | None = PrivateAttr(default=None)
+
+    def _bind_cipher(self, cipher: Cipher | None) -> None:
+        """Bind the conversation cipher used for lazy profile resolution."""
+        self._cipher = cipher
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""
@@ -139,9 +148,14 @@ class FallbackStrategy(BaseModel):
         remaining_names = self.fallback_llms[len(self._resolved) :]
         for name in remaining_names:
             try:
-                fb = self._profile_store.load(name)
+                fb = self._profile_store._load_for_execution(
+                    name,
+                    cipher=self._cipher,
+                )
                 self._resolved.append(fb)
                 yield fb
+            except ProfileDecryptionError:
+                raise
             except (FileNotFoundError, ValueError) as exc:
                 logger.error(
                     "[Fallback Strategy] Failed to load "

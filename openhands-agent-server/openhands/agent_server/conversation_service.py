@@ -563,6 +563,7 @@ def _register_agent_definitions(
     agent_defs: list["AgentDefinition"],
     *,
     context: str,
+    cipher: Cipher | None,
 ) -> None:
     """Register agent definitions into the subagent registry.
 
@@ -577,7 +578,7 @@ def _register_agent_definitions(
     registered = 0
     for agent_def in agent_defs:
         try:
-            factory = agent_definition_to_factory(agent_def)
+            factory = agent_definition_to_factory(agent_def, cipher=cipher)
             register_agent_if_absent(
                 name=agent_def.name,
                 factory_func=factory,
@@ -1104,6 +1105,7 @@ class ConversationService:
             _register_agent_definitions(
                 stored.agent_definitions,
                 context=f"resuming conversation {stored.id}",
+                cipher=self.cipher,
             )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
@@ -1674,6 +1676,7 @@ class ConversationService:
             _register_agent_definitions(
                 request.agent_definitions,
                 context=f"conversation {conversation_id}",
+                cipher=self.cipher,
             )
 
         # Plugin loading is now handled lazily by LocalConversation.
