@@ -226,7 +226,7 @@ def test_without_a_sink_nothing_is_minted_and_chunks_still_flow():
 
 
 def test_a_retry_that_dies_before_its_first_token_still_retires_the_slot():
-    """The attempt that did stream is still owed an answer."""
+    """The abort must name the attempt whose start the client observed."""
     frames: list = []
     stream = _make(frames)
     try:
@@ -237,9 +237,13 @@ def test_a_retry_that_dies_before_its_first_token_still_retires_the_slot():
     except RuntimeError:
         pass
 
+    starts = [f for f in frames if isinstance(f, StreamStarted)]
     aborts = [f for f in frames if isinstance(f, StreamAborted)]
-    assert len(aborts) == 1
-    assert (aborts[0].item_id, aborts[0].attempt) == (stream.item_id, 2)
+    assert len(starts) == len(aborts) == 1
+    assert (aborts[0].item_id, aborts[0].attempt) == (
+        starts[0].item_id,
+        starts[0].attempt,
+    )
 
 
 def test_a_broken_sink_does_not_fail_the_turn():

@@ -201,6 +201,38 @@ def test_a_tool_call_turn_retires_the_slot_on_its_first_action(tmp_path):
     assert not any(isinstance(f, StreamAborted) for f in frames)
 
 
+def test_an_invalid_tool_call_retires_the_stream_with_its_action(tmp_path):
+    frames: list = []
+    llm = _llm(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="Trying the requested operation")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-invalid",
+                        name="missing_tool",
+                        arguments="{}",
+                        origin="completion",
+                    )
+                ],
+            )
+        ],
+        ["Trying the requested operation"],
+    )
+    convo = _conversation(tmp_path, llm, frames)
+
+    events: list = []
+    convo.agent.step(convo, on_event=events.append)
+
+    started = next(f for f in frames if isinstance(f, StreamStarted))
+    invalid_action = next(
+        e for e in events if isinstance(e, ActionEvent) and e.action is None
+    )
+    assert invalid_action.id == started.item_id
+    assert not any(isinstance(f, StreamAborted) for f in frames)
+
+
 def test_a_provider_failure_retires_the_slot_with_an_abort(tmp_path):
     frames: list = []
     llm = _llm(
