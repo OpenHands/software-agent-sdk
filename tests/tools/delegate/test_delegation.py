@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from pydantic import SecretStr
 
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
@@ -197,6 +198,26 @@ def test_close_closes_spawned_sub_agents():
     executor.close()
 
     assert sub_conversation._cleanup_initiated is True
+    assert executor._sub_agents == {}
+
+
+def test_spawn_rejects_disabled_agent_type():
+    """A sub-agent type on the parent's disabled_agents deny-list is refused,
+    and no sub-agent is created."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+    parent_conversation.agent.agent_context = AgentContext(
+        disabled_agents=["general-purpose"]
+    )
+
+    observation = executor(
+        DelegateAction(command="spawn", ids=["sub1"], agent_types=["general-purpose"]),
+        parent_conversation,
+    )
+
+    assert observation.is_error is True
+    assert "general-purpose" in observation.text
     assert executor._sub_agents == {}
 
 

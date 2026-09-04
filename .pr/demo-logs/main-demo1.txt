@@ -1,0 +1,69 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.42.1                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[08/20/26 06:30:36] INFO     Registered file-based agent          default.py:148
+                             'bash-runner' from                                 
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/bash_runner.md               
+[08/20/26 06:30:36] INFO     Registered file-based agent          default.py:148
+                             'code-explorer' from                               
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/code_explorer.               
+                             md                                                 
+[08/20/26 06:30:36] INFO     Registered file-based agent          default.py:148
+                             'general-purpose' from                             
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/default.md                   
+[08/20/26 06:30:36] INFO     Registered file-based agent          default.py:148
+                             'web-researcher' from                              
+                             /home/glitchenstein/repos/software-a               
+                             gent-sdk/openhands-tools/openhands/t               
+                             ools/preset/subagents/web_researcher               
+                             .md                                                
+[08/20/26 06:30:36] WARNING  No persistence_dir provided; falling   state.py:506
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[08/20/26 06:30:36] INFO     Created new conversation               state.py:583
+                             470e7de2-16b8-49e3-b3c0-e2b2a98b6ff2               
+[08/20/26 06:30:36] INFO     Created new conversation               state.py:583
+                             8bcff624-561a-4460-b997-cf8b9a48bb63               
+[08/20/26 06:30:36] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+[08/20/26 06:30:36] INFO     Created new conversation               state.py:583
+                             62ba1100-55ce-449d-84bf-a538b2e207df               
+[08/20/26 06:30:36] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+[08/20/26 06:30:36] WARNING  No persistence_dir provided; falling   state.py:506
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[08/20/26 06:30:36] INFO     Created new conversation               state.py:583
+                             1455e0a7-ece9-4e86-af22-f98d4c70c19f               
+[08/20/26 06:30:36] INFO     Confirmation policy set  local_conversation.py:2542
+                             to: kind='NeverConfirm'                            
+[08/20/26 06:30:36] INFO     Spawned sub-agent 's1                   impl.py:250
+                             (general-purpose)'                                 
+=== 1. Can the preference even be expressed? ===
+AgentContext(disabled_agents=[...]) -> AttributeError: field does not exist; the preference has nowhere to live
+
+=== 2. Does anything stop the spawn? (no LLM involved) ===
+spawned: task_00000001 status=running  <- the 'disabled' agent runs; nothing enforced the preference
+
+=== 3. What the calling LLM sees (full tool path, TaskExecutor) ===
+skipped: with no guard this call would proceed into a real LLM run
+
+=== 4. A type not on the list still spawns ===
+spawned: task_00000002 status=running
+
+=== 5. delegate tool spawn path ===
+is_error=False
+text: Successfully spawned 1 sub-agents: s1 (general-purpose)
