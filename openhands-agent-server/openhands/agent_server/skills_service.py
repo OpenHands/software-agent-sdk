@@ -14,16 +14,15 @@ Precedence (later overrides earlier):
 sandbox < registered marketplace/public < user < org < project
 """
 
-import json
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from time import monotonic
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
+from openhands.agent_server.marketplace_snapshot import load_marketplace_snapshot
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
@@ -54,7 +53,6 @@ from openhands.sdk.skills.utils import (
     update_skills_repository,
 )
 from openhands.sdk.utils import sanitized_env
-from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -638,26 +636,7 @@ class MarketplaceSkillInfo(BaseModel):
     installed: bool
 
 
-# ---------------------------------------------------------------------------
-# Marketplace catalog cache
-# ---------------------------------------------------------------------------
-# Each call to service_get_marketplace_catalog triggers a git fetch via
-# update_skills_repository, which is a network-bound operation that takes
-# multiple seconds. A short TTL cache avoids that hit on every tab open.
-#
-# Only the catalog structure (name, description, source) is cached; the
-# `installed` field is always derived fresh from the local FS so that
-# install/uninstall actions are reflected immediately.
-#
-# Thread safety: concurrent cache misses (cold start or TTL expiry) may
-# trigger parallel git fetches, but each fetch is idempotent and produces
-# the same result (last writer wins). For this low-traffic endpoint the
-# thundering-herd risk is acceptable without an explicit lock.
-#
-# Type: (timestamp, list-of-(name, description, source)) or None
 _CatalogEntry = tuple[str, str | None, str]
-_catalog_cache: tuple[float, list[_CatalogEntry]] | None = None
-_CATALOG_TTL_SECONDS = 300  # 5 minutes
 
 
 def service_get_marketplace_catalog(
@@ -669,9 +648,8 @@ def service_get_marketplace_catalog(
     Loads the marketplace JSON from the public extensions repository and
     enriches each entry with installation status.
 
-    The catalog structure (name, description, source) is cached for
-    _CATALOG_TTL_SECONDS to avoid a git fetch on every call. The
-    ``installed`` field is always resolved fresh from the local FS.
+    The shared marketplace snapshot is cached to avoid a git fetch on every
+    call. The ``installed`` field is always resolved fresh from the local FS.
 
     Args:
         marketplace_path: Relative path to marketplace JSON file.
@@ -682,14 +660,8 @@ def service_get_marketplace_catalog(
     Returns:
         List of MarketplaceSkillInfo with skill details and installation status.
     """
-    global _catalog_cache
-
-    now = monotonic()
-    if _catalog_cache is not None and now - _catalog_cache[0] < _CATALOG_TTL_SECONDS:
-        entries = _catalog_cache[1]
-    else:
-        entries = _fetch_catalog_entries(marketplace_path)
-        _catalog_cache = (now, entries)
+    marketplace = load_marketplace_snapshot(marketplace_path)
+    entries = _catalog_entries(marketplace) if marketplace is not None else []
 
     # Always-fresh installed check — local FS scan, not a network call.
     installed_names = {
@@ -703,43 +675,7 @@ def service_get_marketplace_catalog(
     ]
 
 
-def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
-    """Fetch marketplace catalog entries from the public extensions repository.
-
-    This is the slow path: it does a git fetch + reads the marketplace JSON.
-    Results are cached by the caller.
-
-    Returns:
-        List of (name, description, source) tuples, or an empty list on error.
-    """
-    cache_dir = get_skills_cache_dir()
-    repo_path = update_skills_repository(
-        PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
-    )
-
-    if repo_path is None:
-        logger.warning("Failed to access public skills repository")
-        return []
-
-    marketplace_file = repo_path / marketplace_path
-    if not marketplace_file.exists():
-        logger.warning(f"Marketplace file not found: {marketplace_file}")
-        return []
-
-    try:
-        marketplace = Marketplace.load(repo_path)
-    except (FileNotFoundError, ValueError) as e:
-        # Fallback to loading from specific path
-        try:
-            with open(marketplace_file, encoding="utf-8") as f:
-                data = json.load(f)
-            marketplace = Marketplace.model_validate(
-                {**data, "path": to_posix_path(repo_path)}
-            )
-        except (json.JSONDecodeError, ValidationError, OSError) as e2:
-            logger.warning(f"Failed to load marketplace: {e}, {e2}")
-            return []
-
+def _catalog_entries(marketplace: Marketplace) -> list[_CatalogEntry]:
     # Build catalog from plugins and skills.
     # Plugins take priority: if a name appears in both plugins and skills,
     # the plugin version is used (since plugins are added first).
