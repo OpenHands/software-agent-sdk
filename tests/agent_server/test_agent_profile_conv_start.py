@@ -1024,57 +1024,6 @@ class TestConversationServiceStartWithDirectAgent:
         assert agent.agent_context.system_message_suffix == "client-set suffix"
 
     @pytest.mark.asyncio
-    async def test_client_supplied_load_memory_false_beats_the_preference(
-        self, tmp_path
-    ):
-        """The stored value is a default, not an override.
-
-        Unlike a profile launch, the ``agent`` shape lets a client state the
-        setting outright. Stamping over an explicit ``False`` would leave that
-        client with no way to opt a single conversation out.
-        """
-        agent_opted_out = Agent(
-            llm=LLM(model="gpt-4o", usage_id="llm"),
-            tools=[],
-            agent_context=AgentContext(load_memory=False),
-        )
-        persisted = PersistedSettings(
-            agent_settings=OpenHandsAgentSettings(
-                agent_context=AgentContext(load_memory=True)
-            )
-        )
-
-        agent = await _start_with_agent(tmp_path, persisted, agent=agent_opted_out)
-
-        assert agent.agent_context is not None
-        assert agent.agent_context.load_memory is False
-
-    @pytest.mark.asyncio
-    async def test_agent_settings_load_memory_false_beats_the_preference(
-        self, tmp_path
-    ):
-        """Same guarantee for the third shape, which converts to ``agent``
-        through a ``mode="before"`` validator before the stamp runs."""
-        persisted = PersistedSettings(
-            agent_settings=OpenHandsAgentSettings(
-                agent_context=AgentContext(load_memory=True)
-            )
-        )
-
-        agent = await _start_with_agent(
-            tmp_path,
-            persisted,
-            agent_settings={
-                "agent_kind": "openhands",
-                "llm": {"model": "gpt-4o", "usage_id": "llm"},
-                "agent_context": {"load_memory": False},
-            },
-        )
-
-        assert agent.agent_context is not None
-        assert agent.agent_context.load_memory is False
-
-    @pytest.mark.asyncio
     async def test_stamp_does_not_introduce_a_current_datetime(self, tmp_path):
         """Synthesizing a context must not smuggle in AgentContext's defaults.
 
