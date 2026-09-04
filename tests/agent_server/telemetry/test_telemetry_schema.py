@@ -21,6 +21,7 @@ PROPERTY_MODELS: list[type[BaseModel]] = [
     m.ConversationOutcomeProperties,
     m.ErrorProperties,
     m.RequestFailedProperties,
+    m.OperationTimingProperties,
 ]
 
 
@@ -29,6 +30,18 @@ def _is_constrained_str(annotation: object) -> bool:
     if get_origin(annotation) is Annotated:
         args = get_args(annotation)
         return args[0] is str and len(args) > 1
+    return False
+
+
+def _is_constrained_int(annotation: object) -> bool:
+    """True if the annotation is a *bounded* int, not a bare ``int``.
+
+    ``OperationTimingProperties`` deliberately carries raw milliseconds as a
+    bounded ``Annotated[int, Field(ge=..., le=...)]`` (see ``DurationMs``).
+    """
+    if get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        return args[0] is int and len(args) > 1
     return False
 
 
@@ -41,7 +54,7 @@ def _permitted(annotation: object) -> bool:
         )
     if origin is Literal:
         return all(isinstance(a, str) for a in get_args(annotation))
-    if _is_constrained_str(annotation):
+    if _is_constrained_str(annotation) or _is_constrained_int(annotation):
         return True
     return annotation in (bool, int)
 
