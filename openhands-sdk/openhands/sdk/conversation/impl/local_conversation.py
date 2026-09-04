@@ -10,6 +10,7 @@ from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
@@ -183,6 +184,7 @@ class LocalConversation(BaseConversation):
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
+    _on_stream: StreamProgressCallbackType | None
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
@@ -238,6 +240,7 @@ class LocalConversation(BaseConversation):
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
         profile_store_dir: str | Path | None = None,
+        stream_callbacks: list[StreamProgressCallbackType] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -260,6 +263,8 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
+            stream_callbacks: Optional list of callbacks invoked with the
+                stream-progress frames minted by ``StreamContext``.
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
@@ -466,6 +471,14 @@ class LocalConversation(BaseConversation):
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
+            else None
+        )
+        self._on_stream = (
+            cast(
+                StreamProgressCallbackType,
+                BaseConversation.compose_callbacks(stream_callbacks),  # type: ignore[arg-type]
+            )
+            if stream_callbacks
             else None
         )
 
@@ -2585,6 +2598,15 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.confirmation_policy = policy
         logger.info(f"Confirmation policy set to: {policy}")
+
+    @property
+    def on_stream(self) -> StreamProgressCallbackType | None:
+        """Sink for stream-progress frames, or ``None`` if nothing consumes them.
+
+        Read by the agent rather than passed to ``step``: a new ``step``
+        parameter would break every third-party ``AgentBase`` subclass.
+        """
+        return self._on_stream
 
     def set_token_callbacks(
         self, token_callbacks: list[ConversationTokenCallbackType] | None

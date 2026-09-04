@@ -174,7 +174,12 @@ def clear_subclass_cache() -> None:
     Normally not needed — the cache auto-invalidates when new
     DiscriminatedUnionMixin subclasses are defined.  This function exists
     for edge cases involving non-DiscriminatedUnionMixin hierarchies.
+
+    Entries are dropped, not just superseded: a stale one is a strong
+    reference to every subclass it captured.
     """
+    _concrete_cache.clear()
+    _checked_cache.clear()
     _bump_subclass_generation()
 
 

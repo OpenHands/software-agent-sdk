@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -18,6 +18,7 @@ from openhands.sdk.agent.response_dispatch import (
     ResponseDispatchMixin,
     classify_response,
 )
+from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.agent.utils import (
     amake_llm_completion,
     aprepare_llm_messages,
@@ -640,6 +641,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
+        with StreamContext.open(conversation, on_token) as stream:
+            self._step(conversation, on_event, stream)
+
+    def _step(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        stream: StreamContext,
+    ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
@@ -721,7 +731,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 self.llm,
                 _messages,
                 tools=list(self.tools_map.values()),
-                on_token=on_token,
+                on_token=stream.token_callback,
                 call_context=call_context,
             )
         except FunctionCallValidationError as e:
@@ -807,11 +817,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         match response_type:
             case LLMResponseType.TOOL_CALLS:
                 self._handle_tool_calls(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -820,6 +830,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     conversation,
                     state,
                     on_event,
+                    stream,
                     response_type=response_type,
                 )
 
@@ -839,6 +850,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
+        with StreamContext.open(conversation, on_token) as stream:
+            await self._astep(conversation, on_event, stream)
+
+    async def _astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        stream: StreamContext,
+    ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
@@ -918,7 +938,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     self.llm,
                     _messages,
                     tools=list(self.tools_map.values()),
-                    on_token=on_token,
+                    on_token=stream.token_callback,
                     call_context=call_context,
                 )
         except FunctionCallValidationError as e:
@@ -1006,11 +1026,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         match response_type:
             case LLMResponseType.TOOL_CALLS:
                 await self._ahandle_tool_calls(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1019,6 +1039,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     conversation,
                     state,
                     on_event,
+                    stream,
                     response_type=response_type,
                 )
 
@@ -1207,6 +1228,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
+        stream: StreamContext | None = None,
     ) -> ActionEvent | None:
         """Converts a tool call into an ActionEvent, validating arguments.
 
@@ -1314,8 +1336,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             return
 
-        # Create initial action event
+        # Create initial action event. Claimed here rather than at the call
+        # site so an error path, which never builds this event, leaves the slot
+        # open for the abort in StreamContext.__exit__.
+        minted: dict[str, Any] = {}
+        if stream is not None and (item_id := stream.claim()):
+            minted["id"] = item_id
+
         action_event = ActionEvent(
+            **minted,
             action=action,
             thought=thought or [],
             reasoning_content=reasoning_content,
@@ -1339,6 +1368,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
 
         on_event(action_event)
+        if stream is not None and minted:
+            stream.commit()
         return action_event
 
     def _execute_action_event(

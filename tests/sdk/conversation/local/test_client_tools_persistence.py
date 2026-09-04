@@ -1,11 +1,13 @@
 """Persistence/resume behavior for client-defined tools on LocalConversation."""
 
+import gc
 import uuid
 from pathlib import Path
 
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.tool import Tool, client_tool as ct, registry as reg
 from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.utils.models import clear_subclass_cache
 
 
 def _make_agent() -> Agent:
@@ -23,6 +25,11 @@ def _wipe_client_tool_globals(names: list[str]) -> None:
         reg._REG.pop(name, None)
         reg._USABILITY_REG.pop(name, None)
         reg._MODULE_QUALNAMES.pop(name, None)
+    # The dynamic ClientAction classes are only weakly reachable once the
+    # registries drop them, but the subclass cache holds them strongly — and a
+    # surviving pair with the same name is a duplicate to any later rebuild.
+    clear_subclass_cache()
+    gc.collect()
 
 
 def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> None:

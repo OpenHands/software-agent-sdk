@@ -31,6 +31,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
 )
+from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -134,6 +135,11 @@ class EventService:
     _conversation: LocalConversation | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
+    )
+    # Its own fan-out, not the event bus: frames are not events, and only the
+    # session socket consumes them.
+    _stream_pub_sub: PubSub[StreamProgress] = field(
+        default_factory=lambda: PubSub[StreamProgress](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
@@ -848,6 +854,19 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    async def subscribe_to_stream_progress(
+        self, subscriber: Subscriber[StreamProgress]
+    ) -> UUID:
+        """Register for stream-progress frames.
+
+        No initial push, unlike :meth:`subscribe_to_events`: a client that
+        connects mid-stream gets the real text with the durable event.
+        """
+        return self._stream_pub_sub.subscribe(subscriber)
+
+    async def unsubscribe_from_stream_progress(self, subscriber_id: UUID) -> bool:
+        return self._stream_pub_sub.unsubscribe(subscriber_id)
+
     def _emit_event_from_thread(self, event: Event) -> None:
         """Helper to safely emit events from non-async contexts (e.g., callbacks).
 
@@ -1075,6 +1094,16 @@ class EventService:
             with suppress(RuntimeError):  # main loop already closed during teardown
                 asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
 
+        def _publish_stream_progress(frame: StreamProgress) -> None:
+            # Same cross-thread hop as _publish_stream_delta: called from the
+            # run thread, or the ACP portal thread.
+            if not self._main_loop or not self._main_loop.is_running():
+                return
+            with suppress(RuntimeError):  # main loop already closed during teardown
+                asyncio.run_coroutine_threadsafe(
+                    self._stream_pub_sub(frame), self._main_loop
+                )
+
         def _token_streaming_callback(chunk: LLMStreamChunk | str) -> None:
             if isinstance(chunk, str):
                 _publish_stream_delta(content=chunk)
@@ -1099,6 +1128,7 @@ class EventService:
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
+            stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
@@ -1774,6 +1804,7 @@ class EventService:
             self._run_task = None
 
         await self._pub_sub.close()
+        await self._stream_pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)
