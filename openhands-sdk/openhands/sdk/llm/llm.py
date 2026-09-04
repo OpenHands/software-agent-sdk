@@ -127,7 +127,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import (
     Telemetry,
-    record_llm_span_cost,
+    install_llm_cost_callback,
 )
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -2217,52 +2217,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             **kwargs,
         }
 
-    def _add_span_cost_callback(self, kwargs: dict[str, Any], *, async_: bool) -> None:
-        """Attach a litellm success callback that publishes the span cost.
+    def _ensure_span_cost_callback(self) -> None:
+        """Install the global litellm cost callback once (idempotent).
 
-        lmnr's LiteLLM instrumentation ends its ``litellm.completion`` span inside
-        the completion call, ahead of ``Telemetry.on_response``. A success callback
-        (which litellm runs before returning the response) makes the cost available to
-        the observability span processor before the span ends (ordering requirement of
-        ``LLMSpanCostProcessor``). Plain callables run for sync completions only, so
-        async completions get an async twin routed to litellm's async hook.
+        The callback publishes each response's authoritative cost keyed by
+        ``gen_ai.response.id`` so ``LLMSpanCostProcessor`` can stamp it onto the
+        ended LLM span. See ``install_llm_cost_callback`` for why a global
+        ``CustomLogger`` is used instead of a per-request ``success_callback``.
         """
         if self._telemetry is None:
             return
-        telemetry = self._telemetry
-        existing = kwargs.get("success_callback")
-        merged = [existing] if callable(existing) else list(existing or [])
-
-        def _record(kwargs: dict[str, Any], response_obj: Any) -> None:
-            try:
-                if response_obj is None:
-                    response_obj = kwargs.get("response") or kwargs.get(
-                        "complete_streaming_response"
-                    )
-                response_id = getattr(response_obj, "id", None)
-                if not response_id:
-                    return
-                usage = getattr(response_obj, "usage", None)
-                cache_read = cache_write = 0
-                if usage is not None:
-                    cache_read, cache_write = telemetry._cache_buckets(usage)
-                cost = telemetry._compute_cost(response_obj)
-                record_llm_span_cost(str(response_id), cost, cache_read, cache_write)
-            except Exception:
-                logger.debug("Failed to record LLM span cost", exc_info=True)
-
-        if async_:
-
-            async def _async_record(
-                kwargs: dict[str, Any], response_obj: Any, _start: Any, _end: Any
-            ) -> None:
-                _record(kwargs, response_obj)
-
-            merged.append(_async_record)
-
-        else:
-            merged.append(_record)
-        kwargs["success_callback"] = merged
+        install_llm_cost_callback()
 
     def _transport_call(
         self,
@@ -2275,7 +2240,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         transport_kwargs = self._prepare_transport_kwargs(
             messages=messages, enable_streaming=enable_streaming, **kwargs
         )
-        self._add_span_cost_callback(transport_kwargs, async_=False)
+        self._ensure_span_cost_callback()
         ret = litellm_completion(**transport_kwargs)
         if enable_streaming and on_token is not None:
             chunks: list[ModelResponseStream] = []
@@ -2306,7 +2271,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             auth_values=auth_values,
             **kwargs,
         )
-        self._add_span_cost_callback(transport_kwargs, async_=True)
+        self._ensure_span_cost_callback()
         ret = await litellm_acompletion(**transport_kwargs)
         if enable_streaming and on_token is not None:
             chunks: list[ModelResponseStream] = []

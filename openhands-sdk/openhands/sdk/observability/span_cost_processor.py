@@ -2,9 +2,10 @@
 
 lmnr's LiteLLM instrumentation ends its ``litellm.completion`` span inside the
 completion call, ahead of ``Telemetry.on_response``, so attributes cannot be
-attached afterwards. The authoritative cost is published instead from a litellm
-success callback (see ``openhands.sdk.llm.llm._add_span_cost_callback``)
-keyed by ``gen_ai.response.id``, and consumed here at ``on_end`` time. This
+attached afterwards. The authoritative cost is published instead from a global
+litellm success callback (see
+``openhands.sdk.llm.utils.telemetry.install_llm_cost_callback``) keyed by
+``gen_ai.response.id``, and consumed here at ``on_end`` time. This
 preserves the span's name, parent chain and all existing attributes (no double-
 count, no trace-shape change).
 """

@@ -63,6 +63,88 @@ def consume_llm_span_cost(
         return _SPAN_COST_BY_RESPONSE_ID.pop(response_id, None)
 
 
+_COST_CALLBACK_INSTALLED = False
+_COST_CALLBACK_LOCK = threading.Lock()
+
+
+def _publish_llm_span_cost(kwargs: dict[str, Any], response_obj: Any) -> None:
+    """Publish one response's authoritative cost from a litellm success event."""
+    try:
+        response_id = getattr(response_obj, "id", None)
+        if not response_id:
+            return
+        # litellm injects its own authoritative per-call cost here; it honors any
+        # pricing registered for a custom ``litellm_proxy`` alias (#4816). Fall
+        # back to a direct calculation only when it is missing or zero.
+        cost = kwargs.get("response_cost")
+        if not cost:
+            try:
+                cost = float(litellm_completion_cost(completion_response=response_obj))
+            except Exception:
+                cost = None
+        usage = getattr(response_obj, "usage", None)
+        cache_read, cache_write = (
+            Telemetry._cache_buckets(usage) if usage is not None else (0, 0)
+        )
+        record_llm_span_cost(str(response_id), cost, cache_read, cache_write)
+    except Exception:
+        logger.debug("Failed to publish LLM span cost", exc_info=True)
+
+
+def install_llm_cost_callback() -> None:
+    """Register a global litellm ``CustomLogger`` that publishes span cost.
+
+    lmnr's LiteLLM instrumentation ends the ``litellm.completion`` span before
+    ``Telemetry.on_response`` runs, so the authoritative cost is published from a
+    litellm success event (keyed by ``gen_ai.response.id``) and stamped onto the
+    ended span by ``LLMSpanCostProcessor``. litellm's global ``callbacks`` fire
+    reliably for both sync and async completions with a stable 4-argument
+    signature, unlike a per-request ``success_callback`` kwarg (which is only
+    dispatched when a global callback is already configured, and which litellm
+    invokes with 4 positional args regardless of the callback's arity).
+    """
+    global _COST_CALLBACK_INSTALLED
+    if _COST_CALLBACK_INSTALLED:
+        return
+    with _COST_CALLBACK_LOCK:
+        if _COST_CALLBACK_INSTALLED:
+            return
+        try:
+            import litellm
+            from litellm.integrations.custom_logger import CustomLogger
+        except Exception:
+            logger.debug("litellm CustomLogger unavailable; span cost disabled")
+            return
+
+        class _LLMSpanCostCallback(CustomLogger):
+            # litellm invokes these with (kwargs, response_obj, start_time,
+            # end_time); only the first two are needed here.
+            def log_success_event(
+                self,
+                kwargs,
+                response_obj,
+                start_time,
+                end_time,  # noqa: ARG002
+            ) -> None:
+                _publish_llm_span_cost(kwargs, response_obj)
+
+            async def async_log_success_event(
+                self,
+                kwargs,
+                response_obj,
+                start_time,
+                end_time,  # noqa: ARG002
+            ) -> None:
+                _publish_llm_span_cost(kwargs, response_obj)
+
+        already = any(
+            type(cb).__name__ == "_LLMSpanCostCallback" for cb in litellm.callbacks
+        )
+        if not already:
+            litellm.callbacks.append(_LLMSpanCostCallback())
+        _COST_CALLBACK_INSTALLED = True
+
+
 class Telemetry(BaseModel):
     """
     Handles latency, token/cost accounting, and optional logging.

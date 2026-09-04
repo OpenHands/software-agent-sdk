@@ -1,12 +1,24 @@
-"""Tests for LLM._add_span_cost_callback wiring (see #4816 / #4817)."""
+"""Tests for the global litellm span-cost callback (see #4816 / #4817).
+
+The cost is published from litellm's global ``callbacks`` (a ``CustomLogger``
+that fires reliably for sync and async completions with a stable 4-argument
+signature), then consumed by ``LLMSpanCostProcessor``. Older revisions used a
+per-request ``success_callback`` kwarg, which litellm only dispatched when a
+global callback was already configured and always invoked with 4 positional
+args regardless of the callback's arity.
+"""
 
 import asyncio
 
+import litellm
 import pytest
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils import telemetry as telemetry_mod
-from openhands.sdk.llm.utils.telemetry import consume_llm_span_cost
+from openhands.sdk.llm.utils.telemetry import (
+    consume_llm_span_cost,
+    install_llm_cost_callback,
+)
 
 
 class _FakeUsage:
@@ -36,51 +48,65 @@ def _clear_registry():
         telemetry_mod._SPAN_COST_BY_RESPONSE_ID.clear()
 
 
-def test_sync_callback_records_cost(llm):
-    kwargs: dict = {}
-    llm._add_span_cost_callback(kwargs, async_=False)
+def _installed_callback():
+    for cb in reversed(litellm.callbacks):
+        if type(cb).__name__ == "_LLMSpanCostCallback":
+            return cb
+    return None
 
-    callbacks = kwargs["success_callback"]
-    assert callbacks, "expected a success callback to be attached"
 
-    recorder = callbacks[-1]
-    recorder({}, _FakeResponse("resp-sync"))
+def test_install_registers_global_callback():
+    install_llm_cost_callback()
+    assert _installed_callback() is not None
+    # Idempotent: a second install does not append a duplicate.
+    before = sum(
+        1 for cb in litellm.callbacks if type(cb).__name__ == "_LLMSpanCostCallback"
+    )
+    install_llm_cost_callback()
+    after = sum(
+        1 for cb in litellm.callbacks if type(cb).__name__ == "_LLMSpanCostCallback"
+    )
+    assert before == after == 1
+
+
+def test_llm_wiring_installs_callback(llm):
+    llm._ensure_span_cost_callback()
+    assert _installed_callback() is not None
+
+
+def test_sync_success_event_records_cost():
+    install_llm_cost_callback()
+    cb = _installed_callback()
+    # litellm passes 4 positional args; response_cost is its authoritative value.
+    cb.log_success_event(
+        {"response_cost": 0.0012}, _FakeResponse("resp-sync"), None, None
+    )
 
     entry = consume_llm_span_cost("resp-sync")
     assert entry is not None
     cost, cache_read, cache_write = entry
+    assert cost == pytest.approx(0.0012)
     assert cache_read == 0
     assert cache_write == 0
 
 
-def test_async_callback_records_cost(llm):
-    kwargs: dict = {}
-    llm._add_span_cost_callback(kwargs, async_=True)
+def test_async_success_event_records_cost():
+    install_llm_cost_callback()
+    cb = _installed_callback()
+    asyncio.run(
+        cb.async_log_success_event(
+            {"response_cost": 0.0034}, _FakeResponse("resp-async"), None, None
+        )
+    )
 
-    recorder = kwargs["success_callback"][-1]
-    assert asyncio.iscoroutinefunction(recorder)
-
-    asyncio.run(recorder({}, _FakeResponse("resp-async"), None, None))
-
-    assert consume_llm_span_cost("resp-async") is not None
-
-
-def test_existing_callbacks_are_preserved(llm):
-    def sentinel(*_args, **_kwargs):
-        return None
-
-    kwargs = {"success_callback": [sentinel]}
-    llm._add_span_cost_callback(kwargs, async_=False)
-
-    assert sentinel in kwargs["success_callback"]
-    assert len(kwargs["success_callback"]) == 2
+    entry = consume_llm_span_cost("resp-async")
+    assert entry is not None
+    assert entry[0] == pytest.approx(0.0034)
 
 
-def test_callback_ignores_response_without_id(llm):
-    kwargs: dict = {}
-    llm._add_span_cost_callback(kwargs, async_=False)
-
-    recorder = kwargs["success_callback"][-1]
-    recorder({}, _FakeResponse(None))
+def test_success_event_ignores_response_without_id():
+    install_llm_cost_callback()
+    cb = _installed_callback()
+    cb.log_success_event({"response_cost": 0.0012}, _FakeResponse(None), None, None)
 
     assert consume_llm_span_cost("") is None
