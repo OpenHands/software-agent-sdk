@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -2491,6 +2491,13 @@ def _build_telemetry_context(
 
 @dataclass
 class _EventSubscriber(Subscriber):
+    # Streaming deltas arrive at token rate and are otherwise filtered from
+    # non-websocket subscribers, but this subscriber is the activity heartbeat:
+    # its __call__ refreshes both the idle-eviction clock and the runtime-api
+    # idle timer. It must keep receiving deltas so a long-running streaming
+    # generation keeps the pod alive.
+    receives_streaming_deltas: ClassVar[bool] = True
+
     service: EventService
 
     async def __call__(self, _event: Event):
