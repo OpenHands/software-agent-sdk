@@ -7,8 +7,9 @@ frontend wants to embed workspace artifacts (HTML reports, plots, PDFs).
 
 These endpoints let a client that already has a valid session API key
 exchange it for a short-lived cookie which the browser will automatically
-attach to every workspace request — including cross-site iframes, thanks
-to ``SameSite=None; Secure; Partitioned``.
+attach to every workspace request. Secure contexts support cross-site iframes
+via ``SameSite=None; Secure; Partitioned``; plain HTTP falls back to a
+same-site ``SameSite=Lax`` cookie.
 
 The cookie is honored by ``workspace_router`` ONLY. Every other API route
 continues to require the ``X-Session-API-Key`` header. This is deliberate:
@@ -74,12 +75,10 @@ def _set_workspace_cookie(
     in third-party contexts; without it, the cookie may be silently
     dropped under third-party-cookie phase-out.
 
-    We always set ``SameSite=None`` so the same cookie works for both
-    same-site and cross-site iframes, and always set ``HttpOnly`` so JS
-    in workspace HTML can't read it back. ``Secure`` is set whenever
-    the request comes from a secure context (HTTPS or loopback) — the
-    only contexts where a ``SameSite=None`` cookie will actually be
-    stored by the browser.
+    We set ``SameSite=None`` in secure contexts so the cookie works for both
+    same-site and cross-site iframes. Plain HTTP uses ``SameSite=Lax`` because
+    browsers reject ``SameSite=None`` cookies without ``Secure``. ``HttpOnly``
+    is always set so JS in workspace HTML can't read the cookie back.
     """
     response.set_cookie(
         key=WORKSPACE_SESSION_COOKIE_NAME,
@@ -88,7 +87,7 @@ def _set_workspace_cookie(
         path=_COOKIE_PATH,
         secure=secure,
         httponly=True,
-        samesite="none",
+        samesite="none" if secure else "lax",
     )
     # Starlette plumbs ``partitioned`` through to ``http.cookies.Morsel``,
     # which only recognized the attribute starting in Python 3.14. We need
