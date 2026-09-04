@@ -518,7 +518,8 @@ def get_skills_cache_dir() -> Path:
     """Get the local cache directory for public skills repository.
 
     Returns:
-        Path to the skills cache directory (~/.openhands/cache/skills).
+        Path to the ``cache/skills`` subdirectory of the user persistence
+        directory (``~/.openhands/cache/skills`` absent OH_PERSISTENCE_DIR).
     """
     cache_dir = get_user_persistence_dir() / "cache" / "skills"
     cache_dir.mkdir(parents=True, exist_ok=True)

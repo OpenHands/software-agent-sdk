@@ -45,6 +45,7 @@ from openhands.sdk.context.prompts.sections.static import (
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
 from openhands.sdk.skills import KeywordTrigger, Skill
+from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.workspace import LocalWorkspace
 
 from .test_prompt_snapshot import (
@@ -189,7 +190,9 @@ def test_memory_section_names_persistence_dir_when_set(
     not the ephemeral ``~/.openhands`` home."""
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistent"))
     enabled = MemorySection().render(_ctx(memory_enabled=True)) or ""
-    assert f"`{tmp_path / 'persistent' / 'memory'}/`" in enabled
+    # Slash-separated on every platform, so the agent never sees a mixed path.
+    expected = to_posix_path(tmp_path / "persistent" / "memory")
+    assert f"`{expected}/`" in enabled
     assert "~/.openhands/memory/" not in enabled
 
 

@@ -53,6 +53,24 @@ def test_get_user_persistence_dir_expands_tilde_in_env(
     assert get_user_persistence_dir() == fake_home / "persist"
 
 
+def test_get_user_persistence_dir_anchors_relative_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A relative value is pinned to the import-time CWD, not the current one."""
+    import openhands.sdk.utils.path as path_module
+
+    anchor = tmp_path / "anchor"
+    anchor.mkdir()
+    monkeypatch.setattr(path_module, "_INITIAL_CWD", anchor)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", "persist")
+    assert get_user_persistence_dir() == anchor / "persist"
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert get_user_persistence_dir() == anchor / "persist"
+
+
 def test_get_user_persistence_dir_default_overrides_home_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
