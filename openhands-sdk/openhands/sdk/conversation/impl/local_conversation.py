@@ -984,6 +984,8 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+            fork_conv._state.confirmation_policy = self._state.confirmation_policy
+            fork_conv._state.security_analyzer = self._state.security_analyzer
             # Conversation secrets (``secrets=`` / update_secrets) live in the
             # registry, not the agent. Assigning the field (rather than
             # mutating the registry) autosaves them, encrypted with the cipher.
