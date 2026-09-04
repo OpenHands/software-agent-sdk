@@ -8,11 +8,18 @@ import json
 import os
 import tempfile
 import warnings
+from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from openai.types.responses.response_output_message import ResponseOutputMessage
+from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.tool.schema import Action
+from openhands.sdk.tool.tool import ToolDefinition
 
 # Import common test utilities
 from tests.conftest import create_mock_litellm_response
@@ -187,3 +194,108 @@ def test_llm_log_completions_with_tool_calls():
 
         assert "response" in log_data
         assert log_data["response"]["choices"][0]["message"]["tool_calls"] is not None
+
+
+class _LogCompletionsArgs(Action):
+    param: str
+
+
+class _LogCompletionsMockTool(ToolDefinition[_LogCompletionsArgs, None]):
+    name: ClassVar[str] = "test_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_LogCompletionsMockTool"]:
+        return [cls(description="A test tool", action_type=_LogCompletionsArgs)]
+
+
+def _read_single_log(temp_dir: str) -> dict:
+    log_files = os.listdir(temp_dir)
+    assert len(log_files) == 1, f"Expected 1 log file, got {len(log_files)}"
+    with open(os.path.join(temp_dir, log_files[0])) as f:
+        return json.loads(f.read())
+
+
+def test_log_completions_logs_openai_format_tool_schemas():
+    """The chat-path log must carry the OpenAI-format tool schemas actually
+    sent (full parameter properties), so offline analysis can reconstruct the
+    request without the Tool classes."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o",
+            api_key=SecretStr("test-key"),
+            usage_id="test-log-tools-llm",
+            log_completions=True,
+            log_completions_folder=temp_dir,
+            num_retries=0,
+        )
+        mock_response = create_mock_litellm_response(
+            content="ok",
+            response_id="chat-tools-id",
+            model="gpt-4o",
+        )
+
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion", return_value=mock_response
+        ):
+            llm.completion(
+                [Message(role="user", content=[TextContent(text="Call a tool")])],
+                tools=list(_LogCompletionsMockTool.create()),
+            )
+
+        log_data = _read_single_log(temp_dir)
+
+    (log_tool,) = log_data["tools"]
+    assert log_tool["type"] == "function"
+    assert log_tool["function"]["name"] == "test_tool"
+    assert "param" in log_tool["function"]["parameters"]["properties"]
+    # The duplicate copy under kwargs is still stripped by Telemetry.
+    assert "tools" not in log_data["kwargs"]
+
+
+def test_log_completions_logs_responses_format_tool_schemas():
+    """The Responses-path log must carry the finalized Responses ToolParam
+    schemas (parameter properties at the top level)."""
+    output = ResponseOutputMessage.model_construct(
+        id="m1",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[ResponseOutputText(type="output_text", text="ok", annotations=[])],
+    )
+    mock_response = ResponsesAPIResponse(
+        id="resp-tools-id",
+        created_at=0,
+        output=[output],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+        status="completed",
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-5-mini",
+            api_key=SecretStr("test-key"),
+            usage_id="test-log-resp-tools-llm",
+            log_completions=True,
+            log_completions_folder=temp_dir,
+            num_retries=0,
+        )
+
+        with patch(
+            "openhands.sdk.llm.llm.litellm_responses", return_value=mock_response
+        ):
+            llm.responses(
+                [Message(role="user", content=[TextContent(text="Call a tool")])],
+                tools=list(_LogCompletionsMockTool.create()),
+            )
+
+        log_data = _read_single_log(temp_dir)
+
+    assert log_data["llm_path"] == "responses"
+    (log_tool,) = log_data["tools"]
+    assert log_tool["type"] == "function"
+    assert log_tool["name"] == "test_tool"
+    assert "param" in log_tool["parameters"]["properties"]

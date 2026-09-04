@@ -1318,7 +1318,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             telemetry_ctx.update(
                 {
                     "messages": formatted_messages[:],  # already simple dicts
-                    "tools": tools,
+                    # OpenAI-format schemas as sent, so offline analysis can
+                    # reconstruct the request without the Tool classes.
+                    "tools": cc_tools or None,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
             )
@@ -1456,7 +1458,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "llm_path": "responses",
                     "instructions": instructions,
                     "input": input_items[:],
-                    "tools": tools,
+                    # Responses-format schemas as sent (see above).
+                    "tools": resp_tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
             )
