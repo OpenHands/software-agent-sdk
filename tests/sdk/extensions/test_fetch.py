@@ -128,6 +128,19 @@ def test_parse_ssh_with_custom_user():
     assert url == ssh_url
 
 
+def test_parse_ssh_scheme_url():
+    """`ssh://` scheme URLs (incl. an explicit port) are recognized as git URLs.
+
+    Regression test: previously `is_git_url()` did not recognize the `ssh://`
+    scheme, so these dropped through to "Unable to parse extension source"
+    instead of being treated as a git source.
+    """
+    ssh_url = "ssh://git@bitbucket.example.com:7999/team/repo.git"
+    source_type, url = parse_extension_source(ssh_url)
+    assert source_type == SourceType.GIT
+    assert url == ssh_url
+
+
 def test_parse_relative_path_with_slash():
     source_type, url = parse_extension_source("extensions/my-ext")
     assert source_type == SourceType.LOCAL
