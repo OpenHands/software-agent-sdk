@@ -1294,7 +1294,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     enable_classify_and_switch_llm_tool: bool = Field(
         default=False,
         description=(
-            "Enable the built-in classify_and_switch_llm tool, which routes the "
+            "Enable the built-in route_task_to_model tool, which routes the "
             "task to the best LLM profile using the active meta-profile. When no "
             "active_meta_profile is set, the first available meta-profile is used."
         ),
@@ -1310,7 +1310,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Name of the active meta-profile (in ~/.openhands/meta-profiles) used "
-            "by the classify_and_switch_llm tool to route tasks to LLM profiles."
+            "by the route_task_to_model tool to route tasks to LLM profiles."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(

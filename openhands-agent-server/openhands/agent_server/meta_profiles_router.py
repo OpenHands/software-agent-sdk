@@ -217,7 +217,7 @@ async def activate_meta_profile(
 
     Unlike LLM profiles, activating a meta-profile does not mutate the agent's
     LLM config — it only records which meta-profile the
-    ``classify_and_switch_llm`` tool should route with. Returns 404 if the
+    ``route_task_to_model`` tool should route with. Returns 404 if the
     meta-profile does not exist.
     """
     # Verify the meta-profile exists (and is valid) before activating.

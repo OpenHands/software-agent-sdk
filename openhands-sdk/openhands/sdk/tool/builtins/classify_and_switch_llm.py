@@ -404,6 +404,8 @@ class ClassifyAndSwitchLLMTool(
 ):
     """Tool that classifies the task and switches to a meta-profile's LLM."""
 
+    name = "route_task_to_model"
+
     @classmethod
     def create(
         cls,
