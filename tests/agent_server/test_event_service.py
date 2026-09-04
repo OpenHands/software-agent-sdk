@@ -1865,6 +1865,26 @@ class TestEventServiceSaveMeta:
         assert loaded.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    async def test_save_meta_writes_provided_payload_without_mutating_stored(
+        self, event_service, tmp_path
+    ):
+        """An explicit payload is written first; in-memory stored stays put."""
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        original_title = event_service.stored.title
+        updated = event_service.stored.model_copy(update={"title": "Persisted Title"})
+
+        await event_service.save_meta(updated)
+
+        assert event_service.stored.title == original_title
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert loaded.title == "Persisted Title"
+
+    @pytest.mark.asyncio
     async def test_save_meta_round_trips_agent_definition_mcp_secrets(
         self, sample_stored_conversation, tmp_path
     ):
