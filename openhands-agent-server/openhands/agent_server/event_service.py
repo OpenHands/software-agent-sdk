@@ -23,8 +23,10 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
 from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
@@ -158,6 +160,8 @@ class EventService:
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
     # Monotonic clock of the last activity, used for idle eviction.
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
+    # Monotonic clock of the last throttled streaming heartbeat.
+    _last_stream_activity_signal: float = field(default=float("-inf"), init=False)
     # Subscribers attached at startup; later ones (e.g. websockets) are external.
     _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
@@ -907,11 +911,21 @@ class EventService:
         from openhands.sdk.agent import ACPAgent
 
         if isinstance(agent, ACPAgent):
-            from openhands.agent_server.server_details_router import (
-                update_last_execution_time,
-            )
-
             agent._on_activity = update_last_execution_time
+
+    def _signal_stream_activity(self) -> None:
+        """Refresh the runtime idle timer while a completion streams.
+
+        Deltas are never persisted, so the durable-event path that calls
+        update_last_execution_time() is silent for the length of a stream.
+        Signalled from the producer so it survives deltas leaving the shared
+        bus; throttled like the ACP bridge's _maybe_signal_activity.
+        """
+        now = time.monotonic()
+        if now - self._last_stream_activity_signal < ACTIVITY_SIGNAL_INTERVAL:
+            return
+        self._last_stream_activity_signal = now
+        update_last_execution_time()
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -1057,6 +1071,7 @@ class EventService:
                 content=content,
                 reasoning_content=reasoning_content,
             )
+            self._signal_stream_activity()
             with suppress(RuntimeError):  # main loop already closed during teardown
                 asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
 

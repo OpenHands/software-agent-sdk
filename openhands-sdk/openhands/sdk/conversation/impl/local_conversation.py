@@ -425,7 +425,14 @@ class LocalConversation(BaseConversation):
                 self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
-        composed_list = callback_list + [_default_callback]
+        # _default_callback (persist) runs before the caller-supplied callbacks
+        # (e.g. a PubSub publish), so no subscriber is told about an event that
+        # is not on disk yet. compose_callbacks' plain for-loop has no
+        # try/except, so if persist raises here, the callbacks after it in the
+        # list never run. The visualizer is prepended below and so still renders
+        # ahead of persist — that is local terminal output, not an announcement
+        # a client can act on.
+        composed_list = [_default_callback] + callback_list
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -447,7 +454,7 @@ class LocalConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Compose the base callback chain (visualizer -> user callbacks -> default)
+        # Compose the base callback chain (visualizer -> default -> user callbacks)
         base_callback = BaseConversation.compose_callbacks(composed_list)
         self._base_callback = base_callback  # Store for _ensure_plugins_loaded
 
@@ -679,6 +686,15 @@ class LocalConversation(BaseConversation):
     @property
     def conversation_stats(self):
         return self._state.stats
+
+    def _latest_acp_prompt_message_id(self) -> str | None:
+        """Id of the most recent ACP prompt message, or None if there is none."""
+        acp_prompt_messages = [
+            event
+            for event in self._state.active_branch()
+            if _is_acp_prompt_message(event)
+        ]
+        return acp_prompt_messages[-1].id if acp_prompt_messages else None
 
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
@@ -2232,6 +2248,7 @@ class LocalConversation(BaseConversation):
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
+                        last_user_message_id = self._state.last_user_message_id
                         try:
                             await self.agent.astep(
                                 self,
@@ -2242,6 +2259,59 @@ class LocalConversation(BaseConversation):
                             self._step_holds_state_lock = False
                         iteration += 1
 
+                        # astep releases the state lock for the LLM call, so a
+                        # message can land mid-step with status still RUNNING and
+                        # go unrecorded; without this rescan the loop would break
+                        # (or hang behind a stale pending confirmation) with it
+                        # unread (agent-canvas#1900). Mirrors the ACP branch's
+                        # rescan below. step_finished is captured before this
+                        # rescan can flip status back to RUNNING, so the budget
+                        # carve-out below still sees the step's real outcome.
+                        step_finished = (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        )
+                        step_awaiting_confirmation = (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        )
+                        new_message_arrived = (
+                            self._state.last_user_message_id != last_user_message_id
+                        )
+                        if new_message_arrived and (
+                            step_finished or step_awaiting_confirmation
+                        ):
+                            if step_awaiting_confirmation:
+                                # Reject up front, regardless of whether we
+                                # continue running or go IDLE below: astep()
+                                # executes any pending action it finds as an
+                                # implicit confirmation, so leaving it
+                                # unmatched would let it run on the very next
+                                # call, silently overriding the new message.
+                                logger.info(
+                                    "User message arrived while awaiting "
+                                    "confirmation; rejecting the pending action"
+                                )
+                                self.reject_pending_actions(
+                                    "Superseded by a new user message"
+                                )
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived during final iteration; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            if not step_awaiting_confirmation:
+                                logger.info(
+                                    "User message arrived during step; continuing run"
+                                )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+
                         if (
                             self.state.execution_status
                             == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -2249,10 +2319,7 @@ class LocalConversation(BaseConversation):
                             break
 
                         budget_detail = self._budget_exceeded_detail()
-                        if budget_detail and (
-                            self._state.execution_status
-                            != ConversationExecutionStatus.FINISHED
-                        ):
+                        if budget_detail and not step_finished:
                             self._emit_run_limit_error(
                                 "MaxBudgetReached", budget_detail
                             )
@@ -2289,13 +2356,8 @@ class LocalConversation(BaseConversation):
                 # for each individual mutation.
                 if acp_step_user_message is None:
                     with self._state:
-                        acp_prompt_messages = [
-                            event
-                            for event in self._state.active_branch()
-                            if _is_acp_prompt_message(event)
-                        ]
                         latest_acp_prompt_message_id = (
-                            acp_prompt_messages[-1].id if acp_prompt_messages else None
+                            self._latest_acp_prompt_message_id()
                         )
                         acp_prompt_message_changed = (
                             latest_acp_prompt_message_id is not None
@@ -2387,14 +2449,7 @@ class LocalConversation(BaseConversation):
                         )
                         break
 
-                    acp_prompt_messages = [
-                        event
-                        for event in self._state.active_branch()
-                        if _is_acp_prompt_message(event)
-                    ]
-                    latest_acp_prompt_message_id = (
-                        acp_prompt_messages[-1].id if acp_prompt_messages else None
-                    )
+                    latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
                     acp_prompt_message_changed = (
                         latest_acp_prompt_message_id is not None
                         and latest_acp_prompt_message_id
