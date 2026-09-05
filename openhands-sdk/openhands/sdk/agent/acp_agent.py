@@ -516,6 +516,34 @@ def _npx_packages(command: list[str]) -> list[str]:
     return []
 
 
+@contextlib.contextmanager
+def _installation_lock(path: Path) -> Generator[None]:
+    """Hold an exclusive advisory lock on ``path`` for the block's duration.
+
+    Cross-process, and released by the OS if the holder dies — which is why
+    the caller still has to re-check its completion marker inside the block
+    rather than treating the lock as proof the work is unfinished.
+
+    ``fcntl`` is POSIX-only. Where it is unavailable the block still runs,
+    unserialised: the agent-server images this guards are Linux, and refusing
+    to launch a provider on the platforms that lack it would be a worse
+    failure than the race.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        logger.debug("No fcntl on this platform; ACP install lock is a no-op")
+        yield
+        return
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def _git_checkout_spec(provider_key: str) -> ACPGitCheckoutInstallSpec | None:
     """``provider_key``'s checkout spec, or ``None`` if it installs another way."""
     spec = ACP_INSTALL_CATALOG.get(provider_key)
@@ -2672,11 +2700,20 @@ class ACPAgent(AgentBase):
         """
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", spec.source.pinned).strip("-")
         checkout_dir = self._acp_package_cache_dir(state, "acp-checkouts") / slug
-        if not (checkout_dir / _ACP_CHECKOUT_READY_FILE).is_file():
-            self._executor.run_async(
-                self._prepare_git_checkout(spec, checkout_dir, env),
-                timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT * 2 + 5,
-            )
+        marker = checkout_dir / _ACP_CHECKOUT_READY_FILE
+        if marker.is_file():
+            return checkout_dir / ".venv" / "bin"
+        # Serialise the whole install across conversations sharing this
+        # sandbox. Staging the clone makes it crash-safe but not concurrent:
+        # two conversations starting together would both reach `uv sync` on
+        # one venv, and both would then write the marker — so a pair of syncs
+        # that trod on each other would leave a broken venv flagged complete.
+        with _installation_lock(checkout_dir.parent / f"{checkout_dir.name}.lock"):
+            if not marker.is_file():
+                self._executor.run_async(
+                    self._prepare_git_checkout(spec, checkout_dir, env),
+                    timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT * 2 + 5,
+                )
         return checkout_dir / ".venv" / "bin"
 
     def _isolate_acp_data_dir(
@@ -3063,6 +3100,13 @@ class ACPAgent(AgentBase):
         )
         if checkout_spec is not None and shutil.which(command) is None:
             env["UV_CACHE_DIR"] = str(self._acp_package_cache_dir(state, "uv-cache"))
+            # An interpreter uv provisions to satisfy the project's
+            # ``requires-python`` otherwise lands under the user's home, where
+            # container replacement takes it — and with it the venv that
+            # symlinks into it, leaving a checkout whose marker says ready.
+            env["UV_PYTHON_INSTALL_DIR"] = str(
+                self._acp_package_cache_dir(state, "uv-python")
+            )
             bin_dir = self._acp_git_checkout_bin(state, checkout_spec, env)
             env["PATH"] = os.pathsep.join((str(bin_dir), env.get("PATH", os.defpath)))
 

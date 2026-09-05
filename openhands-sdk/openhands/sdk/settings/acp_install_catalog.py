@@ -195,12 +195,6 @@ class ACPGitCheckoutInstallSpec:
     """Args appended after the console script name (e.g. a subcommand that
     enters ACP mode). Empty for scripts that speak ACP directly."""
 
-    requires_python: str | None = None
-    """The project's own ``requires-python``, when it constrains the
-    interpreter ``uv`` may provision. Recorded for the same reason
-    :attr:`ACPInstallSpec.min_node_version` is: a violated floor surfaces deep
-    inside a dependency build rather than as a legible version error."""
-
     reported_version: str | None = None
     """The version the CLI reports over ACP when built from :attr:`source`.
 
@@ -252,7 +246,14 @@ class ACPGitCheckoutInstallSpec:
         )
 
     def sync_command(self) -> tuple[str, ...]:
-        """Editable install of the checkout, at its own locked versions."""
+        """Editable install of the checkout, at its own locked versions.
+
+        There is deliberately no ``requires_python`` counterpart to
+        :attr:`ACPInstallSpec.min_node_version` here: ``uv`` reads the
+        project's own ``requires-python`` and selects — or downloads — a
+        matching interpreter, so the floor is enforced by the installer
+        rather than by anything this catalog could restate.
+        """
         extras = tuple(arg for extra in self.extras for arg in ("--extra", extra))
         return ("uv", "sync", "--frozen", *extras)
 
@@ -355,7 +356,6 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPAnyInstallSpec] = {
         # subcommand dispatch and its argument grammar.
         binary_name="hermes-acp",
         extras=("acp",),
-        requires_python=">=3.11,<3.14",
         reported_version="0.21.0",
     ),
 }

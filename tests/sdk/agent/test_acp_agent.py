@@ -348,6 +348,68 @@ class TestGitCheckoutInstall:
         self._bin_dir(agent, tmp_path, self._spec(), calls)
         assert calls == ["git", "uv", "uv"]
 
+    def test_concurrent_installs_are_serialised_and_run_once(self, tmp_path):
+        """Two conversations starting together must not both reach `uv sync`.
+
+        Staging the clone makes it crash-safe but not concurrent: without a
+        lock both would sync one venv and both would write the marker, so a
+        pair of syncs that trod on each other would leave a broken venv
+        flagged complete.
+        """
+        agent = self._agent()
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+        spec = self._spec()
+        calls: list[str] = []
+        holders: list[int] = []
+        peak = 0
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            nonlocal peak
+            calls.append(command[0])
+            holders.append(1)
+            peak = max(peak, len(holders))
+            await asyncio.sleep(0.02)
+            holders.pop()
+            if command[0] == "git":
+                pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
+            process = MagicMock()
+            process.returncode = 0
+            process.communicate = AsyncMock(return_value=(b"", b""))
+            return process
+
+        results: list[Path] = []
+
+        def _install():
+            with patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_exec,
+            ):
+                results.append(agent._acp_git_checkout_bin(state, spec, {}))
+
+        threads = [threading.Thread(target=_install) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert peak == 1, "install steps overlapped despite the lock"
+        assert calls == ["git", "uv"], f"install ran more than once: {calls}"
+        assert len(set(results)) == 1
+
+    def test_lock_is_rechecked_so_a_dead_holder_does_not_strand_the_install(
+        self, tmp_path
+    ):
+        """The OS drops the lock when its holder dies, so holding it is never
+        proof the work is unfinished — the marker is."""
+        lock_path = tmp_path / "install.lock"
+        with acp_agent_module._installation_lock(lock_path):
+            pass
+        # Re-acquirable: the lock is released, not leaked.
+        with acp_agent_module._installation_lock(lock_path):
+            pass
+        assert lock_path.is_file()
+
     def test_checkout_directory_is_keyed_by_pin(self, tmp_path):
         """Bumping the ref must install alongside the old tree, not reuse it."""
         agent = self._agent()
