@@ -564,3 +564,72 @@ def test_git_commit_endpoints_in_openapi(client):
     assert commit_param is not None
     assert commit_param["in"] == "query"
     assert commit_param.get("required", False) is False
+
+
+def test_git_non_ascii_unicode_filename(tmp_path, client):
+    """Non-ASCII filenames (e.g. äfile.txt, 测试.txt) should return clean UTF-8 paths
+    in /changes and work in /diff.
+    """
+    repo_dir = tmp_path / "unicode_repo"
+    repo_dir.mkdir()
+
+    subprocess.run(["git", "init"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True
+    )
+    subprocess.run(
+        ["git", "config", "core.quotePath", "true"], cwd=repo_dir, check=True
+    )
+
+    non_ascii_file = repo_dir / "äfile_测试.txt"
+    non_ascii_file.write_text("initial content\n", encoding="utf-8")
+
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_dir, check=True)
+
+    # Modify the file so it shows in diff/changes
+    non_ascii_file.write_text("initial content\nmodified content\n", encoding="utf-8")
+
+    rel_path_str = "äfile_测试.txt"
+    abs_path_str = str(non_ascii_file)
+
+    # 1. Test /api/git/changes returns unescaped UTF-8 paths
+    changes_resp = client.get("/api/git/changes", params={"path": str(repo_dir)})
+    assert changes_resp.status_code == 200
+    changes = changes_resp.json()
+    assert len(changes) == 1
+    assert changes[0]["path"] == rel_path_str
+    assert changes[0]["status"] == "UPDATED"
+
+    # 2. Test /api/git/diff with UTF-8 path parameter
+    diff_resp = client.get("/api/git/diff", params={"path": abs_path_str})
+    assert diff_resp.status_code == 200
+    diff_data = diff_resp.json()
+    assert "initial content" in diff_data["original"]
+    assert "modified content" in diff_data["modified"]
+
+    # 3. Test /api/git/diff with defensive octal-escaped path parameter
+    octal_escaped_path = str(
+        repo_dir / '"\\303\\244file_\\346\\265\\213\\350\\257\\225.txt"'
+    )
+    diff_resp_octal = client.get("/api/git/diff", params={"path": octal_escaped_path})
+    assert diff_resp_octal.status_code == 200
+    assert "modified content" in diff_resp_octal.json()["modified"]
+
+    # 4. Test /api/git/commits/{sha}/changes
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    commit_changes_resp = client.get(
+        f"/api/git/commits/{head_sha}/changes", params={"path": str(repo_dir)}
+    )
+    assert commit_changes_resp.status_code == 200
+    commit_changes = commit_changes_resp.json()
+    assert len(commit_changes) == 1
+    assert commit_changes[0]["path"] == rel_path_str
