@@ -354,6 +354,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         response = self.client.get(
             f"/api/profiles/{quote(profile_name, safe='')}",
             headers=headers,
+            params={"resolve_provider": "true"},
         )
         if response.status_code == 404:
             raise FileNotFoundError(f"LLM profile '{profile_name}' not found")
