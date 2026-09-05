@@ -68,9 +68,9 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Declare resource usage based on the active backend.
 
-        With ripgrep, each call spawns an independent subprocess — safe for
-        lock-free parallel execution. The Python fallback uses process-global
-        os.chdir(), so concurrent calls must be serialized via the tool-wide mutex.
+        Both backends are lock-free: ripgrep spawns an independent subprocess per
+        call, and the Python fallback scopes its search with ``glob(root_dir=...)``
+        instead of mutating the process-global cwd.
         """
         if not isinstance(action, GlobAction):
             raise TypeError(f"Expected GlobAction, got {type(action).__name__}")
