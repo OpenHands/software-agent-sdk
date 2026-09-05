@@ -75,8 +75,12 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
-from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.security.confirmation_policy import (
+    ConfirmationPolicyBase,
+    NeverConfirm,
+)
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
@@ -119,11 +123,13 @@ class EventService:
 
     stored: StoredConversation
     conversations_dir: Path
-    # Agent for a NEW conversation. meta.json (``stored``) no longer carries the
-    # agent — base_state.json is its single source of truth — so the creating
-    # caller passes it here. On resume this is ``None`` and the agent is loaded
-    # from base_state.json.
+    # Init-only fields for NEW conversations — base_state.json is the single
+    # source of truth after creation. On resume these are unused (the guard
+    # ``if not base_state_exists:`` in start() skips seeding from here).
     agent: AgentBase | None = None
+    confirmation_policy: ConfirmationPolicyBase = field(default_factory=NeverConfirm)
+    security_analyzer: SecurityAnalyzerBase | None = field(default=None)
+    secrets: dict[str, SecretSource] = field(default_factory=dict)
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
@@ -189,15 +195,6 @@ class EventService:
                 )
             )
 
-    def _without_stored_secret(self, secret_name: str) -> StoredConversation:
-        # meta.json (StoredConversation) no longer carries the agent, so there is
-        # no agent_context secret to scrub here — only the stored secrets map.
-        # The agent's own secret scrub happens on base_state.json (see
-        # _scrub_persisted_credentials).
-        secrets = dict(self.stored.secrets)
-        secrets.pop(secret_name, None)
-        return self.stored.model_copy(update={"secrets": secrets})
-
     async def _scrub_persisted_credentials(
         self,
         credential_bindings: Mapping[str, VersionedCredentialBinding] | None = None,
@@ -238,7 +235,7 @@ class EventService:
                     "ChatGPT authentication is invalid. Please sign in again."
                 )
         for secret_name in bindings:
-            self.stored = self._without_stored_secret(secret_name)
+            self.secrets.pop(secret_name, None)
 
         if (
             not base_state_file.exists()
@@ -320,7 +317,7 @@ class EventService:
             )
             state.agent = agent
             conversation.agent = agent
-            self.stored = self._without_stored_secret(secret_name)
+            self.secrets.pop(secret_name, None)
         await self._scrub_persisted_credentials()
 
     async def apply_resume_secrets(
@@ -353,10 +350,6 @@ class EventService:
                     agent.restart_for_updated_credentials(secrets)
 
         await asyncio.to_thread(_update)
-        self.stored = self.stored.model_copy(
-            update={"secrets": {**self.stored.secrets, **secrets}}
-        )
-        await self.save_meta()
 
     def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
@@ -1102,7 +1095,7 @@ class EventService:
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
-            secrets=self.stored.secrets,
+            secrets=self.secrets,
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
@@ -1113,8 +1106,9 @@ class EventService:
             mcp_tool_provider=self.mcp_tool_provider,
         )
 
-        conversation.set_confirmation_policy(self.stored.confirmation_policy)
-        conversation.set_security_analyzer(self.stored.security_analyzer)
+        if not base_state_exists:
+            conversation.set_confirmation_policy(self.confirmation_policy)
+            conversation.set_security_analyzer(self.security_analyzer)
         # On resume the agent was unknown at construction time (loaded from
         # base_state.json), so decide token streaming now and disable it when the
         # resolved agent can't emit token callbacks.
