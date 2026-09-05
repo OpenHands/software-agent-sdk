@@ -116,9 +116,7 @@ def test_gpt_5_6_models_are_verified_for_openai():
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-6-astra",
-    }.issubset(
-        VERIFIED_OPENAI_MODELS
-    )
+    }.issubset(VERIFIED_OPENAI_MODELS)
 
 
 def test_kimi_k3_and_claude_opus_5_are_verified():

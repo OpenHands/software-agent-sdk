@@ -377,7 +377,6 @@ _CODEX_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="gpt-5.6-sol", label="GPT-5.6 Sol"),
     ACPModelOption(id="gpt-5.6-terra", label="GPT-5.6 Terra"),
     ACPModelOption(id="gpt-5.6-luna", label="GPT-5.6 Luna"),
-    ACPModelOption(id="gpt-6-astra", label="GPT-6 Astra"),
     ACPModelOption(id="gpt-5.5", label="GPT-5.5"),
 )
 

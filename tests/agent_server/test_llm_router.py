@@ -49,7 +49,6 @@ async def test_list_models_filtered_by_provider():
     assert "gpt-5.6-sol" in response.models
     assert "gpt-5.6-terra" in response.models
     assert "gpt-5.6-luna" in response.models
-    assert "gpt-6-astra" in response.models
     # Verify filtering works - there should be fewer models than unfiltered
     all_models_response = await list_models(provider=None)
     assert len(response.models) < len(all_models_response.models)
@@ -135,7 +134,6 @@ def test_openai_subscription_models_endpoint_integration(client):
     assert "gpt-5.6-sol" in data["models"]
     assert "gpt-5.6-terra" in data["models"]
     assert "gpt-5.6-luna" in data["models"]
-    assert "gpt-6-astra" in data["models"]
     assert "gpt-5.5" in data["models"]
 
 
