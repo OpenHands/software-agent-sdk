@@ -514,12 +514,17 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
+    unread = state.execution_status.is_terminal() and (
+        stored.last_read_at is None or stored.updated_at > stored.last_read_at
+    )
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        last_read_at=stored.last_read_at,
+        unread=unread,
         forked_from_conversation_id=stored.forked_from_conversation_id,
         forked_from_event_id=stored.forked_from_event_id,
         parent_conversation_id=stored.parent_conversation_id,
@@ -624,6 +629,7 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
             "metrics",
             "created_at",
             "updated_at",
+            "last_read_at",
             "forked_from_conversation_id",
             "forked_from_event_id",
             "parent_conversation_id",
@@ -1908,7 +1914,8 @@ class ConversationService:
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
-        event_service.stored.updated_at = utc_now()
+        if request.unread is not None:
+            event_service.stored.last_read_at = None if request.unread else utc_now()
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
@@ -1929,6 +1936,8 @@ class ConversationService:
             updated_fields.append("title")
         if request.tags is not None:
             updated_fields.append("tags")
+        if request.unread is not None:
+            updated_fields.append("unread")
         logger.info(
             "Successfully updated conversation %s (%s)",
             conversation_id,
@@ -2595,7 +2604,6 @@ class AutoTitleSubscriber(Subscriber):
                 )
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
-                    self.service.stored.updated_at = utc_now()
                     await self.service.save_meta()
             except Exception:
                 logger.warning(
