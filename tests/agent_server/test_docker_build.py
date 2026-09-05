@@ -568,6 +568,33 @@ def test_all_tags_with_target_suffix():
     assert "ghcr.io/openhands/agent-server:abc1234567890-python-source" in all_tags
 
 
+def test_make_build_context_builds_agent_server_package():
+    from openhands.agent_server.docker.build import (
+        _default_sdk_project_root,
+        _make_build_context,
+    )
+
+    project_root = _default_sdk_project_root()
+
+    def fake_run(cmd, *, cwd=None, **kwargs):
+        assert cmd[:4] == ["uv", "build", "--package", "openhands-agent-server"]
+        assert cmd[4:6] == ["--sdist", "--out-dir"]
+        assert cwd == str(project_root.resolve())
+        _create_fake_sdist(Path(cmd[6]))
+
+    with patch("openhands.agent_server.docker.build._run", side_effect=fake_run):
+        ctx = _make_build_context(project_root)
+
+    try:
+        assert (ctx / "README.md").read_text(encoding="utf-8") == "fixture"
+        assert (ctx / "Dockerfile").exists()
+    finally:
+        if ctx.exists():
+            import shutil
+
+            shutil.rmtree(ctx, ignore_errors=True)
+
+
 def test_make_build_context_reuses_prebuilt_sdist_without_running_uv_build(
     tmp_path: Path,
 ):
