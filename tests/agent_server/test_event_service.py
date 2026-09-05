@@ -1865,6 +1865,21 @@ class TestEventServiceSaveMeta:
         assert loaded.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    async def test_save_meta_round_trips_title_prompt(self, event_service, tmp_path):
+        event_service.stored.prompt = (
+            "Create a concise title for {conversation_content}."
+        )
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        await event_service.save_meta()
+
+        meta_file = conv_dir / "meta.json"
+        loaded = StoredConversation.model_validate_json(meta_file.read_text())
+        assert loaded.prompt == ("Create a concise title for {conversation_content}.")
+
+    @pytest.mark.asyncio
     async def test_save_meta_round_trips_agent_definition_mcp_secrets(
         self, sample_stored_conversation, tmp_path
     ):
