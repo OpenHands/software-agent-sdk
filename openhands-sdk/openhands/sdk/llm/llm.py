@@ -719,7 +719,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
-            d["api_version"] = "2024-12-01-preview"
+            d["api_version"] = "2025-03-01-preview"
 
         # Fix base_url for direct OpenAI - API expects /v1 suffix
         # If base_url is "https://api.openai.com", set to None to use LiteLLM default
