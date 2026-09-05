@@ -142,7 +142,9 @@ class MCPClient(AsyncMCPClient):
                     transport_pids.append(pid)
             if isinstance(transport, StdioTransport) and task is not None:
                 if not task.done() and not transport_pids:
-                    logger.debug("Could not extract active stdio transport process PID")
+                    logger.warning(
+                        "Could not extract active stdio transport process PID"
+                    )
             pids.extend(transport_pids)
 
         return list(dict.fromkeys(pids))
@@ -197,8 +199,6 @@ class MCPClient(AsyncMCPClient):
         if self._closed:
             return
 
-        subprocess_pids = self._get_transport_subprocess_pids()
-
         # Best-effort: try async close if parent provides it
         if hasattr(self, "close") and inspect.iscoroutinefunction(self.close):
             try:
@@ -206,8 +206,9 @@ class MCPClient(AsyncMCPClient):
             except Exception:
                 pass  # Ignore close errors during cleanup
 
-        # Kill the exact processes owned by this client's stdio transports,
-        # including any that survived an abandoned portal thread.
+        # Capture only processes still owned by active transports after close.
+        # This avoids acting on an exited process's PID if the OS reuses it.
+        subprocess_pids = self._get_transport_subprocess_pids()
         self._force_kill_subprocesses(subprocess_pids)
 
         # Always cleanup the executor
