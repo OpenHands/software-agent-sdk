@@ -112,7 +112,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.sdk.workspace import BaseWorkspace, LocalWorkspace
 
 
 logger = get_logger(__name__)
@@ -178,7 +178,7 @@ def _copy_event_for_fork(event: Event) -> Event:
 
 class LocalConversation(BaseConversation):
     agent: AgentBase
-    workspace: LocalWorkspace
+    workspace: BaseWorkspace
     _state: ConversationState
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
@@ -207,7 +207,7 @@ class LocalConversation(BaseConversation):
     def __init__(
         self,
         agent: AgentBase | None,
-        workspace: str | Path | LocalWorkspace,
+        workspace: str | Path | BaseWorkspace,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
@@ -363,15 +363,15 @@ class LocalConversation(BaseConversation):
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
         if isinstance(workspace, (str, Path)):
-            # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
-        assert isinstance(workspace, LocalWorkspace), (
-            "workspace must be a LocalWorkspace instance"
+        assert isinstance(workspace, BaseWorkspace), (
+            "workspace must be a BaseWorkspace instance"
         )
         self.workspace = workspace
-        ws_path = Path(self.workspace.working_dir)
-        if not ws_path.exists():
-            ws_path.mkdir(parents=True, exist_ok=True)
+        if isinstance(workspace, LocalWorkspace):
+            ws_path = Path(workspace.working_dir)
+            if not ws_path.exists():
+                ws_path.mkdir(parents=True, exist_ok=True)
         self._state = ConversationState.create(
             id=desired_id,
             agent=agent,

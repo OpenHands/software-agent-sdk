@@ -25,6 +25,7 @@ from openhands.agent_server.event_service import (
     EventService,
     _without_agent_context_secret,
 )
+from openhands.agent_server.execution_runtime import DockerExecutionWorkspace
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -71,7 +72,7 @@ from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.sdk.workspace import BaseWorkspace, LocalWorkspace
 
 
 if TYPE_CHECKING:
@@ -273,7 +274,7 @@ def _prepare_request_workspace(
     conversation_id: UUID,
     conversation_worktree_root: Path,
 ) -> StartConversationRequest:
-    if not request.worktree:
+    if not request.worktree or not isinstance(request.workspace, LocalWorkspace):
         return request
 
     worktree = _create_conversation_worktree(
@@ -302,8 +303,12 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
-def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
-    return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
+def _same_workspace(a: BaseWorkspace, b: BaseWorkspace) -> bool:
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, LocalWorkspace) and isinstance(b, LocalWorkspace):
+        return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
+    return a.working_dir == b.working_dir
 
 
 def _apply_acp_skill_sourcing(
@@ -343,6 +348,29 @@ def _apply_acp_skill_sourcing(
                     "registered_marketplaces": [],
                 }
             )
+        }
+    )
+
+
+def _with_execution_workspace(
+    request: StartConversationRequest,
+    *,
+    runtime: str,
+    image: str,
+    platform: str,
+    volumes: list[str],
+) -> StartConversationRequest:
+    if runtime != "docker" or not isinstance(request.workspace, LocalWorkspace):
+        return request
+    return request.model_copy(
+        update={
+            "workspace": DockerExecutionWorkspace(
+                working_dir="/workspace",
+                image=image,
+                platform=platform,
+                volumes=list(volumes),
+            ),
+            "worktree": False,
         }
     )
 
@@ -702,6 +730,11 @@ class ConversationService:
         default_factory=asyncio.Condition, init=False
     )
     _active_lifecycle_operations: int = field(default=0, init=False)
+    execution_runtime: str = "local"
+    execution_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    execution_platform: str = "linux/amd64"
+    execution_volumes: list[str] = field(default_factory=list)
+
     _exclusive_lifecycle_pending: bool = field(default=False, init=False)
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
@@ -1420,6 +1453,13 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
+        request = _with_execution_workspace(
+            request,
+            runtime=self.execution_runtime,
+            image=self.execution_image,
+            platform=self.execution_platform,
+            volumes=self.execution_volumes,
+        )
         existing_record = self._conversation_records.get(conversation_id)
         existing_event_service = self._event_services.get(conversation_id)
         if existing_record is not None or (
@@ -2324,6 +2364,10 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            execution_runtime=config.execution_runtime,
+            execution_image=config.execution_image,
+            execution_platform=config.execution_platform,
+            execution_volumes=config.execution_volumes,
         )
 
     async def _start_event_service(

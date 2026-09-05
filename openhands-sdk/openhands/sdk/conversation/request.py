@@ -18,6 +18,7 @@ from pydantic import (
     Field,
     Tag,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -42,7 +43,7 @@ from openhands.sdk.security.confirmation_policy import (
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.models import kind_of
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.sdk.workspace import BaseWorkspace
 
 
 # ---------------------------------------------------------------------------
@@ -102,9 +103,9 @@ class ConversationConfig(BaseModel):
     remember to exclude.
     """
 
-    workspace: LocalWorkspace = Field(
+    workspace: BaseWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution.",
+        description="Workspace for agent tool execution.",
     )
     worktree: bool = Field(
         default=False,
@@ -114,6 +115,18 @@ class ConversationConfig(BaseModel):
             "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
         ),
     )
+
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def _normalize_workspace(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "kind" in value:
+            return value
+        normalized = dict(value)
+        workspace_type = normalized.pop("type", None)
+        if workspace_type in (None, "local"):
+            normalized["kind"] = "LocalWorkspace"
+        return normalized
+
     conversation_id: UUID | None = Field(
         default=None,
         description=(

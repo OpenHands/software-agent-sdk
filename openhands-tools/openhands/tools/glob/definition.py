@@ -12,6 +12,7 @@ from openhands.sdk.tool import (
     Observation,
     ToolAnnotations,
     ToolDefinition,
+    ToolExecutor,
     register_tool,
 )
 
@@ -97,11 +98,13 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         from openhands.tools.glob.impl import GlobExecutor
 
         working_dir = conv_state.workspace.working_dir
-        if not os.path.isdir(working_dir):
-            raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
-
-        # Initialize the executor
-        executor = GlobExecutor(working_dir=working_dir)
+        executor = conv_state.workspace.create_tool_executor(cls.name)
+        if not isinstance(executor, ToolExecutor):
+            if not os.path.isdir(working_dir):
+                raise ValueError(
+                    f"working_dir '{working_dir}' is not a valid directory"
+                )
+            executor = GlobExecutor(working_dir=working_dir)
 
         # Add working directory information to the tool description
         enhanced_description = (

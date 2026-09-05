@@ -1,7 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
@@ -15,6 +15,9 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool import ToolExecutor
 
 
 def _convert_path_to_str(v: str | Path) -> str:
@@ -53,6 +56,15 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
 
     _conversation_id: str | None = PrivateAttr(default=None)
     _accumulated_cost: float | None = PrivateAttr(default=None)
+
+    @property
+    def runs_conversation_remotely(self) -> bool:
+        """Whether this workspace also owns the conversation's agent loop."""
+        return False
+
+    def create_tool_executor(self, tool_name: str) -> "ToolExecutor | None":  # noqa: ARG002
+        """Return a workspace-hosted executor for ``tool_name``, if supported."""
+        return None
 
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
