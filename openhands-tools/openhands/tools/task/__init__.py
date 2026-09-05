@@ -1,9 +1,11 @@
 """Task tool package for sub-agent delegation.
 
-This package provides a TaskToolSet tool to delegate tasks to subagent.
+This package provides a TaskToolSet for managed sub-agent tasks.
 
 Tools:
-    - task: Launch and run a (blocking) sub-agent task.
+    - task: Launch a blocking or background sub-agent task.
+    - task_output: Poll or wait for a background task's result.
+    - task_stop: Cooperatively stop a background task.
 
 Usage:
     from openhands.tools.task import TaskToolSet
@@ -20,6 +22,12 @@ Usage:
 from openhands.tools.task.definition import (
     TaskAction,
     TaskObservation,
+    TaskOutputAction,
+    TaskOutputObservation,
+    TaskOutputTool,
+    TaskStopAction,
+    TaskStopObservation,
+    TaskStopTool,
     TaskTool,
     TaskToolSet,
 )
@@ -30,6 +38,12 @@ __all__ = [
     "TaskAction",
     "TaskExecutor",
     "TaskObservation",
+    "TaskOutputAction",
+    "TaskOutputObservation",
+    "TaskOutputTool",
+    "TaskStopAction",
+    "TaskStopObservation",
+    "TaskStopTool",
     "TaskTool",
     "TaskToolSet",
 ]

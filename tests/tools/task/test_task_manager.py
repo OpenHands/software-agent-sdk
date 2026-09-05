@@ -60,9 +60,11 @@ def _manager_with_parent(
 
 class TestTaskStatusEnum:
     def test_all_values(self):
+        assert TaskStatus.QUEUED == "queued"
         assert TaskStatus.RUNNING == "running"
         assert TaskStatus.COMPLETED == "completed"
         assert TaskStatus.ERROR == "error"
+        assert TaskStatus.CANCELLED == "cancelled"
 
     def test_is_str_enum(self):
         assert isinstance(TaskStatus.RUNNING, str)

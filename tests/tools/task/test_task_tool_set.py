@@ -365,7 +365,7 @@ class TestTaskToolExamples:
         tools = TaskToolSet.create(
             conv_state=None,  # type: ignore[arg-type]
         )
-        assert len(tools) == 1
+        assert [tool.name for tool in tools] == ["task", "task_output", "task_stop"]
         description = tools[0].description
         assert example_text.strip() in description
 
@@ -382,7 +382,7 @@ class TestTaskToolExamples:
         tools = TaskToolSet.create(
             conv_state=None,  # type: ignore[arg-type]
         )
-        assert len(tools) == 1
+        assert [tool.name for tool in tools] == ["task", "task_output", "task_stop"]
         description = tools[0].description
         for name, example_text in TASK_TOOL_EXAMPLES.items():
             assert example_text.strip() not in description
