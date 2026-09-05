@@ -393,20 +393,64 @@ def test_fetch_with_resolution_falls_back_to_head(tmp_path: Path):
 # -- repo_path parameter ------------------------------------------------------
 
 
-def test_fetch_local_with_repo_path_raises_error(tmp_path: Path):
+def test_fetch_local_with_repo_path_resolves_subdirectory(tmp_path: Path):
+    """A local source plus repo_path composes into the subdirectory (OSS-10405)."""
     ext_dir = tmp_path / "monorepo"
     ext_dir.mkdir()
     (ext_dir / "extensions" / "my-ext").mkdir(parents=True)
 
-    with pytest.raises(
-        ExtensionFetchError,
-        match="repo_path is not supported for local",
-    ):
-        fetch(
-            str(ext_dir),
-            cache_dir=tmp_path,
-            repo_path="extensions/my-ext",
-        )
+    path, resolved_ref = fetch_with_resolution(
+        str(ext_dir),
+        cache_dir=tmp_path,
+        repo_path="extensions/my-ext",
+    )
+
+    assert path == (ext_dir / "extensions" / "my-ext").resolve()
+    assert resolved_ref is None
+
+
+@pytest.mark.parametrize(
+    "source_suffix,repo_path",
+    [
+        ("", "extensions/my-ext"),
+        ("", "/extensions/my-ext"),
+        ("/", "extensions/my-ext"),
+        ("/", "/extensions/my-ext"),
+    ],
+)
+def test_fetch_local_repo_path_tolerates_slashes(
+    tmp_path: Path, source_suffix: str, repo_path: str
+):
+    """Leading/trailing slashes on either field resolve the same way."""
+    ext_dir = tmp_path / "monorepo"
+    ext_dir.mkdir()
+    (ext_dir / "extensions" / "my-ext").mkdir(parents=True)
+
+    path = fetch(
+        str(ext_dir) + source_suffix,
+        cache_dir=tmp_path,
+        repo_path=repo_path,
+    )
+
+    assert path == (ext_dir / "extensions" / "my-ext").resolve()
+
+
+def test_fetch_local_with_missing_repo_path_raises_error(tmp_path: Path):
+    ext_dir = tmp_path / "monorepo"
+    ext_dir.mkdir()
+
+    with pytest.raises(ExtensionFetchError, match="not found in local source"):
+        fetch(str(ext_dir), cache_dir=tmp_path, repo_path="extensions/my-ext")
+
+
+def test_fetch_local_repo_path_cannot_escape_source(tmp_path: Path):
+    """A traversing repo_path is rejected rather than silently escaping."""
+    ext_dir = tmp_path / "monorepo"
+    ext_dir.mkdir()
+    (tmp_path / "outside").mkdir()
+
+    with pytest.raises(ExtensionFetchError, match="escapes local source"):
+        fetch(str(ext_dir), cache_dir=tmp_path, repo_path="../outside")
 
 
 def test_fetch_github_with_repo_path(tmp_path: Path):
