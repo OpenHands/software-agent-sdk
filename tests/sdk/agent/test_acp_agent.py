@@ -218,6 +218,10 @@ def test_npx_packages_prefers_pinned_package_flags():
     ]
 
 
+class _StopBeforeSpawn(Exception):
+    """Abort _start_acp_server once the assertion's subject has been captured."""
+
+
 class TestGitCheckoutInstall:
     """Hermes-shaped providers: installed from a shallow checkout at launch."""
 
@@ -409,6 +413,52 @@ class TestGitCheckoutInstall:
         with acp_agent_module._installation_lock(lock_path):
             pass
         assert lock_path.is_file()
+
+    def test_install_steps_do_not_receive_conversation_secrets(self, tmp_path):
+        """The ACP server needs the user's credentials; the installer doesn't.
+
+        `uv sync` runs the pinned project's own build backend — third-party
+        code that has no business seeing them — so the env handed to the
+        install steps is stripped even though the subprocess env is not.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = ACPAgent(acp_command=["hermes-acp"], acp_server="hermes")
+        agent._executor = AsyncExecutor()
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+        state.secret_registry.update_secrets(
+            {
+                "CUSTOMER_API_KEY": StaticSecret(
+                    value=SecretStr("sk-super-secret"), description="Customer key"
+                )
+            }
+        )
+
+        install_envs: list[dict[str, str]] = []
+
+        def _capture(self_, state_, spec, env):
+            install_envs.append(dict(env))
+            raise _StopBeforeSpawn
+
+        with (
+            patch.object(ACPAgent, "_acp_git_checkout_bin", _capture),
+            patch("openhands.sdk.agent.acp_agent.shutil.which", return_value=None),
+            pytest.raises(_StopBeforeSpawn),
+        ):
+            agent._start_acp_server(state)
+
+        assert install_envs, "the checkout path did not run"
+        install_env = install_envs[0]
+        assert "CUSTOMER_API_KEY" not in install_env
+        assert "sk-super-secret" not in install_env.values()
+        # Still a usable environment — the strip is targeted, not a wipe.
+        assert "PATH" in install_env
+        assert install_env["UV_CACHE_DIR"].endswith("uv-cache")
+        assert install_env["UV_PYTHON_INSTALL_DIR"].endswith("uv-python")
 
     def test_checkout_directory_is_keyed_by_pin(self, tmp_path):
         """Bumping the ref must install alongside the old tree, not reuse it."""

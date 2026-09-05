@@ -3049,9 +3049,10 @@ class ACPAgent(AgentBase):
         # name-scan per command (unlike the regular agent's bash tool), so
         # credentials must be delivered upfront. Registry values override
         # ambient os.environ. Skip file secrets (materialised to disk below).
-        env.update(
-            state.secret_registry.get_all_secrets_as_env_vars(exclude=file_secret_names)
+        conversation_secrets = state.secret_registry.get_all_secrets_as_env_vars(
+            exclude=file_secret_names
         )
+        env.update(conversation_secrets)
         if self.acp_isolate_data_dir:
             self._isolate_acp_data_dir(state, env)
 
@@ -3107,7 +3108,16 @@ class ACPAgent(AgentBase):
             env["UV_PYTHON_INSTALL_DIR"] = str(
                 self._acp_package_cache_dir(state, "uv-python")
             )
-            bin_dir = self._acp_git_checkout_bin(state, checkout_spec, env)
+            # Install with the conversation's credentials stripped. The ACP
+            # server needs them; `git clone` and `uv sync` do not, and the
+            # editable install runs the pinned project's own build backend —
+            # third-party code that has no business seeing the user's keys.
+            install_env = {
+                key: value
+                for key, value in env.items()
+                if key not in conversation_secrets
+            }
+            bin_dir = self._acp_git_checkout_bin(state, checkout_spec, install_env)
             env["PATH"] = os.pathsep.join((str(bin_dir), env.get("PATH", os.defpath)))
 
         # Prior ACP session id — typically survives agent-server restarts via
