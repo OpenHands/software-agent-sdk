@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client as AsyncMCPClient
+from fastmcp.client.transports import StdioTransport
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.exceptions import MCPError
@@ -126,6 +127,7 @@ class MCPClient(AsyncMCPClient):
             coroutine = task.get_coro() if task is not None else None
             frame = getattr(coroutine, "cr_frame", None)
             stack = frame.f_locals.get("stack") if frame is not None else None
+            transport_pids: list[int] = []
             for _, callback in getattr(stack, "_exit_callbacks", ()):
                 manager = getattr(callback, "__self__", None)
                 generator = getattr(manager, "gen", None)
@@ -137,7 +139,11 @@ class MCPClient(AsyncMCPClient):
                 )
                 pid = getattr(process, "pid", None)
                 if isinstance(pid, int):
-                    pids.append(pid)
+                    transport_pids.append(pid)
+            if isinstance(transport, StdioTransport) and task is not None:
+                if not task.done() and not transport_pids:
+                    logger.debug("Could not extract active stdio transport process PID")
+            pids.extend(transport_pids)
 
         return list(dict.fromkeys(pids))
 
