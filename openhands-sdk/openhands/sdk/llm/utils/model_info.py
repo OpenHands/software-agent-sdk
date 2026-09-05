@@ -14,6 +14,31 @@ from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 
 logger = getLogger(__name__)
 
+_MODEL_METADATA_OVERRIDES: dict[str, dict[str, Any]] = {
+    "MiniMax-M3": {
+        "max_input_tokens": 1_000_000,
+        "input_cost_per_token": 0.0000006,
+        "output_cost_per_token": 0.0000024,
+        "cache_read_input_token_cost": 0.00000012,
+    },
+    "MiniMax-M2.7": {
+        "max_input_tokens": 204_800,
+        "input_cost_per_token": 0.0000003,
+        "output_cost_per_token": 0.0000012,
+        "cache_read_input_token_cost": 0.00000006,
+        "cache_creation_input_token_cost": 0.000000375,
+    },
+}
+
+
+def _apply_model_metadata_overrides(
+    model: str, model_info: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    overrides = _MODEL_METADATA_OVERRIDES.get(model.split("/")[-1])
+    if overrides is None:
+        return dict(model_info) if model_info is not None else None
+    return {**(model_info or {}), **overrides}
+
 
 def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     """Preserve raw LiteLLM capability fields."""
@@ -97,20 +122,24 @@ def get_litellm_model_info(
             cache_key=cache_key,
         )
         if model_info:
-            return model_info
+            return _apply_model_metadata_overrides(model, model_info)
 
     # Fallbacks: try base name variants
     try:
         model_info = get_model_info(model.split(":")[0])
         if model_info:
-            return _merge_raw_model_metadata(model_info)
+            return _apply_model_metadata_overrides(
+                model, _merge_raw_model_metadata(model_info)
+            )
     except Exception:
         pass
     try:
         model_info = get_model_info(model.split("/")[-1])
         if model_info:
-            return _merge_raw_model_metadata(model_info)
+            return _apply_model_metadata_overrides(
+                model, _merge_raw_model_metadata(model_info)
+            )
     except Exception:
         pass
 
-    return None
+    return _apply_model_metadata_overrides(model, None)
