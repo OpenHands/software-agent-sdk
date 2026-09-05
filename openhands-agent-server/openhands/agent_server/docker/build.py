@@ -670,15 +670,7 @@ def _make_build_context(
                 tempfile.mkdtemp(prefix="agent-sdist-", dir=None)
             ).resolve()
             _run(
-                [
-                    "uv",
-                    "build",
-                    "--package",
-                    "openhands-agent-server",
-                    "--sdist",
-                    "--out-dir",
-                    str(sdist_dir.resolve()),
-                ],
+                ["uv", "build", "--sdist", "--out-dir", str(sdist_dir.resolve())],
                 cwd=str(sdk_project_root.resolve()),
             )
             sdists = sorted(sdist_dir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
