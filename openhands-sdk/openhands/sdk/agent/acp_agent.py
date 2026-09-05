@@ -23,6 +23,8 @@ import inspect
 import json
 import os
 import re
+import shlex
+import shutil
 import threading
 import time
 import uuid
@@ -101,6 +103,11 @@ from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextC
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    ACPGitCheckoutInstallSpec,
+    is_git_checkout_spec,
+)
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
     ACPEnvConflictSpec,
@@ -160,6 +167,18 @@ _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
 _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
     os.environ.get("ACP_NPX_CACHE_WARM_TIMEOUT", "300")
 )
+# Per-step budget for a git-checkout provider's install. Far larger than the
+# npx warm above because the work is not comparable: a cold install clones a
+# repository and resolves a whole Python dependency graph, and unlike a warm
+# that merely times out into a slower launch, exceeding this leaves no CLI to
+# launch at all.
+_ACP_CHECKOUT_INSTALL_TIMEOUT: float = float(
+    os.environ.get("ACP_CHECKOUT_INSTALL_TIMEOUT", "900")
+)
+# Written into a git-checkout provider's directory once its install finishes.
+# The directory itself cannot carry that signal: the clone exists well before
+# the venv does.
+_ACP_CHECKOUT_READY_FILE: Final[str] = ".openhands-acp-install-complete"
 _ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
@@ -418,17 +437,18 @@ def _warn_auth_selection_failure(
     )
 
 
+def _pinned_provider_version(provider_key: str) -> str | None:
+    """The version the pinned build of ``provider_key`` is expected to report."""
+    spec = ACP_INSTALL_CATALOG.get(provider_key)
+    return spec.pinned_version if spec is not None else None
+
+
 def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
     try:
         provider = detect_acp_provider_by_agent_name(agent_name)
         if provider is None:
             return
-        pinned_version = None
-        for command_part in provider.default_command:
-            package, separator, version = command_part.rpartition("@")
-            if separator and package:
-                pinned_version = version
-                break
+        pinned_version = _pinned_provider_version(provider.key)
         reported_version = next(
             (
                 match.group(1)
@@ -458,8 +478,9 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
         elif pinned_version is not None and reported_version != pinned_version:
             logger.warning(
                 "ACP provider version mismatch: provider=%s, pinned_version=%r, "
-                "reported_version=%r; provider was probably installed at runtime "
-                "via the npx fallback rather than preinstalled in the image",
+                "reported_version=%r; the running CLI is not the pinned build "
+                "(a runtime fallback resolved a different version, or the pin "
+                "moved)",
                 provider.key,
                 pinned_version,
                 reported_version,
@@ -493,6 +514,12 @@ def _npx_packages(command: list[str]) -> list[str]:
         if not arg.startswith("-"):
             return [arg]
     return []
+
+
+def _git_checkout_spec(provider_key: str) -> ACPGitCheckoutInstallSpec | None:
+    """``provider_key``'s checkout spec, or ``None`` if it installs another way."""
+    spec = ACP_INSTALL_CATALOG.get(provider_key)
+    return spec if spec is not None and is_git_checkout_spec(spec) else None
 
 
 def _with_codex_base_url(
@@ -2475,12 +2502,18 @@ class ACPAgent(AgentBase):
             root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
         return Path(os.path.abspath(root))
 
-    def _acp_npm_cache_dir(self, state: ConversationState) -> Path:
+    def _acp_package_cache_dir(self, state: ConversationState, name: str) -> Path:
+        """A durable per-installation cache root named ``name``.
+
+        Shared across the sandbox's conversations and outliving container
+        replacement, so a provider fetched on demand is downloaded once rather
+        than once per container.
+        """
         if state.persistence_dir:
             root = Path(state.persistence_dir).parent
         else:
             root = Path(state.workspace.working_dir) / ".openhands"
-        cache_dir = root / "npm-cache"
+        cache_dir = root / name
         cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         return Path(os.path.abspath(cache_dir))
 
@@ -2527,6 +2560,124 @@ class ACPAgent(AgentBase):
                 f"ACP provider cache warm failed for {provider_key} "
                 f"(exit code {process.returncode})"
             )
+
+    async def _run_checkout_step(
+        self,
+        command: Sequence[str],
+        provider_key: str,
+        env: dict[str, str],
+        cwd: str,
+    ) -> None:
+        """Run one install step, failing loudly with its own stderr.
+
+        Unlike the npx cache warm — whose failure only costs a slower launch —
+        a failed step here means the CLI will not exist at all, so the output
+        that explains why is worth keeping rather than discarding to DEVNULL.
+        """
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT
+            )
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(
+                f"ACP provider install timed out after "
+                f"{_ACP_CHECKOUT_INSTALL_TIMEOUT:.0f}s for {provider_key}: "
+                f"{shlex.join(command)}"
+            ) from exc
+        if process.returncode:
+            detail = maybe_truncate(
+                (stderr or b"").decode("utf-8", "replace").strip(),
+                _ACP_SUBPROCESS_LOG_LINE_CHARS,
+            )
+            raise RuntimeError(
+                f"ACP provider install failed for {provider_key} "
+                f"(exit code {process.returncode}): {shlex.join(command)}\n{detail}"
+            )
+
+    async def _prepare_git_checkout(
+        self,
+        spec: ACPGitCheckoutInstallSpec,
+        checkout_dir: Path,
+        env: dict[str, str],
+    ) -> None:
+        """Clone ``spec``'s pinned ref and install it, once per pin.
+
+        The clone lands via a temporary sibling and an atomic rename, so an
+        interrupted transfer never leaves a half-populated tree behind. The
+        install then has to run *in place*: ``uv sync`` writes the venv's own
+        absolute path into every console script's shebang, so a venv built
+        under the staging name and renamed afterwards points its ``exec`` at a
+        directory that no longer exists.
+
+        Completion is therefore recorded by :data:`_ACP_CHECKOUT_READY_FILE`
+        rather than by the directory existing, and re-running the install over
+        an already-synced checkout is both cheap and how a partial one heals.
+        """
+        logger.info(
+            "Installing ACP provider from git: provider=%s, source=%s, dest=%s; "
+            "first use clones and installs the provider before session startup",
+            spec.key,
+            spec.source.pinned,
+            checkout_dir,
+        )
+        if not checkout_dir.is_dir():
+            staging = checkout_dir.with_name(
+                f"{checkout_dir.name}.partial-{os.getpid()}"
+            )
+            shutil.rmtree(staging, ignore_errors=True)
+            staging.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                await self._run_checkout_step(
+                    spec.clone_command(str(staging)),
+                    spec.key,
+                    env,
+                    str(staging.parent),
+                )
+                try:
+                    staging.rename(checkout_dir)
+                except OSError:
+                    # Lost the race to a concurrent conversation cloning the
+                    # same pin. Its tree is equivalent, so keep it.
+                    if not checkout_dir.is_dir():
+                        raise
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+
+        await self._run_checkout_step(
+            spec.sync_command(), spec.key, env, str(checkout_dir)
+        )
+        (checkout_dir / _ACP_CHECKOUT_READY_FILE).write_text(spec.source.pinned)
+
+    def _acp_git_checkout_bin(
+        self,
+        state: ConversationState,
+        spec: ACPGitCheckoutInstallSpec,
+        env: dict[str, str],
+    ) -> Path:
+        """Path to the venv ``bin`` holding ``spec``'s console script.
+
+        Keyed by pin, so bumping the ref installs alongside the old checkout
+        rather than reusing a stale tree, and shared across the sandbox's
+        conversations like the package caches next to it.
+        """
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", spec.source.pinned).strip("-")
+        checkout_dir = self._acp_package_cache_dir(state, "acp-checkouts") / slug
+        if not (checkout_dir / _ACP_CHECKOUT_READY_FILE).is_file():
+            self._executor.run_async(
+                self._prepare_git_checkout(spec, checkout_dir, env),
+                timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT * 2 + 5,
+            )
+        return checkout_dir / ".venv" / "bin"
 
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]
@@ -2887,7 +3038,9 @@ class ACPAgent(AgentBase):
         provider = detect_acp_provider_by_command(self.acp_command)
         packages = _npx_packages(self.acp_command)
         if provider is not None and packages:
-            env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
+            env["npm_config_cache"] = str(
+                self._acp_package_cache_dir(state, "npm-cache")
+            )
             try:
                 self._executor.run_async(
                     self._warm_npx_cache(packages, provider.key, env, working_dir),
@@ -2900,6 +3053,18 @@ class ACPAgent(AgentBase):
                     provider.key,
                     error,
                 )
+
+        # A git-checkout provider ships no binary in the image and cannot be
+        # fetched by the launch command itself, so the checkout is installed
+        # here and its venv put on PATH. Unlike the npx warm above this is not
+        # best-effort: without it `command` resolves to nothing.
+        checkout_spec = (
+            _git_checkout_spec(provider.key) if provider is not None else None
+        )
+        if checkout_spec is not None and shutil.which(command) is None:
+            env["UV_CACHE_DIR"] = str(self._acp_package_cache_dir(state, "uv-cache"))
+            bin_dir = self._acp_git_checkout_bin(state, checkout_spec, env)
+            env["PATH"] = os.pathsep.join((str(bin_dir), env.get("PATH", os.defpath)))
 
         # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).

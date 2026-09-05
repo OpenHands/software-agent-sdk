@@ -171,6 +171,28 @@
     "supports_runtime_model_switch": true,
     "supports_set_session_model": true
   },
+  "hermes": {
+    "agent_name_patterns": [
+      "hermes"
+    ],
+    "api_key_env_var": "OPENAI_API_KEY",
+    "available_models": [],
+    "base_url_env_var": "OPENAI_BASE_URL",
+    "binary_name": "hermes-acp",
+    "data_dir_env_var": "HERMES_HOME",
+    "default_command": [
+      "hermes-acp"
+    ],
+    "default_model": null,
+    "default_session_mode": "dont_ask",
+    "display_name": "Hermes",
+    "env_conflicts": [],
+    "file_secrets": [],
+    "key": "hermes",
+    "session_meta_key": null,
+    "supports_runtime_model_switch": true,
+    "supports_set_session_model": true
+  },
   "kimi-code": {
     "agent_name_patterns": [
       "kimi"

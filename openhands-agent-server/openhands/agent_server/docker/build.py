@@ -34,8 +34,8 @@ from pydantic import BaseModel, Field, field_validator
 from openhands.sdk.logger import IN_CI, get_logger, rolling_log_view
 from openhands.sdk.settings.acp_install_catalog import (
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
+    render_docker_install_plan,
 )
-from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.workspace import PlatformType, TargetType
 
 
@@ -454,23 +454,19 @@ class BuildOptions(BaseModel):
     install_acp_providers: str = Field(
         default=",".join(DEFAULT_PREINSTALLED_ACP_PROVIDERS),
         description=(
-            "Comma-separated ACP provider keys (see ACP_PROVIDERS in "
-            "openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake "
-            "into the image. Empty string installs none."
+            "Comma-separated ACP provider keys (see ACP_INSTALL_CATALOG in "
+            "openhands-sdk/openhands/sdk/settings/acp_install_catalog.py) to "
+            "bake into the image. Empty string installs none."
         ),
     )
 
     @field_validator("install_acp_providers")
     @classmethod
     def _valid_install_acp_providers(cls, v: str) -> str:
-        unknown = [
-            p for p in (t.strip() for t in v.split(",")) if p and p not in ACP_PROVIDERS
-        ]
-        if unknown:
-            raise ValueError(
-                f"Unknown ACP provider(s) in install_acp_providers: "
-                f"{', '.join(unknown)}. Valid keys: {', '.join(ACP_PROVIDERS)}"
-            )
+        # Same resolver the acp-providers build stage runs, so an unknown or
+        # non-preinstallable key is rejected here rather than several minutes
+        # into a Docker build.
+        render_docker_install_plan(t.strip() for t in v.split(",") if t.strip())
         return v
 
     install_capabilities: str = Field(
