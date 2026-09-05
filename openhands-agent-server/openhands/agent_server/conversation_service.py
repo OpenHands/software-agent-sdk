@@ -693,6 +693,7 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
+    metadata_only: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1062,15 +1063,15 @@ class ConversationService:
             record.state_signature = signature
 
     async def _reconcile_active_records(self) -> None:
-        """Fill catalog entries for services injected outside normal startup.
-
-        Normal service lifecycle paths maintain the catalog themselves. This
-        small reconciliation keeps direct embedders and existing test fixtures
-        that populate ``_event_services`` compatible.
-        """
+        """Refresh catalog records and include externally injected services."""
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
+        if self.metadata_only:
+            self._conversation_records = await asyncio.to_thread(
+                self._load_catalog_sync
+            )
+            return
         for conversation_id, event_service in event_services.items():
             if conversation_id in self._conversation_records:
                 continue
@@ -1149,6 +1150,8 @@ class ConversationService:
     async def _get_or_load_event_service(
         self, conversation_id: UUID
     ) -> EventService | None:
+        if self.metadata_only:
+            return None
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -1205,6 +1208,8 @@ class ConversationService:
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
+        if self.metadata_only:
+            await self._reconcile_active_records()
         record = self._conversation_records.get(conversation_id)
         if record is None:
             event_service = self._event_services.get(conversation_id)
@@ -2324,6 +2329,7 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            metadata_only=(config.conversation_runtime == "docker"),
         )
 
     async def _start_event_service(
