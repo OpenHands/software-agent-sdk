@@ -897,3 +897,87 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         new_str="Inserted line at 500",
     )
     assert "   500\tInserted line at 500" in result.text
+
+
+def test_insert_at_eof_without_trailing_newline(editor):
+    """Inserting after the last line of a file without a trailing newline
+    should start the inserted content on its own line, not concatenate it
+    onto the last line.
+    """
+    editor, test_file = editor
+    # The fixture's test file has 2 lines and no trailing newline
+    # ("This is a test file.\nThis file is for testing purposes.")
+    result = editor(
+        command="insert",
+        path=str(test_file),
+        insert_line=2,
+        new_str="New line at the end",
+    )
+
+    content = test_file.read_text()
+    assert content == (
+        "This is a test file.\n"
+        "This file is for testing purposes.\n"
+        "New line at the end\n"
+    )
+    # The inserted line must not be concatenated onto the previous last line
+    assert "testing purposes.New line" not in content
+    # The observation should show the new content as a separate line
+    assert "New line at the end" in result.text
+
+
+def test_insert_multiple_lines_at_eof_without_trailing_newline(editor, tmp_path):
+    """Multi-line inserts at EOF of a file without a trailing newline should
+    each land on their own lines, without merging into the original last line.
+    """
+    editor, _ = editor
+
+    no_newline_file = tmp_path / "no_trailing_newline.txt"
+    no_newline_file.write_text("a\nb\nc")  # no trailing newline
+    result = editor(
+        command="insert",
+        path=str(no_newline_file),
+        insert_line=3,
+        new_str="X\nY",
+    )
+
+    content = no_newline_file.read_text()
+    assert content == "a\nb\nc\nX\nY\n"
+    assert "cX" not in content
+    assert "X" in result.text and "Y" in result.text
+
+
+def test_insert_at_eof_with_trailing_newline_unchanged(editor, tmp_path):
+    """Inserting at EOF of a file that already ends with a newline keeps the
+    existing behavior: no extra blank line is introduced.
+    """
+    editor, _ = editor
+
+    with_newline_file = tmp_path / "trailing_newline.txt"
+    with_newline_file.write_text("a\nb\nc\n")  # trailing newline present
+    result = editor(
+        command="insert",
+        path=str(with_newline_file),
+        insert_line=3,
+        new_str="Z",
+    )
+
+    content = with_newline_file.read_text()
+    assert content == "a\nb\nc\nZ\n"
+
+
+def test_insert_in_middle_unaffected_by_eof_fix(editor, tmp_path):
+    """Inserting in the middle of a file still behaves as before."""
+    editor, _ = editor
+
+    mid_file = tmp_path / "middle.txt"
+    mid_file.write_text("a\nb\nc")  # no trailing newline, but insert mid-file
+    editor(
+        command="insert",
+        path=str(mid_file),
+        insert_line=1,
+        new_str="MID",
+    )
+
+    content = mid_file.read_text()
+    assert content == "a\nMID\nb\nc"
