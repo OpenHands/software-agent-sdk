@@ -13,6 +13,9 @@ from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openhands.sdk.llm.utils.tool_call_id import (
+    OPENAI_RESPONSES_TOOL_CALL_ID_POLICY,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
@@ -99,11 +102,13 @@ class MessageToolCall(BaseModel):
 
     def to_responses_dict(self) -> dict[str, Any]:
         """Serialize to OpenAI Responses 'function_call' input item format."""
-        # Echo the original function_call.id verbatim when we have it, so
-        # replays stay byte-identical and OpenAI's prefix cache keeps matching.
-        item_id = self.responses_item_id or (
-            self.id if str(self.id).startswith("fc") else f"fc_{self.id}"
+        # Echo a valid original function_call.id verbatim when we have it, so
+        # Responses replays stay byte-identical and prefix caches keep matching.
+        call_id = OPENAI_RESPONSES_TOOL_CALL_ID_POLICY.encode(self.id)
+        raw_item_id = self.responses_item_id or (
+            call_id if call_id.startswith("fc") else f"fc_{call_id}"
         )
+        item_id = OPENAI_RESPONSES_TOOL_CALL_ID_POLICY.encode(raw_item_id)
         # Responses requires arguments to be a JSON string
         args_str = (
             self.arguments
@@ -113,7 +118,7 @@ class MessageToolCall(BaseModel):
         return {
             "type": "function_call",
             "id": item_id,
-            "call_id": self.id,
+            "call_id": call_id,
             "name": self.name,
             "arguments": args_str,
         }

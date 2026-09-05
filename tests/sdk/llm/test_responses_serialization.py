@@ -1,3 +1,5 @@
+import re
+
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import (
     ImageContent,
@@ -37,6 +39,45 @@ def test_function_call_and_output_paired():
     assert fcs[0]["id"] == "fc_abc123"
     assert fcs[0]["call_id"] == "call_xyz789"
     assert outs[0]["call_id"] == fcs[0]["call_id"]
+
+
+def test_parallel_cross_provider_tool_call_ids_are_responses_compatible():
+    tool_calls = [
+        MessageToolCall(
+            id=f"github_get_file_contents:{index}",
+            name="github_get_file_contents",
+            arguments="{}",
+            origin="completion",
+        )
+        for index in (1, 2)
+    ]
+    messages = [
+        Message(role="assistant", content=[], tool_calls=tool_calls),
+        *[
+            Message(
+                role="tool",
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+                content=[TextContent(text="done")],
+            )
+            for tool_call in tool_calls
+        ],
+        Message(role="user", content=[TextContent(text="switched")]),
+    ]
+
+    _, inputs = LLM(model="gpt-5.6").format_messages_for_responses(messages)
+
+    function_calls = [item for item in inputs if item["type"] == "function_call"]
+    outputs = [item for item in inputs if item["type"] == "function_call_output"]
+    allowed_id = re.compile(r"^[A-Za-z0-9_-]+$")
+
+    assert len(function_calls) == len(outputs) == 2
+    assert all(allowed_id.fullmatch(item["id"]) for item in function_calls)
+    assert all(allowed_id.fullmatch(item["call_id"]) for item in function_calls)
+    assert [item["call_id"] for item in outputs] == [
+        item["call_id"] for item in function_calls
+    ]
+    assert len({item["call_id"] for item in function_calls}) == 2
 
 
 def test_system_to_responses_value_instructions_concat():
