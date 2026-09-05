@@ -19,7 +19,7 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.conversation.types import TAG_VALUE_MAX_LENGTH, ConversationTags
 from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
@@ -465,6 +465,15 @@ class SetSecurityAnalyzerRequest(BaseModel):
 
     security_analyzer: SecurityAnalyzerBase | None = Field(
         description="The security analyzer to set"
+    )
+
+
+class SetTagRequest(BaseModel):
+    """Payload to set a single conversation tag."""
+
+    value: str = Field(
+        description="Tag value (arbitrary string, up to 256 characters)",
+        max_length=TAG_VALUE_MAX_LENGTH,
     )
 
 

@@ -115,6 +115,40 @@ test) captures the expected behaviour.
 - In async routes/services, move state-lock acquisition into `run_in_executor(...)` (or another worker-thread boundary) before awaiting network I/O.
 
 
+## Per-key conversation tag endpoints
+
+Two sub-resource endpoints allow atomic single-key mutations on the conversation
+tag map without a read-modify-write round-trip:
+
+| Method | Path | Description |
+|---|---|---|
+| `PUT` | `/api/conversations/{id}/tags/{key}` | Set or overwrite one tag; body: `{"value": "..."}` |
+| `DELETE` | `/api/conversations/{id}/tags/{key}` | Remove one tag |
+
+Both operations leave all other tags untouched and **do not update `updated_at`**
+on the conversation (tag mutations are metadata-only and must not perturb
+sort order or localStorage-to-server migration checks).
+
+### Tag storage model
+
+`ConversationState.tags` (persisted to `base_state.json`) is the **source of
+truth**. `StoredConversation.tags` (persisted to `meta.json`) is a **read-only
+projection** maintained purely for listing and filtering performance — loading
+every `base_state.json` to answer a tag query would defeat the purpose of
+`meta.json`. Do not treat `stored.tags` as an independent store or update it
+without also updating `ConversationState`. Every write path must go through
+`_flush_tags_mutation`, which keeps both in sync.
+
+Key constraints: lowercase alphanumeric only (matches `TAG_KEY_PATTERN`); value
+up to 256 characters.
+
+Response codes:
+- `200` — success
+- `404` — conversation not found, or (DELETE only) key not present
+- `422` — key fails the pattern validation
+
+The existing `PATCH /api/conversations/{id}` full-replace behaviour is unchanged.
+
 ## REST API compatibility & deprecation policy
 
 The agent-server **REST API** (the FastAPI OpenAPI surface under `/api/**`) is a
