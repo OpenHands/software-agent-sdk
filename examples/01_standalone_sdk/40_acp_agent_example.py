@@ -36,6 +36,13 @@ try:
     )
     conversation.run()
 
+    # --- ask_agent: stateless side-question via fork_session ---
+    print("\n--- ask_agent ---")
+    response = conversation.ask_agent(
+        "Based on the files you inspected, which exported agent class is the newest?"
+    )
+    print(f"ask_agent response: {response}")
+
     # --- Image input turn (text + image) ---
     print("\n--- image input ---")
     conversation.send_message(
@@ -50,13 +57,6 @@ try:
         )
     )
     conversation.run()
-
-    # --- ask_agent: stateless side-question via fork_session ---
-    print("\n--- ask_agent ---")
-    response = conversation.ask_agent(
-        "Based on what you just saw, which agent class is the newest addition?"
-    )
-    print(f"ask_agent response: {response}")
     # Report cost (ACP server reports usage via session_update notifications)
     cost = agent.llm.metrics.accumulated_cost
     print(f"EXAMPLE_COST: {cost:.4f}")
