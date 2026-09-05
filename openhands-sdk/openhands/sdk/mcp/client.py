@@ -206,14 +206,19 @@ class MCPClient(AsyncMCPClient):
             except Exception:
                 pass  # Ignore close errors during cleanup
 
-        # Capture only processes still owned by active transports after close.
-        # This avoids acting on an exited process's PID if the OS reuses it.
-        subprocess_pids = self._get_transport_subprocess_pids()
-        self._force_kill_subprocesses(subprocess_pids)
-
-        # Always cleanup the executor
-        self._executor.close()
-        self._closed = True
+        try:
+            # Capture only processes still owned by active transports after close.
+            # This avoids acting on an exited process's PID if the OS reuses it.
+            subprocess_pids = self._get_transport_subprocess_pids()
+            self._force_kill_subprocesses(subprocess_pids)
+        except Exception:
+            logger.warning(
+                "Error force-killing stdio subprocesses during MCPClient cleanup",
+                exc_info=True,
+            )
+        finally:
+            self._executor.close()
+            self._closed = True
 
     def __del__(self):
         """Cleanup on deletion."""
