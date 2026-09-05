@@ -21,6 +21,68 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _usage_int(value: Any) -> int:
+    return int(value or 0)
+
+
+def _usage_attr(usage: Any, name: str) -> int:
+    try:
+        return _usage_int(getattr(usage, name, 0))
+    except (AttributeError, TypeError):
+        return 0
+
+
+def _prompt_token_details(usage: Any) -> Any:
+    return getattr(usage, "prompt_tokens_details", None) or getattr(
+        usage, "input_tokens_details", None
+    )
+
+
+def _completion_token_details(usage: Any) -> Any:
+    return getattr(usage, "completion_tokens_details", None) or getattr(
+        usage, "output_tokens_details", None
+    )
+
+
+def _cache_read_tokens(usage: Any) -> int:
+    details = _prompt_token_details(usage)
+    if details is not None:
+        cached_tokens = _usage_attr(details, "cached_tokens")
+        if cached_tokens:
+            return cached_tokens
+
+    for field_name in (
+        "prompt_cache_hit_tokens",
+        "cache_read_input_tokens",
+        "cached_tokens",
+    ):
+        cached_tokens = _usage_attr(usage, field_name)
+        if cached_tokens:
+            return cached_tokens
+
+    return 0
+
+
+def _cache_write_tokens(usage: Any) -> int:
+    for field_name in (
+        "_cache_creation_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        cache_write = _usage_attr(usage, field_name)
+        if cache_write:
+            return cache_write
+
+    details = _prompt_token_details(usage)
+    if details is None:
+        return 0
+
+    return (
+        _usage_attr(details, "cache_write_tokens")
+        or _usage_attr(details, "cache_creation_tokens")
+        or _usage_attr(details, "cache_creation_input_tokens")
+    )
+
+
 class Telemetry(BaseModel):
     """
     Handles latency, token/cost accounting, and optional logging.
@@ -183,8 +245,13 @@ class Telemetry(BaseModel):
             if completion_tokens is None:
                 completion_tokens = getattr(usage, "output_tokens", 0)
 
-            pt = int(prompt_tokens or 0)
-            ct = int(completion_tokens or 0)
+            if prompt_tokens is None:
+                prompt_tokens = _usage_attr(usage, "prompt_cache_hit_tokens") + (
+                    _usage_attr(usage, "prompt_cache_miss_tokens")
+                )
+
+            pt = _usage_int(prompt_tokens)
+            ct = _usage_int(completion_tokens)
             return pt > 0 or ct > 0
         except Exception:
             return False
@@ -206,37 +273,30 @@ class Telemetry(BaseModel):
           - input_tokens_details.cached_tokens
           - output_tokens_details.reasoning_tokens
         """
-        prompt_tokens = int(
+        prompt_tokens = _usage_int(
             getattr(usage, "prompt_tokens", None)
             or getattr(usage, "input_tokens", 0)
             or 0
         )
-        completion_tokens = int(
+        if not prompt_tokens:
+            prompt_tokens = _usage_attr(usage, "prompt_cache_hit_tokens") + (
+                _usage_attr(usage, "prompt_cache_miss_tokens")
+            )
+
+        completion_tokens = _usage_int(
             getattr(usage, "completion_tokens", None)
             or getattr(usage, "output_tokens", 0)
             or 0
         )
 
-        cache_read = 0
-        p_details = getattr(usage, "prompt_tokens_details", None) or getattr(
-            usage, "input_tokens_details", None
-        )
-        if p_details is not None:
-            cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
-
-        # Kimi-K2-thinking populate usage.cached_tokens field
-        if not cache_read and hasattr(usage, "cached_tokens"):
-            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+        cache_read = _cache_read_tokens(usage)
 
         reasoning_tokens = 0
-        c_details = getattr(usage, "completion_tokens_details", None) or getattr(
-            usage, "output_tokens_details", None
-        )
+        c_details = _completion_token_details(usage)
         if c_details is not None:
-            reasoning_tokens = int(getattr(c_details, "reasoning_tokens", 0) or 0)
+            reasoning_tokens = _usage_attr(c_details, "reasoning_tokens")
 
-        # Chat-specific: litellm may set a hidden cache write field
-        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
+        cache_write = _cache_write_tokens(usage)
 
         self.metrics.add_token_usage(
             prompt_tokens=prompt_tokens,
@@ -321,38 +381,32 @@ class Telemetry(BaseModel):
             try:
                 usage = getattr(resp, "usage", None)
                 if usage:
-                    prompt_tokens = int(
+                    prompt_tokens = _usage_int(
                         getattr(usage, "prompt_tokens", None)
                         or getattr(usage, "input_tokens", 0)
                         or 0
                     )
-                    completion_tokens = int(
+                    if not prompt_tokens:
+                        prompt_tokens = _usage_attr(
+                            usage, "prompt_cache_hit_tokens"
+                        ) + _usage_attr(usage, "prompt_cache_miss_tokens")
+
+                    completion_tokens = _usage_int(
                         getattr(usage, "completion_tokens", None)
                         or getattr(usage, "output_tokens", 0)
                         or 0
                     )
-                    details = getattr(
-                        usage, "completion_tokens_details", None
-                    ) or getattr(usage, "output_tokens_details", None)
+                    details = _completion_token_details(usage)
                     reasoning_tokens = (
-                        int(getattr(details, "reasoning_tokens", 0) or 0)
-                        if details
-                        else 0
-                    )
-                    p_details = getattr(
-                        usage, "prompt_tokens_details", None
-                    ) or getattr(usage, "input_tokens_details", None)
-                    cache_read_tokens = (
-                        int(getattr(p_details, "cached_tokens", 0) or 0)
-                        if p_details
-                        else 0
+                        _usage_attr(details, "reasoning_tokens") if details else 0
                     )
 
                     data["usage_summary"] = {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
                         "reasoning_tokens": reasoning_tokens,
-                        "cache_read_tokens": cache_read_tokens,
+                        "cache_read_tokens": _cache_read_tokens(usage),
+                        "cache_write_tokens": _cache_write_tokens(usage),
                     }
             except Exception:
                 # Best-effort only; don't fail logging
