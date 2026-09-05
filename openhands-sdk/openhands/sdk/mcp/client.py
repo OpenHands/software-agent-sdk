@@ -97,87 +97,49 @@ class MCPClient(AsyncMCPClient):
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
     def _get_transport_subprocess_pids(self) -> list[int]:
-        """Best-effort: extract PIDs of stdio MCP server subprocesses.
+        """Extract PIDs owned by active FastMCP stdio transports.
 
-        fastmcp's ``StdioTransport`` spawns the subprocess inside its
-        ``_connect_task`` via ``stdio_client()``, and the process object is
-        not exposed on the transport.  When ``sync_close()`` times out waiting
-        for the async close to unwind, the ``AsyncExitStack`` never runs its
-        ``finally`` block — so ``stdio_client``'s ``_terminate_process_tree()``
-        never fires and the subprocess leaks.
-
-        We recover the PID by inspecting the transport's ``_connect_task``:
-        the task's coroutine frame locals include the ``AsyncExitStack`` and
-        the ``stdio_client`` context, whose ``finally`` holds the ``process``.
-        If that fails, we fall back to scanning child processes of this
-        process for the transport's command string.
+        FastMCP retains each stdio context manager on the connection task's
+        ``AsyncExitStack``. Its async-generator frame owns the exact process
+        object, so this avoids matching another client's subprocess by command.
         """
+        transport = getattr(self, "transport", None)
+        if transport is None:
+            return []
+
         pids: list[int] = []
-        try:
-            transport = getattr(self, "transport", None)
-            if transport is None:
-                return pids
-            # StdioTransport stores command/args — use them to find children
-            command = getattr(transport, "command", None)
-            args = getattr(transport, "args", None) or []
-            if command is None:
-                return pids
-            # Scan /proc for child processes matching this command
-            cmdline_frag = command
-            if args:
-                cmdline_frag = f"{command} {' '.join(str(a) for a in args[:2])}"
-            self._scan_child_procs(pids, cmdline_frag, command)
-        except Exception:
-            logger.debug("Failed to extract transport subprocess PIDs", exc_info=True)
-        return pids
-
-    def _scan_child_procs(self, pids: list[int], fragment: str, command: str) -> None:
-        """Scan /proc for descendant processes matching the transport command."""
-        try:
-            own_pid = os.getpid()
-            for entry in os.listdir("/proc"):
-                if not entry.isdigit():
-                    continue
-                pid = int(entry)
-                if pid == own_pid:
-                    continue
-                # Check if this is a descendant of our process
-                if not self._is_descendant(pid, own_pid):
-                    continue
-                try:
-                    with open(f"/proc/{pid}/cmdline", "rb") as f:
-                        cmdline = (
-                            f.read()
-                            .replace(b"\x00", b" ")
-                            .decode("utf-8", errors="replace")
-                        )
-                except (FileNotFoundError, ProcessLookupError, PermissionError):
-                    continue
-                if command in cmdline or fragment in cmdline:
-                    pids.append(pid)
-        except Exception:
-            pass
-
-    def _is_descendant(self, pid: int, ancestor: int) -> bool:
-        """Check if ``pid`` is a descendant of ``ancestor`` via /proc/PPid."""
+        pending = [transport]
         seen: set[int] = set()
-        current = pid
-        while current and current not in seen:
-            seen.add(current)
-            try:
-                with open(f"/proc/{current}/status") as f:
-                    for line in f:
-                        if line.startswith("PPid:"):
-                            ppid = int(line.split()[1])
-                            if ppid == ancestor:
-                                return True
-                            current = ppid
-                            break
-                    else:
-                        break
-            except (FileNotFoundError, ProcessLookupError, ValueError):
-                break
-        return False
+
+        while pending:
+            transport = pending.pop()
+            if id(transport) in seen:
+                continue
+            seen.add(id(transport))
+
+            child = getattr(transport, "transport", None)
+            if child is not None:
+                pending.append(child)
+            pending.extend(getattr(transport, "_transports", ()))
+
+            task = getattr(transport, "_connect_task", None)
+            coroutine = task.get_coro() if task is not None else None
+            frame = getattr(coroutine, "cr_frame", None)
+            stack = frame.f_locals.get("stack") if frame is not None else None
+            for _, callback in getattr(stack, "_exit_callbacks", ()):
+                manager = getattr(callback, "__self__", None)
+                generator = getattr(manager, "gen", None)
+                generator_frame = getattr(generator, "ag_frame", None)
+                process = (
+                    generator_frame.f_locals.get("process")
+                    if generator_frame is not None
+                    else None
+                )
+                pid = getattr(process, "pid", None)
+                if isinstance(pid, int):
+                    pids.append(pid)
+
+        return list(dict.fromkeys(pids))
 
     def _kill_process_group(self, pid: int) -> None:
         """Kill a process and its group (SIGTERM then SIGKILL)."""
@@ -203,18 +165,12 @@ class MCPClient(AsyncMCPClient):
             except (ProcessLookupError, OSError):
                 return  # Dead
 
-    def _force_kill_subprocesses(self) -> None:
-        """Kill any stdio MCP subprocesses that survived the async close.
-
-        This is the safety net: if ``close()`` timed out or the portal
-        thread was abandoned (see PR #4548 / issue #4598), the transport's
-        ``_terminate_process_tree()`` never ran.  We kill by PID directly.
-        """
-        pids = self._get_transport_subprocess_pids()
+    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
+        """Kill stdio MCP subprocesses captured before async close."""
         if not pids:
             return
         logger.debug(
-            "MCPClient: force-killing %d leaked subprocess(es) after async close: %s",
+            "MCPClient: force-killing %d stdio subprocess(es) after async close: %s",
             len(pids),
             pids,
         )
@@ -235,6 +191,8 @@ class MCPClient(AsyncMCPClient):
         if self._closed:
             return
 
+        subprocess_pids = self._get_transport_subprocess_pids()
+
         # Best-effort: try async close if parent provides it
         if hasattr(self, "close") and inspect.iscoroutinefunction(self.close):
             try:
@@ -242,9 +200,9 @@ class MCPClient(AsyncMCPClient):
             except Exception:
                 pass  # Ignore close errors during cleanup
 
-        # Safety net: kill any subprocesses that the async close didn't
-        # clean up (e.g. if the portal thread was abandoned after timeout).
-        self._force_kill_subprocesses()
+        # Kill the exact processes owned by this client's stdio transports,
+        # including any that survived an abandoned portal thread.
+        self._force_kill_subprocesses(subprocess_pids)
 
         # Always cleanup the executor
         self._executor.close()
