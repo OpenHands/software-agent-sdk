@@ -77,6 +77,35 @@ class TestPolicyRails:
         assert decision.outcome == SecurityRisk.HIGH
         assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
 
+    def test_catastrophic_delete_with_intervening_flag(self):
+        decision = _evaluate_rail("rm --no-preserve-root -rf /")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
+    def test_catastrophic_delete_split_flags_with_long_option(self):
+        decision = _evaluate_rail("rm --preserve-root=all -r -f /")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
+    def test_catastrophic_delete_flags_after_positional_arg(self):
+        decision = _evaluate_rail("rm / -rf")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
+    def test_catastrophic_delete_with_interleaved_redirection(self):
+        decision = _evaluate_rail("rm -r 2>&1 -f /")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
+    def test_catastrophic_delete_with_long_argument_between_flags(self):
+        decision = _evaluate_rail("rm -r " + ("A" * 250) + " -f /")
+        assert decision.outcome == SecurityRisk.HIGH
+        assert decision.rule_name == RAIL_CATASTROPHIC_DELETE
+
+    def test_substring_not_detected_as_rm(self):
+        decision = _evaluate_rail("germ -rf /")
+        assert decision.outcome == SecurityRisk.LOW
+
 
 class TestPolicyRailAnalyzer:
     """Integration tests for PolicyRailSecurityAnalyzer."""
