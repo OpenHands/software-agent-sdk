@@ -41,10 +41,27 @@ describe('ACP provider credential descriptors', () => {
     // opencode's own gateway (OpenCode Zen) resolves its endpoint from the
     // model catalogue, so it has no base-URL override var either.
     ['opencode', 'OPENCODE_API_KEY', null],
+    // hermes resolves its `openai-api` provider from this pair, which is what
+    // routes it at an OpenAI-compatible proxy.
+    ['hermes', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
   ])('%s declares its api_key/base_url env vars', (key, apiKeyEnvVar, baseUrlEnvVar) => {
     const provider = ACP_PROVIDERS[key];
     expect(provider.api_key_env_var).toBe(apiKeyEnvVar);
     expect(provider.base_url_env_var).toBe(baseUrlEnvVar);
+  });
+
+  it('hermes launches a console script rather than a package runner', () => {
+    // The only provider not installed from npm: it is cloned from a pinned git
+    // ref and installed at launch, so its command carries no fetch and a
+    // consumer must not assume every default_command starts with `npx`.
+    const hermes = ACP_PROVIDERS.hermes;
+    expect(hermes.default_command).toEqual(['hermes-acp']);
+    expect(hermes.binary_name).toBe('hermes-acp');
+    expect(hermes.file_secrets).toEqual([]);
+    // Model ids follow whichever provider hermes can authenticate, so nothing
+    // is curated and the CLI resolves its own default.
+    expect(hermes.available_models).toEqual([]);
+    expect(hermes.default_model).toBeNull();
   });
 
   it('pi pins both the ACP adapter and the engine it spawns', () => {

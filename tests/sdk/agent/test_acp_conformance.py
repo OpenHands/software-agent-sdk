@@ -44,7 +44,10 @@ from openhands.sdk.agent.acp_agent import (
     _select_auth_method,
 )
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.settings.acp_install_catalog import ACP_INSTALL_CATALOG
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    is_npm_spec,
+)
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -62,6 +65,25 @@ requires_npx = pytest.mark.skipif(
     shutil.which("npx") is None or not _npm_registry_reachable(),
     reason="npx (Node.js) not available, or npm registry unreachable",
 )
+
+
+def _skip_unless_installable(provider_key: str) -> None:
+    """Skip when this provider's installer is not usable on the host.
+
+    Each flavour has its own prerequisites, and a missing one is an unmet
+    prerequisite rather than a conformance failure.
+    """
+    spec = ACP_INSTALL_CATALOG[provider_key]
+    if is_npm_spec(spec):
+        _skip_if_node_below_floor(provider_key)
+        return
+    missing = [tool for tool in ("git", "uv") if shutil.which(tool) is None]
+    if missing:
+        pytest.skip(
+            f"provider {provider_key!r} installs from a git checkout; "
+            f"missing {', '.join(missing)}"
+        )
+
 
 pytestmark = pytest.mark.acp_live
 
@@ -105,9 +127,10 @@ def _skip_if_node_below_floor(provider_key: str) -> None:
     unmet prerequisite. The image's own floor is asserted separately, against
     the Dockerfile pin, in tests/cross/test_agent_server_build_metadata.py.
     """
-    floor = ACP_INSTALL_CATALOG[provider_key].min_node_version
-    if floor is None:
+    spec = ACP_INSTALL_CATALOG[provider_key]
+    if not is_npm_spec(spec) or spec.min_node_version is None:
         return
+    floor = spec.min_node_version
     running = _node_version()
     required = tuple(int(part) for part in floor.split("."))
     if running is not None and running < required:
@@ -157,6 +180,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "KIMI_BASE_URL",
         "KIMI_CODE_HOME",
         "KIMI_MODEL_BASE_URL",
+        # Hermes reads ~/.hermes (or $HERMES_HOME) for config.yaml, .env and
+        # its auth store, any of which would hand the probe a host credential.
+        "HERMES_HOME",
         "OPENCODE_CONFIG_DIR",
         "OPENCODE_CONFIG",
         "OPENCODE_CONFIG_CONTENT",
@@ -203,7 +229,7 @@ def test_acp_conformance_probe(
     provider_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = ACP_PROVIDERS[provider_key]
-    _skip_if_node_below_floor(provider_key)
+    _skip_unless_installable(provider_key)
     _isolate_env(monkeypatch, tmp_path)
 
     init_captured = _spy(monkeypatch, ClientSideConnection, "initialize")
@@ -246,11 +272,14 @@ def test_acp_conformance_probe(
             f"{provider.agent_name_patterns!r} (upstream renamed the agent?)"
         )
 
-        # agent_version equals the pin.
-        pinned_version = ACP_INSTALL_CATALOG[provider.key].packages[0].version
+        # agent_version equals the pin. For a git-checkout provider the ref
+        # is not a version (Hermes tags by release date), so the catalog
+        # records what the pinned ref reports and this compares against that
+        # — which is what catches a tag that moved.
+        pinned_version = ACP_INSTALL_CATALOG[provider.key].pinned_version
         assert agent.agent_version == pinned_version, (
             f"agent_version={agent.agent_version!r} != pinned {pinned_version!r} — "
-            "npx resolved a different version than default_command pins"
+            "the launcher resolved a different build than the catalog pins"
         )
 
         # authMethods contains what _select_auth_method picked. Some

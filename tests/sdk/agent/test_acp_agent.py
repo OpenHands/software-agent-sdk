@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import pathlib
 import threading
 import time
 import uuid
@@ -25,6 +26,7 @@ import openhands.sdk.agent.acp_agent as acp_agent_module
 import openhands.sdk.agent.acp_file_credentials as acp_file_credentials_module
 import openhands.sdk.utils.files as files_module
 from openhands.sdk.agent.acp_agent import (
+    _ACP_CHECKOUT_READY_FILE,
     ACPAgent,
     _acp_error_detail,
     _acp_error_indicates_auth,
@@ -78,6 +80,8 @@ from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_install_catalog import (
+    ACPGitCheckoutInstallSpec,
+    ACPGitPin,
     ACPInstallSpec,
     ACPPackagePin,
 )
@@ -186,7 +190,7 @@ def test_warns_when_acp_provider_version_differs_from_pin(caplog):
     assert "provider=gemini-cli" in caplog.text
     assert "pinned_version='0.46.0'" in caplog.text
     assert "reported_version='0.38.0'" in caplog.text
-    assert "probably installed at runtime via the npx fallback" in caplog.text
+    assert "the running CLI is not the pinned build" in caplog.text
 
 
 def test_npx_packages_skips_prefer_offline():
@@ -214,12 +218,271 @@ def test_npx_packages_prefers_pinned_package_flags():
     ]
 
 
+class _StopBeforeSpawn(Exception):
+    """Abort _start_acp_server once the assertion's subject has been captured."""
+
+
+class TestGitCheckoutInstall:
+    """Hermes-shaped providers: installed from a shallow checkout at launch."""
+
+    def _spec(self, ref: str = "v1.2.3") -> ACPGitCheckoutInstallSpec:
+        return ACPGitCheckoutInstallSpec(
+            key="proj",
+            source=ACPGitPin(url="https://example.test/org/proj", ref=ref),
+            binary_name="proj-acp",
+            extras=("acp",),
+        )
+
+    async def _prepare(self, tmp_path, *, exists: bool = False):
+        """Run the install against stub subprocesses, recording each step."""
+        checkout = tmp_path / "checkout"
+        if exists:
+            checkout.mkdir(parents=True)
+        calls: list[tuple[tuple[str, ...], str]] = []
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            calls.append((command, cwd))
+            # Stand in for the clone actually producing its destination.
+            if command[0] == "git":
+                pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
+            process = MagicMock()
+            process.returncode = 0
+            process.communicate = AsyncMock(return_value=(b"", b""))
+            return process
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+            new=_fake_exec,
+        ):
+            await _make_agent()._prepare_git_checkout(self._spec(), checkout, {})
+        return checkout, calls
+
+    async def test_clones_then_installs_and_marks_completion(self, tmp_path):
+        checkout, calls = await self._prepare(tmp_path)
+
+        assert [command[0] for command, _ in calls] == ["git", "uv"]
+        assert calls[1][0] == ("uv", "sync", "--frozen", "--extra", "acp")
+        assert (checkout / _ACP_CHECKOUT_READY_FILE).read_text() == (
+            "https://example.test/org/proj@v1.2.3"
+        )
+
+    async def test_installs_in_place_rather_than_in_the_staging_clone(self, tmp_path):
+        """``uv sync`` writes the venv's absolute path into every console
+        script's shebang, so a venv built under the staging name and renamed
+        afterwards would exec a path that no longer exists."""
+        checkout, calls = await self._prepare(tmp_path)
+
+        (clone_command, _), (_, sync_cwd) = calls
+        assert clone_command[-1] != str(checkout), "clone should stage, not land"
+        assert sync_cwd == str(checkout), "sync must run at the final path"
+
+    async def test_reinstalls_over_an_existing_checkout_without_recloning(
+        self, tmp_path
+    ):
+        """A checkout left by an interrupted install still needs its sync;
+        re-running it is how that heals, and re-cloning would be waste."""
+        _, calls = await self._prepare(tmp_path, exists=True)
+
+        assert [command[0] for command, _ in calls] == ["uv"]
+
+    async def test_failed_step_surfaces_its_own_stderr(self, tmp_path):
+        """Unlike the npx warm, a failure here means no CLI to launch at all,
+        so the output explaining why has to reach the caller."""
+        agent = _make_agent()
+        process = MagicMock()
+        process.returncode = 128
+        process.communicate = AsyncMock(
+            return_value=(b"", b"fatal: Remote branch v1.2.3 not found")
+        )
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            with pytest.raises(RuntimeError, match="Remote branch v1.2.3 not found"):
+                await agent._run_checkout_step(
+                    ("git", "clone"), "proj", {}, str(tmp_path)
+                )
+
+    def _agent(self) -> ACPAgent:
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        agent._executor = AsyncExecutor()
+        return agent
+
+    def _bin_dir(self, agent, tmp_path, spec, calls):
+        """Resolve the venv bin, running the real install against stubs."""
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            calls.append(command[0])
+            if command[0] == "git":
+                pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
+            process = MagicMock()
+            process.returncode = 0
+            process.communicate = AsyncMock(return_value=(b"", b""))
+            return process
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+            new=_fake_exec,
+        ):
+            return agent._acp_git_checkout_bin(state, spec, {})
+
+    def test_ready_marker_not_directory_gates_the_install(self, tmp_path):
+        """The clone exists long before the venv does, so the directory alone
+        cannot mean 'installed'."""
+        agent = self._agent()
+        calls: list[str] = []
+
+        bin_dir = self._bin_dir(agent, tmp_path, self._spec(), calls)
+        checkout = bin_dir.parent.parent
+        assert calls == ["git", "uv"]
+        assert bin_dir.parts[-2:] == (".venv", "bin")
+
+        # The marker, not the directory, is what lets the next launch skip it.
+        self._bin_dir(agent, tmp_path, self._spec(), calls)
+        assert calls == ["git", "uv"], "a completed install must not re-run"
+
+        # Remove it and the install runs again — over the existing checkout,
+        # which is how a half-finished one heals.
+        (checkout / _ACP_CHECKOUT_READY_FILE).unlink()
+        self._bin_dir(agent, tmp_path, self._spec(), calls)
+        assert calls == ["git", "uv", "uv"]
+
+    def test_concurrent_installs_are_serialised_and_run_once(self, tmp_path):
+        """Two conversations starting together must not both reach `uv sync`.
+
+        Staging the clone makes it crash-safe but not concurrent: without a
+        lock both would sync one venv and both would write the marker, so a
+        pair of syncs that trod on each other would leave a broken venv
+        flagged complete.
+        """
+        agent = self._agent()
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+        spec = self._spec()
+        calls: list[str] = []
+        holders: list[int] = []
+        peak = 0
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            nonlocal peak
+            calls.append(command[0])
+            holders.append(1)
+            peak = max(peak, len(holders))
+            await asyncio.sleep(0.02)
+            holders.pop()
+            if command[0] == "git":
+                pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
+            process = MagicMock()
+            process.returncode = 0
+            process.communicate = AsyncMock(return_value=(b"", b""))
+            return process
+
+        results: list[Path] = []
+
+        def _install():
+            with patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_exec,
+            ):
+                results.append(agent._acp_git_checkout_bin(state, spec, {}))
+
+        threads = [threading.Thread(target=_install) for _ in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert peak == 1, "install steps overlapped despite the lock"
+        assert calls == ["git", "uv"], f"install ran more than once: {calls}"
+        assert len(set(results)) == 1
+
+    def test_lock_is_rechecked_so_a_dead_holder_does_not_strand_the_install(
+        self, tmp_path
+    ):
+        """The OS drops the lock when its holder dies, so holding it is never
+        proof the work is unfinished — the marker is."""
+        lock_path = tmp_path / "install.lock"
+        with acp_agent_module._installation_lock(lock_path):
+            pass
+        # Re-acquirable: the lock is released, not leaked.
+        with acp_agent_module._installation_lock(lock_path):
+            pass
+        assert lock_path.is_file()
+
+    def test_install_steps_do_not_receive_conversation_secrets(self, tmp_path):
+        """The ACP server needs the user's credentials; the installer doesn't.
+
+        `uv sync` runs the pinned project's own build backend — third-party
+        code that has no business seeing them — so the env handed to the
+        install steps is stripped even though the subprocess env is not.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = ACPAgent(acp_command=["hermes-acp"], acp_server="hermes")
+        agent._executor = AsyncExecutor()
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+        state.secret_registry.update_secrets(
+            {
+                "CUSTOMER_API_KEY": StaticSecret(
+                    value=SecretStr("sk-super-secret"), description="Customer key"
+                )
+            }
+        )
+
+        install_envs: list[dict[str, str]] = []
+
+        def _capture(self_, state_, spec, env):
+            install_envs.append(dict(env))
+            raise _StopBeforeSpawn
+
+        with (
+            patch.object(ACPAgent, "_acp_git_checkout_bin", _capture),
+            patch("openhands.sdk.agent.acp_agent.shutil.which", return_value=None),
+            pytest.raises(_StopBeforeSpawn),
+        ):
+            agent._start_acp_server(state)
+
+        assert install_envs, "the checkout path did not run"
+        install_env = install_envs[0]
+        assert "CUSTOMER_API_KEY" not in install_env
+        assert "sk-super-secret" not in install_env.values()
+        # Still a usable environment — the strip is targeted, not a wipe.
+        assert "PATH" in install_env
+        assert install_env["UV_CACHE_DIR"].endswith("uv-cache")
+        assert install_env["UV_PYTHON_INSTALL_DIR"].endswith("uv-python")
+
+    def test_checkout_directory_is_keyed_by_pin(self, tmp_path):
+        """Bumping the ref must install alongside the old tree, not reuse it."""
+        agent = self._agent()
+        calls: list[str] = []
+
+        first = self._bin_dir(agent, tmp_path, self._spec(), calls)
+        second = self._bin_dir(agent, tmp_path, self._spec(ref="v9.9.9"), calls)
+
+        assert first != second
+        assert calls == ["git", "uv", "git", "uv"], "a new pin needs its own clone"
+        # Same parent: one directory per pin, side by side.
+        assert first.parent.parent.parent == second.parent.parent.parent
+
+
 def test_acp_npm_cache_is_shared_across_conversations(tmp_path):
     agent = _make_agent()
     state = _make_state(tmp_path)
     state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
 
-    assert agent._acp_npm_cache_dir(state) == tmp_path / "conversations" / "npm-cache"
+    assert (
+        agent._acp_package_cache_dir(state, "npm-cache")
+        == tmp_path / "conversations" / "npm-cache"
+    )
 
 
 async def test_warm_npx_cache_passes_every_pinned_package(tmp_path):

@@ -1,6 +1,15 @@
-"""ACP npm installation catalog — the single source of truth for each
-built-in provider's pinned npm package(s), CLI entry point, and any launch
-arguments needed to invoke it.
+"""ACP installation catalog — the single source of truth for each built-in
+provider's pinned distribution, CLI entry point, and any launch arguments
+needed to invoke it.
+
+Two install flavours are described, one per packaging ecosystem the built-in
+providers ship in:
+
+- :class:`ACPInstallSpec` — one or more pinned npm packages, launched with
+  ``npx`` and preinstallable into the agent-server image.
+- :class:`ACPGitCheckoutInstallSpec` — a project installed from a shallow
+  checkout of a pinned git ref. On-demand only;
+  :func:`render_docker_install_plan` rejects it.
 
 Deliberately dependency-free (stdlib only, no pydantic): the agent-server
 Dockerfile's ``acp-providers`` stage builds from a bare ``python:*-bookworm``
@@ -23,6 +32,7 @@ import argparse
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import TypeGuard
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,156 @@ class ACPInstallSpec:
             *self.trailing_args,
         )
 
+    def launch_command(self) -> tuple[str, ...]:
+        """Alias of :meth:`npx_command`, shared with
+        :class:`ACPGitCheckoutInstallSpec`."""
+        return self.npx_command()
+
+    @property
+    def pinned_version(self) -> str | None:
+        """The version a correctly-installed CLI reports over ACP.
+
+        For an npm provider the pin *is* that version. The first package is
+        the one that answers: a multi-package provider lists its ACP adapter
+        first, and the adapter is what runs.
+        """
+        return self.packages[0].version
+
+
+@dataclass(frozen=True)
+class ACPGitPin:
+    """One project pinned to an exact git ref."""
+
+    url: str
+    """Clone URL."""
+
+    ref: str
+    """Tag or commit SHA to check out. A tag is only as immutable as its
+    publisher makes it, which is why
+    :attr:`ACPGitCheckoutInstallSpec.reported_version` exists to catch one
+    that moved."""
+
+    @property
+    def pinned(self) -> str:
+        """``<url>@<ref>``, for logs and cache-directory naming."""
+        return f"{self.url}@{self.ref}"
+
+
+@dataclass(frozen=True)
+class ACPGitCheckoutInstallSpec:
+    """Everything needed to install and launch one provider's ACP CLI from a
+    git checkout of a pinned ref.
+
+    The counterpart of :class:`ACPInstallSpec` for a provider that is neither
+    an npm package nor installable as a Python *distribution*. Hermes is the
+    motivating case, and the reason the obvious ``uvx --from git+…@<ref>``
+    shape is not what this renders:
+
+    - Its ``setup.py`` overrides ``bdist_wheel``/``sdist`` to raise outside a
+      Nix build, so every PEP 517 wheel path — ``uvx``, ``uv tool install``,
+      ``pip install`` — fails by design.
+    - The guard is not incidental: ``[tool.setuptools.packages.find]`` never
+      packaged ``skills/``, ``locales/`` or ``optional-mcps/``, so a wheel
+      forced through with ``HERMES_NIX_BUILD=1`` installs and runs while
+      silently missing them.
+    - ``uv``'s git backend resolves a ref then re-fetches by commit SHA, and
+      that fetch does not complete against a repository advertising ~10^5
+      refs (upstream's own installer documents the same GitHub throttle and
+      works around it with retries plus a blobless partial clone).
+
+    A shallow, single-branch clone of the tag sidesteps all three: it needs no
+    wheel, materialises the bundled assets, and asks the server for one ref
+    rather than the full advertisement. The editable install ``uv sync``
+    performs is the path upstream supports.
+
+    Nothing here reaches the published agent-server images —
+    :func:`render_docker_install_plan` rejects this flavour outright, and the
+    checkout is materialised at runtime under the conversation's durable
+    cache root.
+    """
+
+    key: str
+    """Provider key, matching
+    :class:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.key`."""
+
+    source: ACPGitPin
+    """Pinned git ref the checkout is cloned from."""
+
+    binary_name: str
+    """Console script the project installs into its venv
+    (``[project.scripts]``), and the name resolved off ``PATH`` at launch."""
+
+    extras: tuple[str, ...] = field(default=())
+    """Optional-dependency groups the ACP entry point needs. Hermes keeps
+    ``agent-client-protocol`` in an ``acp`` extra, so a default ``uv sync``
+    produces a CLI whose ``--check`` fails on ``No module named 'acp'``."""
+
+    trailing_args: tuple[str, ...] = field(default=())
+    """Args appended after the console script name (e.g. a subcommand that
+    enters ACP mode). Empty for scripts that speak ACP directly."""
+
+    reported_version: str | None = None
+    """The version the CLI reports over ACP when built from :attr:`source`.
+
+    A git ref and a project version are separate namespaces — Hermes tags
+    releases by date (``v2026.8.31``) while its package version is ``0.21.0``
+    — so unlike an npm pin, the ref cannot be compared against what the
+    running server says. Recording the expected value keeps that check alive:
+    it catches a moved tag, and it fails the live probe when the ref is
+    bumped without re-verifying the record."""
+
+    def launch_command(self) -> tuple[str, ...]:
+        """The console script, resolved off ``PATH``.
+
+        The checkout's venv is not on ``PATH`` until
+        :class:`~openhands.sdk.agent.ACPAgent` prepares it and prepends its
+        ``bin`` to the subprocess environment, which is also what keeps this
+        command static: the checkout lives under a per-installation directory
+        the registry cannot know at import time.
+        """
+        return (self.binary_name, *self.trailing_args)
+
+    @property
+    def pinned_version(self) -> str | None:
+        """The version a correctly-installed CLI reports over ACP.
+
+        :attr:`reported_version` rather than the ref, because the two are
+        separate namespaces here — see that field.
+        """
+        return self.reported_version
+
+    def clone_command(self, dest: str) -> tuple[str, ...]:
+        """Shallow, single-branch clone of :attr:`source` into ``dest``.
+
+        ``--depth 1 --single-branch`` is what keeps this viable on a
+        repository with a very large ref advertisement: with a specific
+        ``--branch`` git asks for one ref prefix instead of the full listing,
+        which is the difference between seconds and minutes.
+        """
+        return (
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+            self.source.ref,
+            self.source.url,
+            dest,
+        )
+
+    def sync_command(self) -> tuple[str, ...]:
+        """Editable install of the checkout, at its own locked versions.
+
+        There is deliberately no ``requires_python`` counterpart to
+        :attr:`ACPInstallSpec.min_node_version` here: ``uv`` reads the
+        project's own ``requires-python`` and selects — or downloads — a
+        matching interpreter, so the floor is enforced by the installer
+        rather than by anything this catalog could restate.
+        """
+        extras = tuple(arg for extra in self.extras for arg in ("--extra", extra))
+        return ("uv", "sync", "--frozen", *extras)
+
 
 # Pinned npm versions for the built-in ACP launchers. A bump here is the only
 # edit needed — ACP_PROVIDERS, the Dockerfile install stage, and the
@@ -114,8 +274,20 @@ PI_CODING_AGENT_VERSION = "0.83.0"
 
 OPENCODE_VERSION = "1.18.23"
 
+# Hermes is the one provider not distributed through npm. Its releases are
+# CalVer git tags on the upstream repository; PyPI's `hermes-agent` is a
+# third-party upload (no project URLs, no license metadata, and the repo has
+# no publish workflow), and the `curl | bash` installer takes no version flag,
+# so neither can be pinned to a reviewed release.
+HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent"
+HERMES_REF = "v2026.8.31"
 
-ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
+
+ACPAnyInstallSpec = ACPInstallSpec | ACPGitCheckoutInstallSpec
+"""Either install flavour, as the catalog and its consumers see them."""
+
+
+ACP_INSTALL_CATALOG: Mapping[str, ACPAnyInstallSpec] = {
     "claude-code": ACPInstallSpec(
         key="claude-code",
         packages=(
@@ -176,11 +348,38 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         # No `engines` field on opencode-ai or its platform packages: the CLI
         # is a compiled Bun binary and only its postinstall runs on Node.
     ),
+    "hermes": ACPGitCheckoutInstallSpec(
+        key="hermes",
+        source=ACPGitPin(url=HERMES_REPO_URL, ref=HERMES_REF),
+        # `hermes-acp` and `hermes acp` reach the same entry point; the
+        # dedicated console script avoids paying for the `hermes` CLI's
+        # subcommand dispatch and its argument grammar.
+        binary_name="hermes-acp",
+        extras=("acp",),
+        reported_version="0.21.0",
+    ),
 }
-"""Every ACP provider installable via npm. Registry membership only makes a
-provider *selectable* (``INSTALL_ACP_PROVIDERS``) — see
-:data:`DEFAULT_PREINSTALLED_ACP_PROVIDERS` for what actually ships in the
+"""Every built-in ACP provider and how its CLI is installed. Registry
+membership only makes a provider *selectable* (``INSTALL_ACP_PROVIDERS``) —
+see :data:`DEFAULT_PREINSTALLED_ACP_PROVIDERS` for what actually ships in the
 default image."""
+
+
+def is_npm_spec(spec: ACPAnyInstallSpec) -> TypeGuard[ACPInstallSpec]:
+    """``True`` when ``spec`` describes npm packages (:class:`ACPInstallSpec`).
+
+    Named predicates rather than bare ``isinstance`` at each call site, so the
+    catalog can grow a third flavour without every consumer having to learn
+    its class. They narrow, so the flavour-specific fields stay type-checked.
+    """
+    return isinstance(spec, ACPInstallSpec)
+
+
+def is_git_checkout_spec(
+    spec: ACPAnyInstallSpec,
+) -> TypeGuard[ACPGitCheckoutInstallSpec]:
+    """``True`` when ``spec`` is installed from a git checkout."""
+    return isinstance(spec, ACPGitCheckoutInstallSpec)
 
 
 DEFAULT_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = (
@@ -197,13 +396,14 @@ deliberate decision per provider (see OpenHands/software-agent-sdk#4820)."""
 
 def render_docker_install_plan(
     keys: Iterable[str],
-    catalog: Mapping[str, ACPInstallSpec] = ACP_INSTALL_CATALOG,
+    catalog: Mapping[str, ACPAnyInstallSpec] = ACP_INSTALL_CATALOG,
 ) -> tuple[list[str], list[str]]:
     """Resolve provider ``keys`` to (npm packages, wrapper bin names).
 
     Packages are deduplicated (first-seen order preserved) so two providers
     sharing a dependency only install it once. Raises :class:`ValueError`
-    listing the valid keys when ``keys`` contains one not in ``catalog``.
+    listing the valid keys when ``keys`` contains one not in ``catalog``, or
+    naming the provider when it is not npm-installable.
     """
     packages: list[str] = []
     wrapper_bins: list[str] = []
@@ -211,10 +411,17 @@ def render_docker_install_plan(
     for key in keys:
         spec = catalog.get(key)
         if spec is None:
-            valid = ", ".join(catalog)
+            valid = ", ".join(k for k, s in catalog.items() if is_npm_spec(s))
             raise ValueError(
                 f"Unknown ACP provider {key!r} in INSTALL_ACP_PROVIDERS "
                 f"(expected one of: {valid})"
+            )
+        if not is_npm_spec(spec):
+            raise ValueError(
+                f"ACP provider {key!r} in INSTALL_ACP_PROVIDERS is not "
+                "npm-installable, and the acp-providers build stage installs "
+                "only npm packages. It is launched on demand instead — leave "
+                "it out of INSTALL_ACP_PROVIDERS."
             )
         for pkg in spec.packages:
             if pkg.pinned not in seen:
