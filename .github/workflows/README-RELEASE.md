@@ -38,17 +38,15 @@ The created PR will include a checklist. Complete the following:
 - [ ] Confirm any merged `release-note-required` PRs are accurately called out in the final release notes
 - [ ] Review and approve the PR
 
-### Step 3: Create the GitHub Release
+### Step 3: Merge the Release PR
 
-1. Go to [Releases](https://github.com/OpenHands/software-agent-sdk/releases/new)
-2. Click **"Draft a new release"**
-3. Configure the release:
-   - **Tag**: `vX.Y.Z` (must match the version)
-   - **Branch**: `rel-X.Y.Z` (the branch created by the workflow)
-   - **Previous tag**: Select the previous release version
-4. Click **"Generate release notes"** to auto-generate the changelog
-5. Review and edit the release notes as needed
-6. Click **"Publish release"**
+When the release PR is merged, `create-release.yml` first checks out that exact
+merge commit and runs the complete agent-server stress suite. The release job
+depends on this gate, so a timeout, deadlock, or resource-budget regression
+prevents the GitHub tag/release and all PyPI, image, and binary dispatches.
+
+Only after the gate succeeds does the workflow create the `vX.Y.Z` tag and
+GitHub Release, generate release notes, and dispatch the package/image builds.
 
 ### Step 4: PyPI Publication (Automated)
 
