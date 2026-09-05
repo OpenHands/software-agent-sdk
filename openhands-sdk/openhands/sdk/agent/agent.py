@@ -121,6 +121,18 @@ INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
+    """Check if the most recent user message contains image content.
+
+    Scans the message list in reverse order to find the latest user message
+    and checks whether it contains any image attachments.
+
+    Args:
+        messages: List of conversation messages to search.
+
+    Returns:
+        True if the most recent user message contains images, False otherwise.
+        Returns False if no user messages are found.
+    """
     for message in reversed(messages):
         if message.role == "user":
             return message.contains_image
@@ -128,6 +140,18 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
 
 
 def _non_multimodal_image_message(model: str) -> Message:
+    """Create an error message for when images are sent to a non-vision model.
+
+    Constructs a user-friendly assistant message explaining that the current
+    model does not support image understanding and suggesting the user switch
+    to a multimodal model.
+
+    Args:
+        model: The name of the current model that does not support vision.
+
+    Returns:
+        A Message object containing an assistant response with the error explanation.
+    """
     return Message(
         role="assistant",
         content=[
@@ -145,6 +169,20 @@ def _non_multimodal_image_message(model: str) -> Message:
 def _replace_latest_user_images_with_references(
     messages: list[Message],
 ) -> list[Message]:
+    """Replace image content in the latest user message with textual references.
+
+    When a non-vision model receives images, this function converts the image
+    attachments into text placeholders that reference the inspect_image_with_vision
+    tool. This allows the agent to acknowledge the images and inform the user that
+    a vision-capable tool is available for inspection.
+
+    Args:
+        messages: List of conversation messages to process.
+
+    Returns:
+        A new list of messages with image content in the latest user message
+        replaced by textual references. Other messages are unchanged.
+    """
     rewritten = list(messages)
     for index in range(len(rewritten) - 1, -1, -1):
         message = rewritten[index]
