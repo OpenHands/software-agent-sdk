@@ -404,6 +404,50 @@ class Config(BaseModel):
             "they are deleted or the server restarts."
         ),
     )
+    conversation_runtime: Literal["local", "docker"] = Field(
+        default="local",
+        description=(
+            "Run conversations in this server process or in one isolated Docker "
+            "agent-server container per conversation."
+        ),
+    )
+    conversation_image: str = Field(
+        default="ghcr.io/openhands/agent-server:latest-python",
+        description="Agent-server image used by the Docker conversation runtime.",
+    )
+    conversation_container_network: str | None = Field(
+        default=None,
+        description="Optional Docker network for conversation containers.",
+    )
+    conversation_container_volumes: list[str] = Field(
+        default_factory=list,
+        description="Additional volume mounts applied to conversation containers.",
+    )
+    conversation_container_forward_env: list[str] = Field(
+        default_factory=lambda: [
+            "DEBUG",
+            "OH_SECRET_KEY",
+            "OH_SESSION_API_KEYS_0",
+        ],
+        description="Environment variable names forwarded to conversation containers.",
+    )
+    conversation_container_platform: str = Field(
+        default="linux/amd64",
+        description="Docker platform used for conversation containers.",
+    )
+    conversation_container_startup_timeout: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="Seconds to wait for a conversation container to become healthy.",
+    )
+    conversation_container_idle_timeout: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Seconds without proxied HTTP or WebSocket activity before an idle "
+            "conversation container is stopped. Set to null to disable cleanup."
+        ),
+    )
     telemetry: TelemetrySpec = Field(
         default_factory=TelemetrySpec,
         description=(
