@@ -22,7 +22,15 @@ from openhands.agent_server.openai.models import (
     OpenAIChatMessage,
     OpenAIModel,
     OpenAIModelListResponse,
+    OpenAIResponse,
+    OpenAIResponseInputMessage,
+    OpenAIResponseInputTokensDetails,
     OpenAIResponseMessage,
+    OpenAIResponseOutputMessage,
+    OpenAIResponseOutputText,
+    OpenAIResponseOutputTokensDetails,
+    OpenAIResponseRequest,
+    OpenAIResponseUsage,
     OpenAIUsage,
 )
 from openhands.agent_server.persistence import (
@@ -46,16 +54,35 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 _MODEL_PREFIX = "openhands_"
+_RESPONSE_ID_PREFIX = "resp_"
 # Fixed gateway defaults are sufficient for the initial local-first endpoint;
 # promote them to Config only if clients need deployment-specific tuning.
 _GATEWAY_TIMEOUT_SECONDS = 120.0
 _POLL_INTERVAL_SECONDS = 2
+_RESPONSES_INSTRUCTIONS_SYSTEM_TEXT = (
+    "Treat the latest <responses_instructions> block in a user message as the "
+    "instructions for that Responses API turn."
+)
 
 
 @dataclass(frozen=True)
 class OpenAIChatCompletionResult:
     response: OpenAIChatCompletionResponse
     conversation_id: UUID
+
+
+@dataclass(frozen=True)
+class OpenAIResponseResult:
+    response: OpenAIResponse
+    conversation_id: UUID
+
+
+@dataclass(frozen=True)
+class OpenAIAgentRunResult:
+    conversation_id: UUID
+    final_response: str
+    state: ConversationState
+    response_usage_before: OpenAIResponseUsage
 
 
 def _profile_name_from_model(model: str) -> str:
@@ -184,21 +211,116 @@ def _system_text(messages: list[OpenAIChatMessage]) -> str:
     return "\n\n".join(text_parts)
 
 
-def _conversation_request(
+def _response_content_to_sdk_parts(
+    message: OpenAIResponseInputMessage,
+) -> list[TextContent | ImageContent]:
+    if isinstance(message.content, str):
+        return [TextContent(text=message.content)]
+
+    parts: list[TextContent | ImageContent] = []
+    for part in message.content:
+        if part.type in {"input_text", "output_text"}:
+            if part.text:
+                parts.append(TextContent(text=part.text))
+            continue
+        if part.type == "input_image":
+            if not part.image_url:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="input_image content part is missing an image_url",
+                )
+            parts.append(ImageContent(image_urls=[part.image_url]))
+            continue
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported Responses content part type: {part.type}",
+        )
+    return parts
+
+
+def _response_message_text(message: OpenAIResponseInputMessage) -> str:
+    return "\n".join(
+        part.text
+        for part in _response_content_to_sdk_parts(message)
+        if isinstance(part, TextContent)
+    )
+
+
+def _response_system_text(request: OpenAIResponseRequest) -> str:
+    text_parts = [_RESPONSES_INSTRUCTIONS_SYSTEM_TEXT]
+    if isinstance(request.input, str):
+        return "\n\n".join(text_parts)
+
+    for message in request.input:
+        if message.role not in {"system", "developer"}:
+            continue
+        text = _response_message_text(message)
+        if text:
+            text_parts.append(text)
+    return "\n\n".join(text for text in text_parts if text)
+
+
+def _response_user_content(
+    request: OpenAIResponseRequest,
+) -> list[TextContent | ImageContent]:
+    parts: list[TextContent | ImageContent] = []
+    if request.instructions:
+        parts.append(
+            TextContent(
+                text=(
+                    "<responses_instructions>\n"
+                    f"{request.instructions.strip()}\n"
+                    "</responses_instructions>"
+                )
+            )
+        )
+
+    if isinstance(request.input, str):
+        if not request.input:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Responses input must not be empty",
+            )
+        parts.append(TextContent(text=request.input))
+        return parts
+
+    messages = [
+        message
+        for message in request.input
+        if message.role not in {"system", "developer"}
+    ]
+    if not any(message.role == "user" for message in messages):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Responses input must include a user message",
+        )
+    if len(messages) == 1 and messages[0].role == "user":
+        parts.extend(_response_content_to_sdk_parts(messages[0]))
+        return parts
+
+    for message in messages:
+        parts.append(TextContent(text=f'<message role="{message.role}">'))
+        parts.extend(_response_content_to_sdk_parts(message))
+        parts.append(TextContent(text="</message>"))
+    return parts
+
+
+def _create_conversation_request(
     *,
-    request: OpenAIChatCompletionRequest,
+    model: str,
+    system_text: str,
+    user_content: list[TextContent | ImageContent],
     config: Config,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
-    profile_name = _profile_name_from_model(request.model)
+    profile_name = _profile_name_from_model(model)
     llm = _load_profile_llm(profile_name, config)
     settings = get_settings_store(config).load() or PersistedSettings()
     agent_settings = _with_profile_llm_and_system_text(
         settings.agent_settings,
         llm,
-        _system_text(request.messages),
+        system_text,
     )
-    user_message = _latest_user_message(request.messages)
     conversation_settings = settings.conversation_settings.model_copy(
         update={"agent_settings": agent_settings}
     )
@@ -208,11 +330,62 @@ def _conversation_request(
         conversation_id=conversation_id,
         initial_message=SendMessageRequest(
             role="user",
-            content=_content_to_sdk_parts(user_message),
+            content=user_content,
             run=True,
         ),
         autotitle=False,
     )
+
+
+def _conversation_request(
+    *,
+    request: OpenAIChatCompletionRequest,
+    config: Config,
+    conversation_id: UUID | None,
+) -> StartConversationRequest:
+    user_message = _latest_user_message(request.messages)
+    return _create_conversation_request(
+        model=request.model,
+        system_text=_system_text(request.messages),
+        user_content=_content_to_sdk_parts(user_message),
+        config=config,
+        conversation_id=conversation_id,
+    )
+
+
+def _response_conversation_request(
+    *,
+    request: OpenAIResponseRequest,
+    user_content: list[TextContent | ImageContent],
+    config: Config,
+    conversation_id: UUID | None,
+) -> StartConversationRequest:
+    return _create_conversation_request(
+        model=request.model,
+        system_text=_response_system_text(request),
+        user_content=user_content,
+        config=config,
+        conversation_id=conversation_id,
+    )
+
+
+def _response_id(conversation_id: UUID) -> str:
+    return f"{_RESPONSE_ID_PREFIX}{conversation_id.hex}_{uuid4().hex}"
+
+
+def _conversation_id_from_response_id(response_id: str) -> UUID:
+    try:
+        prefix, conversation_hex, response_hex = response_id.split("_", maxsplit=2)
+        if f"{prefix}_" != _RESPONSE_ID_PREFIX:
+            raise ValueError
+        conversation_id = UUID(hex=conversation_hex)
+        UUID(hex=response_hex)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid previous_response_id",
+        )
+    return conversation_id
 
 
 # Keep this server-side waiter close to the gateway for readability. It follows
@@ -292,6 +465,70 @@ def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
+    )
+
+
+def _openai_response_usage_from_state(state: ConversationState) -> OpenAIResponseUsage:
+    token_usage = state.stats.get_combined_metrics().accumulated_token_usage
+    if token_usage is None:
+        prompt_tokens = 0
+        completion_tokens = 0
+        cached_tokens = 0
+        reasoning_tokens = 0
+    else:
+        prompt_tokens = token_usage.prompt_tokens
+        completion_tokens = token_usage.completion_tokens
+        cached_tokens = token_usage.cache_read_tokens
+        reasoning_tokens = token_usage.reasoning_tokens
+    return OpenAIResponseUsage(
+        input_tokens=prompt_tokens,
+        input_tokens_details=OpenAIResponseInputTokensDetails(
+            cached_tokens=cached_tokens
+        ),
+        output_tokens=completion_tokens,
+        output_tokens_details=OpenAIResponseOutputTokensDetails(
+            reasoning_tokens=reasoning_tokens
+        ),
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+
+
+def _empty_openai_response_usage() -> OpenAIResponseUsage:
+    return OpenAIResponseUsage(
+        input_tokens=0,
+        input_tokens_details=OpenAIResponseInputTokensDetails(cached_tokens=0),
+        output_tokens=0,
+        output_tokens_details=OpenAIResponseOutputTokensDetails(reasoning_tokens=0),
+        total_tokens=0,
+    )
+
+
+def _openai_response_usage_delta(
+    current: OpenAIResponseUsage,
+    previous: OpenAIResponseUsage,
+) -> OpenAIResponseUsage:
+    input_tokens = max(0, current.input_tokens - previous.input_tokens)
+    output_tokens = max(0, current.output_tokens - previous.output_tokens)
+    cached_tokens = max(
+        0,
+        current.input_tokens_details.cached_tokens
+        - previous.input_tokens_details.cached_tokens,
+    )
+    reasoning_tokens = max(
+        0,
+        current.output_tokens_details.reasoning_tokens
+        - previous.output_tokens_details.reasoning_tokens,
+    )
+    return OpenAIResponseUsage(
+        input_tokens=input_tokens,
+        input_tokens_details=OpenAIResponseInputTokensDetails(
+            cached_tokens=cached_tokens
+        ),
+        output_tokens=output_tokens,
+        output_tokens_details=OpenAIResponseOutputTokensDetails(
+            reasoning_tokens=reasoning_tokens
+        ),
+        total_tokens=input_tokens + output_tokens,
     )
 
 
@@ -392,41 +629,34 @@ async def list_openai_models() -> OpenAIModelListResponse:
     return OpenAIModelListResponse(data=data)
 
 
-async def run_chat_completion(
+async def _run_agent(
     *,
-    request: OpenAIChatCompletionRequest,
-    config: Config,
+    start_request: StartConversationRequest,
+    user_content: list[TextContent | ImageContent],
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
-    observability_overrides: dict[str, object] | None = None,
-) -> OpenAIChatCompletionResult:
-    if request.stream:
-        # SSE streaming needs incremental agent-event forwarding; add it separately.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Streaming chat completions are not supported yet",
-        )
-
-    start_request = _conversation_request(
-        request=request,
-        config=config,
-        conversation_id=reusable_conversation_id,
-    )
-    if observability_overrides:
-        start_request = start_request.model_copy(update=observability_overrides)
+    require_existing_conversation: bool,
+) -> OpenAIAgentRunResult:
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
+    response_usage_before = _empty_openai_response_usage()
 
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
             reusable_conversation_id
         )
+        if event_service is None and require_existing_conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Previous response conversation not found",
+            )
         if event_service is not None:
-            min_event_count = len((await event_service.get_state()).events) + 1
-            user_message = _latest_user_message(request.messages)
+            state_before = await event_service.get_state()
+            min_event_count = len(state_before.events) + 1
+            response_usage_before = _openai_response_usage_from_state(state_before)
             await event_service.send_message(
-                Message(role="user", content=_content_to_sdk_parts(user_message)),
+                Message(role="user", content=user_content),
                 run=True,
             )
     allow_existing_response = event_service is None
@@ -453,6 +683,45 @@ async def run_chat_completion(
     _raise_for_terminal_error(status_value)
     state = await event_service.get_state()
     final_response = await event_service.get_agent_final_response()
+    assert conversation_id is not None
+    return OpenAIAgentRunResult(
+        conversation_id=conversation_id,
+        final_response=final_response,
+        state=state,
+        response_usage_before=response_usage_before,
+    )
+
+
+async def run_chat_completion(
+    *,
+    request: OpenAIChatCompletionRequest,
+    config: Config,
+    conversation_service: ConversationService,
+    reusable_conversation_id: UUID | None,
+    observability_overrides: dict[str, object] | None = None,
+) -> OpenAIChatCompletionResult:
+    if request.stream:
+        # SSE streaming needs incremental agent-event forwarding; add it separately.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Streaming chat completions are not supported yet",
+        )
+
+    start_request = _conversation_request(
+        request=request,
+        config=config,
+        conversation_id=reusable_conversation_id,
+    )
+    if observability_overrides:
+        start_request = start_request.model_copy(update=observability_overrides)
+    user_message = _latest_user_message(request.messages)
+    agent_result = await _run_agent(
+        start_request=start_request,
+        user_content=_content_to_sdk_parts(user_message),
+        conversation_service=conversation_service,
+        reusable_conversation_id=reusable_conversation_id,
+        require_existing_conversation=False,
+    )
     # EventService.get_agent_final_response() returns final text from the SDK's
     # get_agent_final_response(), so the gateway emits assistant text only.
     response = OpenAIChatCompletionResponse(
@@ -466,13 +735,95 @@ async def run_chat_completion(
                 finish_reason="stop",
                 message=OpenAIResponseMessage(
                     role="assistant",
-                    content=final_response,
+                    content=agent_result.final_response,
                 ),
             )
         ],
-        usage=_openai_usage_from_state(state),
+        usage=_openai_usage_from_state(agent_result.state),
     )
-    assert conversation_id is not None
     return OpenAIChatCompletionResult(
-        response=response, conversation_id=conversation_id
+        response=response,
+        conversation_id=agent_result.conversation_id,
+    )
+
+
+async def run_response(
+    *,
+    request: OpenAIResponseRequest,
+    config: Config,
+    conversation_service: ConversationService,
+    observability_overrides: dict[str, object] | None = None,
+) -> OpenAIResponseResult:
+    if request.stream:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Streaming responses are not supported yet",
+        )
+    if request.store:
+        # `store=True` promises server-side persistence retrievable through
+        # GET /v1/responses/{id}, which this gateway does not provide. Rejecting
+        # it is safer than silently returning a response no client can fetch.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Persistent response storage (store=True) is not supported yet",
+        )
+
+    conversation_id = (
+        _conversation_id_from_response_id(request.previous_response_id)
+        if request.previous_response_id
+        else None
+    )
+    user_content = _response_user_content(request)
+    start_request = _response_conversation_request(
+        request=request,
+        user_content=user_content,
+        config=config,
+        conversation_id=conversation_id,
+    )
+    if observability_overrides:
+        start_request = start_request.model_copy(update=observability_overrides)
+    agent_result = await _run_agent(
+        start_request=start_request,
+        user_content=user_content,
+        conversation_service=conversation_service,
+        reusable_conversation_id=conversation_id,
+        require_existing_conversation=request.previous_response_id is not None,
+    )
+    created_at = time.time()
+    response = OpenAIResponse(
+        id=_response_id(agent_result.conversation_id),
+        created_at=created_at,
+        completed_at=created_at,
+        instructions=request.instructions,
+        metadata=request.metadata,
+        model=request.model,
+        object="response",
+        output=[
+            OpenAIResponseOutputMessage(
+                id=f"msg_{uuid4().hex}",
+                content=[
+                    OpenAIResponseOutputText(
+                        annotations=[],
+                        text=agent_result.final_response,
+                        type="output_text",
+                    )
+                ],
+                role="assistant",
+                status="completed",
+                type="message",
+            )
+        ],
+        parallel_tool_calls=False,
+        previous_response_id=request.previous_response_id,
+        status="completed",
+        tool_choice="none",
+        tools=[],
+        usage=_openai_response_usage_delta(
+            _openai_response_usage_from_state(agent_result.state),
+            agent_result.response_usage_before,
+        ),
+    )
+    return OpenAIResponseResult(
+        response=response,
+        conversation_id=agent_result.conversation_id,
     )
