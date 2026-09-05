@@ -31,6 +31,11 @@ class RecordingMCPClient(MCPClient):
         super()._force_kill_subprocesses(pids)
 
 
+class FailingCleanupMCPClient(MCPClient):
+    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
+        raise RuntimeError("forced cleanup failed")
+
+
 def _client(client_type: type[MCPClient] = MCPClient) -> MCPClient:
     transport = StdioTransport(sys.executable, _SERVER_ARGS, cwd=str(_REPO_ROOT))
     client = client_type(transport)
@@ -79,3 +84,13 @@ def test_sync_close_does_not_force_kill_stale_pid_after_clean_close() -> None:
     client.sync_close()
 
     assert client.forced_pids == []
+
+
+def test_sync_close_closes_executor_when_forced_cleanup_fails() -> None:
+    """Forced subprocess cleanup must not prevent executor teardown."""
+    client = cast(FailingCleanupMCPClient, _client(FailingCleanupMCPClient))
+
+    client.sync_close()
+
+    assert client._closed
+    assert client._executor._portal is None
