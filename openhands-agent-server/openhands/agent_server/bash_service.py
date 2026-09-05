@@ -216,21 +216,26 @@ class BashEventService:
                     start_index = i
                     break
 
-        page_slice = matched[start_index : start_index + limit]
-        next_page_id = None
-        if start_index + limit < len(matched):
-            next_page_id = matched[start_index + limit]
-
+        # Collect matching events for this page. Apply the order filter before
+        # counting toward the page limit so the cursor does not skip matches.
         page_events: list[BashEventBase] = []
-        for name in page_slice:
-            event = self._load_event_from_file(self.bash_events_dir / name)
+        next_page_id = None
+        for i in range(start_index, len(matched)):
+            if len(page_events) >= limit:
+                # Set next_page_id to the current file for the next page.
+                next_page_id = matched[i]
+                break
+
+            event = self._load_event_from_file(self.bash_events_dir / matched[i])
             if event is None:
                 continue
+
             # Filter by order if specified (only applies to BashOutput events)
             if order__gt is not None:
                 event_order = getattr(event, "order", None)
                 if event_order is not None and event_order <= order__gt:
                     continue
+
             page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
