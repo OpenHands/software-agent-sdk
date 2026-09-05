@@ -2012,10 +2012,11 @@ class ConversationService:
         source_conversation = source_service.get_conversation()
 
         # fork() deep-copies events, state, and writes to a new persistence dir.
+        # Title is applied to StoredConversation via fork_overrides below — not
+        # passed to fork() since LocalConversation has no title field.
         fork_conv = await asyncio.to_thread(
             source_conversation.fork,
             conversation_id=fork_id,
-            title=title,
             tags=tags,
             reset_metrics=reset_metrics,
             from_event_id=from_event_id,

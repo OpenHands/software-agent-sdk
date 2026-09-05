@@ -112,6 +112,7 @@ from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -794,7 +795,10 @@ class LocalConversation(BaseConversation):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Deprecated. ``LocalConversation`` has no title field;
+                ``ConversationState`` does not store titles (they live on
+                ``StoredConversation`` in the agent-server layer). Passing a
+                value is accepted for backwards compatibility but has no effect.
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
@@ -809,6 +813,17 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
+        if title is not None:
+            warn_deprecated(
+                "LocalConversation.fork() title parameter",
+                deprecated_in="1.44.1",
+                removed_in="1.50.0",
+                details=(
+                    "LocalConversation has no title field; titles are managed by "
+                    "StoredConversation in the agent-server layer."
+                ),
+                stacklevel=2,
+            )
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -888,13 +903,6 @@ class LocalConversation(BaseConversation):
                 self._state.activated_path_rules
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
-
-            # Copy title via tags if provided
-            if title is not None:
-                fork_conv._state.tags = {
-                    **fork_conv._state.tags,
-                    "title": title,
-                }
 
             # Reset or copy metrics
             if not reset_metrics:
