@@ -54,10 +54,13 @@ def test_model_matches(name, pattern, expected):
         ("moonshot/kimi-k2.5", False),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
-        # OpenRouter docs list these as reasoning models, but LiteLLM capability
-        # metadata does not currently mark them as reasoning-capable.
+        # Route-dependent, and both directions are correct: OpenRouter accepts
+        # `reasoning_effort` and translates it, while Moonshot's own API does
+        # not take the parameter at all (see the two rows above). These follow
+        # LiteLLM's per-route `supported_openai_params` rather than an SDK
+        # override, so a value here tracks upstream and may move again (#4877).
         ("openrouter/moonshotai/kimi-k2.5", False),
-        ("openrouter/moonshotai/kimi-k2-thinking", False),
+        ("openrouter/moonshotai/kimi-k2-thinking", True),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
         ("openrouter/anthropic/claude-opus-4.5", True),
