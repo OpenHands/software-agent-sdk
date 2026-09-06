@@ -927,7 +927,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
-        base_context: AgentContext | None = None,  # new
+        base_context: AgentContext | None = None,
     ) -> tuple[list[Skill], AgentContext]:
         """Load skills from the agent server.
 
@@ -940,7 +940,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             load_project=load_project,
             load_org=load_org,
             timeout=timeout,
-            base_context=base_context,  # new
+            base_context=base_context,
         )
 
     def _call_skills_api(
