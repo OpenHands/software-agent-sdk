@@ -826,6 +826,26 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         except Exception as e:
             logger.warning(f"Completion callback failed: {e}")
 
+    # --- Conversation Registration Methods ---
+    # These methods delegate to BaseWorkspace but are explicitly defined here
+    # to maintain API compatibility (griffe detects method removal from subclass
+    # as a breaking change even when methods are inherited).
+
+    def register_conversation(self, conversation_id: str) -> None:
+        """Register a conversation ID with this workspace.
+
+        See BaseWorkspace.register_conversation for full documentation.
+        """
+        return super().register_conversation(conversation_id)
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Get the registered conversation ID.
+
+        See BaseWorkspace.conversation_id for full documentation.
+        """
+        return super().conversation_id
+
     # --- Repository Cloning Methods ---
 
     def _get_secret_value(self, name: str) -> str | None:
