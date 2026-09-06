@@ -508,7 +508,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "claude-code": ACPProviderInfo(
             key="claude-code",
             display_name="Claude Code",
-            default_command=ACP_INSTALL_CATALOG["claude-code"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["claude-code"].launch_command(),
             api_key_env_var="ANTHROPIC_API_KEY",
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
@@ -544,7 +544,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "codex": ACPProviderInfo(
             key="codex",
             display_name="Codex",
-            default_command=ACP_INSTALL_CATALOG["codex"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["codex"].launch_command(),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
             default_session_mode="agent-full-access",
@@ -561,7 +561,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=ACP_INSTALL_CATALOG["gemini-cli"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["gemini-cli"].launch_command(),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             # gemini-cli 0.46.0 rejects ``set_session_mode("yolo")`` at session
@@ -589,7 +589,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "kimi-code": ACPProviderInfo(
             key="kimi-code",
             display_name="Kimi Code",
-            default_command=ACP_INSTALL_CATALOG["kimi-code"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["kimi-code"].launch_command(),
             # No env-var API key: ``KIMI_API_KEY`` is read only from inside
             # config.toml, so exporting it authenticates nothing (verified on
             # 0.38.0, with and without a config file present). The credential
@@ -634,7 +634,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # ``pi-acp`` as the positional npx runs — which is also the only
             # token ``_prefer_pinned_binary`` and
             # ``detect_acp_provider_by_command`` can match on.
-            default_command=ACP_INSTALL_CATALOG["pi"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["pi"].launch_command(),
             api_key_env_var="ANTHROPIC_API_KEY",
             # pi resolves each provider's base URL from its own catalogue;
             # ANTHROPIC_BASE_URL reaches only the vendored Anthropic SDK, which
@@ -657,7 +657,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "opencode": ACPProviderInfo(
             key="opencode",
             display_name="OpenCode",
-            default_command=ACP_INSTALL_CATALOG["opencode"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["opencode"].launch_command(),
             # OpenCode Zen, the CLI's own gateway and the provider its model
             # ids are namespaced under. Third-party keys (ANTHROPIC_API_KEY,
             # OPENAI_API_KEY, ...) also enable their providers inside OpenCode,
@@ -695,6 +695,43 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # XDG_{DATA,CONFIG,CACHE,STATE}_HOME, which all fall back to HOME.
             # Relocating HOME is the only single lever that moves all of them.
             data_dir_env_var="HOME",
+        ),
+        "hermes": ACPProviderInfo(
+            key="hermes",
+            display_name="Hermes",
+            # A bare console script, not a package runner: Hermes is installed
+            # from a pinned git checkout before launch, and its venv reaches
+            # the subprocess through PATH (see ACP_INSTALL_CATALOG).
+            default_command=ACP_INSTALL_CATALOG["hermes"].launch_command(),
+            # Verified live: Hermes resolves its ``openai-api`` provider from
+            # this pair and its model catalogue then becomes the endpoint's
+            # own ``/v1/models``, which is what routes it at a LiteLLM proxy.
+            api_key_env_var="OPENAI_API_KEY",
+            base_url_env_var="OPENAI_BASE_URL",
+            # Hermes maps ACP modes onto its edit-approval policy rather than
+            # onto permissions wholesale: ``default`` asks before every edit,
+            # ``accept_edits`` auto-allows workspace and /tmp only, and
+            # ``dont_ask`` is the one that clears prompts for the session.
+            default_session_mode="dont_ask",
+            # ``hermes-acp`` reports ``agentInfo.name = "hermes-agent"``; the
+            # pattern also prefixes the ``hermes-acp`` console script, so
+            # command-time detection matches before the server starts.
+            agent_name_patterns=("hermes",),
+            # Selection rides ``session/set_model`` — ``session/new`` returns a
+            # model state and no ``configOptions``, and the CLI answers
+            # ``set_config_option`` with an empty list.
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            # Deliberately uncurated, for Kimi's reason rather than Codex's:
+            # ids are ``<hermes-provider>:<model>`` and Hermes only lists
+            # providers it can currently authenticate, so against a proxy the
+            # list *is* that proxy's catalogue (208 entries on the eval
+            # LiteLLM). A static list would be wrong, not merely incomplete.
+            available_models=(),
+            default_model=None,
+            binary_name=ACP_INSTALL_CATALOG["hermes"].binary_name,
+            data_dir_env_var="HERMES_HOME",
         ),
     }
 )
