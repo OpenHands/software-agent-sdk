@@ -20,6 +20,8 @@ permissions:
 jobs:
     check-examples:
         runs-on: ubuntu-latest
+        env:
+            FORK_DOCS_OWNER: ${{ github.event.pull_request.head.repo.owner.login }}
         steps:
             - name: Checkout agent-sdk repository
               uses: actions/checkout@v7
@@ -36,8 +38,20 @@ jobs:
                   fetch-depth: 0
                   ref: ${{ github.head_ref || github.ref_name }}
 
+            # Fork contributors cannot push their docs branch to OpenHands/docs.
+            - name: Checkout docs repository (try fork feature branch)
+              if: steps.checkout-feature.outcome == 'failure' && env.FORK_DOCS_OWNER != '' && env.FORK_DOCS_OWNER != github.repository_owner
+              uses: actions/checkout@v7
+              continue-on-error: true
+              id: checkout-fork
+              with:
+                  repository: ${{ env.FORK_DOCS_OWNER }}/docs
+                  path: docs
+                  fetch-depth: 0
+                  ref: ${{ github.head_ref }}
+
             - name: Checkout docs repository (fallback to main)
-              if: steps.checkout-feature.outcome == 'failure'
+              if: steps.checkout-feature.outcome == 'failure' && steps.checkout-fork.outcome != 'success'
               uses: actions/checkout@v7
               with:
                   repository: OpenHands/docs
