@@ -72,6 +72,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     _client: httpx.Client | None = PrivateAttr(default=None)
 
+    @property
+    def runs_conversation_remotely(self) -> bool:
+        return True
+
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
 
