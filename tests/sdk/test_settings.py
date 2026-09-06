@@ -395,6 +395,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "kimi-code",
         "pi",
         "opencode",
+        "cursor",
         "custom",
     }
 
@@ -1422,6 +1423,7 @@ def test_acp_create_agent_carries_provider_key() -> None:
         "kimi-code",
         "pi",
         "opencode",
+        "cursor",
         "custom",
     ):
         kwargs: dict[str, Any] = {"acp_server": server}
@@ -1451,6 +1453,9 @@ def test_acp_resolve_command_for_known_servers(
         cmd = settings.resolve_acp_command()
         assert cmd, f"expected default command for {server}, got empty"
         assert cmd[0] == "npx", f"expected npx-based default, got {cmd}"
+
+    cursor_cmd = ACPAgentSettings(acp_server="cursor").resolve_acp_command()
+    assert cursor_cmd == ["agent", "acp"]
 
 
 def test_acp_create_agent_explicit_command_overrides_default() -> None:
@@ -1525,6 +1530,8 @@ def _which_returning(*available: str):
         # opencode's trailing arg is an ``acp`` subcommand, preserved the same
         # way as gemini's ``--acp`` flag.
         ("opencode", "opencode", ["opencode", "acp"]),
+        # Cursor's default is already the on-PATH binary; rewrite is a no-op.
+        ("cursor", "agent", ["agent", "acp"]),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -2257,6 +2264,7 @@ def test_acp_resolve_command_uses_registry_defaults(
         "kimi-code",
         "pi",
         "opencode",
+        "cursor",
     ):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)
