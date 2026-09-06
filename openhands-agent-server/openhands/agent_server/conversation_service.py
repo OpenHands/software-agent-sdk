@@ -68,6 +68,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.skills import Skill, merge_skills_by_name
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -144,6 +145,20 @@ def _with_load_memory(agent: AgentBase) -> AgentBase:
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"load_memory": True})}
     )
+
+
+def _append_skills(agent: AgentBase, additions: list[Skill]) -> AgentBase:
+    context = agent.agent_context or AgentContext()
+    disabled_skills = set(context.disabled_skills)
+    skills = [
+        skill
+        for skill in merge_skills_by_name(context.skills, additions)
+        if skill.name not in disabled_skills
+    ]
+    if skills == context.skills:
+        return agent
+    updated_context = context.model_copy(update={"skills": skills})
+    return agent.model_copy(update={"agent_context": updated_context})
 
 
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
@@ -1622,6 +1637,10 @@ class ConversationService:
         )
 
         additions = request.agent_launch_additions
+        if additions and additions.skills_append:
+            request = request.model_copy(
+                update={"agent": _append_skills(request.agent, additions.skills_append)}
+            )
         suffix = (
             additions.system_message_suffix_append.strip()
             if additions and additions.system_message_suffix_append

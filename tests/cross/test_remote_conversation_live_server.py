@@ -24,6 +24,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
+from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -203,6 +204,43 @@ def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     assert response.status_code == 204
     assert conversation_id not in server_env["conversation_service"]._event_services
     assert conversation_id in server_env["conversation_service"]._conversation_records
+
+
+def test_agent_launch_skills_roundtrip_over_real_server(server_env):
+    launch_content = "# OpenHands Automations\n" + "Follow this procedure.\n" * 2_000
+    launch_skill = Skill(
+        name="openhands-automation",
+        content=launch_content,
+        description="Manage OpenHands automations.",
+        disable_model_invocation=True,
+    )
+    agent = ACPAgent(
+        acp_command=["echo", "test"],
+        agent_context=AgentContext(
+            skills=[Skill(name="profile-managed", content="profile content")]
+        ),
+    )
+    payload = {
+        "agent": agent.model_dump(mode="json"),
+        "workspace": {"working_dir": str(server_env["workspace_path"])},
+        "agent_launch_additions": {
+            "skills_append": [launch_skill.model_dump(mode="json")]
+        },
+    }
+
+    assert len(launch_content) > 32_768
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.post(
+            "/api/conversations?include_skills=true",
+            json=payload,
+            timeout=10.0,
+        )
+
+    assert response.status_code == 201, response.text
+    skills = response.json()["agent"]["agent_context"]["skills"]
+    assert [skill["name"] for skill in skills] == ["openhands-automation"]
+    assert skills[0]["content"] == launch_content
+    assert skills[0]["disable_model_invocation"] is True
 
 
 @pytest.fixture
