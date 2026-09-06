@@ -16,6 +16,8 @@ Usage:
 
 import os
 
+from acp.exceptions import RequestError
+
 from openhands.sdk import ImageContent, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
@@ -38,10 +40,13 @@ try:
 
     # --- ask_agent: stateless side-question via fork_session ---
     print("\n--- ask_agent ---")
-    response = conversation.ask_agent(
-        "Based on the files you inspected, which exported agent class is the newest?"
-    )
-    print(f"ask_agent response: {response}")
+    try:
+        response = conversation.ask_agent(
+            "Based on the files you inspected, which exported agent class is newest?"
+        )
+        print(f"ask_agent response: {response}")
+    except RequestError as exc:
+        print(f"ask_agent unavailable from this ACP server: {exc}")
 
     # --- Image input turn (text + image) ---
     print("\n--- image input ---")

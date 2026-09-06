@@ -383,6 +383,12 @@ class ConversationState(OpenHandsModel):
             self._view_branch_leaf = leaf
             return self._view
 
+    def enforced_view_snapshot(self) -> View:
+        """Return an isolated view with incomplete tool-call batches removed."""
+        with self._view_lock:
+            events = list(self.view.events)
+            return View.from_events(events)
+
     def rebuild_view(self) -> None:
         """Re-derive the cached view from the active branch, with full enforcement.
 
