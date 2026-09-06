@@ -1778,15 +1778,19 @@ class EventService:
             loop = asyncio.get_running_loop()
             conversation = self._conversation
             await loop.run_in_executor(None, conversation.close)
-            workspace = getattr(conversation, "workspace", None)
-            if workspace is not None:
-                await loop.run_in_executor(
-                    None,
-                    workspace.__exit__,
-                    None,
-                    None,
-                    None,
-                )
+            # Trigger workspace cleanup (e.g., stop Docker container) and send
+            # the automation completion callback.  __enter__ is a no-op on
+            # BaseWorkspace, so calling __exit__ without a paired __enter__ is
+            # safe.  conversation.close() does not call workspace.__exit__,
+            # so there is no double-callback risk.
+            workspace = conversation.workspace
+            await loop.run_in_executor(
+                None,
+                workspace.__exit__,
+                None,
+                None,
+                None,
+            )
             self._conversation = None
         self.credential_bindings = {}
 

@@ -4,7 +4,6 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
 from urllib.request import Request, urlopen
 
 from pydantic import Field, PrivateAttr
@@ -48,9 +47,6 @@ class DockerExecutionWorkspace(RemoteWorkspace):
     @property
     def runs_conversation_remotely(self) -> bool:
         return False
-
-    def model_post_init(self, context: Any) -> None:
-        super().model_post_init(context)
 
     def _ensure_started(self) -> None:
         if self._container_id is not None:
