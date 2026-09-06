@@ -698,8 +698,9 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "hermes": ACPProviderInfo(
             key="hermes",
             display_name="Hermes",
-            # A ``uvx`` command, not ``npx``: Hermes is a Python project
-            # installed from a pinned git ref (see ACP_INSTALL_CATALOG).
+            # A bare console script, not a package runner: Hermes is installed
+            # from a pinned git checkout before launch, and its venv reaches
+            # the subprocess through PATH (see ACP_INSTALL_CATALOG).
             default_command=ACP_INSTALL_CATALOG["hermes"].launch_command(),
             # Verified live: Hermes resolves its ``openai-api`` provider from
             # this pair and its model catalogue then becomes the endpoint's
