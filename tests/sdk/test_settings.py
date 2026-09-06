@@ -1564,7 +1564,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@agentclientprotocol/codex-acp",
-        "@agentclientprotocol/codex-acp@1.1.7",
+        "@agentclientprotocol/codex-acp@1.10.0",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1587,7 +1587,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/codex-acp@1.1.7",
+        "@agentclientprotocol/codex-acp@1.10.0",
     ]
 
 

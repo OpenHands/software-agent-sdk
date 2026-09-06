@@ -263,7 +263,7 @@ class ACPGitCheckoutInstallSpec:
 # TypeScript mirror (via check-acp-drift.py --write) all derive from
 # ACP_INSTALL_CATALOG below.
 CLAUDE_AGENT_ACP_VERSION = "0.63.0"
-CODEX_ACP_VERSION = "1.1.7"
+CODEX_ACP_VERSION = "1.10.0"
 GEMINI_CLI_VERSION = "0.46.0"
 KIMI_CODE_VERSION = "0.38.0"
 

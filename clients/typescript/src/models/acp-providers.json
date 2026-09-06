@@ -72,6 +72,10 @@
         "label": "GPT-5.6 Luna"
       },
       {
+        "id": "gpt-6-astra",
+        "label": "GPT-6 Astra"
+      },
+      {
         "id": "gpt-5.5",
         "label": "GPT-5.5"
       }
@@ -83,7 +87,7 @@
       "npx",
       "-y",
       "--prefer-offline",
-      "@agentclientprotocol/codex-acp@1.1.7"
+      "@agentclientprotocol/codex-acp@1.10.0"
     ],
     "default_model": "gpt-5.5",
     "default_session_mode": "agent-full-access",
