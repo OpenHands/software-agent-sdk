@@ -368,6 +368,7 @@ class LocalConversation(BaseConversation):
             "workspace must be a BaseWorkspace instance"
         )
         self.workspace = workspace
+        self.workspace.register_conversation(str(desired_id))
         if isinstance(workspace, LocalWorkspace):
             ws_path = Path(workspace.working_dir)
             if not ws_path.exists():
