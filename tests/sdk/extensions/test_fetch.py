@@ -32,6 +32,22 @@ def test_parse_github_shorthand_with_whitespace():
     assert url == "https://github.com/owner/repo.git"
 
 
+def test_parse_github_shorthand_case_insensitive_scheme():
+    # Mobile keyboards / browser autocapitalization mangle "github:" into
+    # "Github:" or "GitHub:". The scheme must match case-insensitively while the
+    # owner/repo remainder is preserved verbatim.
+    for src in ("Github:owner/repo", "GitHub:owner/repo", "GITHUB:owner/repo"):
+        source_type, url = parse_extension_source(src)
+        assert source_type == SourceType.GITHUB
+        assert url == "https://github.com/owner/repo.git"
+
+
+def test_parse_github_shorthand_preserves_remainder_case():
+    source_type, url = parse_extension_source("GitHub:Owner/RepoName")
+    assert source_type == SourceType.GITHUB
+    assert url == "https://github.com/Owner/RepoName.git"
+
+
 def test_parse_github_shorthand_invalid_format():
     with pytest.raises(ExtensionFetchError, match="Invalid GitHub shorthand"):
         parse_extension_source("github:invalid")
