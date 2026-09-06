@@ -23,7 +23,6 @@ from openhands.sdk.tool.builtins import (
 from openhands.sdk.tool.registry import get_registered_tool_factory
 from openhands.sdk.utils.command import execute_command
 from openhands.sdk.workspace import RemoteWorkspace
-from openhands.tools.apply_patch.definition import ApplyPatchObservation, ApplyPatchTool
 from openhands.tools.browser_use.definition import (
     BrowserClickTool,
     BrowserCloseTabTool,
@@ -81,7 +80,6 @@ _CANONICAL_TOOL_FACTORIES = {
     FileEditorTool.name: FileEditorTool,
     GrepTool.name: GrepTool,
     GlobTool.name: GlobTool,
-    ApplyPatchTool.name: ApplyPatchTool,
     TaskTrackerTool.name: TaskTrackerTool,
     BrowserToolSet.name: BrowserToolSet,
     FinishTool.__name__: FinishTool,
@@ -94,7 +92,6 @@ _REMOTE_TOOL_TYPES = {
     FileEditorTool.name: FileEditorTool,
     GrepTool.name: GrepTool,
     GlobTool.name: GlobTool,
-    ApplyPatchTool.name: ApplyPatchTool,
     TaskTrackerTool.name: TaskTrackerTool,
     BrowserNavigateTool.name: BrowserNavigateTool,
     BrowserClickTool.name: BrowserClickTool,
@@ -123,7 +120,6 @@ _REMOTE_OBSERVATION_TYPES = {
     FileEditorTool.name: FileEditorObservation,
     GrepTool.name: GrepObservation,
     GlobTool.name: GlobObservation,
-    ApplyPatchTool.name: ApplyPatchObservation,
     TaskTrackerTool.name: TaskTrackerObservation,
     **{
         tool_name: BrowserObservation
@@ -147,7 +143,12 @@ class RemoteExecutionToolExecutor(ToolExecutor):
             },
         )
         response.raise_for_status()
-        observation_type = _REMOTE_OBSERVATION_TYPES[self.tool_name]
+        if self.tool_name == "apply_patch":
+            from openhands.tools.apply_patch.definition import ApplyPatchObservation
+
+            observation_type = ApplyPatchObservation
+        else:
+            observation_type = _REMOTE_OBSERVATION_TYPES[self.tool_name]
         return observation_type.model_validate(response.json()["observation"])
 
 
@@ -196,7 +197,12 @@ class DockerExecutionWorkspace(RemoteWorkspace):
             )
 
     def validate_tool_spec(self, tool_name: str) -> None:
-        expected = _CANONICAL_TOOL_FACTORIES.get(tool_name)
+        if tool_name == "apply_patch":
+            from openhands.tools.apply_patch.definition import ApplyPatchTool
+
+            expected = ApplyPatchTool
+        else:
+            expected = _CANONICAL_TOOL_FACTORIES.get(tool_name)
         registered = get_registered_tool_factory(tool_name)
         if expected is not None and (
             registered is expected
@@ -210,7 +216,12 @@ class DockerExecutionWorkspace(RemoteWorkspace):
 
     def validate_tool(self, tool: ToolDefinition) -> None:
         executor = tool.executor
-        expected_remote_type = _REMOTE_TOOL_TYPES.get(tool.name)
+        if tool.name == "apply_patch":
+            from openhands.tools.apply_patch.definition import ApplyPatchTool
+
+            expected_remote_type = ApplyPatchTool
+        else:
+            expected_remote_type = _REMOTE_TOOL_TYPES.get(tool.name)
         if (
             expected_remote_type is not None
             and type(tool) is expected_remote_type
