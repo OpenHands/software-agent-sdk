@@ -352,7 +352,6 @@ class TestGitCheckoutInstall:
         self._bin_dir(agent, tmp_path, self._spec(), calls)
         assert calls == ["git", "uv", "uv"]
 
-    @pytest.mark.skip("CI bisect")
     def test_concurrent_installs_are_serialised_and_run_once(self, tmp_path):
         """Two conversations starting together must not both reach `uv sync`.
 
@@ -366,16 +365,16 @@ class TestGitCheckoutInstall:
         state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
         spec = self._spec()
         calls: list[str] = []
-        holders: list[int] = []
+        running: list[int] = []
         peak = 0
 
         async def _fake_exec(*command, cwd, **kwargs):
             nonlocal peak
             calls.append(command[0])
-            holders.append(1)
-            peak = max(peak, len(holders))
+            running.append(1)
+            peak = max(peak, len(running))
             await asyncio.sleep(0.02)
-            holders.pop()
+            running.pop()
             if command[0] == "git":
                 pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
             process = MagicMock()
@@ -386,23 +385,31 @@ class TestGitCheckoutInstall:
         results: list[Path] = []
 
         def _install():
-            with patch(
-                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
-                new=_fake_exec,
-            ):
-                results.append(agent._acp_git_checkout_bin(state, spec, {}))
+            results.append(agent._acp_git_checkout_bin(state, spec, {}))
 
-        threads = [threading.Thread(target=_install) for _ in range(3)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=30)
+        # One patch around every thread, never one per thread: `patch` swaps an
+        # attribute on the real `asyncio` module, so overlapping enter/exit
+        # from several threads can restore in the wrong order and leave this
+        # stub installed process-wide — which then breaks the next real
+        # subprocess anything in the session spawns.
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+            new=_fake_exec,
+        ):
+            threads = [threading.Thread(target=_install) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
 
+        assert not any(thread.is_alive() for thread in threads), "an install hung"
+        # Guards the patch shape above: a stub left installed here would break
+        # every real subprocess the rest of the session spawns.
+        assert asyncio.create_subprocess_exec is not _fake_exec
         assert peak == 1, "install steps overlapped despite the lock"
         assert calls == ["git", "uv"], f"install ran more than once: {calls}"
         assert len(set(results)) == 1
 
-    @pytest.mark.skip("CI bisect")
     def test_lock_is_rechecked_so_a_dead_holder_does_not_strand_the_install(
         self, tmp_path
     ):
@@ -416,7 +423,6 @@ class TestGitCheckoutInstall:
             pass
         assert lock_path.is_file()
 
-    @pytest.mark.skip("CI bisect")
     def test_install_steps_do_not_receive_conversation_secrets(self, tmp_path):
         """The ACP server needs the user's credentials; the installer doesn't.
 
