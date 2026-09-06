@@ -2573,8 +2573,12 @@ class AutoTitleSubscriber(Subscriber):
         # don't configure title_llm_profile.
         conversation = self.service._conversation
         title_llm = self._load_title_llm()
-        if title_llm is None:
-            title_llm = conversation.agent.llm if conversation else None
+        if title_llm is None and conversation is not None:
+            # An ACP agent's llm is inert: the conversation runs in the ACP
+            # subprocess under its own credentials, so agent.llm carries a
+            # model name with no usable key and calling it raises.
+            if conversation.agent.agent_kind != "acp":
+                title_llm = conversation.agent.llm
 
         # Surface an LLM failure during auto-titling to the UI (issue #16686);
         # generation itself stays non-fatal and falls back to truncation.
