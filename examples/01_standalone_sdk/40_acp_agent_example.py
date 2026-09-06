@@ -16,16 +16,15 @@ Usage:
 
 import os
 
-from acp.exceptions import RequestError
-
 from openhands.sdk import ImageContent, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 
 
 IMAGE_URL = "https://www.python.org/static/opengraph-icon-200x200.png"
 
-agent = ACPAgent(acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+agent = ACPAgent(acp_command=list(ACP_PROVIDERS["claude-code"].default_command))
 
 try:
     cwd = os.getcwd()
@@ -37,16 +36,6 @@ try:
         "then read the __init__.py and summarize what agent classes are exported."
     )
     conversation.run()
-
-    # --- ask_agent: stateless side-question via fork_session ---
-    print("\n--- ask_agent ---")
-    try:
-        response = conversation.ask_agent(
-            "Based on the files you inspected, which exported agent class is newest?"
-        )
-        print(f"ask_agent response: {response}")
-    except RequestError as exc:
-        print(f"ask_agent unavailable from this ACP server: {exc}")
 
     # --- Image input turn (text + image) ---
     print("\n--- image input ---")
@@ -62,6 +51,13 @@ try:
         )
     )
     conversation.run()
+
+    # --- ask_agent: stateless side-question via fork_session ---
+    print("\n--- ask_agent ---")
+    response = conversation.ask_agent(
+        "Based on what you just saw, which agent class is the newest addition?"
+    )
+    print(f"ask_agent response: {response}")
     # Report cost (ACP server reports usage via session_update notifications)
     cost = agent.llm.metrics.accumulated_cost
     print(f"EXAMPLE_COST: {cost:.4f}")
