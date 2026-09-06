@@ -308,6 +308,8 @@ class ParallelToolExecutor:
             if not lock_keys:
                 return tool_runner(action)
             with self._lock_manager.lock(*lock_keys):
+                if cancel_token is not None and cancel_token.is_cancelled:
+                    return self._cancelled_error(action, span_owner)
                 return tool_runner(action)
 
         except ValueError as e:
