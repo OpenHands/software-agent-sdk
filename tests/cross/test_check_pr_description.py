@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 
 
-def _load_prod_module():
-    repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / ".github" / "scripts" / "check_pr_description.py"
-    name = "check_pr_description"
+def _load(name: str, script_name: str):
+    script_path = (
+        Path(__file__).resolve().parents[2] / ".github" / "scripts" / script_name
+    )
     spec = importlib.util.spec_from_file_location(name, script_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -18,9 +18,13 @@ def _load_prod_module():
     return mod
 
 
-_prod = _load_prod_module()
+# Import markdown_sections first so check_pr_description can resolve its
+# `from markdown_sections import ...` against the module we loaded above.
+_load("markdown_sections", "markdown_sections.py")
+_prod = _load("check_pr_description", "check_pr_description.py")
 validate_pr_body = _prod.validate_pr_body
 body_from_event = _prod.body_from_event
+extract_human_note = _prod.extract_human_note
 extract_linked_issue_numbers = _prod.extract_linked_issue_numbers
 validate_linked_issue_ready = _prod.validate_linked_issue_ready
 fetch_issue_details = _prod.fetch_issue_details
@@ -103,6 +107,44 @@ def test_optional_template_sections_may_be_removed():
     body = body.split("## Video/Screenshots", maxsplit=1)[0]
 
     assert validate_pr_body(body) == []
+
+
+FENCED_TEMPLATE_BODY = """HUMAN:
+
+Quoting the template I was asked to fill in:
+
+```
+HUMAN:
+I really did test this thoroughly by hand, twice, on my own machine.
+AGENT:
+```
+"""
+
+
+def test_fenced_human_marker_does_not_supply_the_note():
+    assert extract_human_note(FENCED_TEMPLATE_BODY) == ""
+
+
+def test_fenced_agent_marker_does_not_satisfy_validation():
+    errors = validate_pr_body(FENCED_TEMPLATE_BODY)
+    assert "Add a short human-written note between `HUMAN:` and `AGENT:`." in errors
+    assert "Keep the `AGENT:` marker from the PR template." in errors
+
+
+def test_real_markers_still_supply_the_note():
+    body = """HUMAN:
+
+I ran the checker suite and reproduced the fenced-heading case by hand.
+
+AGENT:
+
+## Why
+x
+"""
+    assert "reproduced the fenced-heading case" in extract_human_note(body)
+    errors = validate_pr_body(body)
+    assert "Keep the `AGENT:` marker from the PR template." not in errors
+    assert "Add a short human-written note between `HUMAN:` and `AGENT:`." not in errors
 
 
 def test_body_from_event_reads_pull_request_body(tmp_path: Path):
