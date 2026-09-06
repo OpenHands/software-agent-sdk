@@ -418,9 +418,11 @@ class Config(BaseModel):
     execution_runtime: Literal["local", "docker"] = Field(
         default="local",
         description=(
-            "Execute conversation filesystem and process tools locally or in one "
-            "ephemeral Docker container per conversation. Conversation state, LLM "
-            "calls, policy, and orchestration remain in this server process."
+            "Select the only workspace variety this server can open: LocalWorkspace "
+            "for host execution or DockerExecutionWorkspace for one ephemeral Docker "
+            "container per conversation. Other conversation varieties are rejected. "
+            "Conversation state, LLM calls, policy, and orchestration remain in this "
+            "server process."
         ),
     )
     execution_image: str = Field(

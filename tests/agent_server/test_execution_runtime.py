@@ -10,7 +10,7 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import (
     ConversationService,
-    _with_execution_workspace,
+    _validate_execution_workspace,
 )
 from openhands.agent_server.execution_runtime import DockerExecutionWorkspace
 from openhands.agent_server.execution_runtime.workspace import (
@@ -118,25 +118,59 @@ def test_docker_execution_workspace_is_server_owned_and_lazy():
         env_file.unlink()
 
 
-def test_server_converts_local_workspace_to_execution_container():
-    request = StartConversationRequest(
-        agent_profile_id=UUID("00000000-0000-0000-0000-000000000001"),
+def test_server_accepts_only_its_configured_workspace_variety():
+    profile_id = UUID("00000000-0000-0000-0000-000000000001")
+    local_request = StartConversationRequest(
+        agent_profile_id=profile_id,
         workspace=LocalWorkspace(working_dir="/host/workspace"),
+    )
+    docker_request = StartConversationRequest(
+        agent_profile_id=profile_id,
+        workspace=DockerExecutionWorkspace(
+            working_dir="/workspace",
+            image="client-controlled:latest",
+            platform="linux/arm64",
+        ),
         worktree=True,
     )
 
-    converted = _with_execution_workspace(
-        request,
+    assert (
+        _validate_execution_workspace(
+            local_request,
+            runtime="local",
+            image="execution:test",
+            platform="linux/amd64",
+            volumes=[],
+        )
+        is local_request
+    )
+    validated_docker = _validate_execution_workspace(
+        docker_request,
         runtime="docker",
         image="execution:test",
         platform="linux/amd64",
         volumes=[],
     )
-
-    assert isinstance(converted.workspace, DockerExecutionWorkspace)
-    assert converted.workspace.working_dir == "/workspace"
-    assert converted.workspace.image == "execution:test"
-    assert converted.worktree is False
+    assert type(validated_docker.workspace) is DockerExecutionWorkspace
+    assert validated_docker.workspace.image == "execution:test"
+    assert validated_docker.workspace.platform == "linux/amd64"
+    assert validated_docker.worktree is False
+    with pytest.raises(ValueError, match="only opens DockerExecutionWorkspace"):
+        _validate_execution_workspace(
+            local_request,
+            runtime="docker",
+            image="execution:test",
+            platform="linux/amd64",
+            volumes=[],
+        )
+    with pytest.raises(ValueError, match="only opens LocalWorkspace"):
+        _validate_execution_workspace(
+            docker_request,
+            runtime="local",
+            image="execution:test",
+            platform="linux/amd64",
+            volumes=[],
+        )
 
 
 def test_start_request_accepts_legacy_local_workspace_payloads():
@@ -149,6 +183,20 @@ def test_start_request_accepts_legacy_local_workspace_payloads():
             {"agent_profile_id": profile_id, "workspace": workspace}
         )
         assert isinstance(request.workspace, LocalWorkspace)
+
+
+def test_start_request_accepts_explicit_docker_workspace_payload():
+    request = StartConversationRequest.model_validate(
+        {
+            "agent_profile_id": "00000000-0000-0000-0000-000000000001",
+            "workspace": {
+                "kind": "DockerExecutionWorkspace",
+                "working_dir": "/workspace",
+            },
+        }
+    )
+
+    assert type(request.workspace) is DockerExecutionWorkspace
 
 
 def test_docker_workspace_rejects_host_tool_executors():
@@ -295,35 +343,35 @@ def test_docker_resume_rejects_custom_runtime_before_import(tmp_path, monkeypatc
     assert imported == []
 
 
-def test_persisted_local_workspace_converts_to_docker_execution():
+def test_docker_server_rejects_persisted_local_workspace():
     stored = StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir="/host/workspace"),
         worktree=True,
     )
 
-    converted = _with_execution_workspace(
-        stored,
-        runtime="docker",
-        image="execution:test",
-        platform="linux/amd64",
-        volumes=[],
-    )
-
-    assert isinstance(converted, StoredConversation)
-    assert isinstance(converted.workspace, DockerExecutionWorkspace)
-    assert converted.workspace.working_dir == "/workspace"
-    assert converted.worktree is False
+    with pytest.raises(ValueError, match="only opens DockerExecutionWorkspace"):
+        _validate_execution_workspace(
+            stored,
+            runtime="docker",
+            image="execution:test",
+            platform="linux/amd64",
+            volumes=[],
+        )
 
 
 def test_server_refuses_host_mounts_for_docker_execution():
     request = StartConversationRequest(
         agent_profile_id=UUID("00000000-0000-0000-0000-000000000001"),
-        workspace=LocalWorkspace(working_dir="/host/workspace"),
+        workspace=DockerExecutionWorkspace(
+            working_dir="/workspace",
+            image="execution:test",
+        ),
+        worktree=False,
     )
 
     with pytest.raises(ValueError, match="host volume mounts are forbidden"):
-        _with_execution_workspace(
+        _validate_execution_workspace(
             request,
             runtime="docker",
             image="execution:test",

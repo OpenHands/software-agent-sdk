@@ -373,7 +373,7 @@ def _apply_acp_skill_sourcing(
     )
 
 
-def _with_execution_workspace[
+def _validate_execution_workspace[
     ConversationConfigT: (StartConversationRequest, StoredConversation)
 ](
     request: ConversationConfigT,
@@ -383,23 +383,30 @@ def _with_execution_workspace[
     platform: str,
     volumes: list[str],
 ) -> ConversationConfigT:
-    if runtime != "docker" or not isinstance(request.workspace, LocalWorkspace):
-        return request
-    if volumes:
+    expected_workspace_type: type[BaseWorkspace]
+    if runtime == "local":
+        expected_workspace_type = LocalWorkspace
+    elif runtime == "docker":
+        expected_workspace_type = DockerExecutionWorkspace
+    else:
+        raise ValueError(f"Unsupported execution runtime: {runtime}")
+
+    if type(request.workspace) is not expected_workspace_type:
         raise ValueError(
-            "Docker execution host volume mounts are forbidden; each conversation "
-            "must use an ephemeral container filesystem"
+            f"This agent server only opens {expected_workspace_type.__name__} "
+            f"conversations; received {type(request.workspace).__name__}"
         )
-    return request.model_copy(
-        update={
-            "workspace": DockerExecutionWorkspace(
-                working_dir="/workspace",
-                image=image,
-                platform=platform,
-            ),
-            "worktree": False,
-        }
-    )
+    if runtime == "docker":
+        if volumes:
+            raise ValueError(
+                "Docker execution host volume mounts are forbidden; each conversation "
+                "must use an ephemeral container filesystem"
+            )
+        workspace = request.workspace.model_copy(
+            update={"image": image, "platform": platform}
+        )
+        return request.model_copy(update={"workspace": workspace, "worktree": False})
+    return request
 
 
 def _resolve_agent_from_profile(
@@ -1252,7 +1259,7 @@ class ConversationService:
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
-        record.stored = _with_execution_workspace(
+        record.stored = _validate_execution_workspace(
             record.stored,
             runtime=self.execution_runtime,
             image=self.execution_image,
@@ -1499,7 +1506,7 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
-        request = _with_execution_workspace(
+        request = _validate_execution_workspace(
             request,
             runtime=self.execution_runtime,
             image=self.execution_image,
