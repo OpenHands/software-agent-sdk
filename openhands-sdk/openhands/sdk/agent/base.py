@@ -312,7 +312,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     @property
     def _workspace(self) -> BaseWorkspace | None:
-        return self._workspace_ref() if self._workspace_ref is not None else None
+        try:
+            workspace_ref = self._workspace_ref
+        except AttributeError:
+            return None
+        return workspace_ref() if workspace_ref is not None else None
 
     @property
     def prompt_dir(self) -> str:
