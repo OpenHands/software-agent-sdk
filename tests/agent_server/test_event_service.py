@@ -2684,6 +2684,7 @@ class TestEventServiceClose:
     async def test_close_awaits_conversation_close(self, event_service):
         """close() must await conversation.close(), not fire-and-forget."""
         conversation = MagicMock(spec=Conversation)
+        conversation.workspace = MagicMock()
         event_service._conversation = conversation
 
         closed = asyncio.Event()
@@ -2748,6 +2749,7 @@ class TestEventServiceClose:
         If close() ran first, the still-active run loop would race with executor
         teardown — closing MCP clients while a tool call is in flight."""
         conversation = MagicMock(spec=Conversation)
+        conversation.workspace = MagicMock()
         call_order: list[str] = []
 
         def record_pause():
@@ -2777,6 +2779,7 @@ class TestEventServiceClose:
     async def test_close_skips_pause_when_no_run_task(self, event_service):
         """close() must not call pause() when no run task is in flight."""
         conversation = MagicMock(spec=Conversation)
+        conversation.workspace = MagicMock()
         conversation.pause = MagicMock()
         conversation.close = MagicMock()
         event_service._conversation = conversation
@@ -2796,6 +2799,7 @@ class TestEventServiceClose:
         Pause must still be attempted so the common case (step finishes
         promptly) stays clean."""
         conversation = MagicMock(spec=Conversation)
+        conversation.workspace = MagicMock()
         conversation.pause = MagicMock()
         conversation.close = MagicMock()
         event_service._conversation = conversation
