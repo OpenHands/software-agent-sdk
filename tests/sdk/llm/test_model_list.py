@@ -115,6 +115,7 @@ def test_gpt_5_6_models_are_verified_for_openai():
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-6-astra",
     }.issubset(VERIFIED_OPENAI_MODELS)
 
 
