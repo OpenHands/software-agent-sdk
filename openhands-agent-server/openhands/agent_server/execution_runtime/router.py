@@ -46,10 +46,6 @@ def _get_executor(request: Request, tool_name: str) -> ToolExecutor:
         from openhands.tools.apply_patch.definition import ApplyPatchExecutor
 
         executor = ApplyPatchExecutor(workspace_root=working_dir)
-    elif tool_name == "task_tracker":
-        from openhands.tools.task_tracker.definition import TaskTrackerExecutor
-
-        executor = TaskTrackerExecutor()
     elif tool_name.startswith("browser_"):
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
@@ -93,10 +89,6 @@ def execute_tool(
         from openhands.tools.apply_patch.definition import ApplyPatchAction
 
         action = ApplyPatchAction.model_validate(payload.action)
-    elif payload.tool_name == "task_tracker":
-        from openhands.tools.task_tracker.definition import TaskTrackerAction
-
-        action = TaskTrackerAction.model_validate(payload.action)
     elif payload.tool_name.startswith("browser_"):
         from openhands.tools.browser_use.definition import (
             BrowserClickAction,

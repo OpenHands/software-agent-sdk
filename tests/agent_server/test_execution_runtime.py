@@ -15,14 +15,18 @@ from openhands.agent_server.conversation_service import (
 from openhands.agent_server.execution_runtime import DockerExecutionWorkspace
 from openhands.agent_server.execution_runtime.workspace import (
     RemoteExecutionToolExecutor,
+    cleanup_execution_containers,
+    execution_scope_for,
 )
 from openhands.agent_server.models import StartConversationRequest, StoredConversation
 from openhands.sdk import LLM, Conversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
 from openhands.sdk.tool.builtins import FinishTool
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.task_tracker.definition import TaskTrackerExecutor, TaskTrackerTool
 from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
@@ -95,6 +99,23 @@ def test_execution_only_server_exposes_tools_not_conversations(tmp_path, monkeyp
         assert client.get("/api/conversations/search").status_code == 404
 
 
+def test_execution_only_server_rejects_task_tracker(tmp_path):
+    app = create_app(
+        Config(
+            execution_only=True,
+            execution_working_dir=tmp_path,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/execution/tools",
+            json={"tool_name": "task_tracker", "action": {"command": "view"}},
+        )
+
+    assert response.status_code == 422
+
+
 def test_docker_execution_workspace_is_server_owned_and_lazy():
     workspace = DockerExecutionWorkspace(
         working_dir="/workspace",
@@ -141,6 +162,7 @@ def test_server_accepts_only_its_configured_workspace_variety():
             image="execution:test",
             platform="linux/amd64",
             volumes=[],
+            execution_scope="test-scope",
         )
         is local_request
     )
@@ -150,6 +172,7 @@ def test_server_accepts_only_its_configured_workspace_variety():
         image="execution:test",
         platform="linux/amd64",
         volumes=[],
+        execution_scope="test-scope",
     )
     assert type(validated_docker.workspace) is DockerExecutionWorkspace
     assert validated_docker.workspace.image == "execution:test"
@@ -162,6 +185,7 @@ def test_server_accepts_only_its_configured_workspace_variety():
             image="execution:test",
             platform="linux/amd64",
             volumes=[],
+            execution_scope="test-scope",
         )
     with pytest.raises(ValueError, match="only opens LocalWorkspace"):
         _validate_execution_workspace(
@@ -170,6 +194,7 @@ def test_server_accepts_only_its_configured_workspace_variety():
             image="execution:test",
             platform="linux/amd64",
             volumes=[],
+            execution_scope="test-scope",
         )
 
 
@@ -217,6 +242,28 @@ def test_docker_workspace_allows_control_plane_executors_only_by_identity():
     workspace.validate_tool(finish)
     with pytest.raises(ValueError, match="cannot execute in the trusted host"):
         workspace.validate_tool(remote_impostor)
+
+
+def test_docker_workspace_keeps_task_tracker_persistent_in_control_plane(tmp_path):
+    workspace = DockerExecutionWorkspace()
+    agent = Agent(
+        llm=LLM(model="test-model", usage_id="test-llm"),
+        tools=[],
+        include_default_tools=[],
+    )
+    state = ConversationState(
+        id=uuid4(),
+        agent=agent,
+        workspace=workspace,
+        persistence_dir=str(tmp_path),
+    )
+
+    [task_tracker] = TaskTrackerTool.create(state)
+
+    workspace.validate_tool(task_tracker)
+    assert type(task_tracker.executor) is TaskTrackerExecutor
+    assert task_tracker.executor.save_dir == tmp_path
+    assert workspace._container_id is None
 
 
 def test_docker_workspace_rejects_remote_executor_from_another_workspace():
@@ -357,6 +404,7 @@ def test_docker_server_rejects_persisted_local_workspace():
             image="execution:test",
             platform="linux/amd64",
             volumes=[],
+            execution_scope="test-scope",
         )
 
 
@@ -377,14 +425,17 @@ def test_server_refuses_host_mounts_for_docker_execution():
             image="execution:test",
             platform="linux/amd64",
             volumes=["/home:/workspace"],
+            execution_scope="test-scope",
         )
 
 
 def test_docker_command_uses_defense_in_depth_flags(tmp_path):
     workspace = DockerExecutionWorkspace(image="execution:test")
+    workspace.set_execution_scope("deployment-scope")
     command = workspace._docker_run_command(12345, tmp_path / "env")
 
     assert command[:3] == ["docker", "run", "-d"]
+    assert "ai.openhands.execution-scope=deployment-scope" in command
     assert ["--cap-drop", "ALL"] == command[
         command.index("--cap-drop") : command.index("--cap-drop") + 2
     ]
@@ -393,6 +444,48 @@ def test_docker_command_uses_defense_in_depth_flags(tmp_path):
     assert "/workspace:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=0775" in command
     assert "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777" in command
     assert "-v" not in command
+
+
+def test_execution_scope_is_stable_and_separates_deployments(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    assert execution_scope_for(first) == execution_scope_for(first)
+    assert execution_scope_for(first) != execution_scope_for(second)
+
+
+def test_cleanup_removes_only_containers_in_its_execution_scope(monkeypatch):
+    commands = []
+    results = iter(
+        [
+            subprocess.CompletedProcess(
+                [], 0, stdout="container-a\ncontainer-b\n", stderr=""
+            ),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ]
+    )
+
+    def capture(command):
+        commands.append(command)
+        return next(results)
+
+    monkeypatch.setattr(
+        "openhands.agent_server.execution_runtime.workspace.execute_command",
+        capture,
+    )
+
+    cleanup_execution_containers("deployment-scope")
+
+    assert commands == [
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "label=ai.openhands.execution-scope=deployment-scope",
+        ],
+        ["docker", "rm", "-f", "container-a", "container-b"],
+    ]
 
 
 def test_docker_workspace_reports_early_exit_logs_and_cleans_up(monkeypatch):
@@ -446,13 +539,14 @@ def test_docker_workspace_starts_once_under_parallel_tool_resolution(monkeypatch
     )
     monkeypatch.setattr(DockerExecutionWorkspace, "_wait_for_health", lambda self: None)
     workspace = DockerExecutionWorkspace()
+    workspace.set_execution_scope("test-scope")
 
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
             executors = list(
                 pool.map(
                     workspace.create_tool_executor,
-                    ["terminal", "file_editor", "task_tracker", "browser_navigate"],
+                    ["terminal", "file_editor", "grep", "browser_navigate"],
                 )
             )
         assert all(executor is not None for executor in executors)

@@ -26,6 +26,7 @@ from openhands.agent_server.event_service import (
     _without_agent_context_secret,
 )
 from openhands.agent_server.execution_runtime import DockerExecutionWorkspace
+from openhands.agent_server.execution_runtime.workspace import execution_scope_for
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -382,6 +383,7 @@ def _validate_execution_workspace[
     image: str,
     platform: str,
     volumes: list[str],
+    execution_scope: str,
 ) -> ConversationConfigT:
     expected_workspace_type: type[BaseWorkspace]
     if runtime == "local":
@@ -402,9 +404,11 @@ def _validate_execution_workspace[
                 "Docker execution host volume mounts are forbidden; each conversation "
                 "must use an ephemeral container filesystem"
             )
-        workspace = request.workspace.model_copy(
-            update={"image": image, "platform": platform}
+        workspace = cast(
+            DockerExecutionWorkspace,
+            request.workspace.model_copy(update={"image": image, "platform": platform}),
         )
+        workspace.set_execution_scope(execution_scope)
         return request.model_copy(update={"workspace": workspace, "worktree": False})
     return request
 
@@ -783,6 +787,10 @@ class ConversationService:
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
+
+    @property
+    def execution_scope(self) -> str:
+        return execution_scope_for(self.conversations_dir)
 
     def _load_catalog_sync(self) -> dict[UUID, _ConversationRecord]:
         records: dict[UUID, _ConversationRecord] = {}
@@ -1265,6 +1273,7 @@ class ConversationService:
             image=self.execution_image,
             platform=self.execution_platform,
             volumes=self.execution_volumes,
+            execution_scope=self.execution_scope,
         )
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
@@ -1512,6 +1521,7 @@ class ConversationService:
             image=self.execution_image,
             platform=self.execution_platform,
             volumes=self.execution_volumes,
+            execution_scope=self.execution_scope,
         )
         existing_record = self._conversation_records.get(conversation_id)
         existing_event_service = self._event_services.get(conversation_id)

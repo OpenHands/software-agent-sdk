@@ -1,3 +1,5 @@
+import hashlib
+import logging
 import os
 import socket
 import tempfile
@@ -44,11 +46,42 @@ from openhands.tools.browser_use.definition import (
 from openhands.tools.file_editor.definition import FileEditorObservation, FileEditorTool
 from openhands.tools.glob.definition import GlobObservation, GlobTool
 from openhands.tools.grep.definition import GrepObservation, GrepTool
-from openhands.tools.task_tracker.definition import (
-    TaskTrackerObservation,
-    TaskTrackerTool,
-)
+from openhands.tools.task_tracker.definition import TaskTrackerExecutor, TaskTrackerTool
 from openhands.tools.terminal.definition import TerminalObservation, TerminalTool
+
+
+logger = logging.getLogger(__name__)
+_EXECUTION_SCOPE_LABEL = "ai.openhands.execution-scope"
+
+
+def execution_scope_for(conversations_dir: Path) -> str:
+    canonical_path = str(conversations_dir.expanduser().resolve())
+    return hashlib.sha256(canonical_path.encode()).hexdigest()[:24]
+
+
+def cleanup_execution_containers(execution_scope: str) -> None:
+    result = execute_command(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label={_EXECUTION_SCOPE_LABEL}={execution_scope}",
+        ]
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "Failed to list stale Docker execution containers: %s", result.stderr
+        )
+        return
+    container_ids = result.stdout.split()
+    if not container_ids:
+        return
+    cleanup = execute_command(["docker", "rm", "-f", *container_ids])
+    if cleanup.returncode != 0:
+        logger.warning(
+            "Failed to remove stale Docker execution containers: %s", cleanup.stderr
+        )
 
 
 _REMOTE_TOOL_NAMES = frozenset(
@@ -58,7 +91,6 @@ _REMOTE_TOOL_NAMES = frozenset(
         "grep",
         "glob",
         "apply_patch",
-        "task_tracker",
         "browser_navigate",
         "browser_click",
         "browser_get_state",
@@ -92,7 +124,6 @@ _REMOTE_TOOL_TYPES = {
     FileEditorTool.name: FileEditorTool,
     GrepTool.name: GrepTool,
     GlobTool.name: GlobTool,
-    TaskTrackerTool.name: TaskTrackerTool,
     BrowserNavigateTool.name: BrowserNavigateTool,
     BrowserClickTool.name: BrowserClickTool,
     BrowserGetStateTool.name: BrowserGetStateTool,
@@ -110,6 +141,7 @@ _REMOTE_TOOL_TYPES = {
 }
 _CONTROL_PLANE_TOOLS = {
     FinishTool.__name__: (FinishTool, FinishExecutor),
+    TaskTrackerTool.__name__: (TaskTrackerTool, TaskTrackerExecutor),
     SwitchLLMTool.__name__: (SwitchLLMTool, SwitchLLMExecutor),
     ThinkTool.__name__: (ThinkTool, ThinkExecutor),
     VisionInspectTool.__name__: (VisionInspectTool, VisionInspectExecutor),
@@ -120,7 +152,6 @@ _REMOTE_OBSERVATION_TYPES = {
     FileEditorTool.name: FileEditorObservation,
     GrepTool.name: GrepObservation,
     GlobTool.name: GlobObservation,
-    TaskTrackerTool.name: TaskTrackerObservation,
     **{
         tool_name: BrowserObservation
         for tool_name in _REMOTE_TOOL_NAMES
@@ -163,8 +194,12 @@ class DockerExecutionWorkspace(RemoteWorkspace):
 
     health_check_timeout: float = 120.0
 
+    _execution_scope: str | None = PrivateAttr(default=None)
     _container_id: str | None = PrivateAttr(default=None)
     _startup_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
+
+    def set_execution_scope(self, execution_scope: str) -> None:
+        self._execution_scope = execution_scope
 
     @property
     def runs_conversation_remotely(self) -> bool:
@@ -260,6 +295,10 @@ class DockerExecutionWorkspace(RemoteWorkspace):
             raise ValueError("Docker execution does not permit MCP servers")
 
     def _docker_run_command(self, port: int, env_file: Path) -> list[str]:
+        if self._execution_scope is None:
+            raise RuntimeError(
+                "Docker execution workspace has no server ownership scope"
+            )
         return [
             "docker",
             "run",
@@ -268,6 +307,8 @@ class DockerExecutionWorkspace(RemoteWorkspace):
             self.platform,
             "--name",
             f"openhands-execution-{uuid.uuid4()}",
+            "--label",
+            f"{_EXECUTION_SCOPE_LABEL}={self._execution_scope}",
             "--cap-drop",
             "ALL",
             "--security-opt",

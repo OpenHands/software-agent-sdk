@@ -41,6 +41,10 @@ from openhands.agent_server.dependencies import (
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.execution_runtime import execution_runtime_router
+from openhands.agent_server.execution_runtime.workspace import (
+    cleanup_execution_containers,
+    execution_scope_for,
+)
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -175,6 +179,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
+        if config.execution_runtime == "docker":
+            cleanup_execution_containers(execution_scope_for(config.conversations_path))
 
         deferred = config.deferred_init
 
