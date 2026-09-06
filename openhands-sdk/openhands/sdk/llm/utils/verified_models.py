@@ -1,4 +1,5 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6-astra",
     "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -142,6 +143,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-sonnet-5",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
+    "gpt-6-astra",
     "gpt-5.6",
     "gpt-5.5",
     "gpt-5.4",
