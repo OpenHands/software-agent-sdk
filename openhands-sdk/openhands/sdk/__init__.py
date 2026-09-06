@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
+# Must precede every other openhands import: pins LiteLLM's model database on
+# import, and LiteLLM reads that URL once, when it is itself imported.
+import openhands.sdk.model_cost_map_pin  # noqa: F401
 from openhands.sdk.agent import (
     Agent,
     AgentBase,
