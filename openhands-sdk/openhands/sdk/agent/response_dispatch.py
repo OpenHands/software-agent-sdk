@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.llm import LLMResponse, Message, TextContent
+from openhands.sdk.llm import (
+    LLMResponse,
+    Message,
+    RedactedThinkingBlock,
+    TextContent,
+    ThinkingBlock,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -25,12 +31,7 @@ if TYPE_CHECKING:
     )
     from openhands.sdk.critic.base import CriticBase, CriticResult
     from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import (
-        MessageToolCall,
-        ReasoningItemModel,
-        RedactedThinkingBlock,
-        ThinkingBlock,
-    )
+    from openhands.sdk.llm import MessageToolCall, ReasoningItemModel
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 
 logger = get_logger(__name__)
@@ -297,12 +298,20 @@ class ResponseDispatchMixin:
     def _mask_secrets(message: Message, conversation: LocalConversation) -> Message:
         """Return ``message`` with registered secret values masked in its text.
 
-        ``thinking_blocks`` and ``responses_reasoning_item`` are left alone:
-        they are signed provider payloads, and rewriting them invalidates the
-        signature replayed on the next request.
+        ``responses_reasoning_item`` is left alone: it is a signed provider
+        payload, and rewriting it invalidates the signature replayed on the
+        next request. ``thinking_blocks`` are masked because they are persisted
+        and rendered; the signature is nulled so the provider does not reject
+        a mismatched replay.
         """
         mask = conversation.state.secret_registry.mask_secrets_in_output
         reasoning = message.reasoning_content
+        masked_thinking_blocks = [
+            tb.model_copy(update={"thinking": mask(tb.thinking), "signature": None})
+            if isinstance(tb, ThinkingBlock)
+            else tb
+            for tb in message.thinking_blocks
+        ]
         return message.model_copy(
             update={
                 "content": [
@@ -312,6 +321,7 @@ class ResponseDispatchMixin:
                     for part in message.content
                 ],
                 "reasoning_content": mask(reasoning) if reasoning else reasoning,
+                "thinking_blocks": masked_thinking_blocks,
             }
         )
 
