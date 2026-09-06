@@ -1188,8 +1188,8 @@ def test_load_skills_from_agent_server_without_base_context_matches_legacy():
     with patch.object(workspace.client, "post", return_value=mock_response):
         skills, context = workspace.load_skills_from_agent_server()
         assert context.marketplace_path == AgentContext().marketplace_path
-        assert context.disabled_skills == []
-        assert context.user_message_suffix is None
+        assert context.disabled_skills == AgentContext().disabled_skills
+        assert context.user_message_suffix == AgentContext().user_message_suffix
 
 
 def test_load_skills_from_agent_server_preserves_current_datetime():
