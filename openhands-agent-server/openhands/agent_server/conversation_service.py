@@ -147,6 +147,27 @@ def _with_load_memory(agent: AgentBase) -> AgentBase:
     )
 
 
+def _without_runtime_extensions(agent: AgentBase) -> AgentBase:
+    context = agent.agent_context
+    if context is None:
+        return agent
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={
+                    "skills": [],
+                    "disabled_skills": [],
+                    "load_public_skills": False,
+                    "load_user_skills": False,
+                    "load_project_skills": False,
+                    "load_memory": False,
+                    "registered_marketplaces": [],
+                }
+            )
+        }
+    )
+
+
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
     try:
         run_git_command(["git", "remote", "get-url", remote], repo_root)
@@ -352,23 +373,29 @@ def _apply_acp_skill_sourcing(
     )
 
 
-def _with_execution_workspace(
-    request: StartConversationRequest,
+def _with_execution_workspace[
+    ConversationConfigT: (StartConversationRequest, StoredConversation)
+](
+    request: ConversationConfigT,
     *,
     runtime: str,
     image: str,
     platform: str,
     volumes: list[str],
-) -> StartConversationRequest:
+) -> ConversationConfigT:
     if runtime != "docker" or not isinstance(request.workspace, LocalWorkspace):
         return request
+    if volumes:
+        raise ValueError(
+            "Docker execution host volume mounts are forbidden; each conversation "
+            "must use an ephemeral container filesystem"
+        )
     return request.model_copy(
         update={
             "workspace": DockerExecutionWorkspace(
                 working_dir="/workspace",
                 image=image,
                 platform=platform,
-                volumes=list(volumes),
             ),
             "worktree": False,
         }
@@ -380,6 +407,7 @@ def _resolve_agent_from_profile(
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
+    isolated_execution: bool = False,
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -428,8 +456,8 @@ def _resolve_agent_from_profile(
     # own skills and OpenHands injects none (#4019). A genuine discovery failure
     # fails the launch loudly rather than silently producing a zero-skill agent.
     available_skills = None
-    wants_skills = profile.agent_kind == "openhands" or (
-        acp_skill_sourcing == "openhands_managed"
+    wants_skills = not isolated_execution and (
+        profile.agent_kind == "openhands" or acp_skill_sourcing == "openhands_managed"
     )
     if wants_skills:
         try:
@@ -468,7 +496,7 @@ def _resolve_agent_from_profile(
     if (
         profile.agent_kind == "openhands"
         and profile.tools is None
-        and is_tool_usable(BROWSER_TOOL_NAME)
+        and (isolated_execution or is_tool_usable(BROWSER_TOOL_NAME))
     ):
         agent = agent.model_copy(
             update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
@@ -1114,6 +1142,17 @@ class ConversationService:
             )
 
     def _prepare_persisted_runtime(self, stored: StoredConversation) -> None:
+        if self.execution_runtime == "docker":
+            if (
+                stored.tool_module_qualnames
+                or stored.client_tools
+                or stored.agent_definitions
+            ):
+                raise ValueError(
+                    "Docker execution cannot resume conversations containing custom "
+                    "tool modules, client tools, or subagent definitions"
+                )
+            return
         if stored.tool_module_qualnames:
             for tool_name, module_qualname in stored.tool_module_qualnames.items():
                 try:
@@ -1213,6 +1252,13 @@ class ConversationService:
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
+        record.stored = _with_execution_workspace(
+            record.stored,
+            runtime=self.execution_runtime,
+            image=self.execution_image,
+            platform=self.execution_platform,
+            volumes=self.execution_volumes,
+        )
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
         missing_bindings = (
@@ -1641,8 +1687,36 @@ class ConversationService:
                 self.cipher,
                 mcp_config,
                 acp_skill_sourcing=self.acp_skill_sourcing,
+                isolated_execution=not request.workspace.allows_runtime_extensions,
             )
             request = request.model_copy(update={"agent": resolved_agent})
+
+        if not request.workspace.allows_runtime_extensions:
+            if isinstance(request.agent, ACPAgent):
+                raise ValueError(
+                    "Docker execution mode does not support ACP agents because their "
+                    "CLI subprocess would run in the trusted host"
+                )
+            request.workspace.validate_runtime_extensions(
+                tool_module_qualnames=request.tool_module_qualnames,
+                plugins=list(request.plugins or []),
+                hook_config=request.hook_config,
+                mcp_config=dict(request.agent.mcp_config),
+            )
+            if request.client_tools:
+                raise ValueError(
+                    "Docker execution mode does not support client-defined tools"
+                )
+            if request.agent_definitions:
+                raise ValueError(
+                    "Docker execution mode does not support custom subagent definitions"
+                )
+
+        if not request.workspace.allows_runtime_extensions:
+            request = request.model_copy(
+                update={"agent": _without_runtime_extensions(request.agent)}
+            )
+            load_memory = False
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to

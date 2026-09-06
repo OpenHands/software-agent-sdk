@@ -1,6 +1,7 @@
 import os
 import socket
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -8,9 +9,128 @@ from urllib.request import Request, urlopen
 
 from pydantic import Field, PrivateAttr
 
-from openhands.sdk.tool import Action, Observation, ToolExecutor
+from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.tool.builtins import (
+    FinishExecutor,
+    FinishTool,
+    SwitchLLMExecutor,
+    SwitchLLMTool,
+    ThinkExecutor,
+    ThinkTool,
+    VisionInspectExecutor,
+    VisionInspectTool,
+)
+from openhands.sdk.tool.registry import get_registered_tool_factory
 from openhands.sdk.utils.command import execute_command
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.apply_patch.definition import ApplyPatchObservation, ApplyPatchTool
+from openhands.tools.browser_use.definition import (
+    BrowserClickTool,
+    BrowserCloseTabTool,
+    BrowserGetContentTool,
+    BrowserGetStateTool,
+    BrowserGetStorageTool,
+    BrowserGoBackTool,
+    BrowserListTabsTool,
+    BrowserNavigateTool,
+    BrowserObservation,
+    BrowserScrollTool,
+    BrowserSetStorageTool,
+    BrowserStartRecordingTool,
+    BrowserStopRecordingTool,
+    BrowserSwitchTabTool,
+    BrowserToolSet,
+    BrowserTypeTool,
+)
+from openhands.tools.file_editor.definition import FileEditorObservation, FileEditorTool
+from openhands.tools.glob.definition import GlobObservation, GlobTool
+from openhands.tools.grep.definition import GrepObservation, GrepTool
+from openhands.tools.task_tracker.definition import (
+    TaskTrackerObservation,
+    TaskTrackerTool,
+)
+from openhands.tools.terminal.definition import TerminalObservation, TerminalTool
+
+
+_REMOTE_TOOL_NAMES = frozenset(
+    {
+        "terminal",
+        "file_editor",
+        "grep",
+        "glob",
+        "apply_patch",
+        "task_tracker",
+        "browser_navigate",
+        "browser_click",
+        "browser_get_state",
+        "browser_get_content",
+        "browser_type",
+        "browser_scroll",
+        "browser_go_back",
+        "browser_list_tabs",
+        "browser_switch_tab",
+        "browser_close_tab",
+        "browser_get_storage",
+        "browser_set_storage",
+        "browser_start_recording",
+        "browser_stop_recording",
+    }
+)
+_CANONICAL_TOOL_FACTORIES = {
+    TerminalTool.name: TerminalTool,
+    FileEditorTool.name: FileEditorTool,
+    GrepTool.name: GrepTool,
+    GlobTool.name: GlobTool,
+    ApplyPatchTool.name: ApplyPatchTool,
+    TaskTrackerTool.name: TaskTrackerTool,
+    BrowserToolSet.name: BrowserToolSet,
+    FinishTool.__name__: FinishTool,
+    SwitchLLMTool.__name__: SwitchLLMTool,
+    ThinkTool.__name__: ThinkTool,
+    VisionInspectTool.__name__: VisionInspectTool,
+}
+_REMOTE_TOOL_TYPES = {
+    TerminalTool.name: TerminalTool,
+    FileEditorTool.name: FileEditorTool,
+    GrepTool.name: GrepTool,
+    GlobTool.name: GlobTool,
+    ApplyPatchTool.name: ApplyPatchTool,
+    TaskTrackerTool.name: TaskTrackerTool,
+    BrowserNavigateTool.name: BrowserNavigateTool,
+    BrowserClickTool.name: BrowserClickTool,
+    BrowserGetStateTool.name: BrowserGetStateTool,
+    BrowserGetContentTool.name: BrowserGetContentTool,
+    BrowserTypeTool.name: BrowserTypeTool,
+    BrowserScrollTool.name: BrowserScrollTool,
+    BrowserGoBackTool.name: BrowserGoBackTool,
+    BrowserListTabsTool.name: BrowserListTabsTool,
+    BrowserSwitchTabTool.name: BrowserSwitchTabTool,
+    BrowserCloseTabTool.name: BrowserCloseTabTool,
+    BrowserGetStorageTool.name: BrowserGetStorageTool,
+    BrowserSetStorageTool.name: BrowserSetStorageTool,
+    BrowserStartRecordingTool.name: BrowserStartRecordingTool,
+    BrowserStopRecordingTool.name: BrowserStopRecordingTool,
+}
+_CONTROL_PLANE_TOOLS = {
+    FinishTool.__name__: (FinishTool, FinishExecutor),
+    SwitchLLMTool.__name__: (SwitchLLMTool, SwitchLLMExecutor),
+    ThinkTool.__name__: (ThinkTool, ThinkExecutor),
+    VisionInspectTool.__name__: (VisionInspectTool, VisionInspectExecutor),
+}
+
+_REMOTE_OBSERVATION_TYPES = {
+    TerminalTool.name: TerminalObservation,
+    FileEditorTool.name: FileEditorObservation,
+    GrepTool.name: GrepObservation,
+    GlobTool.name: GlobObservation,
+    ApplyPatchTool.name: ApplyPatchObservation,
+    TaskTrackerTool.name: TaskTrackerObservation,
+    **{
+        tool_name: BrowserObservation
+        for tool_name in _REMOTE_TOOL_NAMES
+        if tool_name.startswith("browser_")
+    },
+}
 
 
 class RemoteExecutionToolExecutor(ToolExecutor):
@@ -27,7 +147,8 @@ class RemoteExecutionToolExecutor(ToolExecutor):
             },
         )
         response.raise_for_status()
-        return Observation.model_validate(response.json()["observation"])
+        observation_type = _REMOTE_OBSERVATION_TYPES[self.tool_name]
+        return observation_type.model_validate(response.json()["observation"])
 
 
 class DockerExecutionWorkspace(RemoteWorkspace):
@@ -39,49 +160,144 @@ class DockerExecutionWorkspace(RemoteWorkspace):
     platform: str = "linux/amd64"
     api_key: str | None = Field(default=None, exclude=True)
 
-    volumes: list[str] = Field(default_factory=list)
     health_check_timeout: float = 120.0
 
     _container_id: str | None = PrivateAttr(default=None)
+    _startup_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
 
     @property
     def runs_conversation_remotely(self) -> bool:
         return False
 
-    def _ensure_started(self) -> None:
-        if self._container_id is not None:
+    @property
+    def allows_runtime_extensions(self) -> bool:
+        return False
+
+    def validate_agent(self, agent: object) -> None:
+        from openhands.sdk.agent.agent import Agent
+
+        if type(agent) is not Agent:
+            raise ValueError(
+                "Docker execution mode only supports the canonical OpenHands Agent; "
+                "custom and ACP agents can execute code in the trusted host"
+            )
+        context = agent.agent_context
+        if context is not None and (
+            context.skills
+            or context.load_public_skills
+            or context.load_user_skills
+            or context.load_project_skills
+            or context.load_memory
+            or context.registered_marketplaces
+        ):
+            raise ValueError(
+                "Docker execution mode does not permit skills, memory, or marketplace "
+                "discovery because they can read or execute host content"
+            )
+
+    def validate_tool_spec(self, tool_name: str) -> None:
+        expected = _CANONICAL_TOOL_FACTORIES.get(tool_name)
+        registered = get_registered_tool_factory(tool_name)
+        if expected is not None and (
+            registered is expected
+            or (tool_name in _CONTROL_PLANE_TOOLS and registered is None)
+        ):
             return
-        port = self._available_port()
-        sandbox_api_key = uuid.uuid4().hex
-        env_file = self._write_env_file(sandbox_api_key)
-        command = [
+        raise ValueError(
+            f"Tool '{tool_name}' is not supported by Docker execution. "
+            "Custom and host-executed tools are disabled in this mode."
+        )
+
+    def validate_tool(self, tool: ToolDefinition) -> None:
+        executor = tool.executor
+        expected_remote_type = _REMOTE_TOOL_TYPES.get(tool.name)
+        if (
+            expected_remote_type is not None
+            and type(tool) is expected_remote_type
+            and isinstance(executor, RemoteExecutionToolExecutor)
+            and executor.workspace is self
+            and executor.tool_name == tool.name
+        ):
+            return
+        control_plane = _CONTROL_PLANE_TOOLS.get(type(tool).__name__)
+        if (
+            control_plane is not None
+            and type(tool) is control_plane[0]
+            and type(executor) is control_plane[1]
+        ):
+            return
+        raise ValueError(
+            f"Tool '{tool.name}' cannot execute in the trusted host while Docker "
+            "execution is enabled"
+        )
+
+    def validate_runtime_extensions(
+        self,
+        *,
+        tool_module_qualnames: dict[str, str] | None = None,
+        plugins: list[object] | None = None,
+        hook_config: object | None = None,
+        mcp_config: dict[str, object] | None = None,
+    ) -> None:
+        if tool_module_qualnames:
+            raise ValueError("Docker execution does not permit custom tool modules")
+        if plugins:
+            raise ValueError("Docker execution does not permit plugins")
+        if hook_config is not None:
+            raise ValueError("Docker execution does not permit hooks")
+        if mcp_config:
+            raise ValueError("Docker execution does not permit MCP servers")
+
+    def _docker_run_command(self, port: int, env_file: Path) -> list[str]:
+        return [
             "docker",
             "run",
             "-d",
-            "--rm",
             "--platform",
             self.platform,
             "--name",
             f"openhands-execution-{uuid.uuid4()}",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            "/workspace:rw,exec,nosuid,nodev,uid=10001,gid=10001,mode=0775",
+            "--tmpfs",
+            "/tmp:rw,exec,nosuid,nodev,size=512m,mode=1777",
+            "--pids-limit",
+            "512",
             "-p",
             f"127.0.0.1:{port}:8000",
             "--env-file",
             str(env_file),
+            self.image,
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000",
         ]
-        for volume in self.volumes:
-            command.extend(["-v", volume])
-        command.extend([self.image, "--host", "0.0.0.0", "--port", "8000"])
-        try:
-            result = execute_command(command)
-        finally:
-            env_file.unlink(missing_ok=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to start execution sandbox: {result.stderr}")
-        self._container_id = result.stdout.strip()
-        object.__setattr__(self, "host", f"http://127.0.0.1:{port}")
-        object.__setattr__(self, "api_key", sandbox_api_key)
-        self.reset_client()
-        self._wait_for_health()
+
+    def _ensure_started(self) -> None:
+        with self._startup_lock:
+            if self._container_id is not None:
+                return
+            port = self._available_port()
+            sandbox_api_key = uuid.uuid4().hex
+            env_file = self._write_env_file(sandbox_api_key)
+            try:
+                result = execute_command(self._docker_run_command(port, env_file))
+            finally:
+                env_file.unlink(missing_ok=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Failed to start execution sandbox: {result.stderr}"
+                )
+            self._container_id = result.stdout.strip()
+            object.__setattr__(self, "host", f"http://127.0.0.1:{port}")
+            object.__setattr__(self, "api_key", sandbox_api_key)
+            self.reset_client()
+            self._wait_for_health()
 
     @staticmethod
     def _write_env_file(sandbox_api_key: str) -> Path:
@@ -100,6 +316,7 @@ class DockerExecutionWorkspace(RemoteWorkspace):
 
     def _wait_for_health(self) -> None:
         deadline = time.monotonic() + self.health_check_timeout
+        next_status_check = time.monotonic()
         while time.monotonic() < deadline:
             try:
                 request = Request(
@@ -110,21 +327,45 @@ class DockerExecutionWorkspace(RemoteWorkspace):
                     if response.status == 200:
                         return
             except Exception:
+                now = time.monotonic()
+                if self._container_id is not None and now >= next_status_check:
+                    status = execute_command(
+                        [
+                            "docker",
+                            "inspect",
+                            "--format",
+                            "{{.State.Status}}",
+                            self._container_id,
+                        ]
+                    )
+                    if status.returncode != 0 or status.stdout.strip() == "exited":
+                        break
+                    next_status_check = now + 1
                 time.sleep(0.25)
+
+        container_id = self._container_id
+        logs = ""
+        if container_id is not None:
+            result = execute_command(["docker", "logs", "--tail", "100", container_id])
+            logs = "\n".join(
+                stream.strip() for stream in (result.stdout, result.stderr) if stream
+            )
         self.close()
-        raise RuntimeError("Execution sandbox did not become healthy")
+        detail = f": {logs}" if logs else ""
+        raise RuntimeError(f"Execution sandbox did not become healthy{detail}")
 
     def create_tool_executor(self, tool_name: str) -> ToolExecutor | None:
-        if tool_name not in {"terminal", "file_editor", "grep", "glob", "apply_patch"}:
+        if tool_name not in _REMOTE_TOOL_NAMES:
             return None
         self._ensure_started()
         return RemoteExecutionToolExecutor(self, tool_name)
 
     def close(self) -> None:
-        self.reset_client()
-        if self._container_id is not None:
-            execute_command(["docker", "stop", self._container_id])
-            self._container_id = None
+        with self._startup_lock:
+            self.reset_client()
+            if self._container_id is not None:
+                execute_command(["docker", "rm", "-f", self._container_id])
+                self._container_id = None
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self._send_completion_callback(exc_type, exc_val)

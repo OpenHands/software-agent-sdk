@@ -46,6 +46,19 @@ def _get_executor(request: Request, tool_name: str) -> ToolExecutor:
         from openhands.tools.apply_patch.definition import ApplyPatchExecutor
 
         executor = ApplyPatchExecutor(workspace_root=working_dir)
+    elif tool_name == "task_tracker":
+        from openhands.tools.task_tracker.definition import TaskTrackerExecutor
+
+        executor = TaskTrackerExecutor()
+    elif tool_name.startswith("browser_"):
+        from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+        executor = executors.get("__browser__")
+        if executor is None:
+            executor = BrowserToolExecutor(
+                full_output_save_dir=f"{working_dir}/.agent_tmp/browser_observations"
+            )
+            executors["__browser__"] = executor
     else:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -80,6 +93,53 @@ def execute_tool(
         from openhands.tools.apply_patch.definition import ApplyPatchAction
 
         action = ApplyPatchAction.model_validate(payload.action)
+    elif payload.tool_name == "task_tracker":
+        from openhands.tools.task_tracker.definition import TaskTrackerAction
+
+        action = TaskTrackerAction.model_validate(payload.action)
+    elif payload.tool_name.startswith("browser_"):
+        from openhands.tools.browser_use.definition import (
+            BrowserClickAction,
+            BrowserCloseTabAction,
+            BrowserGetContentAction,
+            BrowserGetStateAction,
+            BrowserGetStorageAction,
+            BrowserGoBackAction,
+            BrowserListTabsAction,
+            BrowserNavigateAction,
+            BrowserScrollAction,
+            BrowserSetStorageAction,
+            BrowserStartRecordingAction,
+            BrowserStopRecordingAction,
+            BrowserSwitchTabAction,
+            BrowserTypeAction,
+        )
+
+        action_type = {
+            "browser_navigate": BrowserNavigateAction,
+            "browser_click": BrowserClickAction,
+            "browser_get_state": BrowserGetStateAction,
+            "browser_get_content": BrowserGetContentAction,
+            "browser_type": BrowserTypeAction,
+            "browser_scroll": BrowserScrollAction,
+            "browser_go_back": BrowserGoBackAction,
+            "browser_list_tabs": BrowserListTabsAction,
+            "browser_switch_tab": BrowserSwitchTabAction,
+            "browser_close_tab": BrowserCloseTabAction,
+            "browser_get_storage": BrowserGetStorageAction,
+            "browser_set_storage": BrowserSetStorageAction,
+            "browser_start_recording": BrowserStartRecordingAction,
+            "browser_stop_recording": BrowserStopRecordingAction,
+        }.get(payload.tool_name)
+        if action_type is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Tool is not supported by the execution runtime: "
+                    f"{payload.tool_name}"
+                ),
+            )
+        action = action_type.model_validate(payload.action)
     else:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

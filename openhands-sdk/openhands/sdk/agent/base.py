@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
+    from openhands.sdk.workspace import BaseWorkspace
 
 logger = get_logger(__name__)
 
@@ -306,6 +307,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _tools_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _initialized: bool = PrivateAttr(default=False)
+    _workspace: BaseWorkspace | None = PrivateAttr(default=None)
 
     @property
     def prompt_dir(self) -> str:
@@ -547,6 +549,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return
 
         tools: list[ToolDefinition] = []
+        for tool_spec in self.tools:
+            state.workspace.validate_tool_spec(tool_spec.name)
+        for tool_name in self.include_default_tools:
+            state.workspace.validate_tool_spec(tool_name)
 
         # Use ThreadPoolExecutor to parallelize tool resolution
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -560,6 +566,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # Collect results as they complete
             for future in futures:
                 result = future.result()
+                for tool in result:
+                    state.workspace.validate_tool(tool)
                 tools.extend(result)
 
         logger.info("Loaded %d tools from spec", len(tools))
@@ -601,6 +609,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
 
         for tool_name in default_tool_names:
+            state.workspace.validate_tool_spec(tool_name)
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
                 raise ValueError(
@@ -608,6 +617,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
                 )
             tool_instances = tool_class.create(state)
+            for tool in tool_instances:
+                state.workspace.validate_tool(tool)
             tools.extend(tool_instances)
 
         # Check tool types
@@ -626,6 +637,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
+        self._workspace = state.workspace
         self._initialized = True
 
     @abstractmethod
@@ -849,6 +861,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Tool {tool} is not an instance of 'ToolDefinition'. "
                     f"Got type: {type(tool)}"
                 )
+        if self._workspace is not None:
+            for tool in tools:
+                self._workspace.validate_tool(tool)
 
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
@@ -919,6 +934,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
             return
         tool_names = [tool.name for tool in tools]
+        if self._workspace is not None:
+            for tool in tools:
+                self._workspace.validate_tool(tool)
+
         if len(tool_names) != len(set(tool_names)):
             duplicates = {
                 name for name, count in Counter(tool_names).items() if count > 1
@@ -979,6 +998,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         tools: Sequence[MCPToolDefinition],
     ) -> None:
         """Replace this MCP client's tools with its current server snapshot."""
+        if self._workspace is not None:
+            for tool in tools:
+                self._workspace.validate_tool(tool)
+
         tool_names = [tool.name for tool in tools]
         if len(tool_names) != len(set(tool_names)):
             duplicates = {

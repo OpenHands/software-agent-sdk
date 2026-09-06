@@ -309,6 +309,17 @@ class LocalConversation(BaseConversation):
         self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
 
+        if isinstance(workspace, (str, Path)):
+            workspace = LocalWorkspace(working_dir=workspace)
+        assert isinstance(workspace, BaseWorkspace), (
+            "workspace must be a BaseWorkspace instance"
+        )
+        self.workspace = workspace
+        if client_tools and not workspace.allows_runtime_extensions:
+            raise ValueError(
+                "This workspace does not support client-defined runtime tools"
+            )
+
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
         self._plugin_specs = plugins
@@ -362,12 +373,6 @@ class LocalConversation(BaseConversation):
             ]
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
-        if isinstance(workspace, (str, Path)):
-            workspace = LocalWorkspace(working_dir=workspace)
-        assert isinstance(workspace, BaseWorkspace), (
-            "workspace must be a BaseWorkspace instance"
-        )
-        self.workspace = workspace
         self.workspace.register_conversation(str(desired_id))
         if isinstance(workspace, LocalWorkspace):
             ws_path = Path(workspace.working_dir)
@@ -405,8 +410,18 @@ class LocalConversation(BaseConversation):
 
             recovered_specs = extract_client_tool_specs(agent.tools)
             if recovered_specs:
+                if not self.workspace.allows_runtime_extensions:
+                    raise ValueError(
+                        "This workspace cannot resume a conversation with client tools"
+                    )
                 register_client_tools(recovered_specs)
         self.agent = agent
+        self.workspace.validate_agent(self.agent)
+        self.workspace.validate_runtime_extensions(
+            plugins=list(self._plugin_specs or []),
+            hook_config=self._pending_hook_config,
+            mcp_config=dict(self.agent.mcp_config),
+        )
 
         self._bind_conversation_context(self.agent.llm)
 
@@ -951,6 +966,15 @@ class LocalConversation(BaseConversation):
         5. Sets up hook processor with combined hooks (explicit + plugin)
         6. Runs session_start hooks
         """
+        self.workspace.validate_runtime_extensions(
+            plugins=list(self._plugin_specs or []),
+            hook_config=self._pending_hook_config,
+            mcp_config=dict(self.agent.mcp_config),
+        )
+        if not self.workspace.allows_runtime_extensions:
+            self._plugins_loaded = True
+            return
+
         if self._plugins_loaded:
             return
 
@@ -1352,6 +1376,7 @@ class LocalConversation(BaseConversation):
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> list[ToolDefinition]:
+        self.workspace.validate_runtime_extensions(mcp_config=dict(mcp_config))
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
         # config is a plain no-op rather than a zero-server MCP client.
@@ -1404,6 +1429,7 @@ class LocalConversation(BaseConversation):
     def _close_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
         for tool in tools:
             try:
+                self.workspace.validate_tool(tool)
                 tool.as_executable().executor.close()
             except NotImplementedError:
                 continue
@@ -1416,6 +1442,7 @@ class LocalConversation(BaseConversation):
 
     def load_plugin(self, plugin_ref: str) -> None:
         """Load a plugin from the conversation's registered marketplaces."""
+        self.workspace.validate_runtime_extensions(plugins=[plugin_ref])
         self._ensure_plugins_loaded()
         spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
 
@@ -1514,7 +1541,8 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        if self.workspace.allows_runtime_extensions:
+            register_file_agents(self.workspace.working_dir)
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
@@ -2805,6 +2833,10 @@ class LocalConversation(BaseConversation):
                             logger.warning(
                                 f"Error closing executor for tool '{tool.name}': {e}"
                             )
+            try:
+                self.workspace.close()
+            except Exception as e:
+                logger.warning(f"Error closing workspace: {e}")
         if isinstance(agent_error, CredentialBindingError):
             raise agent_error
         self._cleanup_complete = True

@@ -17,7 +17,8 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from openhands.sdk.tool import ToolExecutor
+    from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.tool import ToolDefinition, ToolExecutor
 
 
 def _convert_path_to_str(v: str | Path) -> str:
@@ -62,9 +63,33 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         """Whether this workspace also owns the conversation's agent loop."""
         return False
 
+    @property
+    def allows_runtime_extensions(self) -> bool:
+        """Whether plugins, hooks, MCP, and custom runtime code may run locally."""
+        return True
+
     def create_tool_executor(self, tool_name: str) -> "ToolExecutor | None":  # noqa: ARG002
         """Return a workspace-hosted executor for ``tool_name``, if supported."""
         return None
+
+    def validate_agent(self, agent: "AgentBase") -> None:  # noqa: ARG002
+        """Reject agent implementations incompatible with this workspace boundary."""
+
+    def validate_tool_spec(self, tool_name: str) -> None:  # noqa: ARG002
+        """Reject a tool before its factory runs when the workspace forbids it."""
+
+    def validate_tool(self, tool: "ToolDefinition") -> None:  # noqa: ARG002
+        """Reject an executor that cannot run within this workspace's boundary."""
+
+    def validate_runtime_extensions(
+        self,
+        *,
+        tool_module_qualnames: dict[str, str] | None = None,  # noqa: ARG002
+        plugins: list[object] | None = None,  # noqa: ARG002
+        hook_config: object | None = None,  # noqa: ARG002
+        mcp_config: dict[str, object] | None = None,  # noqa: ARG002
+    ) -> None:
+        """Reject runtime extension mechanisms incompatible with the workspace."""
 
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
@@ -95,6 +120,9 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             The conversation ID if one has been registered, None otherwise
         """
         return self._conversation_id
+
+    def close(self) -> None:
+        """Release workspace-owned resources."""
 
     def register_cost(self, cost: float) -> None:
         """Register the accumulated LLM cost for this workspace's run.
