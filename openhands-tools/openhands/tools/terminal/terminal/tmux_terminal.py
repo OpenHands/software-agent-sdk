@@ -1,5 +1,6 @@
 """Tmux-based terminal backend implementation."""
 
+import logging
 import time
 import uuid
 from collections.abc import Mapping
@@ -7,6 +8,7 @@ from collections.abc import Mapping
 import libtmux
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
@@ -23,6 +25,30 @@ from openhands.tools.terminal.terminal.interface import parse_ctrl_key
 
 
 logger = get_logger(__name__)
+
+
+class _SecretRedactFilter(logging.Filter):
+    """Redact API key literals from libtmux log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg and isinstance(record.msg, str):
+            record.msg = redact_api_key_literals(record.msg)
+        if record.args:
+            if isinstance(record.args, Mapping):
+                record.args = {
+                    k: redact_api_key_literals(v) if isinstance(v, str) else v
+                    for k, v in record.args.items()
+                }
+            elif isinstance(record.args, tuple):
+                record.args = tuple(
+                    redact_api_key_literals(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+        tmux_cmd = getattr(record, "tmux_cmd", None)
+        if tmux_cmd and isinstance(tmux_cmd, str):
+            record.tmux_cmd = redact_api_key_literals(tmux_cmd)
+        return True
+
 
 # Map normalized special key names to tmux key names.
 _TMUX_SPECIALS: dict[str, str] = {
@@ -71,6 +97,12 @@ class TmuxTerminal(TerminalInterface):
         """Initialize the tmux terminal session."""
         if self._initialized:
             return
+
+        # Install a redaction filter on the libtmux logger to prevent secrets
+        # (e.g. API keys in send-keys arguments) from leaking to stderr.
+        _libtmux_logger = logging.getLogger("libtmux")
+        if not any(isinstance(f, _SecretRedactFilter) for f in _libtmux_logger.filters):
+            _libtmux_logger.addFilter(_SecretRedactFilter())
 
         env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
