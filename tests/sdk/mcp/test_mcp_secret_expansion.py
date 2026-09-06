@@ -13,7 +13,7 @@ import mcp.types
 import pytest
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.llm import ImageContent
+from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
@@ -54,6 +54,8 @@ def _make_result(content=None, is_error=False) -> MagicMock:
     result = MagicMock(spec=mcp.types.CallToolResult)
     result.content = content or [mcp.types.TextContent(type="text", text="Success")]
     result.isError = is_error
+    result.structuredContent = None
+    result.meta = None
     return result
 
 
@@ -72,6 +74,148 @@ def _call_and_capture(executor, mock_client, action, conversation, result=None):
     observation = executor(action, conversation=conversation)
     assert "action" in captured, "MCP client was not called"
     return captured["action"], observation
+
+
+def test_registry_masks_nested_structured_result_fields(
+    executor: MCPToolExecutor,
+    secret_registry: SecretRegistry,
+    conversation: MagicMock,
+) -> None:
+    secret = secret_registry.get_secret_value("API_KEY")
+    observation = MCPToolObservation(
+        tool_name="test_tool",
+        structured_content={
+            "rows": [{"token": secret}],
+            f"secret-key-{secret}": "value",
+            "count": 1,
+        },
+        result_meta={"ui": {"hint": f"Bearer {secret}"}},
+    )
+
+    masked = executor._mask_observation(observation, conversation)
+
+    assert masked.structured_content == {
+        "rows": [{"token": "<secret-hidden>"}],
+        "secret-key-<secret-hidden>": "value",
+        "count": 1,
+    }
+    assert masked.result_meta == {"ui": {"hint": "Bearer <secret-hidden>"}}
+
+
+def test_executor_copies_and_masks_structured_result_fields(
+    executor: MCPToolExecutor,
+    mock_client: MagicMock,
+    secret_registry: SecretRegistry,
+    conversation: MagicMock,
+) -> None:
+    secret = secret_registry.get_secret_value("API_KEY")
+    assert secret is not None
+    result = mcp.types.CallToolResult(
+        _meta={"hint": f"Bearer {secret}"},
+        structuredContent={"token": secret},
+        content=[mcp.types.TextContent(type="text", text=f"token={secret}")],
+    )
+
+    _, observation = _call_and_capture(
+        executor,
+        mock_client,
+        MCPToolAction(data={"q": "x"}),
+        conversation,
+        result=result,
+    )
+
+    assert observation.structured_content == {"token": "<secret-hidden>"}
+    assert observation.result_meta == {"hint": "Bearer <secret-hidden>"}
+    observation_text = observation.text
+    assert observation_text is not None
+    assert secret not in observation_text
+
+
+def test_structured_masking_failure_drops_only_the_failing_field(
+    executor: MCPToolExecutor,
+    secret_registry: SecretRegistry,
+    conversation: MagicMock,
+) -> None:
+    secret = secret_registry.get_secret_value("API_KEY")
+    assert secret is not None
+    nested: Any = secret
+    for _ in range(2000):
+        nested = [nested]
+    observation = MCPToolObservation(
+        tool_name="test_tool",
+        content=[TextContent(text=f"token={secret}")],
+        structured_content={"nested": nested},
+        result_meta={"token": secret},
+    )
+
+    masked = executor._mask_observation(observation, conversation)
+
+    masked_text = masked.text
+    assert masked_text is not None
+    assert secret not in masked_text
+    assert "<secret-hidden>" in masked_text
+    assert masked.structured_content is None
+    assert masked.result_meta == {"token": "<secret-hidden>"}
+
+
+def test_content_masking_failure_drops_structured_fields(
+    executor: MCPToolExecutor,
+) -> None:
+    conversation = MagicMock()
+    conversation.state.secret_registry.mask_secrets_in_output.side_effect = (
+        RuntimeError("registry down")
+    )
+    observation = MCPToolObservation(
+        tool_name="test_tool",
+        content=[TextContent(text="token=expanded-api-key")],
+        structured_content={"token": "expanded-api-key"},
+        result_meta={"hint": "expanded-api-key"},
+    )
+
+    masked = executor._mask_observation(observation, conversation)
+
+    masked_text = masked.text
+    assert masked_text is not None
+    # Text content fails open; the structured fields do not.
+    assert "expanded-api-key" in masked_text
+    assert masked.structured_content is None
+    assert masked.result_meta is None
+
+
+def test_masked_key_collision_drops_the_structured_field(
+    executor: MCPToolExecutor,
+    secret_registry: SecretRegistry,
+    conversation: MagicMock,
+) -> None:
+    secret = secret_registry.get_secret_value("API_KEY")
+    assert secret is not None
+    observation = MCPToolObservation(
+        tool_name="test_tool",
+        structured_content={secret: "first", "<secret-hidden>": "second"},
+        result_meta={"token": secret},
+    )
+
+    masked = executor._mask_observation(observation, conversation)
+
+    assert masked.structured_content is None
+    assert masked.result_meta == {"token": "<secret-hidden>"}
+
+
+def test_numeric_secret_in_structured_result_is_masked(
+    executor: MCPToolExecutor,
+    conversation: MagicMock,
+) -> None:
+    registry = SecretRegistry()
+    registry.update_secrets({"PORT": "12345"})
+    conversation.state.secret_registry = registry
+    observation = MCPToolObservation(
+        tool_name="test_tool",
+        structured_content={"port": 12345, "attempts": 3},
+    )
+
+    masked = executor._mask_observation(observation, conversation)
+
+    assert masked.structured_content == {"port": "<secret-hidden>", "attempts": 3}
 
 
 @pytest.mark.parametrize(
