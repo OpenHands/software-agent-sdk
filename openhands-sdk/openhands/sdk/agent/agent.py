@@ -1369,6 +1369,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         # Execute actions!
         try:
+            conversation.workspace.validate_tool(tool)
             if should_enable_observability():
                 tool_name = extract_action_name(action_event)
                 observation: Observation = observe(

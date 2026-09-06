@@ -72,6 +72,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     _client: httpx.Client | None = PrivateAttr(default=None)
 
+    @property
+    def runs_conversation_remotely(self) -> bool:
+        return True
+
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
 
@@ -281,28 +285,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             tags["automationrunid"] = run_id
 
         return tags
-
-    def register_conversation(self, conversation_id: str) -> None:
-        """Register a conversation ID with this workspace.
-
-        Called by RemoteConversation after creation to associate the conversation
-        with the workspace. The conversation ID is included in the completion
-        callback sent to the automation service.
-
-        Args:
-            conversation_id: The conversation ID to register
-        """
-        self._conversation_id = conversation_id
-        logger.debug(f"Registered conversation: {conversation_id}")
-
-    @property
-    def conversation_id(self) -> str | None:
-        """Get the most recently registered conversation ID.
-
-        Returns:
-            The conversation ID if one has been registered, None otherwise.
-        """
-        return self._conversation_id
 
     def __exit__(
         self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any

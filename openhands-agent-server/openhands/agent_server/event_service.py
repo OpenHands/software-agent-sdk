@@ -1005,10 +1005,10 @@ class EventService:
             self._lease_generation = lease_claim.generation
         await self._scrub_persisted_credentials()
         workspace = self.stored.workspace
-        assert isinstance(workspace, LocalWorkspace)
-        working_dir = Path(workspace.working_dir)
-        working_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_workspace_is_git_repo(working_dir)
+        if isinstance(workspace, LocalWorkspace):
+            working_dir = Path(workspace.working_dir)
+            working_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_workspace_is_git_repo(working_dir)
         # base_state.json is the single source of truth for the agent. On resume
         # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
         # persisted agent. On a new conversation the creating caller supplied the
@@ -1776,7 +1776,21 @@ class EventService:
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.close)
+            conversation = self._conversation
+            await loop.run_in_executor(None, conversation.close)
+            # Trigger workspace cleanup (e.g., stop Docker container) and send
+            # the automation completion callback.  __enter__ is a no-op on
+            # BaseWorkspace, so calling __exit__ without a paired __enter__ is
+            # safe.  conversation.close() does not call workspace.__exit__,
+            # so there is no double-callback risk.
+            workspace = conversation.workspace
+            await loop.run_in_executor(
+                None,
+                workspace.__exit__,
+                None,
+                None,
+                None,
+            )
             self._conversation = None
         self.credential_bindings = {}
 

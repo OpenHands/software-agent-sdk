@@ -40,6 +40,11 @@ from openhands.agent_server.dependencies import (
 )
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.event_router import event_router
+from openhands.agent_server.execution_runtime import execution_runtime_router
+from openhands.agent_server.execution_runtime.workspace import (
+    cleanup_execution_containers,
+    execution_scope_for,
+)
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -152,12 +157,31 @@ def _cleanup_stale_tmux_sessions() -> None:
 
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
+    config: Config = api.state.config
+    if config.execution_only:
+        tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
+        api.state.execution_tool_executors = {}
+        mark_initialization_complete()
+        logger.info("Server initialized in execution-only mode")
+        try:
+            yield
+        finally:
+            for executor in api.state.execution_tool_executors.values():
+                with suppress(Exception):
+                    executor.close()
+            if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
+                tmux_tmpdir
+            ):
+                os.environ.pop("TMUX_TMPDIR", None)
+        return
+
     tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
+        if config.execution_runtime == "docker":
+            cleanup_execution_containers(execution_scope_for(config.conversations_path))
 
-        config: Config = api.state.config
         deferred = config.deferred_init
 
         # Deferred pods boot with telemetry disabled and are rebuilt by
@@ -411,6 +435,12 @@ def _add_api_routes(app: FastAPI) -> None:
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
+    config: Config = app.state.config
+    if config.execution_only:
+        api_router.include_router(execution_runtime_router)
+        app.include_router(api_router)
+        return
+
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
     api_router.include_router(credential_binding_router)

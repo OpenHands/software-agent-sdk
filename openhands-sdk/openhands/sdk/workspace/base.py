@@ -1,7 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
@@ -15,6 +15,10 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.tool import ToolDefinition, ToolExecutor
 
 
 def _convert_path_to_str(v: str | Path) -> str:
@@ -54,6 +58,39 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
     _conversation_id: str | None = PrivateAttr(default=None)
     _accumulated_cost: float | None = PrivateAttr(default=None)
 
+    @property
+    def runs_conversation_remotely(self) -> bool:
+        """Whether this workspace also owns the conversation's agent loop."""
+        return False
+
+    @property
+    def allows_runtime_extensions(self) -> bool:
+        """Whether plugins, hooks, MCP, and custom runtime code may run locally."""
+        return True
+
+    def create_tool_executor(self, tool_name: str) -> "ToolExecutor | None":  # noqa: ARG002
+        """Return a workspace-hosted executor for ``tool_name``, if supported."""
+        return None
+
+    def validate_agent(self, agent: "AgentBase") -> None:  # noqa: ARG002
+        """Reject agent implementations incompatible with this workspace boundary."""
+
+    def validate_tool_spec(self, tool_name: str) -> None:  # noqa: ARG002
+        """Reject a tool before its factory runs when the workspace forbids it."""
+
+    def validate_tool(self, tool: "ToolDefinition") -> None:  # noqa: ARG002
+        """Reject an executor that cannot run within this workspace's boundary."""
+
+    def validate_runtime_extensions(
+        self,
+        *,
+        tool_module_qualnames: dict[str, str] | None = None,  # noqa: ARG002
+        plugins: list[object] | None = None,  # noqa: ARG002
+        hook_config: object | None = None,  # noqa: ARG002
+        mcp_config: dict[str, object] | None = None,  # noqa: ARG002
+    ) -> None:
+        """Reject runtime extension mechanisms incompatible with the workspace."""
+
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
 
@@ -61,6 +98,31 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             Self for use in with statements
         """
         return self
+
+    def register_conversation(self, conversation_id: str) -> None:
+        """Register a conversation ID with this workspace.
+
+        Called by the conversation after creation to associate the conversation
+        with the workspace. The conversation ID is included in the completion
+        callback sent to the automation service.
+
+        Args:
+            conversation_id: The conversation ID to register
+        """
+        self._conversation_id = conversation_id
+        logger.debug(f"Registered conversation: {conversation_id}")
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Get the most recently registered conversation ID.
+
+        Returns:
+            The conversation ID if one has been registered, None otherwise
+        """
+        return self._conversation_id
+
+    def close(self) -> None:
+        """Release workspace-owned resources."""
 
     def register_cost(self, cost: float) -> None:
         """Register the accumulated LLM cost for this workspace's run.

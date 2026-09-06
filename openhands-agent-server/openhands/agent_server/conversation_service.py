@@ -25,6 +25,8 @@ from openhands.agent_server.event_service import (
     EventService,
     _without_agent_context_secret,
 )
+from openhands.agent_server.execution_runtime import DockerExecutionWorkspace
+from openhands.agent_server.execution_runtime.workspace import execution_scope_for
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -71,7 +73,7 @@ from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.sdk.workspace import BaseWorkspace, LocalWorkspace
 
 
 if TYPE_CHECKING:
@@ -143,6 +145,27 @@ def _with_load_memory(agent: AgentBase) -> AgentBase:
     context = agent.agent_context or AgentContext(current_datetime=None)
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"load_memory": True})}
+    )
+
+
+def _without_runtime_extensions(agent: AgentBase) -> AgentBase:
+    context = agent.agent_context
+    if context is None:
+        return agent
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={
+                    "skills": [],
+                    "disabled_skills": [],
+                    "load_public_skills": False,
+                    "load_user_skills": False,
+                    "load_project_skills": False,
+                    "load_memory": False,
+                    "registered_marketplaces": [],
+                }
+            )
+        }
     )
 
 
@@ -273,7 +296,7 @@ def _prepare_request_workspace(
     conversation_id: UUID,
     conversation_worktree_root: Path,
 ) -> StartConversationRequest:
-    if not request.worktree:
+    if not request.worktree or not isinstance(request.workspace, LocalWorkspace):
         return request
 
     worktree = _create_conversation_worktree(
@@ -302,8 +325,12 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
-def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
-    return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
+def _same_workspace(a: BaseWorkspace, b: BaseWorkspace) -> bool:
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, LocalWorkspace) and isinstance(b, LocalWorkspace):
+        return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
+    return a.working_dir == b.working_dir
 
 
 def _apply_acp_skill_sourcing(
@@ -347,11 +374,51 @@ def _apply_acp_skill_sourcing(
     )
 
 
+def _validate_execution_workspace[
+    ConversationConfigT: (StartConversationRequest, StoredConversation)
+](
+    request: ConversationConfigT,
+    *,
+    runtime: str,
+    image: str,
+    platform: str,
+    volumes: list[str],
+    execution_scope: str,
+) -> ConversationConfigT:
+    expected_workspace_type: type[BaseWorkspace]
+    if runtime == "local":
+        expected_workspace_type = LocalWorkspace
+    elif runtime == "docker":
+        expected_workspace_type = DockerExecutionWorkspace
+    else:
+        raise ValueError(f"Unsupported execution runtime: {runtime}")
+
+    if type(request.workspace) is not expected_workspace_type:
+        raise ValueError(
+            f"This agent server only opens {expected_workspace_type.__name__} "
+            f"conversations; received {type(request.workspace).__name__}"
+        )
+    if runtime == "docker":
+        if volumes:
+            raise ValueError(
+                "Docker execution host volume mounts are forbidden; each conversation "
+                "must use an ephemeral container filesystem"
+            )
+        workspace = cast(
+            DockerExecutionWorkspace,
+            request.workspace.model_copy(update={"image": image, "platform": platform}),
+        )
+        workspace.set_execution_scope(execution_scope)
+        return request.model_copy(update={"workspace": workspace, "worktree": False})
+    return request
+
+
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
+    isolated_execution: bool = False,
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -400,8 +467,8 @@ def _resolve_agent_from_profile(
     # own skills and OpenHands injects none (#4019). A genuine discovery failure
     # fails the launch loudly rather than silently producing a zero-skill agent.
     available_skills = None
-    wants_skills = profile.agent_kind == "openhands" or (
-        acp_skill_sourcing == "openhands_managed"
+    wants_skills = not isolated_execution and (
+        profile.agent_kind == "openhands" or acp_skill_sourcing == "openhands_managed"
     )
     if wants_skills:
         try:
@@ -440,7 +507,7 @@ def _resolve_agent_from_profile(
     if (
         profile.agent_kind == "openhands"
         and profile.tools is None
-        and is_tool_usable(BROWSER_TOOL_NAME)
+        and (isolated_execution or is_tool_usable(BROWSER_TOOL_NAME))
     ):
         agent = agent.model_copy(
             update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
@@ -702,6 +769,11 @@ class ConversationService:
         default_factory=asyncio.Condition, init=False
     )
     _active_lifecycle_operations: int = field(default=0, init=False)
+    execution_runtime: str = "local"
+    execution_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    execution_platform: str = "linux/amd64"
+    execution_volumes: list[str] = field(default_factory=list)
+
     _exclusive_lifecycle_pending: bool = field(default=False, init=False)
     _conversation_locks: WeakValueDictionary[UUID, asyncio.Lock] = field(
         default_factory=WeakValueDictionary, init=False
@@ -715,6 +787,10 @@ class ConversationService:
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
+
+    @property
+    def execution_scope(self) -> str:
+        return execution_scope_for(self.conversations_dir)
 
     def _load_catalog_sync(self) -> dict[UUID, _ConversationRecord]:
         records: dict[UUID, _ConversationRecord] = {}
@@ -1081,6 +1157,17 @@ class ConversationService:
             )
 
     def _prepare_persisted_runtime(self, stored: StoredConversation) -> None:
+        if self.execution_runtime == "docker":
+            if (
+                stored.tool_module_qualnames
+                or stored.client_tools
+                or stored.agent_definitions
+            ):
+                raise ValueError(
+                    "Docker execution cannot resume conversations containing custom "
+                    "tool modules, client tools, or subagent definitions"
+                )
+            return
         if stored.tool_module_qualnames:
             for tool_name, module_qualname in stored.tool_module_qualnames.items():
                 try:
@@ -1180,6 +1267,14 @@ class ConversationService:
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
+        record.stored = _validate_execution_workspace(
+            record.stored,
+            runtime=self.execution_runtime,
+            image=self.execution_image,
+            platform=self.execution_platform,
+            volumes=self.execution_volumes,
+            execution_scope=self.execution_scope,
+        )
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
         missing_bindings = (
@@ -1420,6 +1515,14 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
+        request = _validate_execution_workspace(
+            request,
+            runtime=self.execution_runtime,
+            image=self.execution_image,
+            platform=self.execution_platform,
+            volumes=self.execution_volumes,
+            execution_scope=self.execution_scope,
+        )
         existing_record = self._conversation_records.get(conversation_id)
         existing_event_service = self._event_services.get(conversation_id)
         if existing_record is not None or (
@@ -1601,8 +1704,36 @@ class ConversationService:
                 self.cipher,
                 mcp_config,
                 acp_skill_sourcing=self.acp_skill_sourcing,
+                isolated_execution=not request.workspace.allows_runtime_extensions,
             )
             request = request.model_copy(update={"agent": resolved_agent})
+
+        if not request.workspace.allows_runtime_extensions:
+            if isinstance(request.agent, ACPAgent):
+                raise ValueError(
+                    "Docker execution mode does not support ACP agents because their "
+                    "CLI subprocess would run in the trusted host"
+                )
+            request.workspace.validate_runtime_extensions(
+                tool_module_qualnames=request.tool_module_qualnames,
+                plugins=list(request.plugins or []),
+                hook_config=request.hook_config,
+                mcp_config=dict(request.agent.mcp_config),
+            )
+            if request.client_tools:
+                raise ValueError(
+                    "Docker execution mode does not support client-defined tools"
+                )
+            if request.agent_definitions:
+                raise ValueError(
+                    "Docker execution mode does not support custom subagent definitions"
+                )
+
+        if not request.workspace.allows_runtime_extensions:
+            request = request.model_copy(
+                update={"agent": _without_runtime_extensions(request.agent)}
+            )
+            load_memory = False
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to
@@ -1765,6 +1896,14 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
+        stored = _validate_execution_workspace(
+            stored,
+            runtime=self.execution_runtime,
+            image=self.execution_image,
+            platform=self.execution_platform,
+            volumes=self.execution_volumes,
+            execution_scope=self.execution_scope,
+        )
         async with self._conversation_lifecycle(conversation_id):
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.
@@ -2324,6 +2463,10 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            execution_runtime=config.execution_runtime,
+            execution_image=config.execution_image,
+            execution_platform=config.execution_platform,
+            execution_volumes=config.execution_volumes,
         )
 
     async def _start_event_service(

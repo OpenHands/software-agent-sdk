@@ -346,8 +346,12 @@ async def test_deltas_keep_idle_time_below_the_threshold(
     )
 
     callback(_make_chunk(content="tok"))
+    request = MagicMock()
+    request.app.state.config.execution_runtime = "local"
 
-    assert (await server_details_router.get_server_info()).idle_time < _IDLE_THRESHOLD
+    assert (
+        await server_details_router.get_server_info(request)
+    ).idle_time < _IDLE_THRESHOLD
 
 
 @pytest.mark.asyncio
