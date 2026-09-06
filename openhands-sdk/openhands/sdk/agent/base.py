@@ -10,6 +10,7 @@ from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from weakref import ReferenceType, ref
 
 from pydantic import (
     BaseModel,
@@ -307,7 +308,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _tools_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _initialized: bool = PrivateAttr(default=False)
-    _workspace: BaseWorkspace | None = PrivateAttr(default=None)
+    _workspace_ref: ReferenceType[BaseWorkspace] | None = PrivateAttr(default=None)
+
+    @property
+    def _workspace(self) -> BaseWorkspace | None:
+        return self._workspace_ref() if self._workspace_ref is not None else None
 
     @property
     def prompt_dir(self) -> str:
@@ -637,7 +642,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
-        self._workspace = state.workspace
+        self._workspace_ref = ref(state.workspace)
         self._initialized = True
 
     @abstractmethod
@@ -861,9 +866,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Tool {tool} is not an instance of 'ToolDefinition'. "
                     f"Got type: {type(tool)}"
                 )
-        if self._workspace is not None:
+        workspace = self._workspace
+        if workspace is not None:
             for tool in tools:
-                self._workspace.validate_tool(tool)
+                workspace.validate_tool(tool)
 
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
@@ -934,9 +940,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
             return
         tool_names = [tool.name for tool in tools]
-        if self._workspace is not None:
+        workspace = self._workspace
+        if workspace is not None:
             for tool in tools:
-                self._workspace.validate_tool(tool)
+                workspace.validate_tool(tool)
 
         if len(tool_names) != len(set(tool_names)):
             duplicates = {
@@ -998,9 +1005,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         tools: Sequence[MCPToolDefinition],
     ) -> None:
         """Replace this MCP client's tools with its current server snapshot."""
-        if self._workspace is not None:
+        workspace = self._workspace
+        if workspace is not None:
             for tool in tools:
-                self._workspace.validate_tool(tool)
+                workspace.validate_tool(tool)
 
         tool_names = [tool.name for tool in tools]
         if len(tool_names) != len(set(tool_names)):
