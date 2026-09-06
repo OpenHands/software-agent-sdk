@@ -8,6 +8,7 @@ from fastapi import (
     Body,
     Depends,
     HTTPException,
+    Path,
     Query,
     Request,
     Response,
@@ -37,6 +38,7 @@ from openhands.agent_server.models import (
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
+    SetTagRequest,
     StartConversationRequest,
     StartGoalRequest,
     Success,
@@ -46,6 +48,7 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import TAG_KEY_PATTERN
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
@@ -608,6 +611,52 @@ async def update_conversation(
     updated = await conversation_service.update_conversation(conversation_id, request)
     if not updated:
         return Success(success=False)
+    return Success()
+
+
+@conversation_router.put(
+    "/{conversation_id}/tags/{key}",
+    responses={404: {"description": "Conversation not found"}},
+)
+async def set_conversation_tag(
+    conversation_id: UUID,
+    key: Annotated[str, Path(pattern=TAG_KEY_PATTERN.pattern)],
+    request: SetTagRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Set or overwrite a single tag on a conversation.
+
+    All other tags on the conversation are left unchanged.
+    Does not update the conversation's ``updated_at`` timestamp.
+    """
+    updated = await conversation_service.set_conversation_tag(
+        conversation_id, key, request.value
+    )
+    if not updated:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return Success()
+
+
+@conversation_router.delete(
+    "/{conversation_id}/tags/{key}",
+    responses={404: {"description": "Conversation or tag key not found"}},
+)
+async def delete_conversation_tag(
+    conversation_id: UUID,
+    key: Annotated[str, Path(pattern=TAG_KEY_PATTERN.pattern)],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Remove a single tag from a conversation.
+
+    All other tags on the conversation are left unchanged.
+    Returns 404 if the conversation does not exist or the key is not present.
+    Does not update the conversation's ``updated_at`` timestamp.
+    """
+    result = await conversation_service.delete_conversation_tag(conversation_id, key)
+    if result is False:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Tag key not found")
     return Success()
 
 

@@ -1,5 +1,6 @@
 """Tests for conversation tags in the API layer."""
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -225,6 +226,176 @@ def test_get_conversation_includes_tags(
         client.app.dependency_overrides.clear()
 
 
+def test_set_conversation_tag(client, mock_conversation_service):
+    """PUT /tags/{key} sets a single tag without touching others."""
+    mock_conversation_service.set_conversation_tag = AsyncMock(return_value=True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.put(
+            f"/api/conversations/{conversation_id}/tags/env",
+            json={"value": "production"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+        mock_conversation_service.set_conversation_tag.assert_awaited_once_with(
+            conversation_id, "env", "production"
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_set_conversation_tag_missing_conversation(client, mock_conversation_service):
+    """PUT /tags/{key} returns 404 when the conversation does not exist."""
+    mock_conversation_service.set_conversation_tag = AsyncMock(return_value=False)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.put(
+            f"/api/conversations/{conversation_id}/tags/env",
+            json={"value": "production"},
+        )
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_set_conversation_tag_invalid_key(client, mock_conversation_service):
+    """PUT /tags/{key} returns 422 for an invalid tag key."""
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.put(
+            f"/api/conversations/{conversation_id}/tags/INVALID-KEY",
+            json={"value": "value"},
+        )
+        assert response.status_code == 422
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_validate_tags_rejects_newline_in_key():
+    """_validate_tags must use fullmatch so a trailing newline does not slip through.
+
+    re.match(r'^[a-z0-9]+$', 'abc\\n') returns a match because $ matches before
+    a trailing newline; re.fullmatch does not.  This test pins that behaviour so
+    reverting fullmatch to match would be caught immediately.
+    """
+    import pytest as _pytest
+
+    from openhands.sdk.conversation.types import _validate_tags
+
+    with _pytest.raises(ValueError, match="invalid"):
+        _validate_tags({"abc\n": "value"})
+
+
+def test_delete_conversation_tag(client, mock_conversation_service):
+    """DELETE /tags/{key} removes a single tag."""
+    mock_conversation_service.delete_conversation_tag = AsyncMock(return_value=True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.delete(
+            f"/api/conversations/{conversation_id}/tags/env",
+        )
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+        mock_conversation_service.delete_conversation_tag.assert_awaited_once_with(
+            conversation_id, "env"
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_delete_conversation_tag_invalid_key(client, mock_conversation_service):
+    """DELETE /tags/{key} returns 422 for an invalid tag key."""
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.delete(
+            f"/api/conversations/{conversation_id}/tags/INVALID-KEY",
+        )
+        assert response.status_code == 422
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_delete_conversation_tag_missing_conversation(
+    client, mock_conversation_service
+):
+    """DELETE /tags/{key} returns 404 when the conversation does not exist."""
+    mock_conversation_service.delete_conversation_tag = AsyncMock(return_value=False)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.delete(
+            f"/api/conversations/{conversation_id}/tags/env",
+        )
+        assert response.status_code == 404
+        assert "Conversation not found" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_delete_conversation_tag_missing_key(client, mock_conversation_service):
+    """DELETE /tags/{key} returns 404 when the key is not present."""
+    mock_conversation_service.delete_conversation_tag = AsyncMock(return_value=None)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.delete(
+            f"/api/conversations/{conversation_id}/tags/nosuchkey",
+        )
+        assert response.status_code == 404
+        assert "Tag key not found" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_set_tag_does_not_affect_other_tags(client, mock_conversation_service):
+    """PUT /tags/{key} overwrites only the specified key."""
+    mock_conversation_service.set_conversation_tag = AsyncMock(return_value=True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    conversation_id = uuid4()
+    try:
+        response = client.put(
+            f"/api/conversations/{conversation_id}/tags/repo",
+            json={"value": "myorg/myrepo"},
+        )
+        assert response.status_code == 200
+        mock_conversation_service.set_conversation_tag.assert_awaited_once_with(
+            conversation_id, "repo", "myorg/myrepo"
+        )
+        # The service is responsible for leaving other keys untouched;
+        # here we verify only one key was passed (not the full tag map).
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 @pytest.mark.asyncio
 async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path):
     """EventService.start() must pass stored tags to LocalConversation.
@@ -310,3 +481,59 @@ async def test_event_service_start_forwards_observability_span_name(tmp_path):
         MockConversation.assert_called_once()
         call_kwargs = MockConversation.call_args.kwargs
         assert call_kwargs["observability_span_name"] == "pr_review_evaluation"
+
+
+@pytest.mark.asyncio
+async def test_set_delete_tag_persists_to_disk(tmp_path):
+    """set/delete_conversation_tag mutate stored.tags and persist to meta.json."""
+    stored = StoredConversation(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        confirmation_policy=NeverConfirm(),
+        tags={"env": "test"},
+        created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+        updated_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    conversations_dir = tmp_path / "conversations"
+    conv_dir = conversations_dir / stored.id.hex
+    conv_dir.mkdir(parents=True)
+    (conv_dir / "meta.json").write_text(stored.model_dump_json())
+
+    # Build an EventService that bypasses LocalConversation startup.
+    event_service = EventService(
+        stored=stored,
+        conversations_dir=conversations_dir,
+        agent=None,
+    )
+    mock_state = MagicMock()
+    mock_state.__enter__ = MagicMock(return_value=mock_state)
+    mock_state.__exit__ = MagicMock(return_value=False)
+    event_service._conversation = MagicMock()
+    event_service._conversation._state = mock_state
+
+    with patch(
+        "openhands.agent_server.conversation_service"
+        "._compose_webhook_conversation_info_sync",
+        return_value=MagicMock(),
+    ):
+        async with ConversationService(conversations_dir=conversations_dir) as service:
+            assert service._event_services is not None
+            service._event_services[stored.id] = event_service
+
+            result = await service.set_conversation_tag(stored.id, "team", "backend")
+            assert result is True
+            assert event_service.stored.tags == {"env": "test", "team": "backend"}
+            assert (
+                event_service.stored.updated_at == stored.updated_at
+            )  # must not change
+            meta = json.loads((conv_dir / "meta.json").read_text())
+            assert meta["tags"] == {"env": "test", "team": "backend"}
+
+            result = await service.delete_conversation_tag(stored.id, "env")
+            assert result is True
+            assert "env" not in event_service.stored.tags
+            assert (
+                event_service.stored.updated_at == stored.updated_at
+            )  # must not change
+            meta = json.loads((conv_dir / "meta.json").read_text())
+            assert "env" not in meta.get("tags", {})
