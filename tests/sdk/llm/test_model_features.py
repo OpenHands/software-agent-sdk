@@ -1,3 +1,16 @@
+"""Capability-detection tests.
+
+LiteLLM fetches ``model_prices_and_context_window.json`` from its upstream
+``main`` branch at import time, so pinning litellm in ``uv.lock`` pins its code
+but not its model database — and the SDK sets no override, in tests or in
+production. These tests therefore run against data that changes without us.
+
+Assert what the SDK owns: its override lists, its model-name normalization, and
+that a routing wrapper does not change the answer. A bare capability value with
+no SDK rule behind it is upstream's to change, and pinning one here fails the
+day it does (#4877).
+"""
+
 import pytest
 from litellm.utils import supports_vision
 
