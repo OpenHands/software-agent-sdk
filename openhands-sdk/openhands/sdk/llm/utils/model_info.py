@@ -9,6 +9,10 @@ from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
+from openhands.sdk.llm.utils.model_cost_map import (
+    log_model_cost_map_provenance,
+    warn_on_metadata_anomalies,
+)
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 
 
@@ -71,6 +75,20 @@ def _get_model_info_from_litellm_proxy(
 
 
 def get_litellm_model_info(
+    secret_api_key: SecretStr | str | None, base_url: str | None, model: str
+) -> dict[str, Any] | None:
+    # Single funnel for model metadata, so provenance and sanity checks belong
+    # here rather than at each of the branches below.
+    log_model_cost_map_provenance()
+    return _checked(model, _get_litellm_model_info(secret_api_key, base_url, model))
+
+
+def _checked(model: str, info: dict[str, Any] | None) -> dict[str, Any] | None:
+    warn_on_metadata_anomalies(model, info)
+    return info
+
+
+def _get_litellm_model_info(
     secret_api_key: SecretStr | str | None, base_url: str | None, model: str
 ) -> dict[str, Any] | None:
     call_kwargs = litellm_call_kwargs(model, base_url)
