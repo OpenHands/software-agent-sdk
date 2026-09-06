@@ -8,6 +8,7 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
+    "gpt-5.3-codex",
     "gpt-5.1",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
@@ -23,6 +24,7 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-4.1-2025-04-14",
     "o1-mini",
     "o3",
+    "o3-pro",
     "codex-mini-latest",
 ]
 
@@ -65,6 +67,7 @@ VERIFIED_MISTRAL_MODELS = [
 VERIFIED_GEMINI_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3.1-pro",
+    "gemini-3.1-flash-lite",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
@@ -100,6 +103,7 @@ VERIFIED_MINIMAX_MODELS = [
 
 VERIFIED_GLM_MODELS = [
     "glm-4.7",
+    "glm-4.7-flash",
     "glm-5",
     "glm-5.1",
     "glm-5.2",
@@ -116,12 +120,18 @@ VERIFIED_NVIDIA_MODELS = [
 
 VERIFIED_QWEN_MODELS = [
     "qwen3-6-plus",
+    "qwen3.5-plus",
     "qwen3.6-plus",
     "qwen3.7-plus",
     "qwen3.8-max",
+    "qwen3.7-max",
+    "qwen3-max",
     "qwen3.8-flash",
+    "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
+    "qwen3-coder-plus",
+    "qwen3-coder-flash",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -143,6 +153,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
+    "gpt-5.3-codex",
     "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
@@ -171,6 +182,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
     "gpt-5.1",
+    "o3-pro",
     "glm-4.7",
     "glm-5",
     "glm-5.1",
@@ -182,12 +194,18 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-ultra-550b-a55b",
     "nemotron-3.5-lightning-30b-a3b",
     "qwen3-6-plus",
+    "qwen3.5-plus",
     "qwen3.6-plus",
     "qwen3.7-plus",
     "qwen3.8-max",
+    "qwen3.7-max",
+    "qwen3-max",
     "qwen3.8-flash",
+    "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
+    "qwen3-coder-plus",
+    "qwen3-coder-flash",
     "trinity-large-thinking",
 ]
 
