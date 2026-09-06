@@ -1704,7 +1704,7 @@ class LocalConversation(BaseConversation):
         try:
             cached = self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self.load_profile_llm(profile_name)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
 
@@ -1719,12 +1719,39 @@ class LocalConversation(BaseConversation):
         try:
             return self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            loaded = self.load_profile_llm(profile_name)
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)
             self._bind_conversation_context(llm)
             return llm
+
+    def load_profile_llm(
+        self, profile_name: str, profile_store_dir: str | None = None
+    ) -> LLM:
+        """Load a saved profile LLM without registering or activating it.
+
+        The returned LLM is not added to ``llm_registry`` or made active, so the
+        caller owns its lifecycle and metrics attribution. Persisted subscription
+        profiles are restored by :class:`LLMProfileStore` during the load.
+        Secrets are decrypted with the conversation's cipher.
+
+        Args:
+            profile_name: Name of a profile previously saved via
+                LLMProfileStore (a ``.json`` suffix is tolerated).
+            profile_store_dir: Optional override for the store directory. When
+                None, the conversation's default store is used.
+
+        Raises:
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the profile is corrupted or invalid.
+        """
+        store = (
+            self._profile_store
+            if profile_store_dir is None
+            else LLMProfileStore(profile_store_dir)
+        )
+        return store.load(profile_name, cipher=self._cipher)
 
     def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
