@@ -650,6 +650,44 @@ class TestCloudWorkspaceRepoMethods:
             assert "## Cloned Repositories" in context
             assert "`owner/repo`" in context
 
+    def test_load_skills_from_agent_server_preserves_base_context(self):
+        """OpenHandsCloudWorkspace override must forward base_context through
+        to RemoteWorkspace so caller-configured AgentContext fields survive."""
+        from openhands.sdk.context import AgentContext
+        from openhands.workspace import OpenHandsCloudWorkspace
+
+        with patch.object(
+            OpenHandsCloudWorkspace, "model_post_init", lambda self, ctx: None
+        ):
+            workspace = OpenHandsCloudWorkspace(
+                cloud_api_url="https://test.com",
+                cloud_api_key="test-key",
+                local_agent_server_mode=True,
+            )
+            workspace._sandbox_id = "test-sandbox"
+            workspace._session_api_key = "test-session"
+            workspace.working_dir = "/workspace/project"
+            workspace.host = "http://localhost:8000"
+
+            base_context = AgentContext(
+                marketplace_path="internal/marketplace.json",
+                disabled_skills=["risky-skill"],
+            )
+
+            with patch.object(
+                workspace,
+                "_call_skills_api",
+                return_value=[{"name": "test-skill", "content": "Test content"}],
+            ):
+                skills, context = workspace.load_skills_from_agent_server(
+                    base_context=base_context
+                )
+
+            assert len(skills) == 1
+            assert context.marketplace_path == "internal/marketplace.json"
+            assert context.disabled_skills == ["risky-skill"]
+            assert context.load_public_skills is False
+
 
 class TestCloneReposIntegration:
     """Integration tests for clone_repos using real git operations.

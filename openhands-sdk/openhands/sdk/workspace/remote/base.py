@@ -853,6 +853,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
+        base_context: "AgentContext | None" = None,
     ) -> tuple[list["Skill"], "AgentContext"]:
         """Load skills via the agent-server's /api/skills endpoint.
 
@@ -873,6 +874,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             load_project: Load project skills from workspace directories.
             load_org: Load organization-level skills.
             timeout: Request timeout in seconds.
+            base_context: Existing AgentContext to preserve. All of its
+                fields survive except `skills` and `load_public_skills`,
+                which this method always sets based on whether skills
+                were found. Defaults to None, which starts from a fresh
+                AgentContext — today's behavior.
 
         Returns:
             Tuple of (list of Skill objects, AgentContext).
@@ -925,11 +931,18 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if loaded_skills:
             logger.debug(f"Skills: {[s.name for s in loaded_skills]}")
 
-        # Create AgentContext - fall back to public skills if none loaded
+        # Update `base_context` (or start fresh if none given) with the
+        # newly loaded skills — every other field the caller configured is
+        # preserved. Fall back to public skills if none loaded.
+        base = base_context if base_context is not None else AgentContext()
         if loaded_skills:
-            agent_context = AgentContext(skills=loaded_skills, load_public_skills=False)
+            agent_context = base.model_copy(
+                update={"skills": loaded_skills, "load_public_skills": False}
+            )
         else:
             logger.warning("No skills loaded, falling back to public skills")
-            agent_context = AgentContext(skills=[], load_public_skills=True)
+            agent_context = base.model_copy(
+                update={"skills": [], "load_public_skills": True}
+            )
 
         return loaded_skills, agent_context
