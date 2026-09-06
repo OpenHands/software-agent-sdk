@@ -1896,6 +1896,14 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
+        stored = _validate_execution_workspace(
+            stored,
+            runtime=self.execution_runtime,
+            image=self.execution_image,
+            platform=self.execution_platform,
+            volumes=self.execution_volumes,
+            execution_scope=self.execution_scope,
+        )
         async with self._conversation_lifecycle(conversation_id):
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.

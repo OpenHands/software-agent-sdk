@@ -224,6 +224,32 @@ def test_start_request_accepts_explicit_docker_workspace_payload():
     assert type(request.workspace) is DockerExecutionWorkspace
 
 
+def test_server_restores_execution_scope_after_workspace_serialization():
+    workspace = DockerExecutionWorkspace(working_dir="/workspace")
+    workspace.set_execution_scope("deployment-scope")
+    stored = StoredConversation(
+        id=uuid4(),
+        workspace=DockerExecutionWorkspace.model_validate(
+            workspace.model_dump(mode="json")
+        ),
+    )
+
+    assert type(stored.workspace) is DockerExecutionWorkspace
+    assert stored.workspace._execution_scope is None
+
+    validated = _validate_execution_workspace(
+        stored,
+        runtime="docker",
+        image="execution:test",
+        platform="linux/amd64",
+        volumes=[],
+        execution_scope="deployment-scope",
+    )
+
+    assert type(validated.workspace) is DockerExecutionWorkspace
+    assert validated.workspace._execution_scope == "deployment-scope"
+
+
 def test_docker_workspace_rejects_host_tool_executors():
     workspace = DockerExecutionWorkspace()
     tool = _HostTool.create()[0]
