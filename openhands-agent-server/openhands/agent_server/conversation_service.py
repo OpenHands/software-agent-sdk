@@ -1421,6 +1421,7 @@ class ConversationService:
         if parent_service is None:
             raise ValueError(f"Parent conversation not found: {parent_id}")
         parent_conversation = parent_service.get_conversation()
+        parent_stored = parent_service.stored
         request = StartConversationRequest(
             agent=parent_conversation.agent,
             workspace=parent_conversation.workspace,
@@ -1428,8 +1429,21 @@ class ConversationService:
             parent_conversation_id=parent_id,
             title=action.title,
             autotitle=False,
-            confirmation_policy=parent_service.stored.confirmation_policy,
-            security_analyzer=parent_service.stored.security_analyzer,
+            # Inherit all conversation-scoped controls from the parent so the
+            # child respects the same guardrails (hooks, iteration caps,
+            # secrets, security policy, observability, tags, etc.).
+            confirmation_policy=parent_stored.confirmation_policy,
+            security_analyzer=parent_stored.security_analyzer,
+            max_iterations=parent_stored.max_iterations,
+            stuck_detection=parent_stored.stuck_detection,
+            hook_config=parent_stored.hook_config,
+            secrets=parent_stored.secrets,
+            tags=parent_stored.tags,
+            user_id=parent_stored.user_id,
+            observability_metadata=parent_stored.observability_metadata,
+            observability_tags=parent_stored.observability_tags,
+            observability_span_name=parent_stored.observability_span_name,
+            title_llm_profile=parent_stored.title_llm_profile,
             initial_message=SendMessageRequest(
                 role="user",
                 content=[TextContent(text=action.task)],

@@ -200,3 +200,46 @@ async def test_child_inherits_parent_security_policy(tmp_path: Path) -> None:
         child_info = await service.get_conversation(UUID(child.conversation_id))
         assert child_info is not None
         assert child_info.confirmation_policy == parent.confirmation_policy
+
+
+@pytest.mark.asyncio
+async def test_child_inherits_parent_runtime_controls(tmp_path: Path) -> None:
+    """Child conversation must inherit max_iterations, stuck_detection, hooks,
+    secrets, and tags from the parent's stored configuration."""
+    from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+    from openhands.sdk.secret import StaticSecret
+
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    hook_cfg = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="terminal",
+                hooks=[HookDefinition(command="echo blocked")],
+            )
+        ]
+    )
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        parent, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent=_agent(),
+                workspace=LocalWorkspace(working_dir=workspace_dir),
+                max_iterations=42,
+                stuck_detection=False,
+                hook_config=hook_cfg,
+                secrets={"API_KEY": StaticSecret(value="secret-value")},
+                tags={"env": "test"},
+            )
+        )
+        child = await service._launch_child_conversation(
+            parent.id,
+            LaunchChildConversationAction(task="inspect files"),
+        )
+        child_service = await service.get_event_service(UUID(child.conversation_id))
+        assert child_service is not None
+        child_stored = child_service.stored
+        assert child_stored.max_iterations == 42
+        assert child_stored.stuck_detection is False
+        assert child_stored.hook_config == hook_cfg
+        assert child_stored.tags == {"env": "test"}

@@ -403,19 +403,20 @@ class EventService:
         return self._conversation
 
     def launch_child_conversation(self, action: object):
-        """Launch a child through the owning service from a tool worker thread."""
+        """Launch a child through the owning service from a tool worker thread.
+
+        Blocks until the child conversation is fully created (or raises on
+        failure).  No timeout is imposed so that a successful launch always
+        returns the child identity and a failed launch propagates the real
+        exception — neither orphaned children nor spurious timeout errors are
+        possible.
+        """
         if self.child_launcher is None or not hasattr(self, "_main_loop"):
             raise RuntimeError("Child conversations are not supported in this context")
         future = asyncio.run_coroutine_threadsafe(
             self.child_launcher(self.stored.id, action), self._main_loop
         )
-        try:
-            return future.result(timeout=30)
-        except TimeoutError:
-            future.cancel()
-            raise RuntimeError(
-                f"Timed out launching child conversation for {self.stored.id}"
-            )
+        return future.result()
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
