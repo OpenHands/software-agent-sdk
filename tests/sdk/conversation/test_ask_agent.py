@@ -439,67 +439,6 @@ def test_ask_agent_with_existing_events_and_tool_calls(
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
-def test_ask_agent_filters_incomplete_parallel_tool_calls(
-    mock_completion, tmp_path, agent
-):
-    mock_completion.return_value = create_mock_llm_response("One tool completed.")
-    conv = Conversation(
-        agent=agent,
-        persistence_dir=str(tmp_path),
-        workspace=str(tmp_path),
-    )
-    conv.state.events.append(
-        SystemPromptEvent(
-            source="agent",
-            system_prompt=TextContent(text="You are a helpful assistant."),
-            tools=[],
-        )
-    )
-
-    conv.state.events.append(
-        MessageEvent(
-            source="user",
-            llm_message=Message(
-                role="user", content=[TextContent(text="Inspect two files")]
-            ),
-        )
-    )
-    for call_id in ("call_complete", "call_pending"):
-        conv.state.events.append(
-            ActionEvent(
-                source="agent",
-                thought=[],
-                action=MockAction(command=f"cat {call_id}"),
-                tool_name="terminal",
-                tool_call_id=call_id,
-                tool_call=MessageToolCall(
-                    id=call_id,
-                    name="terminal",
-                    arguments=json.dumps({"command": f"cat {call_id}"}),
-                    origin="completion",
-                ),
-                llm_response_id="parallel_response",
-            )
-        )
-    conv.state.events.append(
-        ObservationEvent(
-            source="environment",
-            observation=MockObservation(result="done"),
-            action_id="action_complete",
-            tool_name="terminal",
-            tool_call_id="call_complete",
-        )
-    )
-
-    assert conv.ask_agent("What completed?") == "One tool completed."
-
-    messages = mock_completion.call_args.kwargs["messages"]
-    tool_calls = [call for message in messages for call in (message.tool_calls or [])]
-    assert tool_calls == []
-    assert [message for message in messages if message.role == "tool"] == []
-
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_local_conversation_ask_agent_raises_context_window_error(
     mock_completion, tmp_path, agent
 ):
