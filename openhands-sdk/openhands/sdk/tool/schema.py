@@ -141,7 +141,7 @@ def _process_schema_node(
         non_null_types = [
             t
             for t in node["anyOf"]
-            if not isinstance(t, dict) or t.get("type") != "null"
+            if t is True or (isinstance(t, dict) and t.get("type") != "null")
         ]
         if non_null_types:
             # Process the first non-null type
