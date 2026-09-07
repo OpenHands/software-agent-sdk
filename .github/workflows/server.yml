@@ -4,8 +4,6 @@ name: Agent Server
 on:
     push:
         branches: [main]
-        tags:
-            - '*'  # Trigger on any tag (e.g., 1.0.0, 1.0.0a5, build-docker)
     pull_request:
         branches: [main]
     workflow_dispatch:
