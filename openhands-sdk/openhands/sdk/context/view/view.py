@@ -7,13 +7,16 @@ from typing import overload
 from pydantic import BaseModel, Field
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
-from openhands.sdk.context.view.properties import ALL_PROPERTIES
+from openhands.sdk.context.view.properties import (
+    ALL_PROPERTIES,
+    ToolCallMatchingProperty,
+)
 from openhands.sdk.event import (
     Condensation,
     CondensationRequest,
     LLMConvertibleEvent,
 )
-from openhands.sdk.event.base import Event
+from openhands.sdk.event.base import Event, EventID
 
 
 logger = getLogger(__name__)
@@ -74,6 +77,8 @@ class View(BaseModel):
     def enforce_properties(
         self,
         all_events: Sequence[Event],
+        *,
+        allowed_unmatched_action_ids: set[EventID] | None = None,
     ) -> None:
         """Enforce all properties on the list of current view events.
 
@@ -84,10 +89,16 @@ class View(BaseModel):
         properties via the associated manipulation indices, any time a property must be
         enforced a warning is logged.
 
+        ``allowed_unmatched_action_ids`` identifies action events that may appear
+        without matching observations, such as actions awaiting user confirmation.
+
         Modifies the view in-place.
         """
+        allowed_unmatched_action_ids = allowed_unmatched_action_ids or set()
         for property in ALL_PROPERTIES:
             events_to_forget = property.enforce(self.events, all_events)
+            if isinstance(property, ToolCallMatchingProperty):
+                events_to_forget -= allowed_unmatched_action_ids
             if events_to_forget:
                 logger.warning(
                     f"Property {property.__class__} enforced, "
@@ -106,7 +117,10 @@ class View(BaseModel):
 
         # If we did hit a break in the loop, a property applied and now we need to check
         # all the properties again to see if any are unblocked.
-        self.enforce_properties(all_events)
+        self.enforce_properties(
+            all_events,
+            allowed_unmatched_action_ids=allowed_unmatched_action_ids,
+        )
 
     def append_event(self, event: Event) -> None:
         """Append an event to the end of the view, applying any condensation semantics
@@ -140,7 +154,11 @@ class View(BaseModel):
                 )
 
     @staticmethod
-    def from_events(events: Sequence[Event]) -> View:
+    def from_events(
+        events: Sequence[Event],
+        *,
+        allowed_unmatched_action_ids: set[EventID] | None = None,
+    ) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
@@ -155,6 +173,9 @@ class View(BaseModel):
 
         # Once all the events are loaded enforce the relevant properties to ensure
         # the construction was done properly.
-        result.enforce_properties(events)
+        result.enforce_properties(
+            events,
+            allowed_unmatched_action_ids=allowed_unmatched_action_ids,
+        )
 
         return result
