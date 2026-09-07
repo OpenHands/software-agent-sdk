@@ -9,13 +9,12 @@ import pytest
 from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 from pydantic import SecretStr
 
-from openhands.agent_server import server_details_router
+from openhands.agent_server import conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event
 from openhands.sdk.agent import ACPAgent, Agent
-from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
@@ -36,24 +35,16 @@ def _make_chunk(
 
 
 class _CollectorSubscriber(Subscriber):
-    """Subscriber that opts into deltas and collects events for assertions."""
-
-    receives_streaming_deltas = True
+    """Collects whatever bus it is attached to."""
 
     def __init__(self):
-        self.events: list[Event] = []
+        self.events: list[Event | StreamingDeltaEvent] = []
 
-    async def __call__(self, event: Event):
+    async def __call__(self, event: Event | StreamingDeltaEvent):
         self.events.append(event)
 
     async def close(self):
         pass
-
-
-class _PlainSubscriber(_CollectorSubscriber):
-    """Collector that keeps the default: it must never observe a delta."""
-
-    receives_streaming_deltas = False
 
 
 @pytest.fixture
@@ -136,7 +127,7 @@ async def test_callback_publishes_delta(
     event_service, tmp_path, chunk_kwargs, expected_content, expected_reasoning
 ):
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
 
@@ -153,7 +144,7 @@ async def test_callback_publishes_delta(
 async def test_callback_ignores_delta_with_no_content_fields(event_service, tmp_path):
     """Chunks where both content and reasoning_content are None are dropped."""
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
 
@@ -168,7 +159,7 @@ async def test_callback_ignores_delta_with_no_content_fields(event_service, tmp_
 async def test_callback_forwards_empty_string_delta(event_service, tmp_path):
     """Empty-string chunks (legitimate at stream boundaries) must be forwarded."""
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
     callback(_make_chunk(content=""))
@@ -183,7 +174,7 @@ async def test_callback_forwards_empty_string_delta(event_service, tmp_path):
 async def test_callback_handles_none_choices(event_service, tmp_path):
     """Some providers emit keepalive chunks with choices=None."""
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
     keepalive = ModelResponseStream(id="k", choices=[], model="test-model")
@@ -265,7 +256,7 @@ async def test_acp_string_token_callback_publishes_delta(tmp_path):
         conversations_dir=tmp_path / "conversations",
     )
     collector = _CollectorSubscriber()
-    service._pub_sub.subscribe(collector)
+    service._delta_pub_sub.subscribe(collector)
     (tmp_path / "workspace").mkdir(exist_ok=True)
 
     with _mock_local_conversation() as MockConv:
@@ -290,7 +281,7 @@ async def test_acp_string_token_callback_publishes_delta(tmp_path):
 @pytest.mark.asyncio
 async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
 
@@ -306,63 +297,43 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deltas_only_reach_subscribers_that_opted_in(event_service, tmp_path):
-    """Deltas reach only subscribers that opted in, never the rest of the bus."""
+async def test_deltas_never_reach_the_durable_bus(event_service, tmp_path):
+    """Durable subscribers must never see a delta."""
     streaming = _CollectorSubscriber()
-    plain = _PlainSubscriber()
-    event_service._pub_sub.subscribe(streaming)
-    event_service._pub_sub.subscribe(plain)
+    durable = _CollectorSubscriber()
+    event_service._delta_pub_sub.subscribe(streaming)
+    event_service._pub_sub.subscribe(durable)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
     callback(_make_chunk(content="Hello"))
     await asyncio.sleep(0.05)
 
     assert [e for e in streaming.events if isinstance(e, StreamingDeltaEvent)]
-    assert not [e for e in plain.events if isinstance(e, StreamingDeltaEvent)]
-
-
-# The runtime-api reaps a managed pod once /server_info reports this much
-# idle time; the value it injects is ~20 min.
-_IDLE_THRESHOLD = 20 * 60.0
+    assert not [e for e in durable.events if isinstance(e, StreamingDeltaEvent)]
 
 
 @pytest.mark.asyncio
-async def test_deltas_keep_idle_time_below_the_threshold(
-    event_service, tmp_path, monkeypatch
-):
-    """A completion that streams past the idle threshold keeps the pod alive.
+async def test_deltas_reset_the_idle_timer(event_service):
+    """A stream with no durable events must still keep the pod alive (#4695)."""
+    subscriber = conversation_service._DeltaSubscriber(service=event_service)
+    event_service._delta_pub_sub.subscribe(subscriber)
+    event_service._last_active_monotonic = time.monotonic() - 600
 
-    Deltas are never persisted, so nothing on the durable-event path refreshes
-    the idle clock for the length of a single streamed completion.
-    """
-    callback = await _start_and_capture_callback(event_service, tmp_path)
+    with patch.object(conversation_service, "update_last_execution_time") as heartbeat:
+        await event_service._delta_pub_sub(StreamingDeltaEvent(content="tok"))
 
-    # Where a stream longer than the idle threshold, emitting no durable
-    # event, leaves the server: one reap away from losing the completion.
-    monkeypatch.setattr(
-        server_details_router,
-        "_last_event_time",
-        time.time() - 2 * _IDLE_THRESHOLD,
-    )
-
-    callback(_make_chunk(content="tok"))
-
-    assert (await server_details_router.get_server_info()).idle_time < _IDLE_THRESHOLD
+    heartbeat.assert_called_once_with()
+    assert event_service.idle_seconds() < 1
 
 
 @pytest.mark.asyncio
-async def test_delta_idle_signal_is_throttled(event_service, tmp_path, monkeypatch):
-    """The first delta touches the idle timer; the rest of the interval does not."""
-    callback = await _start_and_capture_callback(event_service, tmp_path)
+async def test_delta_heartbeat_is_throttled(event_service):
+    """Deltas arrive at token rate; the heartbeat must not."""
+    subscriber = conversation_service._DeltaSubscriber(service=event_service)
+    event_service._delta_pub_sub.subscribe(subscriber)
 
-    stale = time.time() - 2 * ACTIVITY_SIGNAL_INTERVAL
-    monkeypatch.setattr(server_details_router, "_last_event_time", stale)
+    with patch.object(conversation_service, "update_last_execution_time") as heartbeat:
+        for _ in range(100):
+            await event_service._delta_pub_sub(StreamingDeltaEvent(content="tok"))
 
-    # A service that has never signalled must not throttle its own first
-    # delta, however long the process clock has been running.
-    callback(_make_chunk(content="first"))
-    assert server_details_router._last_event_time > stale
-
-    monkeypatch.setattr(server_details_router, "_last_event_time", stale)
-    callback(_make_chunk(content="second"))
-    assert server_details_router._last_event_time == stale
+    heartbeat.assert_called_once_with()
