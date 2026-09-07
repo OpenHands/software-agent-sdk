@@ -513,12 +513,13 @@ def test_update_nonexistent_extension(
     assert info is None
 
 
-def test_update_clears_requested_ref_to_track_latest(
+def test_update_preserves_pinned_requested_ref(
     manager: InstallationManager[MockExtension],
     mock_extension_dir: Path,
 ):
-    """update() re-fetches with ref=None, so a previously pinned requested_ref
-    is cleared to reflect that the extension now tracks the latest version."""
+    """update() re-fetches at the recorded requested_ref instead of ref=None,
+    so a pinned install stays pinned (only its resolved SHA may move, e.g.
+    a moved tag). Regression guard for issue #4363."""
     with patch(
         "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
         return_value=(mock_extension_dir, "abc123"),
@@ -530,5 +531,31 @@ def test_update_clears_requested_ref_to_track_latest(
         updated = manager.update("mock-extension")
 
     assert updated is not None
+    assert updated.requested_ref == "v1.0.0"
+    assert updated.resolved_ref == "def456"
+    # update() must re-fetch at the pinned ref, not the default branch.
+    assert mock_fetch.call_count == 2
+    assert mock_fetch.call_args.kwargs["ref"] == "v1.0.0"
+
+
+def test_update_floating_install_resolves_latest(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+):
+    """update() on a floating install (requested_ref is None) still resolves
+    to the source's current default-branch HEAD, same as before."""
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        return_value=(mock_extension_dir, "abc123"),
+    ) as mock_fetch:
+        info = manager.install(source="github:org/repo")
+        assert info.requested_ref is None
+
+        mock_fetch.return_value = (mock_extension_dir, "def456")
+        updated = manager.update("mock-extension")
+
+    assert updated is not None
     assert updated.requested_ref is None
     assert updated.resolved_ref == "def456"
+    assert mock_fetch.call_count == 2
+    assert mock_fetch.call_args.kwargs["ref"] is None
