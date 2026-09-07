@@ -152,6 +152,7 @@ conversation = Conversation(
     workspace=Path.cwd(),
     visualizer=DelegationVisualizer(name="Orchestrator"),
     persistence_dir=persistence_dir,
+    max_iteration_per_run=20,
 )
 
 print("=" * 80)
