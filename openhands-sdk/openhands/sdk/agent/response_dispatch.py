@@ -281,7 +281,7 @@ class ResponseDispatchMixin:
         """Create and emit a MessageEvent, running critic if configured."""
         msg_event = MessageEvent(
             source="agent",
-            llm_message=message,
+            llm_message=self._mask_secrets(message, conversation),
             llm_response_id=llm_response.id,
         )
         if self.critic is not None and self.critic.mode == "finish_and_message":
@@ -292,6 +292,28 @@ class ResponseDispatchMixin:
                 )
         on_event(msg_event)
         return msg_event
+
+    @staticmethod
+    def _mask_secrets(message: Message, conversation: LocalConversation) -> Message:
+        """Return ``message`` with registered secret values masked in its text.
+
+        ``thinking_blocks`` and ``responses_reasoning_item`` are left alone:
+        they are signed provider payloads, and rewriting them invalidates the
+        signature replayed on the next request.
+        """
+        mask = conversation.state.secret_registry.mask_secrets_in_output
+        reasoning = message.reasoning_content
+        return message.model_copy(
+            update={
+                "content": [
+                    part.model_copy(update={"text": mask(part.text)})
+                    if isinstance(part, TextContent)
+                    else part
+                    for part in message.content
+                ],
+                "reasoning_content": mask(reasoning) if reasoning else reasoning,
+            }
+        )
 
     def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
         """Inject corrective feedback when no tool call and no content.

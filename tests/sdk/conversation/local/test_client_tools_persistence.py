@@ -1,11 +1,31 @@
 """Persistence/resume behavior for client-defined tools on LocalConversation."""
 
+import gc
 import uuid
 from pathlib import Path
+
+import pytest
 
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.tool import Tool, client_tool as ct, registry as reg
 from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.utils.models import clear_subclass_cache
+
+
+@pytest.fixture(autouse=True)
+def _collect_dynamic_client_tool_classes():
+    """Drop the dynamic ``ClientAction_*`` classes these tests define.
+
+    Each client tool spec builds a new class, so a test that registers the same
+    tool name twice leaves two same-named classes behind. They are only
+    reachable through reference cycles, so until a cyclic collection runs they
+    stay in ``Action.__subclasses__()`` and make the duplicate-class check in
+    ``_get_checked_concrete_subclasses`` fail in *unrelated* later tests.
+    Collecting on teardown, once the test frame is gone, keeps that leak local.
+    """
+    yield
+    gc.collect()
+    clear_subclass_cache()
 
 
 def _make_agent() -> Agent:

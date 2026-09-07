@@ -29,6 +29,9 @@ permissions:
 
 jobs:
     resolve-tag:
+        if: >-
+            github.event_name != 'release' ||
+            startsWith(github.event.release.tag_name, 'v')
         name: Resolve artifact and image tag
         runs-on: ubuntu-24.04
         outputs:

@@ -14,12 +14,13 @@ from openhands.sdk.extensions.installation import (
     InstallationManager,
 )
 from openhands.sdk.plugin.plugin import Plugin
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 # Public type alias — keeps existing import sites working.
 InstalledPluginInfo = InstallationInfo
 
-DEFAULT_INSTALLED_PLUGINS_DIR = Path.home() / ".openhands" / "plugins" / "installed"
+DEFAULT_INSTALLED_PLUGINS_DIR = get_user_persistence_dir() / "plugins" / "installed"
 
 
 def get_installed_plugins_dir() -> Path:

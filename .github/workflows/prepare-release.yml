@@ -55,6 +55,13 @@ jobs:
                   echo "🔧 Setting version to $INPUTS_VERSION"
                   make set-package-version version="$INPUTS_VERSION"
 
+            - name: Set TypeScript client version
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
+              run: |
+                  npm --prefix clients/typescript version "$INPUTS_VERSION" \
+                    --no-git-tag-version --ignore-scripts
+
             - name: Commit version changes
               env:
                   INPUTS_VERSION: ${{ inputs.version }}

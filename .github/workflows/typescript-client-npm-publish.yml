@@ -1,0 +1,74 @@
+---
+name: Publish TypeScript client to npm
+
+on:
+    release:
+        types: [published]
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Version to publish without a leading v
+                required: true
+                type: string
+
+concurrency:
+    group: typescript-client-npm-publish-${{ github.ref }}
+    cancel-in-progress: false
+
+permissions:
+    contents: read
+    id-token: write
+
+defaults:
+    run:
+        working-directory: clients/typescript
+
+jobs:
+    publish:
+        if: >-
+            github.event_name == 'workflow_dispatch' ||
+            (!github.event.release.prerelease &&
+             startsWith(github.event.release.tag_name, 'v'))
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Check out repository
+              uses: actions/checkout@v4
+
+            - name: Set up Node.js for npm trusted publishing
+              uses: actions/setup-node@v6
+              with:
+                  node-version: '22'
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+                  registry-url: https://registry.npmjs.org
+
+            - name: Upgrade npm for trusted publishing
+              run: npm install -g npm@latest
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run tests
+              run: npm test
+
+            - name: Set package version
+              env:
+                  DISPATCH_VERSION: ${{ inputs.version }}
+                  RELEASE_TAG: ${{ github.event.release.tag_name }}
+              run: |
+                  if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+                    target_version="$DISPATCH_VERSION"
+                  else
+                    target_version="${RELEASE_TAG#v}"
+                  fi
+                  npm version "$target_version" --no-git-tag-version --allow-same-version
+
+            - name: Build package
+              run: npm run build
+
+            - name: Verify package contents
+              run: npm pack --dry-run
+
+            - name: Publish to npm
+              run: npm publish --access public --provenance --tag latest
