@@ -277,6 +277,27 @@ class TestLLMAPISerialization:
         assert len(llm_data["content"]) == 2
         assert llm_data["content"][0]["type"] == "text"
         assert llm_data["content"][1]["type"] == "image_url"
+        
+    def test_tool_message_omits_cache_when_cache_disabled_with_function_calling(self):
+        message = Message(
+        role="tool",
+        content=[TextContent(text="Tool response", cache_prompt=True)],
+        tool_call_id="call_123",
+        name="test_tool",
+        )
+        llm_data = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "cache_enabled": False,
+            "function_calling_enabled": True,
+            }
+        )
+
+        assert "cache_control" not in llm_data
+        assert "cache_control" not in llm_data["content"][0]
+        
+        
+
 
 
 class TestSerializationPathSelection:
