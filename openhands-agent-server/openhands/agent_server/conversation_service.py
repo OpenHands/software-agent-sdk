@@ -1428,6 +1428,8 @@ class ConversationService:
             parent_conversation_id=parent_id,
             title=action.title,
             autotitle=False,
+            confirmation_policy=parent_service.stored.confirmation_policy,
+            security_analyzer=parent_service.stored.security_analyzer,
             initial_message=SendMessageRequest(
                 role="user",
                 content=[TextContent(text=action.task)],

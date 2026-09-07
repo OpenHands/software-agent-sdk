@@ -13,6 +13,7 @@ from openhands.sdk.tool import (
     ToolExecutor,
     register_tool,
 )
+from openhands.sdk.tool.client_tool import register_reserved_native_tool_name
 
 
 class LaunchChildConversationAction(Action):
@@ -92,3 +93,4 @@ class LaunchChildConversationTool(
 
 
 register_tool(LaunchChildConversationTool.name, LaunchChildConversationTool)
+register_reserved_native_tool_name(LaunchChildConversationTool.name)

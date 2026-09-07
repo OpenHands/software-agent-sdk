@@ -155,3 +155,48 @@ async def test_child_launch_uses_worktree_isolation(tmp_path: Path) -> None:
         assert child_info.parent_conversation_id == parent.id
         assert child_info.workspace.working_dir != str(repo_dir)
         assert Path(child_info.workspace.working_dir).exists()
+
+
+def test_legacy_client_tool_spec_for_native_name_is_dropped() -> None:
+    """Old clients that still send a ClientToolSpec for launch_child_conversation
+    should not cause a collision error; the spec is silently dropped."""
+    from openhands.sdk.tool.client_tool import (
+        ClientToolSpec,
+        register_client_tools,
+    )
+
+    specs = [
+        ClientToolSpec(
+            name="launch_child_conversation",
+            description="legacy client-side launcher",
+            parameters={"type": "object", "properties": {}},
+        )
+    ]
+    result = register_client_tools(specs)
+    assert result == []  # dropped, not registered as a client tool
+
+
+@pytest.mark.asyncio
+async def test_child_inherits_parent_security_policy(tmp_path: Path) -> None:
+    """Child conversation should inherit confirmation_policy and security_analyzer
+    from the parent."""
+    from openhands.sdk.security.confirmation_policy import NeverConfirm
+
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        parent, _ = await service.start_conversation(
+            StartConversationRequest(
+                agent=_agent(),
+                workspace=LocalWorkspace(working_dir=workspace_dir),
+                confirmation_policy=NeverConfirm(),
+            )
+        )
+        child = await service._launch_child_conversation(
+            parent.id,
+            LaunchChildConversationAction(task="inspect files"),
+        )
+        child_info = await service.get_conversation(UUID(child.conversation_id))
+        assert child_info is not None
+        assert child_info.confirmation_policy == parent.confirmation_policy

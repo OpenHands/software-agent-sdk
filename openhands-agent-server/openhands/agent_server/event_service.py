@@ -409,7 +409,13 @@ class EventService:
         future = asyncio.run_coroutine_threadsafe(
             self.child_launcher(self.stored.id, action), self._main_loop
         )
-        return future.result(timeout=30)
+        try:
+            return future.result(timeout=30)
+        except TimeoutError:
+            future.cancel()
+            raise RuntimeError(
+                f"Timed out launching child conversation for {self.stored.id}"
+            )
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
