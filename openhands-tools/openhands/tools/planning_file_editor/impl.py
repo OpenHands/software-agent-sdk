@@ -7,7 +7,6 @@ from openhands.sdk.tool import ToolExecutor
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
-from openhands.tools.file_editor.definition import FileEditorAction
 from openhands.tools.file_editor.impl import FileEditorExecutor
 from openhands.tools.planning_file_editor.definition import (
     PlanningFileEditorAction,
@@ -43,24 +42,15 @@ class PlanningFileEditorExecutor(ToolExecutor):
         Returns:
             PlanningFileEditorObservation with the result
         """
-        # Convert PlanningFileEditorAction to FileEditorAction
-        file_editor_action = FileEditorAction(
-            command=action.command,
-            path=action.path,
-            file_text=action.file_text,
-            old_str=action.old_str,
-            new_str=action.new_str,
-            insert_line=action.insert_line,
-            view_range=action.view_range,
-        )
+        # PlanningFileEditorAction is a FileEditorAction, so the base executor
+        # takes it unchanged. Rebuilding one field by field only lets the two
+        # definitions drift apart.
+        file_editor_obs = self.file_editor_executor(action)
 
-        # Execute with FileEditorExecutor
-        file_editor_obs = self.file_editor_executor(file_editor_action)
-
-        # Convert FileEditorObservation to PlanningFileEditorObservation
+        # Carry the whole base observation across rather than a hand-maintained
+        # field list, which silently dropped prev_exist / old_content /
+        # new_content and would drop any field added to the base later. `kind`
+        # is a computed discriminator and is re-derived by this subclass.
         return PlanningFileEditorObservation(
-            command=action.command,
-            content=file_editor_obs.content,
-            is_error=file_editor_obs.is_error,
-            path=file_editor_obs.path,
+            **file_editor_obs.model_dump(exclude={"kind"})
         )
