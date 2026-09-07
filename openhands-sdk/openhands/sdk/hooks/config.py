@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = logging.getLogger(__name__)
@@ -292,7 +293,7 @@ class HookConfig(BaseModel):
             base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
                 base_dir / ".openhands" / "hooks.json",
-                Path.home() / ".openhands" / "hooks.json",
+                get_user_persistence_dir() / "hooks.json",
             ]
             for search_path in search_paths:
                 if search_path.exists():

@@ -109,23 +109,19 @@ After successful PyPI publication, the workflow will automatically create PRs to
 
 - **[OpenHands-CLI](https://github.com/OpenHands/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
 - **[automation](https://github.com/OpenHands/automation)** - Updates `openhands-sdk` and `openhands-workspace` versions. Opened with a `fix:` title so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK (which the agent-canvas `sdk-version-sync` check requires).
-- **[typescript-client](https://github.com/OpenHands/typescript-client)** -
-  Waits for both the exact GHCR image and the release `openapi.json`, updates
-  `config.agentServerImage`, regenerates the checked-in transport types,
-  and includes an API-change summary. Required client PR CI then runs pinned
-  regeneration, type checking, and integration tests before merge.
+- **TypeScript client (`clients/typescript`)** - Opens a PR in this repository after both the exact GHCR image and release `openapi.json` are available, updates `config.agentServerImage`, regenerates the checked-in transport types, and includes an API-change summary.
 
 These PRs will:
 - Be created automatically with branch name `bump-sdk-X.Y.Z` (`bump-agent-server-X.Y.Z` for typescript-client)
 - Include links back to the SDK release
 - Include generated Agent Server contract changes for the exact released
   version rather than only changing the image tag
-- Need to be reviewed and merged by the respective repository maintainers
+- Need to be reviewed and merged by maintainers
 
 ### Step 6: Post-Release Tasks
 
 - [ ] Merge the release PR to main
-- [ ] Review and merge the auto-created version bump PRs in OpenHands-CLI, automation, and typescript-client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
+- [ ] Review and merge the auto-created version bump PRs in OpenHands-CLI, automation, and the TypeScript client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
 - [ ] Announce the release
 
 ## Manual PyPI Release (If Needed)

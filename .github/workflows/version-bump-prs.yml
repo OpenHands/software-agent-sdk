@@ -303,11 +303,8 @@ jobs:
                       text: "🚀 *SDK v${{ steps.get_version.outputs.version }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands-CLI>\n• <https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|automation>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ steps.get_version.outputs.version }}|View Release>"
 
     bump-typescript-client:
-        # Open a PR in OpenHands/typescript-client bumping the pinned
-        # agent-server image (package.json -> config.agentServerImage) to this
-        # release. The agent-server image tag <version>-python corresponds 1:1
-        # to the SDK release vX.Y.Z. Runs independently of the package bumps
-        # above so it can't affect the OpenHands / openhands-cli PRs.
+        # Open a PR in this repository bumping the TypeScript client's pinned
+        # agent-server image and generated contract to this SDK release.
         runs-on: ubuntu-24.04
         timeout-minutes: 60
         env:
@@ -320,6 +317,8 @@ jobs:
               uses: actions/setup-node@v6
               with:
                   node-version: 22
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
 
             - name: Get version
               id: get_version
@@ -340,23 +339,16 @@ jobs:
               run: |
                   set -euo pipefail
                   IMAGE="ghcr.io/openhands/agent-server:${VERSION}-python"
-                  MAX_ATTEMPTS=90
-                  SLEEP_SECONDS=30
-                  echo "⏳ Waiting for ${IMAGE} to be published..."
-                  ATTEMPT=1
-                  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                  for ATTEMPT in $(seq 1 90); do
                     if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
                       echo "✅ ${IMAGE} is published"
-                      break
+                      exit 0
                     fi
-                    echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: not ready, waiting ${SLEEP_SECONDS}s..."
-                    sleep $SLEEP_SECONDS
-                    ATTEMPT=$((ATTEMPT + 1))
+                    echo "Attempt $ATTEMPT/90: waiting 30s for ${IMAGE}"
+                    sleep 30
                   done
-                  if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-                    echo "❌ Timeout waiting for ${IMAGE} (server.yml may still be building or failed)"
-                    exit 1
-                  fi
+                  echo "❌ Timeout waiting for ${IMAGE}"
+                  exit 1
 
             - name: Obtain exact OpenAPI release artifact
               id: openapi
@@ -367,12 +359,7 @@ jobs:
                   ARTIFACT_DIR="$RUNNER_TEMP/agent-server-$VERSION-openapi"
                   OPENAPI_PATH="$ARTIFACT_DIR/openapi.json"
                   mkdir -p "$ARTIFACT_DIR"
-
-                  MAX_ATTEMPTS=90
-                  SLEEP_SECONDS=20
-                  ATTEMPT=1
-                  echo "⏳ Waiting for openapi.json on SDK release v${VERSION}..."
-                  while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                  for ATTEMPT in $(seq 1 90); do
                     if gh release download "v$VERSION" \
                       --repo "${{ github.repository }}" \
                       --pattern openapi.json \
@@ -380,121 +367,86 @@ jobs:
                       --clobber > /dev/null 2>&1; then
                       jq -e --arg version "$VERSION" \
                         '.info.version == $version' "$OPENAPI_PATH" > /dev/null
-                      echo "✅ Downloaded exact OpenAPI artifact for v$VERSION"
                       echo "path=$OPENAPI_PATH" >> "$GITHUB_OUTPUT"
-                      break
+                      exit 0
                     fi
-                    echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: artifact not ready, waiting ${SLEEP_SECONDS}s..."
-                    sleep "$SLEEP_SECONDS"
-                    ATTEMPT=$((ATTEMPT + 1))
+                    echo "Attempt $ATTEMPT/90: waiting 20s for openapi.json"
+                    sleep 20
                   done
+                  echo "❌ Timeout waiting for SDK release v${VERSION} openapi.json"
+                  exit 1
 
-                  if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-                    echo "❌ Timeout waiting for SDK release v${VERSION} openapi.json"
-                    exit 1
-                  fi
-
-            - name: Open bump PR in typescript-client
+            - name: Open TypeScript client bump PR
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
                   OPENAPI_PATH: ${{ steps.openapi.outputs.path }}
               run: |
                   set -euo pipefail
-                  REPO="OpenHands/typescript-client"
-                  BRANCH="bump-agent-server-$VERSION"
+                  REPO="${{ github.repository }}"
+                  BRANCH="bump-typescript-agent-server-$VERSION"
+                  CLIENT_ROOT="clients/typescript"
                   BEFORE_SCHEMA="$RUNNER_TEMP/agent-server-schema-before.ts"
                   API_SUMMARY="$RUNNER_TEMP/agent-server-api-summary.md"
 
-                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" ts-client
-                  cd ts-client
+                  git fetch origin main
+                  git checkout -B "$BRANCH" origin/main
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
 
-                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-                    echo "⚠️ Branch $BRANCH exists, checking it out"
-                    git fetch origin "$BRANCH"
-                    git checkout "$BRANCH"
-                  else
-                    git checkout -b "$BRANCH"
-                  fi
-
-                  # Source of truth for the currently-pinned version.
-                  CURRENT=$(grep -oE 'agent-server:[0-9]+\.[0-9]+\.[0-9]+-python' package.json | head -1 | sed -E 's/.*:([0-9.]+)-python/\1/')
-                  if [ -z "$CURRENT" ]; then
-                    echo "❌ Could not determine current agent-server version from package.json"
-                    exit 1
-                  fi
+                  CURRENT=$(node -p "require('./$CLIENT_ROOT/package.json').config.agentServerImage.match(/agent-server:([0-9.]+)-python/)[1]")
                   if [ "$CURRENT" = "$VERSION" ]; then
-                    echo "✅ typescript-client already pinned to $VERSION — nothing to do"
+                    echo "✅ TypeScript client already pinned to $VERSION"
                     exit 0
                   fi
 
-                  cp src/generated/agent-server-schema.ts "$BEFORE_SCHEMA"
-                  npm ci
-                  python "$GITHUB_WORKSPACE/.github/scripts/prepare_typescript_client_agent_server_bump.py" \
-                    --client-root "$PWD" \
+                  cp "$CLIENT_ROOT/src/generated/agent-server-schema.ts" "$BEFORE_SCHEMA"
+                  npm ci --prefix "$CLIENT_ROOT"
+                  python .github/scripts/prepare_typescript_client_agent_server_bump.py \
+                    --client-root "$CLIENT_ROOT" \
                     --version "$VERSION" \
                     --openapi "$OPENAPI_PATH"
-                  AGENT_SERVER_OPENAPI_PATH="$OPENAPI_PATH" \
-                    npm run generate:agent-server-api
-                  npm run summarize:agent-server-api -- \
-                    --before "$BEFORE_SCHEMA" \
-                    --after src/generated/agent-server-schema.ts \
-                    --output "$API_SUMMARY"
+                  (
+                    cd "$CLIENT_ROOT"
+                    AGENT_SERVER_OPENAPI_PATH="$OPENAPI_PATH" npm run generate:agent-server-api
+                    npm run summarize:agent-server-api -- \
+                      --before "$BEFORE_SCHEMA" \
+                      --after src/generated/agent-server-schema.ts \
+                      --output "$API_SUMMARY"
+                  )
 
                   if git diff --quiet; then
-                    echo "⚠️ No changes produced — versions may already match"
+                    echo "⚠️ No changes produced"
                     exit 0
                   fi
 
-                  git add \
-                    package.json \
-                    .github/workflows/integration-tests.yml \
-                    AGENTS.md \
-                    README.md \
-                    src/generated/agent-server-schema.ts
-                  git commit -m "chore: agent-server (software-agent-sdk) to v$VERSION"
-                  git push -u origin "$BRANCH"
+                  git add "$CLIENT_ROOT/package.json" "$CLIENT_ROOT/AGENTS.md" \
+                    "$CLIENT_ROOT/README.md" "$CLIENT_ROOT/src/generated/agent-server-schema.ts"
+                  git commit -m "chore(typescript): agent-server to v$VERSION"
+                  git push --force-with-lease -u origin "$BRANCH"
 
                   EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
                   if [ -n "$EXISTING_PR" ]; then
-                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                    echo "✅ PR #$EXISTING_PR already exists"
                     exit 0
                   fi
 
-                  cat > pr_body.md <<EOF
-                  ## Bump tracked agent-server / SDK version
+                  cat > "$RUNNER_TEMP/pr_body.md" <<EOF
+                  ## Bump tracked Agent Server version
 
-                  Updates the pinned OpenHands software-agent-sdk / agent-server image from v${CURRENT} to v${VERSION} (package.json config.agentServerImage, plus the integration-tests.yml, AGENTS.md, and README.md mirrors).
-
-                  CI + integration tests on this PR run against ghcr.io/openhands/agent-server:${VERSION}-python, validating the client against the new server before merge. This does not release the npm package.
+                  Updates `clients/typescript` from Agent Server v${CURRENT} to v${VERSION} and regenerates its checked-in OpenAPI contract.
 
                   ## Agent Server API change summary
 
                   $(cat "$API_SUMMARY")
 
-                  Triggered by: software-agent-sdk v${VERSION} — https://github.com/OpenHands/software-agent-sdk/releases/tag/v${VERSION}
-
-                  ---
-                  Automatically created by the version-bump-prs workflow.
+                  Triggered by https://github.com/OpenHands/software-agent-sdk/releases/tag/v${VERSION}.
                   EOF
-
-                  gh pr create \
-                    --repo "$REPO" \
-                    --base main \
-                    --head "$BRANCH" \
-                    --title "chore: agent-server (software-agent-sdk) to v$VERSION" \
-                    --body-file pr_body.md
-                  echo "✅ PR created for $REPO"
+                  gh pr create --repo "$REPO" --base main --head "$BRANCH" \
+                    --title "chore(typescript): agent-server to v$VERSION" \
+                    --body-file "$RUNNER_TEMP/pr_body.md"
 
             - name: Summary
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
-                  {
-                    echo "## ✅ typescript-client agent-server bump"
-                    echo ""
-                    echo "Bumped the tracked agent-server image to **v$VERSION**:"
-                    echo ""
-                    echo "- [typescript-client](https://github.com/OpenHands/typescript-client/pulls?q=is%3Apr+bump-agent-server-$VERSION)"
-                  } >> "$GITHUB_STEP_SUMMARY"
+                  echo "TypeScript client bump: https://github.com/${{ github.repository }}/pulls?q=is%3Apr+bump-typescript-agent-server-$VERSION" >> "$GITHUB_STEP_SUMMARY"
