@@ -1,5 +1,6 @@
 """Utility functions for generating conversation titles."""
 
+import re
 from collections.abc import Callable, Sequence
 
 from openhands.sdk.event import MessageEvent
@@ -57,6 +58,21 @@ def extract_first_user_message(events: Sequence[Event]) -> str | None:
                 return text
 
     return None
+
+
+_REASONING_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED_REASONING = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning_blocks(text: str) -> str:
+    """Remove inline ``<think>`` reasoning from a model's text.
+
+    Providers that do not split chain-of-thought into ``reasoning_content`` return it
+    inline in ``content``. An unterminated block means the response was cut mid-thought,
+    so everything from the opening tag on is reasoning too.
+    """
+    text = _REASONING_BLOCK.sub("", text)
+    return _UNCLOSED_REASONING.sub("", text)
 
 
 def generate_title_with_llm(
@@ -137,7 +153,13 @@ def generate_title_with_llm(
         if response.message.content and isinstance(
             response.message.content[0], TextContent
         ):
-            title = response.message.content[0].text.strip()
+            title = strip_reasoning_blocks(response.message.content[0].text).strip()
+
+            if not title:
+                logger.warning(
+                    "LLM returned only reasoning content for title generation"
+                )
+                return None
 
             # Ensure the title isn't too long
             if len(title) > max_length:
