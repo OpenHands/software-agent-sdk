@@ -3,7 +3,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.child_conversation_tool import (
     LaunchChildConversationAction,
@@ -228,7 +228,7 @@ async def test_child_inherits_parent_runtime_controls(tmp_path: Path) -> None:
                 max_iterations=42,
                 stuck_detection=False,
                 hook_config=hook_cfg,
-                secrets={"API_KEY": StaticSecret(value="secret-value")},
+                secrets={"API_KEY": StaticSecret(value=SecretStr("secret-value"))},
                 tags={"env": "test"},
             )
         )
