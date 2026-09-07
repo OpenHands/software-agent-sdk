@@ -1230,6 +1230,7 @@ class LocalConversation(BaseConversation):
             register_plugin_agents(
                 agents=all_plugin_agents,
                 work_dir=self.workspace.working_dir,
+                cipher=self._cipher,
             )
 
         # Combine explicit hook_config with plugin hooks
@@ -1475,6 +1476,7 @@ class LocalConversation(BaseConversation):
                 register_plugin_agents(
                     agents=plugin.agents,
                     work_dir=self.workspace.working_dir,
+                    cipher=self._cipher,
                 )
             if plugin.hooks and not plugin.hooks.is_empty():
                 self._merge_runtime_plugin_hooks(plugin.hooks)
@@ -1513,7 +1515,10 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        register_file_agents(
+            self.workspace.working_dir,
+            cipher=self._cipher,
+        )
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.

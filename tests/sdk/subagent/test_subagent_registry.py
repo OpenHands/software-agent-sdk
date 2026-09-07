@@ -21,6 +21,7 @@ from openhands.sdk.subagent.registry import (
     register_plugin_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 
 
 def setup_function() -> None:
@@ -503,6 +504,42 @@ def test_agent_definition_to_factory_model_profile(tmp_path: Path) -> None:
     assert agent.llm.stream is False
     # Metrics must be independent from the parent LLM
     assert agent.llm.metrics is not parent_llm.metrics
+
+
+def test_agent_definition_to_factory_model_profile_decrypts_with_cipher(
+    tmp_path: Path,
+) -> None:
+    """Encrypted profile secrets are decrypted before the subagent uses them."""
+    store = LLMProfileStore(base_dir=tmp_path)
+    cipher = Cipher("subagent-profile-test-key")
+    api_key = "sk-subagent-secret"
+    store.save(
+        "encrypted-profile",
+        LLM(
+            model="gpt-4o",
+            api_key=SecretStr(api_key),
+            usage_id="encrypted-profile-llm",
+        ),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    serialized_profile = (tmp_path / "encrypted-profile.json").read_text()
+    assert api_key not in serialized_profile
+    assert "gAAAAA" in serialized_profile
+
+    factory = agent_definition_to_factory(
+        AgentDefinition(
+            name="encrypted-profile-agent",
+            model="encrypted-profile",
+            profile_store_dir=str(tmp_path),
+        ),
+        cipher=cipher,
+    )
+    agent = factory(_make_test_llm())
+
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == api_key
 
 
 def test_agent_definition_to_factory_model_profile_with_json_suffix(
