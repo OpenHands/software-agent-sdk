@@ -112,6 +112,54 @@ def test_condensation_request_sets_flag(state):
     assert state.view.unhandled_condensation_request is True
 
 
+def test_incremental_condensation_drops_orphan_tool_result(state):
+    """The incremental view path must enforce properties after a condensation
+    that breaks an action/observation pair, so orphan tool_results don't reach
+    the LLM.  Regression test for the Anthropic malformed-history error caused
+    by a tool_result without a matching tool_use.
+    """
+    from openhands.sdk.event.llm_convertible import ActionEvent, ObservationEvent
+    from openhands.sdk.llm import MessageToolCall
+    from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+
+    msg = _msg("hello")
+    action = ActionEvent(
+        thought=[],
+        action=MCPToolAction(data={}),
+        tool_name="test_tool",
+        tool_call_id="call_1",
+        tool_call=MessageToolCall(
+            id="call_1", name="test_tool", arguments="{}", origin="completion"
+        ),
+        llm_response_id="resp_1",
+        source="agent",
+    )
+    obs = ObservationEvent(
+        observation=MCPToolObservation.from_text(text="ok", tool_name="test_tool"),
+        tool_name="test_tool",
+        tool_call_id="call_1",
+        action_id=action.id,
+        source="environment",
+    )
+    state.events.append(msg)
+    state.events.append(action)
+    state.events.append(obs)
+
+    # Condensation that forgets the action but not the observation.
+    state.events.append(
+        Condensation(
+            forgotten_event_ids={action.id},
+            llm_response_id="resp_2",
+        )
+    )
+
+    view = state.view
+    ids = {e.id for e in view.events}
+    assert action.id not in ids
+    assert obs.id not in ids  # orphan observation dropped
+    assert msg.id in ids
+
+
 def test_hot_path_does_not_call_enforce_properties(state):
     """Normal incremental appends must never invoke enforce_properties."""
     call_count = 0
