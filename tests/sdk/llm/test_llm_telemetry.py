@@ -197,6 +197,51 @@ class TestTelemetryTokenUsage:
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.cache_write_tokens == 30
 
+    def test_record_usage_with_deepseek_cache_hit_tokens(self, basic_telemetry):
+        """Test token usage recording with DeepSeek cache hit tokens."""
+        usage = Usage.model_construct(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            prompt_cache_hit_tokens=75,
+            prompt_cache_miss_tokens=25,
+        )
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.prompt_tokens == 100
+        assert token_usage.cache_read_tokens == 75
+
+    def test_record_usage_derives_deepseek_prompt_tokens(self, basic_telemetry):
+        """Test token usage recording when only DeepSeek cache buckets exist."""
+        usage = Usage.model_construct(
+            completion_tokens=50,
+            total_tokens=150,
+            prompt_cache_hit_tokens=75,
+            prompt_cache_miss_tokens=25,
+        )
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.prompt_tokens == 100
+        assert token_usage.cache_read_tokens == 75
+
+    def test_record_usage_with_top_level_cache_creation(self, basic_telemetry):
+        """Test token usage recording with public cache creation tokens."""
+        usage = Usage.model_construct(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            cache_creation_input_tokens=30,
+        )
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_write_tokens == 30
+
     def test_record_usage_missing_tokens(self, basic_telemetry):
         """Test token usage recording with missing token counts."""
         usage = Usage()  # Empty usage
