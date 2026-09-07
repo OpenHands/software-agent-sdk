@@ -1,11 +1,13 @@
 """Unit tests for RemoteWorkspace class."""
 
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
 
+from openhands.sdk.context import AgentContext
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
@@ -1118,6 +1120,97 @@ def test_load_skills_from_agent_server_with_project_dirs():
         # Should have loaded global skills + 2 project dirs = 3 calls
         assert mock_post.call_count == 3
         assert len(skills) >= 1  # At least the global skill
+
+
+def test_load_skills_from_agent_server_preserves_base_context_when_found():
+    """Test load_skills_from_agent_server preserves caller's AgentContext fields."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(
+        marketplace_path="internal/marketplace.json",
+        disabled_skills=["risky-skill"],
+        user_message_suffix="Follow the client's policy.",
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server(
+            base_context=base_context
+        )
+        assert len(skills) == 1
+        assert context.marketplace_path == "internal/marketplace.json"
+        assert context.disabled_skills == ["risky-skill"]
+        assert context.user_message_suffix == "Follow the client's policy."
+        assert context.load_public_skills is False
+
+
+def test_load_skills_from_agent_server_preserves_base_context_on_fallback():
+    """Test base context fields survive even when no skills are found."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(
+        marketplace_path="internal/marketplace.json",
+        disabled_skills=["risky-skill"],
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server(
+            base_context=base_context
+        )
+        assert len(skills) == 0
+        assert context.marketplace_path == "internal/marketplace.json"
+        assert context.disabled_skills == ["risky-skill"]
+        assert context.load_public_skills is True
+
+
+def test_load_skills_from_agent_server_without_base_context_matches_legacy():
+    """Test omitting base_context matches today's default behavior."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+        assert context.marketplace_path == AgentContext().marketplace_path
+        assert context.disabled_skills == AgentContext().disabled_skills
+        assert context.user_message_suffix == AgentContext().user_message_suffix
+
+
+def test_load_skills_from_agent_server_preserves_current_datetime():
+    """Test current_datetime from the base context is not regenerated."""
+    from datetime import datetime
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    fixed_time = datetime(2020, 1, 1, tzinfo=UTC)
+    base_context = AgentContext(current_datetime=fixed_time)
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server(base_context=base_context)
+        assert context.current_datetime == fixed_time
 
 
 # --- Completion callback tests ---
