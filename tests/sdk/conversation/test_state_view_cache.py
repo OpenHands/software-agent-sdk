@@ -10,9 +10,13 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.llm import LLM
-from openhands.sdk.llm.message import Message, TextContent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -229,3 +233,116 @@ def test_rebuild_view_leaves_cache_unchanged_on_error(state):
 
     assert state._view is old_view
     assert state._view_branch_leaf == old_branch_leaf
+
+
+def _action_event(llm_response_id: str, tool_call_id: str) -> ActionEvent:
+    return ActionEvent(
+        thought=[TextContent(text="thought")],
+        action=MCPToolAction(data={}),
+        tool_name="test_tool",
+        tool_call_id=tool_call_id,
+        tool_call=MessageToolCall(
+            id=tool_call_id,
+            name="test_tool",
+            arguments="{}",
+            origin="completion",
+        ),
+        llm_response_id=llm_response_id,
+        source="agent",
+    )
+
+
+def _observation_event(tool_call_id: str, content: str = "ok") -> ObservationEvent:
+    return ObservationEvent(
+        observation=MCPToolObservation.from_text(text=content, tool_name="test_tool"),
+        tool_name="test_tool",
+        tool_call_id=tool_call_id,
+        action_id="action_id",
+        source="environment",
+    )
+
+
+def test_condensation_in_tail_triggers_rebuild_not_incremental(state):
+    """A condensation in the incremental tail must trigger a full rebuild so
+    that enforce_properties can repair orphaned action/observation halves.
+
+    Without the fix, the fast path replays the condensation via append_event
+    (which does not call enforce_properties), leaving an orphaned observation
+    in the view that downstream LLM APIs reject as malformed history.
+    """
+    a1 = _action_event("resp_1", "call_1")
+    o1 = _observation_event("call_1")
+    a2 = _action_event("resp_2", "call_2")
+    o2 = _observation_event("call_2")
+
+    # Populate the cache incrementally with complete, well-formed pairs.
+    for e in [a1, o1, a2, o2]:
+        state.events.append(e)
+    _ = state.view  # populate cache
+    assert len(state.view.events) == 4
+
+    # Condensation that forgets a1 but NOT o1 -> o1 becomes an orphan.
+    state.events.append(
+        Condensation(
+            forgotten_event_ids={a1.id},
+            llm_response_id="cond_resp",
+        )
+    )
+
+    view = state.view
+    tool_call_ids = {e.tool_call_id for e in view.events if hasattr(e, "tool_call_id")}
+    # The orphaned observation for call_1 must have been dropped by
+    # enforce_properties during the full rebuild.
+    assert "call_1" not in tool_call_ids
+    # The intact pair for call_2 must remain.
+    assert "call_2" in tool_call_ids
+    # No orphaned observations (every observation has a matching action).
+    action_ids = {
+        e.tool_call_id for e in view.events if isinstance(e, ActionEvent)
+    }
+    obs_ids = {
+        e.tool_call_id for e in view.events if isinstance(e, ObservationEvent)
+    }
+    assert obs_ids == action_ids, "orphaned observations or actions remain"
+
+
+def test_condensation_in_tail_matches_full_rebuild(state):
+    """The incremental view must match View.from_events even when a
+    condensation that breaks a pair is in the tail."""
+    a1 = _action_event("resp_1", "call_1")
+    o1 = _observation_event("call_1")
+    a2 = _action_event("resp_2", "call_2")
+    o2 = _observation_event("call_2")
+
+    for e in [a1, o1, a2, o2]:
+        state.events.append(e)
+
+    state.events.append(
+        Condensation(
+            forgotten_event_ids={a1.id},
+            llm_response_id="cond_resp",
+        )
+    )
+
+    incremental_ids = [e.id for e in state.view.events]
+    full_ids = [e.id for e in View.from_events(state.events).events]
+    assert incremental_ids == full_ids
+
+
+def test_normal_appends_still_skip_enforce_properties(state):
+    """After the fix, normal (non-condensation) appends must still avoid
+    enforce_properties on the fast path."""
+    call_count = 0
+    original = View.enforce_properties
+
+    def counting_enforce(self, all_events):
+        nonlocal call_count
+        call_count += 1
+        return original(self, all_events)
+
+    with patch.object(View, "enforce_properties", counting_enforce):
+        for i in range(10):
+            state.events.append(_msg(f"msg-{i}"))
+        _ = state.view  # force lazy catch-up
+
+    assert call_count == 0
