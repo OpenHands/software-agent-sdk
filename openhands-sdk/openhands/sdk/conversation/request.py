@@ -114,6 +114,11 @@ class ConversationConfig(BaseModel):
             "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
         ),
     )
+    title: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Optional user-defined title for the conversation.",
+    )
     conversation_id: UUID | None = Field(
         default=None,
         description=(

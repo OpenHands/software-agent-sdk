@@ -1,6 +1,6 @@
 import asyncio
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -126,6 +126,9 @@ class EventService:
     agent: AgentBase | None = None
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
+    child_launcher: (
+        Callable[[UUID, object], Coroutine[object, object, object]] | None
+    ) = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
         default_factory=dict
     )
@@ -398,6 +401,15 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
         return self._conversation
+
+    def launch_child_conversation(self, action: object):
+        """Launch a child through the owning service from a tool worker thread."""
+        if self.child_launcher is None or not hasattr(self, "_main_loop"):
+            raise RuntimeError("Child conversations are not supported in this context")
+        future = asyncio.run_coroutine_threadsafe(
+            self.child_launcher(self.stored.id, action), self._main_loop
+        )
+        return future.result(timeout=30)
 
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
@@ -1111,6 +1123,7 @@ class EventService:
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
             mcp_tool_provider=self.mcp_tool_provider,
+            server_tool_context=self,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
