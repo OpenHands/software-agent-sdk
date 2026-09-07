@@ -41,6 +41,7 @@ describe('ACP provider credential descriptors', () => {
     // opencode's own gateway (OpenCode Zen) resolves its endpoint from the
     // model catalogue, so it has no base-URL override var either.
     ['opencode', 'OPENCODE_API_KEY', null],
+    ['cursor', 'CURSOR_API_KEY', 'CURSOR_API_ENDPOINT'],
   ])('%s declares its api_key/base_url env vars', (key, apiKeyEnvVar, baseUrlEnvVar) => {
     const provider = ACP_PROVIDERS[key];
     expect(provider.api_key_env_var).toBe(apiKeyEnvVar);
@@ -73,6 +74,16 @@ describe('ACP provider credential descriptors', () => {
     ]);
     expect(opencode.default_session_mode).toBe('build');
     expect(opencode.file_secrets).toEqual([]);
+  });
+
+  it('cursor launches the preinstalled agent binary in ACP mode', () => {
+    const cursor = ACP_PROVIDERS.cursor;
+    expect(cursor.default_command).toEqual(['agent', 'acp']);
+    expect(cursor.binary_name).toBe('agent');
+    expect(cursor.default_session_mode).toBe('agent');
+    expect(cursor.default_model).toBe('default[]');
+    expect(cursor.file_secrets).toEqual([]);
+    expect(cursor.data_dir_env_var).toBeNull();
   });
 
   it('uses the maintained Codex adapter and exposes GPT-5.6 models', () => {
