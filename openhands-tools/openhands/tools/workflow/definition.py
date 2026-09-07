@@ -85,6 +85,13 @@ Available `wf` methods:
   the previous result. Stages may be sync or async. A stage that raises drops that
   item to `None`. Prefer this over chained `map_agents` calls when per-item stages
   are independent, since `map_agents` fully drains each stage before the next.
+- `await wf.run_dag(nodes, max_concurrency=None)` — run a directed acyclic
+  graph (DAG) of sub-agent tasks with dependency resolution and concurrency
+  control. `nodes` maps node IDs to specs (`prompt`, `depends_on`,
+  `subagent_type`, `description`). Tasks execute as soon as their upstream
+  dependencies finish. Upstream results are interpolated into `{parent_node_id}`
+  prompt placeholders. If an upstream task fails, downstream dependent tasks
+  are pruned automatically.
 - `wf.flatten(values)` — flatten one level of nesting (not recursive)
 
 `subagent_type` must be a sub-agent type registered in the parent application.

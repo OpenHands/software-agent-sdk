@@ -241,6 +241,147 @@ class WorkflowContext:
             description=description,
         )
 
+    async def run_dag(
+        self,
+        nodes: dict[str, dict[str, Any]],
+        *,
+        max_concurrency: int | None = None,
+    ) -> dict[str, str]:
+        """Execute a directed acyclic graph (DAG) of sub-agent tasks.
+
+        Tasks are dispatched concurrently as soon as their upstream dependencies
+        complete. If an upstream dependency fails, downstream dependent tasks
+        are pruned without executing to avoid wasting agent calls.
+
+        Args:
+            nodes: Mapping of node ID to specification dict:
+                - ``prompt``: Required prompt string or callable
+                  ``(results) -> str``. When a string, occurrences of
+                  ``{parent_id}`` are substituted with the parent node's result.
+                - ``depends_on``: Optional sequence of parent node IDs
+                  (default: ``[]``).
+                - ``subagent_type``: Optional subagent type
+                  (default: ``"general-purpose"``).
+                - ``description``: Optional human-readable description.
+            max_concurrency: Optional per-call concurrency limit (capped at
+                context limit).
+
+        Returns:
+            Mapping of node ID to string result for completed nodes.
+
+        Raises:
+            ValueError: If ``nodes`` is empty, contains unknown dependencies,
+                contains self-dependencies, or contains cycles.
+            ExceptionGroup: If one or more tasks fail during execution.
+        """
+        if not nodes:
+            raise ValueError("run_dag requires at least one node")
+        if max_concurrency is not None and max_concurrency < 1:
+            raise ValueError("max_concurrency must be at least 1")
+
+        # 1. Structural validation
+        for node_id, spec in nodes.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f"Node '{node_id}' specification must be a dict")
+            deps = spec.get("depends_on", [])
+            for dep in deps:
+                if dep == node_id:
+                    raise ValueError(f"Node '{node_id}' cannot depend on itself")
+                if dep not in nodes:
+                    raise ValueError(
+                        f"Node '{node_id}' depends on unknown node '{dep}'"
+                    )
+
+        # 2. Cycle detection via Kahn's topological sort
+        in_degree = {k: len(nodes[k].get("depends_on", [])) for k in nodes}
+        adj: dict[str, list[str]] = {k: [] for k in nodes}
+        for k, spec in nodes.items():
+            for dep in spec.get("depends_on", []):
+                adj[dep].append(k)
+
+        queue = [k for k, deg in in_degree.items() if deg == 0]
+        visited_count = 0
+        while queue:
+            curr = queue.pop(0)
+            visited_count += 1
+            for neighbor in adj[curr]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        if visited_count < len(nodes):
+            unresolved = [k for k, deg in in_degree.items() if deg > 0]
+            raise ValueError(
+                f"DAG contains cycles involving: {', '.join(sorted(unresolved))}"
+            )
+
+        # 3. Frontier execution
+        semaphore = (
+            asyncio.Semaphore(min(max_concurrency, self._max_concurrency))
+            if max_concurrency is not None
+            else self._default_semaphore
+        )
+
+        results: dict[str, str] = {}
+        errors: dict[str, Exception] = {}
+        failed_or_skipped: set[str] = set()
+        events: dict[str, asyncio.Event] = {k: asyncio.Event() for k in nodes}
+
+        async def run_node(node_id: str, spec: dict[str, Any]) -> None:
+            deps = spec.get("depends_on", [])
+            # Wait for all upstream dependencies
+            for dep in deps:
+                await events[dep].wait()
+
+            # Prune if any upstream dependency failed or was skipped
+            failed_deps = [dep for dep in deps if dep in failed_or_skipped]
+            if failed_deps:
+                failed_or_skipped.add(node_id)
+                errors[node_id] = RuntimeError(
+                    f"Node '{node_id}' skipped because dependency "
+                    f"'{failed_deps[0]}' failed"
+                )
+                events[node_id].set()
+                return
+
+            # Render prompt
+            raw_prompt = spec.get("prompt", "")
+            subagent_type = spec.get("subagent_type", "general-purpose")
+            description = spec.get("description")
+
+            if callable(raw_prompt):
+                rendered_prompt = str(raw_prompt(results))
+            elif isinstance(raw_prompt, str):
+                rendered_prompt = raw_prompt
+                for dep in deps:
+                    val = str(results.get(dep, ""))
+                    rendered_prompt = rendered_prompt.replace(f"{{{dep}}}", val)
+            else:
+                rendered_prompt = str(raw_prompt)
+
+            async with semaphore:
+                try:
+                    res = await self._run_agent_task(
+                        prompt=rendered_prompt,
+                        subagent_type=subagent_type,
+                        description=description,
+                    )
+                    results[node_id] = res
+                except Exception as exc:
+                    failed_or_skipped.add(node_id)
+                    errors[node_id] = exc
+                finally:
+                    events[node_id].set()
+
+        await asyncio.gather(*(run_node(k, v) for k, v in nodes.items()))
+
+        if errors:
+            raise ExceptionGroup(
+                "run_dag: one or more nodes failed", list(errors.values())
+            )
+
+        return results
+
     def flatten(self, values: list[Any]) -> list[Any]:
         """Flatten one list level."""
         flattened: list[Any] = []
