@@ -409,3 +409,120 @@ def test_glob_executor_concurrent_with_ripgrep():
         assert all(len(files) == 5 for files in results_b)
         assert all(all("alpha_" in Path(f).name for f in files) for files in results_a)
         assert all(all("beta_" in Path(f).name for f in files) for files in results_b)
+
+
+def test_glob_fallback_leaves_process_cwd_untouched():
+    """Guards #4663. The fallback must not mutate the process-global cwd.
+
+    ``os.chdir`` was restored in a ``finally``, so a single-threaded caller never
+    noticed, but any concurrent code resolving a relative path during the search
+    resolved it against the search directory instead of its own.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tree = Path(temp_dir) / "tree"
+        for i in range(40):
+            pkg = tree / f"pkg{i}"
+            pkg.mkdir(parents=True)
+            for j in range(20):
+                (pkg / f"mod{j}.py").write_text("x = 1\n")
+
+        executor = GlobExecutor(working_dir=str(tree))
+        executor._ripgrep_available = False  # force the Python fallback
+
+        before = os.getcwd()
+        observed: list[str] = []
+        stop = threading.Event()
+
+        def sample() -> None:
+            while not stop.is_set():
+                observed.append(os.getcwd())
+
+        watcher = threading.Thread(target=sample, daemon=True)
+        watcher.start()
+        try:
+            obs = executor(GlobAction(pattern="*.py", path=str(tree)))
+        finally:
+            stop.set()
+            watcher.join(timeout=5)
+
+        assert obs.is_error is False
+        assert obs.files, "the search should still find files"
+        assert os.getcwd() == before
+        assert set(observed) <= {before}, (
+            f"process cwd changed during the search: {set(observed) - {before}}"
+        )
+
+
+def test_glob_fallback_concurrent_searches_across_two_roots():
+    """Guards #4663. Forced-fallback searches over two roots must not interfere."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        dir_a = Path(temp_dir) / "a"
+        dir_a.mkdir()
+        for i in range(15):
+            (dir_a / f"alpha_{i}.py").write_text("# a")
+
+        dir_b = Path(temp_dir) / "b"
+        dir_b.mkdir()
+        for i in range(15):
+            (dir_b / f"beta_{i}.txt").write_text("# b")
+
+        executor = GlobExecutor(working_dir=temp_dir)
+        executor._ripgrep_available = False  # force the Python fallback
+
+        results: dict[str, list[str]] = {}
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def search(name: str, path: Path, pattern: str) -> None:
+            try:
+                for _ in range(8):
+                    obs = executor(GlobAction(pattern=pattern, path=str(path)))
+                    with lock:
+                        results[name] = obs.files
+            except Exception as exc:  # pragma: no cover - failure path
+                with lock:
+                    errors.append(exc)
+
+        threads = [
+            threading.Thread(target=search, args=("a", dir_a, "*.py")),
+            threading.Thread(target=search, args=("b", dir_b, "*.txt")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, f"concurrent fallback searches raised: {errors}"
+        assert len(results["a"]) == 15
+        assert len(results["b"]) == 15
+        assert all(p.endswith(".py") for p in results["a"])
+        assert all(p.endswith(".txt") for p in results["b"])
+
+
+def test_glob_fallback_matches_ripgrep_for_recursive_and_hidden():
+    """Guards #4663. Switching to ``root_dir`` must not change what is matched."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        (root / "top.py").write_text("x = 1\n")
+        nested = root / "deep" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "buried.py").write_text("x = 1\n")
+        hidden_dir = root / ".hidden"
+        hidden_dir.mkdir()
+        (hidden_dir / "secret.py").write_text("x = 1\n")
+
+        executor = GlobExecutor(working_dir=str(root))
+        executor._ripgrep_available = False
+
+        names = {
+            Path(p).name
+            for p in executor(GlobAction(pattern="*.py", path=str(root))).files
+        }
+        assert "top.py" in names, "non-recursive pattern must still recurse"
+        assert "buried.py" in names, "nested match must be found"
+
+        explicit = {
+            Path(p).name
+            for p in executor(GlobAction(pattern="**/*.py", path=str(root))).files
+        }
+        assert explicit == names, "explicit ** must match the implicit rewrite"
