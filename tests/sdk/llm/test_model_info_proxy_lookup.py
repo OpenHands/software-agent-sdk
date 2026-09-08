@@ -14,6 +14,7 @@ aliases (claude-opus-4-8 vision still off).
 from unittest.mock import patch
 
 from openhands.sdk.llm.utils.model_info import (
+    _apply_model_metadata_overrides,
     _get_model_info_from_litellm_proxy,
     _merge_raw_model_metadata,
     get_litellm_model_info,
@@ -138,3 +139,19 @@ def test_raw_registry_capabilities_survive_typed_model_info_projection():
     assert info["supports_reasoning"] is True
     assert info["supports_adaptive_thinking"] is True
     assert info["supports_sampling_params"] is False
+
+
+def test_minimax_model_metadata_overrides():
+    assert _apply_model_metadata_overrides("minimax/MiniMax-M3", {}) == {
+        "max_input_tokens": 1_000_000,
+        "input_cost_per_token": 0.0000006,
+        "output_cost_per_token": 0.0000024,
+        "cache_read_input_token_cost": 0.00000012,
+    }
+    assert _apply_model_metadata_overrides("minimax/MiniMax-M2.7", {}) == {
+        "max_input_tokens": 204_800,
+        "input_cost_per_token": 0.0000003,
+        "output_cost_per_token": 0.0000012,
+        "cache_read_input_token_cost": 0.00000006,
+        "cache_creation_input_token_cost": 0.000000375,
+    }
