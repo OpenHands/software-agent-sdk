@@ -22,8 +22,9 @@ from openhands.sdk.mcp.config import (
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.utils.redact import redact_url_params
 
 
 logger = get_logger(__name__)
@@ -46,6 +47,7 @@ class MCPToolProvider(Protocol):
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient: ...
@@ -59,12 +61,14 @@ class DefaultMCPToolProvider:
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
         return create_mcp_tools(
             mcp_config,
             timeout,
+            strict=strict,
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,
         )
@@ -312,10 +316,43 @@ class _ToolListChangedHandler(MessageHandler):
             )
 
 
+def _server_target(name: str, server: MCPServer) -> str:
+    if server.url is not None:
+        return f"{name!r} at {redact_url_params(server.url)!r}"
+    if server.command is not None:
+        return f"{name!r} using command {server.command!r}"
+    return repr(name)
+
+
+def _connection_failure_message(
+    mcp_config: Mapping[str, MCPServer], error: BaseException
+) -> str:
+    targets = ", ".join(
+        _server_target(name, server) for name, server in mcp_config.items()
+    )
+    detail = str(error.__cause__ or error)
+    return (
+        f"Failed to connect to MCP server(s): {targets}. {detail}\n"
+        "Possible solutions:\n"
+        "  1. Check if the MCP server is running and responding\n"
+        "  2. Verify network connectivity to the MCP server"
+    )
+
+
+def _close_client_quietly(client: MCPClient) -> None:
+    try:
+        client.sync_close()
+    except BaseException as close_error:  # noqa: BLE001 - cleanup must not mask the original error
+        logger.debug(
+            "Failed to close MCP client during error cleanup", exc_info=close_error
+        )
+
+
 def create_mcp_tools(
     mcp_config: dict[str, MCPServer],
     timeout: float = 30.0,
     *,
+    strict: bool = False,
     on_tools_changed: ToolsChangedCallback | None = None,
     on_tools_reconciled: ToolsReconciledCallback | None = None,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
@@ -329,6 +366,10 @@ def create_mcp_tools(
             for tool in client.tools:
                 # use tool
         # Connection automatically closed
+
+    By default, an unavailable server is logged and skipped so an optional
+    MCP server cannot prevent the agent from starting. Pass ``strict=True``
+    to preserve fail-fast behavior for configurations that require MCP.
 
     The client subscribes to ``notifications/tools/list_changed`` and
     reconciles its tool list whenever the server signals a change. When
@@ -365,7 +406,7 @@ def create_mcp_tools(
             _connect_and_list_tools, timeout=timeout, client=client
         )
     except TimeoutError as e:
-        client.sync_close()
+        _close_client_quietly(client)
         # Extract server names from config for better error message
         server_names = (
             list(config.mcpServers.keys()) if config.mcpServers else ["unknown"]
@@ -381,13 +422,18 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
+    except (MCPError, ConnectionError) as e:
+        error_msg = _connection_failure_message(mcp_config, e)
+        _close_client_quietly(client)
+        if strict:
+            raise MCPError(error_msg) from e
+        logger.warning(
+            "%s. Continuing without MCP tools; pass strict=True to fail fast.",
+            error_msg,
+        )
+        return client
     except BaseException:
-        try:
-            client.sync_close()
-        except Exception as close_exc:
-            logger.warning(
-                "Failed to close MCP client during error cleanup", exc_info=close_exc
-            )
+        _close_client_quietly(client)
         raise
 
     logger.info("Created %d MCP tools", len(client.tools))
