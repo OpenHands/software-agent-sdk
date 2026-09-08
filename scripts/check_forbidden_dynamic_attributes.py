@@ -9,6 +9,9 @@ call name, and a hash of the stripped source line.  Keying on the source line
 instead of the line number keeps the baseline stable when unrelated edits shift
 line numbers, while still flagging genuine edits to an existing call.
 
+The baseline is a *multiset* (occurrence counts are preserved), so adding
+another copy of an already-baselined call is still flagged.
+
 Regenerate the baseline after removing existing calls with::
 
     uv run python scripts/check_forbidden_dynamic_attributes.py \\
@@ -22,6 +25,7 @@ import ast
 import hashlib
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -50,11 +54,11 @@ def violations(path: Path) -> list[tuple[int, str, str]]:
     return result
 
 
-def _load_baseline() -> set[tuple[str, str, str]]:
+def _load_baseline() -> Counter[tuple[str, str, str]]:
     if not BASELINE_FILE.exists():
-        return set()
+        return Counter()
     data = json.loads(BASELINE_FILE.read_text())
-    return {(entry["file"], entry["name"], entry["hash"]) for entry in data}
+    return Counter((entry["file"], entry["name"], entry["hash"]) for entry in data)
 
 
 def _write_baseline(entries: list[tuple[str, str, str]]) -> None:
@@ -94,16 +98,26 @@ def main(argv: list[str]) -> int:
         return 0
 
     baseline = _load_baseline()
-    current_keys = {(file, name, digest) for file, name, digest, _ in current}
+    current_counter = Counter(
+        (file, name, digest) for file, name, digest, _ in current
+    )
     passed_files = set(args.paths)
-    new_violations = [
-        (file, line, name)
-        for file, name, digest, line in current
-        if (file, name, digest) not in baseline
-    ]
-    # Only flag staleness for files actually being checked, so subset runs
-    # (e.g. pre-commit on changed files) don't report unrelated drift.
-    stale = {entry for entry in baseline - current_keys if entry[0] in passed_files}
+
+    # New violations: occurrences that exceed the baseline count for each key.
+    new_violations: list[tuple[str, int, str]] = []
+    for file, name, digest, line in current:
+        key = (file, name, digest)
+        if current_counter[key] > baseline.get(key, 0):
+            new_violations.append((file, line, name))
+            current_counter[key] -= 1  # count only the excess as new
+
+    # Stale: baseline entries no longer present in the current code (for files
+    # actually being checked, so subset runs don't report unrelated drift).
+    stale = {
+        key
+        for key, count in (baseline - current_counter).items()
+        if key[0] in passed_files
+    }
 
     for file, line, name in sorted(new_violations):
         print(f"{file}:{line}: forbidden dynamic attribute call: {name}")
