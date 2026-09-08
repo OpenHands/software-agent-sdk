@@ -297,6 +297,16 @@ async def validate_profile(
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
 
+    # Restore runtime subscription credentials, mirroring ``from_persisted``.
+    # The frontend sends auth_type="subscription" but the OAuth access token
+    # lives in the credential store, not in the serialized LLM config. Without
+    # this, the pre-flight sends api_key=None and fails with
+    # "Incorrect API key provided: None".
+    if getattr(llm, "auth_type", None) == "subscription":
+        from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
+
+        llm = create_subscription_llm_from_config(llm)
+
     messages = [
         Message(
             role="user",
