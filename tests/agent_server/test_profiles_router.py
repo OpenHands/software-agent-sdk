@@ -2049,3 +2049,38 @@ def test_validate_profile_subscription_restores_credentials(client):
     assert body["error"] is None
     assert captured["is_subscription"] is True
     assert captured["api_key"] == "fake-access-token"
+
+
+def test_validate_profile_subscription_missing_credentials(client):
+    """Pre-flight returns ``valid=False`` when subscription credentials are absent.
+
+    ``create_subscription_llm_from_config`` raises ``ValueError`` when no stored
+    OAuth credentials exist.  The endpoint must catch this and return a
+    structured error instead of a 500.
+    """
+    # CredentialStore.get returns None → refresh_if_needed_sync returns None
+    # → create_subscription_llm_from_config raises ValueError.
+    with (
+        patch(
+            "openhands.sdk.llm.auth.credentials.CredentialStore.get",
+            return_value=None,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+    ):
+        response = client.post(
+            "/api/profiles/sub-profile/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-6-astra",
+                    "auth_type": "subscription",
+                    "subscription_vendor": "openai",
+                    "stream": True,
+                    "native_tool_calling": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert "subscription login" in body["error"]["message"].lower()
