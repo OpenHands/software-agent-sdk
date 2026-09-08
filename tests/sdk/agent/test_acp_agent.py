@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import signal
 import threading
 import time
 import uuid
@@ -3477,6 +3478,115 @@ class TestACPAgentCleanup:
             process,
             timeout=5.0,
         )
+
+    def test_close_terminates_process_group_on_posix(self):
+        agent = _make_agent()
+        mock_process = MagicMock()
+        mock_process.pid = 54321
+        mock_process.returncode = None
+        agent._process = mock_process
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        with (
+            patch("openhands.sdk.agent.acp_agent.sys.platform", "linux"),
+            patch(
+                "openhands.sdk.agent.acp_agent.os.getpgid", return_value=54321
+            ) as mock_getpgid,
+            patch("openhands.sdk.agent.acp_agent.os.getpgrp", return_value=12345),
+            patch("openhands.sdk.agent.acp_agent.os.killpg") as mock_killpg,
+        ):
+            agent.close()
+
+        mock_getpgid.assert_called_once_with(54321)
+        mock_killpg.assert_called_once_with(54321, signal.SIGTERM)
+        mock_process.terminate.assert_called_once()
+        mock_process.kill.assert_not_called()
+
+    def test_close_kills_process_group_on_timeout_or_error(self):
+        agent = _make_agent()
+        mock_process = MagicMock()
+        mock_process.pid = 54321
+        mock_process.returncode = None
+        mock_process.terminate.side_effect = OSError("still running")
+        agent._process = mock_process
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        with (
+            patch("openhands.sdk.agent.acp_agent.sys.platform", "linux"),
+            patch("openhands.sdk.agent.acp_agent.os.getpgid", return_value=54321),
+            patch("openhands.sdk.agent.acp_agent.os.getpgrp", return_value=12345),
+            patch("openhands.sdk.agent.acp_agent.os.killpg") as mock_killpg,
+        ):
+            agent.close()
+
+        assert mock_killpg.call_args_list == [
+            call(54321, signal.SIGTERM),
+            call(54321, signal.SIGKILL),
+        ]
+        mock_process.kill.assert_called_once()
+
+    def test_close_terminates_orphaned_process_group_when_leader_exited(self):
+        agent = _make_agent()
+        mock_process = MagicMock()
+        mock_process.pid = 54321
+        mock_process.returncode = 0
+        agent._process = mock_process
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        with (
+            patch("openhands.sdk.agent.acp_agent.sys.platform", "linux"),
+            patch(
+                "openhands.sdk.agent.acp_agent.os.getpgid",
+                side_effect=ProcessLookupError("No such process"),
+            ),
+            patch("openhands.sdk.agent.acp_agent.os.getpgrp", return_value=12345),
+            patch("openhands.sdk.agent.acp_agent.os.killpg") as mock_killpg,
+        ):
+            agent.close()
+
+        mock_killpg.assert_called_once_with(54321, signal.SIGTERM)
+        mock_process.terminate.assert_not_called()
+
+    def test_close_does_not_killpg_same_process_group(self):
+        agent = _make_agent()
+        mock_process = MagicMock()
+        mock_process.pid = 54321
+        mock_process.returncode = None
+        agent._process = mock_process
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        with (
+            patch("openhands.sdk.agent.acp_agent.sys.platform", "linux"),
+            patch("openhands.sdk.agent.acp_agent.os.getpgid", return_value=12345),
+            patch("openhands.sdk.agent.acp_agent.os.getpgrp", return_value=12345),
+            patch("openhands.sdk.agent.acp_agent.os.killpg") as mock_killpg,
+        ):
+            agent.close()
+
+        mock_killpg.assert_not_called()
+        mock_process.terminate.assert_called_once()
+
+    def test_close_skips_killpg_on_windows(self):
+        agent = _make_agent()
+        mock_process = MagicMock()
+        mock_process.pid = 54321
+        mock_process.returncode = None
+        agent._process = mock_process
+        agent._executor = MagicMock()
+        agent._conn = None
+
+        with (
+            patch("openhands.sdk.agent.acp_agent.sys.platform", "win32"),
+            patch("openhands.sdk.agent.acp_agent.os.killpg") as mock_killpg,
+        ):
+            agent.close()
+
+        mock_killpg.assert_not_called()
+        mock_process.terminate.assert_called_once()
 
     def test_finalizer_falls_back_when_thread_start_fails(self):
         agent = _make_agent()
@@ -10011,3 +10121,163 @@ class TestUnperformableAuthMethodLogging:
 
         assert "session creation may fail" in caplog.text
         assert "GEMINI_API_KEY is unset" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Process group shutdown / leaf process teardown (#4901)
+# ---------------------------------------------------------------------------
+
+
+class TestACPProcessGroupShutdown:
+    """Verify that ACP subprocess trees run in their own process group on POSIX
+    and that teardown terminates the entire process group.
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_acp_server_sets_start_new_session_on_posix(self, tmp_path):
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = TestACPFileSecretMaterialisation._make_conn()
+
+        captured_kwargs: dict[str, Any] = {}
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+
+        async def _fake_exec(*_args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_process
+
+        async def _fake_noop(*_args, **_kwargs):
+            return None
+
+        agent._executor = AsyncExecutor()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("openhands.sdk.agent.acp_agent.sys.platform", "linux")
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_noop,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._log_acp_subprocess_stderr",
+                    new=_fake_noop,
+                )
+            )
+            agent._start_acp_server(state)
+
+        assert captured_kwargs.get("start_new_session") is True
+        agent._shutdown_runtime(discard_bindings=True)
+
+    @pytest.mark.asyncio
+    async def test_start_acp_server_omits_start_new_session_on_windows(self, tmp_path):
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = TestACPFileSecretMaterialisation._make_conn()
+
+        captured_kwargs: dict[str, Any] = {}
+        mock_process = MagicMock(spec=asyncio.subprocess.Process)
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(return_value=0)
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+        mock_process.stderr = MagicMock()
+
+        async def _fake_exec(*_args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_process
+
+        async def _fake_noop(*_args, **_kwargs):
+            return None
+
+        agent._executor = AsyncExecutor()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("openhands.sdk.agent.acp_agent.sys.platform", "win32")
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_noop,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._log_acp_subprocess_stderr",
+                    new=_fake_noop,
+                )
+            )
+            agent._start_acp_server(state)
+
+        assert "start_new_session" not in captured_kwargs
+        agent._shutdown_runtime(discard_bindings=True)
+
+    @pytest.mark.asyncio
+    async def test_terminate_process_group_e2e_reaps_descendants(self):
+        import subprocess
+
+        # Spawn a process that spawns background child sleeps
+        proc = await asyncio.create_subprocess_exec(
+            "sh",
+            "-c",
+            "sleep 10 & sleep 20 & wait",
+            start_new_session=True,
+        )
+        pgid = proc.pid
+        await asyncio.sleep(0.1)
+
+        # Confirm children exist in process group
+        ps_before = subprocess.run(
+            ["pgrep", "-g", str(pgid)], capture_output=True, text=True
+        )
+        pids_before = ps_before.stdout.strip().split()
+        assert len(pids_before) >= 2
+
+        ACPAgent._terminate_process_group(proc)
+        await proc.wait()
+        await asyncio.sleep(0.1)
+
+        ps_after = subprocess.run(
+            ["pgrep", "-g", str(pgid)], capture_output=True, text=True
+        )
+        assert ps_after.stdout.strip() == ""
+
