@@ -7,8 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client as AsyncMCPClient
 
-from openhands.sdk.mcp.exceptions import MCPError
+from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.exceptions import MCPConnectionError, MCPError
 from openhands.sdk.utils.async_executor import AsyncExecutor
+
+
+logger = get_logger(__name__)
 
 
 if TYPE_CHECKING:
@@ -55,12 +59,66 @@ class MCPClient(AsyncMCPClient):
         """The MCP tools using this client connection (returns a copy)."""
         return list(self._tools)
 
+    def _extract_connection_target(
+        self,
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
+        """Extract server name, URL/command target, and config dict if available."""
+        transport = getattr(self, "transport", None)
+        config_dict = None
+        if transport is not None:
+            config = getattr(transport, "config", None)
+            if config is not None:
+                if hasattr(config, "model_dump"):
+                    try:
+                        config_dict = config.model_dump()
+                    except Exception:
+                        pass
+                mcp_servers = getattr(config, "mcpServers", None)
+                if isinstance(mcp_servers, dict) and mcp_servers:
+                    name, srv = next(iter(mcp_servers.items()))
+                    url = getattr(srv, "url", None)
+                    if url:
+                        return name, str(url), config_dict
+                    cmd = getattr(srv, "command", None)
+                    if cmd:
+                        args = getattr(srv, "args", None)
+                        args_str = f" {' '.join(args)}" if args else ""
+                        return name, f"{cmd}{args_str}", config_dict
+                    return name, None, config_dict
+            url = getattr(transport, "url", None)
+            if url:
+                return None, str(url), config_dict
+        return None, None, config_dict
+
+    @staticmethod
+    def _troubleshooting_guidance() -> str:
+        return (
+            "Possible solutions:\n"
+            "  1. Check if the MCP server is running and accepting connections\n"
+            "  2. Verify network connectivity, firewall rules, and port configuration\n"
+            "  3. Verify the server URL or command and authentication credentials"
+        )
+
     async def connect(self) -> None:
         """Establish connection to the MCP server."""
         try:
             await self.__aenter__()
-        except RuntimeError as exc:
-            raise MCPError("MCP Connection Failure") from exc
+        except MCPError:
+            raise
+        except (RuntimeError, Exception) as exc:
+            server_name, target, config_dict = self._extract_connection_target()
+            cause = getattr(exc, "__cause__", None) or exc
+            guidance = self._troubleshooting_guidance()
+            msg = (
+                "Failed to connect to MCP server"
+                + (f" '{server_name}'" if server_name else "")
+                + (f" at '{target}'" if target else "")
+                + f": {cause}\n\n"
+                + f"{guidance}\n"
+            )
+            raise MCPConnectionError(
+                msg, server_name=server_name, url=target, config=config_dict
+            ) from exc
 
     def call_async_from_sync(
         self,
@@ -88,6 +146,25 @@ class MCPClient(AsyncMCPClient):
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+
+    async def close(self) -> None:
+        """Close the MCP client and cleanup resources safely."""
+        # If the background session task already completed with an exception,
+        # fastmcp._disconnect() would await that failed task and re-raise the
+        # exception during cleanup. Clearing the failed task avoids mutating or
+        # chaining teardown exceptions onto the original error.
+        if hasattr(self, "_session_state"):
+            task = self._session_state.session_task
+            if task is not None and task.done() and not task.cancelled():
+                try:
+                    if task.exception() is not None:
+                        self._session_state.session_task = None
+                except Exception:
+                    pass
+        try:
+            await super().close()
+        except Exception as exc:
+            logger.debug("Error closing MCP client: %s", exc)
 
     def sync_close(self) -> None:
         """

@@ -520,6 +520,14 @@ class MCPServer(_MCPBaseModel):
             "ACP subprocess."
         ),
     )
+    strict: bool = Field(
+        default=False,
+        description=(
+            "Whether connection failure to this server should abort agent "
+            "initialization (True) or degrade gracefully by logging a warning "
+            "and dropping its tools (False, default)."
+        ),
+    )
 
     @field_validator("env", "headers", mode="after")
     @classmethod
@@ -660,6 +668,7 @@ def _normalize_server_for_fastmcp(
     # already (see ``enabled_mcp_servers``) -- this only keeps the key from
     # leaking through the public ``to_fastmcp_mcp_config`` boundary.
     server.pop("enabled", None)
+    server.pop("strict", None)
     auth = server.pop("auth", None)
     raw_headers = server.get("headers")
     headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}
