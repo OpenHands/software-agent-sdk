@@ -84,6 +84,28 @@ def test_stale_baseline_entry_fails(checker, tmp_path: Path):
     assert checker.main([str(f)]) == 1
 
 
+def test_remove_then_reintroduce_is_caught(checker, tmp_path: Path):
+    """Reintroducing a removed call must fail.
+
+    Baseline one ``getattr``, replace it with ``x.y`` (check fails on stale
+    entry, forcing a baseline refresh), then restore the identical line.
+    Because the stale entry forced a refresh, the reintroduced call is no
+    longer covered and is correctly rejected.
+    """
+    f = _write_py(tmp_path / "reintro.py", 'v = getattr(obj, "attr")\n')
+    checker.main([str(f), "--update-baseline"])  # baseline count = 1
+
+    # Remove the call → stale entry → must fail.
+    _write_py(f, "v = obj.attr\n")
+    assert checker.main([str(f)]) == 1
+    # The developer is forced to refresh the baseline, which now records 0.
+    checker.main([str(f), "--update-baseline"])
+
+    # Reintroduce the identical call → now a *new* violation, not covered.
+    _write_py(f, 'v = getattr(obj, "attr")\n')
+    assert checker.main([str(f)]) == 1
+
+
 def test_update_baseline_idempotent(checker, tmp_path: Path):
     """Running --update-baseline twice produces the same file."""
     f = _write_py(tmp_path / "idem.py", 'v = getattr(obj, "attr")\n')
