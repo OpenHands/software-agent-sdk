@@ -10,7 +10,7 @@ import pytest
 
 
 SCRIPT = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "scripts"
     / "check_forbidden_dynamic_attributes.py"
 )
@@ -20,9 +20,9 @@ def _load_module(tmp_path: Path):
     """Load the checker script as an importable module with an isolated baseline."""
     spec = importlib.util.spec_from_file_location("checker", SCRIPT)
     module = importlib.util.module_from_spec(spec)
-    # Point BASELINE_FILE at a temp location so tests don't clobber the real one.
-    module.__dict__["BASELINE_FILE"] = tmp_path / "baseline.json"
     spec.loader.exec_module(module)
+    # Override after exec so the module-level assignment doesn't clobber it.
+    module.BASELINE_FILE = tmp_path / "baseline.json"
     return module
 
 
