@@ -47,7 +47,6 @@ class MCPToolProvider(Protocol):
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
-        strict: bool = False,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient: ...
