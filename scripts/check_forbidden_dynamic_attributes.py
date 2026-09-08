@@ -5,9 +5,10 @@ the hook can be introduced before the cleanup work (tracked in #4903, #4904,
 #4905) is finished.  Only calls *not* present in the baseline are reported.
 
 A violation is identified by its file path (relative to the repo root), the
-call name, and a hash of the stripped source line.  Keying on the source line
-instead of the line number keeps the baseline stable when unrelated edits shift
-line numbers, while still flagging genuine edits to an existing call.
+call name, and a hash of the full call source segment (not just the first
+physical line).  Keying on the complete expression keeps the baseline stable
+when unrelated edits shift line numbers, while still flagging genuine edits
+to an existing call — including argument changes on subsequent lines.
 
 The baseline is a *multiset* (occurrence counts are preserved), so adding
 another copy of an already-baselined call is still flagged.
@@ -33,15 +34,23 @@ FORBIDDEN = {"getattr", "setattr"}
 BASELINE_FILE = Path(__file__).with_name("forbidden_dynamic_attributes_baseline.json")
 
 
-def _line_hash(source: str) -> str:
-    return hashlib.sha256(source.strip().encode("utf-8")).hexdigest()
+def _segment_hash(source: str, node: ast.Call) -> str:
+    """Hash the full source segment of *node*, not just its first line."""
+    segment = ast.get_source_segment(source, node)
+    if segment is not None:
+        text = segment
+    else:
+        # Fallback: join all physical lines the node spans.
+        lines = source.splitlines()
+        end = getattr(node, "end_lineno", node.lineno) or node.lineno
+        text = "\n".join(lines[node.lineno - 1 : end])
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
 def violations(path: Path) -> list[tuple[int, str, str]]:
-    """Return ``(lineno, name, line_hash)`` for each forbidden call in *path*."""
+    """Return ``(lineno, name, segment_hash)`` for each forbidden call in *path*."""
     source = path.read_text()
     tree = ast.parse(source, filename=str(path))
-    lines = source.splitlines()
     result: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
         if (
@@ -49,8 +58,7 @@ def violations(path: Path) -> list[tuple[int, str, str]]:
             and isinstance(node.func, ast.Name)
             and node.func.id in FORBIDDEN
         ):
-            line_text = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
-            result.append((node.lineno, node.func.id, _line_hash(line_text)))
+            result.append((node.lineno, node.func.id, _segment_hash(source, node)))
     return result
 
 

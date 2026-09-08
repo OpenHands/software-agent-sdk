@@ -138,3 +138,19 @@ def test_deleted_baselined_file_is_stale(checker, tmp_path: Path):
 
     other = _write_py(tmp_path / "other.py", "x = 1\n")
     assert checker.main([str(other)]) == 1
+
+
+def test_multiline_arg_change_is_caught(checker, tmp_path: Path):
+    """Editing arguments on a subsequent line of a multiline call must fail.
+
+    Because the baseline hashes the full call source segment (not just the
+    first physical line), changing arguments below the first line produces a
+    different hash and is correctly rejected as a new violation.
+    """
+    original = "v = getattr(\n    obj,\n    'attr',\n)\n"
+    f = _write_py(tmp_path / "multiline.py", original)
+    checker.main([str(f), "--update-baseline"])
+
+    # Change the argument on a subsequent line — same first line, different call.
+    _write_py(f, "v = getattr(\n    obj,\n    'other',\n)\n")
+    assert checker.main([str(f)]) == 1
