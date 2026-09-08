@@ -124,8 +124,11 @@ def main(argv: list[str]) -> int:
     if stale:
         count = len(stale)
         unit = "entry is" if count == 1 else "entries are"
-        print(f"note: {count} baseline {unit} stale; run --update-baseline to refresh.")
-    if new_violations:
+        print(
+            f"error: {count} baseline {unit} stale; "
+            "run --update-baseline to refresh."
+        )
+    if new_violations or stale:
         return 1
     return 0
 
