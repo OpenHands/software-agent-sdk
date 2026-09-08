@@ -171,11 +171,11 @@ def _make_state(tmp_path) -> ConversationState:
 
 def test_logs_matching_acp_provider_version(caplog):
     with caplog.at_level("INFO"):
-        _log_acp_provider_version("codex-acp", "1.1.7")
+        _log_acp_provider_version("codex-acp", "1.10.0")
 
     assert "provider=codex" in caplog.text
-    assert "pinned_version='1.1.7'" in caplog.text
-    assert "reported_version='1.1.7'" in caplog.text
+    assert "pinned_version='1.10.0'" in caplog.text
+    assert "reported_version='1.10.0'" in caplog.text
     assert "mismatch" not in caplog.text
 
 
@@ -191,8 +191,8 @@ def test_warns_when_acp_provider_version_differs_from_pin(caplog):
 
 def test_npx_packages_skips_prefer_offline():
     assert _npx_packages(
-        ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.1.7"]
-    ) == ["@agentclientprotocol/codex-acp@1.1.7"]
+        ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.10.0"]
+    ) == ["@agentclientprotocol/codex-acp@1.10.0"]
 
 
 def test_npx_packages_prefers_pinned_package_flags():
@@ -264,7 +264,7 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
         new=AsyncMock(return_value=process),
     ) as create_process:
         await agent._warm_npx_cache(
-            ["@agentclientprotocol/codex-acp@1.1.7"], "codex", env, str(tmp_path)
+            ["@agentclientprotocol/codex-acp@1.10.0"], "codex", env, str(tmp_path)
         )
 
     create_process.assert_awaited_once_with(
@@ -272,7 +272,7 @@ async def test_warm_npx_cache_uses_prefer_offline_and_durable_env(tmp_path):
         "--yes",
         "--prefer-offline",
         "--package",
-        "@agentclientprotocol/codex-acp@1.1.7",
+        "@agentclientprotocol/codex-acp@1.10.0",
         "--",
         "node",
         "-e",
@@ -291,7 +291,7 @@ def test_npx_cache_warm_failure_continues_with_normal_startup(tmp_path, caplog):
             "npx",
             "-y",
             "--prefer-offline",
-            "@agentclientprotocol/codex-acp@1.1.7",
+            "@agentclientprotocol/codex-acp@1.10.0",
         ],
         acp_server="codex",
     )
@@ -5234,7 +5234,7 @@ class TestWithCodexBaseUrl:
         original = env.copy()
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
+            ["-y", "@agentclientprotocol/codex-acp@1.10.0"],
             env,
         )
         assert json.loads(result["CODEX_CONFIG"]) == {
@@ -5270,7 +5270,7 @@ class TestWithCodexBaseUrl:
         }
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
+            ["-y", "@agentclientprotocol/codex-acp@1.10.0"],
             env,
         )
         assert json.loads(result["CODEX_CONFIG"])["openai_base_url"] == (
@@ -5285,7 +5285,7 @@ class TestWithCodexBaseUrl:
         }
         result = _with_codex_base_url(
             "npx",
-            ["-y", "@agentclientprotocol/codex-acp@1.1.7"],
+            ["-y", "@agentclientprotocol/codex-acp@1.10.0"],
             env,
         )
         assert result == env

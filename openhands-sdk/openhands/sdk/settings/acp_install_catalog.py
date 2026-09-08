@@ -103,7 +103,7 @@ class ACPInstallSpec:
 # TypeScript mirror (via check-acp-drift.py --write) all derive from
 # ACP_INSTALL_CATALOG below.
 CLAUDE_AGENT_ACP_VERSION = "0.63.0"
-CODEX_ACP_VERSION = "1.1.7"
+CODEX_ACP_VERSION = "1.10.0"
 GEMINI_CLI_VERSION = "0.46.0"
 KIMI_CODE_VERSION = "0.38.0"
 
@@ -111,6 +111,8 @@ KIMI_CODE_VERSION = "0.38.0"
 # spawns a separately installed `pi` engine off PATH.
 PI_ACP_VERSION = "0.0.33"
 PI_CODING_AGENT_VERSION = "0.83.0"
+
+OPENCODE_VERSION = "1.18.23"
 
 
 ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
@@ -161,6 +163,18 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         # having already died on `webidl.util.markAsUncloneable is not a
         # function`.
         min_node_version="22.19.0",
+    ),
+    "opencode": ACPInstallSpec(
+        key="opencode",
+        # The npm package is a 7.8KB shim whose postinstall pulls the matching
+        # per-platform compiled binary (~184MB unpacked) from an
+        # optionalDependency, so `--ignore-scripts` leaves a stub that errors.
+        packages=(ACPPackagePin("opencode-ai", OPENCODE_VERSION),),
+        # The shim's npm bin is ``opencode``, not the package basename.
+        binary_name="opencode",
+        trailing_args=("acp",),
+        # No `engines` field on opencode-ai or its platform packages: the CLI
+        # is a compiled Bun binary and only its postinstall runs on Node.
     ),
 }
 """Every ACP provider installable via npm. Registry membership only makes a

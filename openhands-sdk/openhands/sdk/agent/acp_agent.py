@@ -1686,8 +1686,8 @@ class ACPAgent(AgentBase):
         default=None,
         description=(
             "Provider registry key identifying which ACP CLI this agent runs "
-            "('claude-code', 'codex', 'gemini-cli', 'pi', or 'custom'); None "
-            "when the agent is built directly rather than via ACPAgentSettings. Set by "
+            "(any ACP_PROVIDERS key, or 'custom'); None when the agent is "
+            "built directly rather than via ACPAgentSettings. Set by "
             "ACPAgentSettings.create_agent() from ACPAgentSettings.acp_server so "
             "the authoritative key survives onto the agent — and thus onto "
             "ConversationInfo.agent — because the launch command in acp_command "

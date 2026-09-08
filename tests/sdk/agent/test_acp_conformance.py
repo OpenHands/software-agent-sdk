@@ -136,6 +136,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # bogus credential, which is what this suite needs. Setting the name
         # without the key makes the CLI exit, so both must be set.
         "KIMI_MODEL_API_KEY",
+        # opencode gates its *catalogue* on this, not just auth-method
+        # selection: unauthenticated, ``session/new`` advertises only the free
+        # tier and the live set_config_option call rejects the rest of
+        # available_models. A syntactically-present key is enough to be offered
+        # what a key-holding user sees (verified: 7 model options -> 90).
+        "OPENCODE_API_KEY",
     ):
         monkeypatch.setenv(var, _BOGUS_KEY)
     monkeypatch.setenv("KIMI_MODEL_NAME", "kimi-k2.7-code")
@@ -151,6 +157,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "KIMI_BASE_URL",
         "KIMI_CODE_HOME",
         "KIMI_MODEL_BASE_URL",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT",
+        # Carries an entire opencode auth store by value, so an ambient one
+        # would smuggle host credentials into a credential-free probe.
+        "OPENCODE_AUTH_CONTENT",
     ):
         monkeypatch.delenv(var, raising=False)
 
