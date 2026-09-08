@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
@@ -14,6 +15,7 @@ from openhands.sdk.settings.acp_install_catalog import (
     CODEX_ACP_VERSION,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
     GEMINI_CLI_VERSION,
+    HERMES_COMMIT,
     HERMES_REF,
     HERMES_REPO_URL,
     PI_ACP_VERSION,
@@ -134,7 +136,11 @@ class TestACPGitCheckoutInstallSpec:
     def _spec(self, **overrides) -> ACPGitCheckoutInstallSpec:
         return ACPGitCheckoutInstallSpec(
             key="proj",
-            source=ACPGitPin(url="https://example.test/org/proj", ref="v1.2.3"),
+            source=ACPGitPin(
+                url="https://example.test/org/proj",
+                ref="v1.2.3",
+                commit="a" * 40,
+            ),
             binary_name="proj-acp",
             **overrides,
         )
@@ -178,6 +184,21 @@ class TestACPGitCheckoutInstallSpec:
     def test_sync_without_extras_takes_no_extra_flags(self):
         assert self._spec().sync_command() == ("uv", "sync", "--frozen")
 
+    def test_resolved_commit_is_read_off_the_finished_tree(self):
+        """Local, so confirming the source identity costs nothing over the
+        network — the clone already fetched whatever the ref pointed at."""
+        assert self._spec().resolved_commit_command() == (
+            "git",
+            "rev-parse",
+            "HEAD",
+        )
+
+    def test_pin_identity_covers_the_commit_not_just_the_ref(self):
+        """The pin string keys the on-disk cache, so a tree installed under a
+        moved tag must not be reusable as the reviewed one."""
+        pin = self._spec().source
+        assert pin.pinned == f"https://example.test/org/proj@v1.2.3@{'a' * 40}"
+
 
 class TestHermesInstallSpec:
     """Hermes is the one provider installed from a git checkout, not npm."""
@@ -191,6 +212,11 @@ class TestHermesInstallSpec:
             == "https://github.com/NousResearch/hermes-agent"
         )
         assert spec.source.ref == HERMES_REF
+        # The ref is how the source is fetched; the commit is which source.
+        assert spec.source.commit == HERMES_COMMIT
+        assert re.fullmatch(r"[0-9a-f]{40}", spec.source.commit), (
+            "the pin must be a full commit SHA, not a ref or an abbreviation"
+        )
         assert spec.clone_command("/dest")[:6] == (
             "git",
             "clone",

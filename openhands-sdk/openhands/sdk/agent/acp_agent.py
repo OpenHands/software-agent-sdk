@@ -2595,23 +2595,26 @@ class ACPAgent(AgentBase):
         provider_key: str,
         env: dict[str, str],
         cwd: str,
-    ) -> None:
+    ) -> str:
         """Run one install step, failing loudly with its own stderr.
 
         Unlike the npx cache warm — whose failure only costs a slower launch —
         a failed step here means the CLI will not exist at all, so the output
         that explains why is worth keeping rather than discarding to DEVNULL.
+
+        Returns the step's stdout, which is the answer for the query steps
+        (``git rev-parse``) and empty in practice for the install ones.
         """
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=cwd,
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            _, stderr = await asyncio.wait_for(
+            stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT
             )
         except TimeoutError as exc:
@@ -2631,6 +2634,7 @@ class ACPAgent(AgentBase):
                 f"ACP provider install failed for {provider_key} "
                 f"(exit code {process.returncode}): {shlex.join(command)}\n{detail}"
             )
+        return (stdout or b"").decode("utf-8", "replace")
 
     async def _prepare_git_checkout(
         self,
@@ -2650,6 +2654,12 @@ class ACPAgent(AgentBase):
         Completion is therefore recorded by :data:`_ACP_CHECKOUT_READY_FILE`
         rather than by the directory existing, and re-running the install over
         an already-synced checkout is both cheap and how a partial one heals.
+
+        Nothing in the tree runs before its ``HEAD`` is confirmed to be the
+        pinned commit — ``uv sync`` executes the project's own build backend,
+        and the ref the clone asked for is no evidence of what arrived. A tree
+        that fails the check keeps no marker, so it never launches and the next
+        attempt re-checks it instead of re-cloning.
         """
         logger.info(
             "Installing ACP provider from git: provider=%s, source=%s, dest=%s; "
@@ -2680,6 +2690,20 @@ class ACPAgent(AgentBase):
                         raise
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
+
+        resolved = (
+            await self._run_checkout_step(
+                spec.resolved_commit_command(), spec.key, env, str(checkout_dir)
+            )
+        ).strip()
+        if resolved != spec.source.commit:
+            raise RuntimeError(
+                f"ACP provider source identity mismatch for {spec.key}: "
+                f"{spec.source.url} ref {spec.source.ref} is at {resolved!r}, "
+                f"but the catalog pins {spec.source.commit!r}. The ref moved; "
+                "re-verify the upstream release and update the recorded commit "
+                "before this provider can be installed."
+            )
 
         await self._run_checkout_step(
             spec.sync_command(), spec.key, env, str(checkout_dir)
@@ -3094,12 +3118,19 @@ class ACPAgent(AgentBase):
 
         # A git-checkout provider ships no binary in the image and cannot be
         # fetched by the launch command itself, so the checkout is installed
-        # here and its venv put on PATH. Unlike the npx warm above this is not
-        # best-effort: without it `command` resolves to nothing.
+        # here and its venv prepended to PATH. Unlike the npx warm above this
+        # is not best-effort: without it `command` resolves to nothing.
+        #
+        # Whether the binary already resolves on the *ambient* PATH is
+        # deliberately not consulted: something answering to the same name is
+        # not the pinned, commit-verified build, and prepending the venv is
+        # what makes the child exec ours. Only an explicitly-pathed command is
+        # exempt, because then PATH plays no part in what runs and installing
+        # could not change it.
         checkout_spec = (
             _git_checkout_spec(provider.key) if provider is not None else None
         )
-        if checkout_spec is not None and shutil.which(command) is None:
+        if checkout_spec is not None and not os.path.dirname(command):
             env["UV_CACHE_DIR"] = str(self._acp_package_cache_dir(state, "uv-cache"))
             # An interpreter uv provisions to satisfy the project's
             # ``requires-python`` otherwise lands under the user's home, where

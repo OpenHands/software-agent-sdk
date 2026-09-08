@@ -125,21 +125,33 @@ class ACPInstallSpec:
 
 @dataclass(frozen=True)
 class ACPGitPin:
-    """One project pinned to an exact git ref."""
+    """One project pinned to an exact git commit, reached through a ref."""
 
     url: str
     """Clone URL."""
 
     ref: str
-    """Tag or commit SHA to check out. A tag is only as immutable as its
-    publisher makes it, which is why
-    :attr:`ACPGitCheckoutInstallSpec.reported_version` exists to catch one
-    that moved."""
+    """Tag or branch to clone. Naming a ref rather than a commit is what keeps
+    a repository with a very large ref advertisement viable — see
+    :meth:`ACPGitCheckoutInstallSpec.clone_command`."""
+
+    commit: str
+    """Full SHA :attr:`ref` must resolve to — the reviewed source identity.
+
+    A tag is only as immutable as its publisher makes it, and the install runs
+    the checkout's own build backend before its CLI runs with the
+    conversation's credentials. So the ref is how the source is *fetched* and
+    this is what says *which source*: the checkout's ``HEAD`` is compared
+    against it before anything in the tree executes."""
 
     @property
     def pinned(self) -> str:
-        """``<url>@<ref>``, for logs and cache-directory naming."""
-        return f"{self.url}@{self.ref}"
+        """``<url>@<ref>@<commit>``, for logs and cache-directory naming.
+
+        Naming the commit is what makes a cache entry re-verifiable: a tree
+        installed under a moved tag can never be mistaken for the reviewed one.
+        """
+        return f"{self.url}@{self.ref}@{self.commit}"
 
 
 @dataclass(frozen=True)
@@ -202,8 +214,9 @@ class ACPGitCheckoutInstallSpec:
     releases by date (``v2026.8.31``) while its package version is ``0.21.0``
     — so unlike an npm pin, the ref cannot be compared against what the
     running server says. Recording the expected value keeps that check alive:
-    it catches a moved tag, and it fails the live probe when the ref is
-    bumped without re-verifying the record."""
+    it fails the live probe when the ref is bumped without re-verifying the
+    record. Source identity is not its job — that is
+    :attr:`ACPGitPin.commit`, checked before the tree runs at all."""
 
     def launch_command(self) -> tuple[str, ...]:
         """The console script, resolved off ``PATH``.
@@ -245,6 +258,16 @@ class ACPGitCheckoutInstallSpec:
             dest,
         )
 
+    def resolved_commit_command(self) -> tuple[str, ...]:
+        """Read back the commit a checkout of :attr:`source` landed on.
+
+        Run against the finished tree, so it costs nothing over the network:
+        ``--branch <tag>`` leaves ``HEAD`` detached at whatever the server
+        said the tag was, and that answer is what has to match
+        :attr:`ACPGitPin.commit`.
+        """
+        return ("git", "rev-parse", "HEAD")
+
     def sync_command(self) -> tuple[str, ...]:
         """Editable install of the checkout, at its own locked versions.
 
@@ -281,6 +304,11 @@ OPENCODE_VERSION = "1.18.23"
 # so neither can be pinned to a reviewed release.
 HERMES_REPO_URL = "https://github.com/NousResearch/hermes-agent"
 HERMES_REF = "v2026.8.31"
+# The commit HERMES_REF resolved to when this pin was reviewed; a bump has to
+# re-resolve it. The tags are annotated, so it takes two hops through the API
+# (`git/ref/tags/<ref>` yields the tag object, `git/tags/<sha>` the commit) —
+# `git ls-remote` answers in one, but not against this repository's ref count.
+HERMES_COMMIT = "29112bef099274229cadff79cdff7bf7b99c4b77"
 
 
 ACPAnyInstallSpec = ACPInstallSpec | ACPGitCheckoutInstallSpec
@@ -350,7 +378,7 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPAnyInstallSpec] = {
     ),
     "hermes": ACPGitCheckoutInstallSpec(
         key="hermes",
-        source=ACPGitPin(url=HERMES_REPO_URL, ref=HERMES_REF),
+        source=ACPGitPin(url=HERMES_REPO_URL, ref=HERMES_REF, commit=HERMES_COMMIT),
         # `hermes-acp` and `hermes acp` reach the same entry point; the
         # dedicated console script avoids paying for the `hermes` CLI's
         # subcommand dispatch and its argument grammar.
