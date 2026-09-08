@@ -120,3 +120,19 @@ def test_setattr_also_detected(checker, tmp_path: Path):
     """setattr is also forbidden."""
     f = _write_py(tmp_path / "set.py", 'setattr(obj, "attr", 1)\n')
     assert checker.main([str(f)]) == 1
+
+
+def test_deleted_baselined_file_is_stale(checker, tmp_path: Path):
+    """Deleting a baselined file must be caught even when checking other files.
+
+    Pre-commit does not pass deleted files to hooks, so the checker must flag
+    stale baseline entries for files that no longer exist — even when the
+    current run is checking a different (still-existing) file.
+    """
+    f = _write_py(tmp_path / "deleted.py", 'v = getattr(obj, "attr")\n')
+    checker.main([str(f), "--update-baseline"])
+
+    f.unlink()  # simulate deletion
+
+    other = _write_py(tmp_path / "other.py", "x = 1\n")
+    assert checker.main([str(other)]) == 1

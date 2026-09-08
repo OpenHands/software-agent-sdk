@@ -69,6 +69,18 @@ def _write_baseline(entries: list[tuple[str, str, str]]) -> None:
     BASELINE_FILE.write_text(json.dumps(payload, indent=4) + "\n")
 
 
+SDK_ROOT = "openhands-sdk"
+
+
+def _discover_sdk_files() -> list[str]:
+    """Return all Python files under the SDK root, relative to the repo root."""
+    root = Path(__file__).resolve().parent.parent
+    return [
+        str(p.relative_to(root))
+        for p in sorted(root.glob(f"{SDK_ROOT}/**/*.py"))
+    ]
+
+
 def _current_entries(
     paths: list[str],
 ) -> list[tuple[str, str, str, int]]:
@@ -90,7 +102,11 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    current = _current_entries(args.paths)
+    # When no paths are given (e.g. via pre-commit with pass_filenames: false),
+    # auto-discover all SDK Python files so deletions are caught.
+    paths = args.paths if args.paths else _discover_sdk_files()
+
+    current = _current_entries(paths)
 
     if args.update_baseline:
         _write_baseline([(file, name, digest) for file, name, digest, _ in current])
@@ -101,7 +117,7 @@ def main(argv: list[str]) -> int:
     current_counter = Counter(
         (file, name, digest) for file, name, digest, _ in current
     )
-    passed_files = set(args.paths)
+    checked_files = set(paths)
 
     # New violations: occurrences that exceed the baseline count for each key.
     new_violations: list[tuple[str, int, str]] = []
@@ -111,12 +127,13 @@ def main(argv: list[str]) -> int:
             new_violations.append((file, line, name))
             current_counter[key] -= 1  # count only the excess as new
 
-    # Stale: baseline entries no longer present in the current code (for files
-    # actually being checked, so subset runs don't report unrelated drift).
+    # Stale: baseline entries no longer present in the current code.  When the
+    # checker runs on all SDK files (auto-discovery), entries for deleted files
+    # are also flagged; subset runs only report drift for files they checked.
     stale = {
         key
         for key, count in (baseline - current_counter).items()
-        if key[0] in passed_files
+        if key[0] in checked_files or not Path(key[0]).exists()
     }
 
     for file, line, name in sorted(new_violations):
