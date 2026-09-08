@@ -189,6 +189,11 @@ _ACP_CHECKOUT_CLONE_BACKOFF: float = float(
 # Budget for reading a checkout's HEAD back. Local to a tree that is already
 # on disk, so it shares nothing with the transfer budget above.
 _ACP_CHECKOUT_VERIFY_TIMEOUT: Final[float] = 60.0
+# Where a venv keeps its console scripts. `uv sync` follows the interpreter's
+# own layout, which is `Scripts` on Windows and `bin` everywhere else, and the
+# launch command is resolved off PATH rather than by an absolute path — so
+# prepending the wrong one leaves the CLI unfindable after a clean install.
+_VENV_BIN_DIR: Final[str] = "Scripts" if os.name == "nt" else "bin"
 # Written into a git-checkout provider's directory once its install finishes.
 # The directory itself cannot carry that signal: the clone exists well before
 # the venv does.
@@ -2800,7 +2805,7 @@ class ACPAgent(AgentBase):
         checkout_dir = self._acp_package_cache_dir(state, "acp-checkouts") / slug
         marker = checkout_dir / _ACP_CHECKOUT_READY_FILE
         if marker.is_file():
-            return checkout_dir / ".venv" / "bin"
+            return checkout_dir / ".venv" / _VENV_BIN_DIR
         # Serialise the whole install across conversations sharing this
         # sandbox. Staging the clone makes it crash-safe but not concurrent:
         # two conversations starting together would both reach `uv sync` on
@@ -2816,7 +2821,7 @@ class ACPAgent(AgentBase):
                         + 5
                     ),
                 )
-        return checkout_dir / ".venv" / "bin"
+        return checkout_dir / ".venv" / _VENV_BIN_DIR
 
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]

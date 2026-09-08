@@ -7,13 +7,14 @@ import gc
 import json
 import os
 import pathlib
+import sysconfig
 import threading
 import time
 import uuid
 import weakref
 from collections.abc import Mapping
 from concurrent.futures import Future
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -504,7 +505,10 @@ class TestGitCheckoutInstall:
         bin_dir = self._bin_dir(agent, tmp_path, self._spec(), calls)
         checkout = bin_dir.parent.parent
         assert calls == ["clone", "verify", "sync"]
-        assert bin_dir.parts[-2:] == (".venv", "bin")
+        assert bin_dir.parts[-2:] == (
+            ".venv",
+            PurePath(sysconfig.get_path("scripts", "venv")).name,
+        )
 
         # The marker, not the directory, is what lets the next launch skip it.
         self._bin_dir(agent, tmp_path, self._spec(), calls)
@@ -680,6 +684,20 @@ class TestGitCheckoutInstall:
         assert launch_env["PATH"].split(os.pathsep)[0] == str(bin_dirs[0]), (
             "the checkout's venv must win PATH resolution in the child"
         )
+
+    def test_venv_bin_follows_the_platform_layout(self, tmp_path):
+        """`uv sync` writes console scripts where the interpreter puts them —
+        ``Scripts`` on Windows — and the launch command is a bare name resolved
+        off PATH, so prepending the other one hides a clean install's CLI.
+
+        Checked against ``sysconfig``'s own venv scheme rather than a repeat of
+        the ternary, so hard-coding either name fails on the platform it is
+        wrong for.
+        """
+        agent = self._agent()
+        bin_dir = self._bin_dir(agent, tmp_path, self._spec(), [])
+
+        assert bin_dir.name == PurePath(sysconfig.get_path("scripts", "venv")).name
 
     def test_an_explicitly_pathed_command_is_left_alone(self, tmp_path):
         """PATH plays no part in resolving a command that carries a directory,
