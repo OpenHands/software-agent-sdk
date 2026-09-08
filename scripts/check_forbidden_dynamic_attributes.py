@@ -75,10 +75,7 @@ SDK_ROOT = "openhands-sdk"
 def _discover_sdk_files() -> list[str]:
     """Return all Python files under the SDK root, relative to the repo root."""
     root = Path(__file__).resolve().parent.parent
-    return [
-        str(p.relative_to(root))
-        for p in sorted(root.glob(f"{SDK_ROOT}/**/*.py"))
-    ]
+    return [str(p.relative_to(root)) for p in sorted(root.glob(f"{SDK_ROOT}/**/*.py"))]
 
 
 def _current_entries(
@@ -114,9 +111,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     baseline = _load_baseline()
-    current_counter = Counter(
-        (file, name, digest) for file, name, digest, _ in current
-    )
+    current_counter = Counter((file, name, digest) for file, name, digest, _ in current)
     checked_files = set(paths)
 
     # New violations: occurrences that exceed the baseline count for each key.
@@ -141,10 +136,7 @@ def main(argv: list[str]) -> int:
     if stale:
         count = len(stale)
         unit = "entry is" if count == 1 else "entries are"
-        print(
-            f"error: {count} baseline {unit} stale; "
-            "run --update-baseline to refresh."
-        )
+        print(f"error: {count} baseline {unit} stale; run --update-baseline to refresh")
     if new_violations or stale:
         return 1
     return 0

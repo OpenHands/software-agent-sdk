@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,13 +17,14 @@ SCRIPT = (
 )
 
 
-def _load_module(tmp_path: Path):
+def _load_module(tmp_path: Path) -> Any:
     """Load the checker script as an importable module with an isolated baseline."""
     spec = importlib.util.spec_from_file_location("checker", SCRIPT)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     # Override after exec so the module-level assignment doesn't clobber it.
-    module.BASELINE_FILE = tmp_path / "baseline.json"
+    module.BASELINE_FILE = tmp_path / "baseline.json"  # type: ignore[attr-defined]
     return module
 
 
@@ -31,7 +33,7 @@ def checker(tmp_path: Path):
     return _load_module(tmp_path)
 
 
-def _write_py(path: Path, body: str) -> None:
+def _write_py(path: Path, body: str) -> Path:
     path.write_text(body)
     return path
 
