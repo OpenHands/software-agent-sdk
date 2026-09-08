@@ -109,13 +109,36 @@ def _probe_auto_title_spans() -> dict[str, Any]:
     names_by_id = {
         span.context.span_id: span.name for span in spans if span.context is not None
     }
+    parent_id_by_id = {
+        span.context.span_id: (span.parent.span_id if span.parent else None)
+        for span in spans
+        if span.context is not None
+    }
+
+    def operation_parent(span: Any) -> str | None:
+        """Nearest ancestor that isn't the SDK's synthetic ``llm.<model>`` span.
+
+        Telemetry.on_request opens an ``llm.<model>`` span that stays current
+        while the call runs (so the authoritative cost can be attached before
+        lmnr ends its ``litellm.completion`` span). That span sits between the
+        operation span and ``litellm.completion``; skip it to recover the
+        operation the LLM call belongs to.
+        """
+        pid = span.parent.span_id if span.parent else None
+        while pid is not None and names_by_id.get(pid, "").startswith("llm."):
+            pid = parent_id_by_id.get(pid)
+        return names_by_id.get(pid) if pid is not None else None
+
     return {
         "title": stored.title,
         "conversation_trace_id": root_span.span.get_span_context().trace_id,
         "spans": [
             {
                 "name": span.name,
-                "parent": names_by_id.get(span.parent.span_id) if span.parent else None,
+                "parent": operation_parent(span),
+                "immediate_parent": (
+                    names_by_id.get(span.parent.span_id) if span.parent else None
+                ),
                 "trace_id": span.context.trace_id if span.context else None,
                 "attributes": dict(span.attributes or {}),
             }
@@ -144,6 +167,10 @@ def test_auto_title_llm_span_joins_the_conversation_trace() -> None:
     assert len(llm_spans) == 1
     title_llm = llm_spans[0]
 
+    # The SDK's synthetic ``llm.<model>`` cost span sits between the two now;
+    # ``parent`` walks through it to the operation the call belongs to, which is
+    # what "joined the conversation trace" actually means here.
+    assert title_llm["immediate_parent"].startswith("llm.")
     assert title_llm["parent"] == "conversation.generate_title"
     assert title_llm["trace_id"] == probe["conversation_trace_id"]
 
