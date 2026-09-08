@@ -175,6 +175,20 @@ _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
 _ACP_CHECKOUT_INSTALL_TIMEOUT: float = float(
     os.environ.get("ACP_CHECKOUT_INSTALL_TIMEOUT", "900")
 )
+# Attempts allowed for the clone inside that budget. GitHub meters a
+# repository whose ref advertisement runs to ~10^5 refs, and answers a burst
+# with an HTTP 429 that git reports as a failed RPC rather than retrying
+# itself; upstream's own installer works around the same throttle.
+_ACP_CHECKOUT_CLONE_ATTEMPTS: Final[int] = max(
+    1, int(os.environ.get("ACP_CHECKOUT_CLONE_ATTEMPTS", "3"))
+)
+# Delay before the second attempt, doubling for each one after it.
+_ACP_CHECKOUT_CLONE_BACKOFF: float = float(
+    os.environ.get("ACP_CHECKOUT_CLONE_BACKOFF", "15")
+)
+# Budget for reading a checkout's HEAD back. Local to a tree that is already
+# on disk, so it shares nothing with the transfer budget above.
+_ACP_CHECKOUT_VERIFY_TIMEOUT: Final[float] = 60.0
 # Written into a git-checkout provider's directory once its install finishes.
 # The directory itself cannot carry that signal: the clone exists well before
 # the venv does.
@@ -2595,6 +2609,7 @@ class ACPAgent(AgentBase):
         provider_key: str,
         env: dict[str, str],
         cwd: str,
+        timeout: float = _ACP_CHECKOUT_INSTALL_TIMEOUT,
     ) -> str:
         """Run one install step, failing loudly with its own stderr.
 
@@ -2615,15 +2630,14 @@ class ACPAgent(AgentBase):
         )
         try:
             stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT
+                process.communicate(), timeout=timeout
             )
         except TimeoutError as exc:
             process.kill()
             await process.wait()
             raise RuntimeError(
-                f"ACP provider install timed out after "
-                f"{_ACP_CHECKOUT_INSTALL_TIMEOUT:.0f}s for {provider_key}: "
-                f"{shlex.join(command)}"
+                f"ACP provider install timed out after {timeout:.0f}s "
+                f"for {provider_key}: {shlex.join(command)}"
             ) from exc
         if process.returncode:
             detail = maybe_truncate(
@@ -2635,6 +2649,67 @@ class ACPAgent(AgentBase):
                 f"(exit code {process.returncode}): {shlex.join(command)}\n{detail}"
             )
         return (stdout or b"").decode("utf-8", "replace")
+
+    async def _clone_pinned_ref(
+        self,
+        spec: ACPGitCheckoutInstallSpec,
+        staging: Path,
+        env: dict[str, str],
+    ) -> None:
+        """Clone ``spec``'s ref into ``staging``, retrying a throttled fetch.
+
+        Serving a ~10^5-ref advertisement costs GitHub real work, and it meters
+        the repository accordingly: a burst comes back as ``HTTP 429``, which
+        git reports as a failed RPC rather than something it retries itself.
+        Upstream's own installer works around the same throttle. A cold install
+        is the only time this runs, so one metered minute is worth far more
+        than the provider being unusable until the next launch.
+
+        Every failure is retried, not just the ones that look transient:
+        matching on stderr would have to keep pace with git's and GitHub's
+        wording, and the cost of being wrong is asymmetric — a stale pin loses
+        the backoff before failing, a missed throttle loses the install.
+
+        The attempts share one deadline, so the caller's budget still bounds
+        the phase however many of them run.
+        """
+        deadline = time.monotonic() + _ACP_CHECKOUT_INSTALL_TIMEOUT
+        for attempt in range(1, _ACP_CHECKOUT_CLONE_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"ACP provider clone ran out of time for {spec.key} after "
+                    f"{attempt - 1} attempt(s): {spec.source.pinned}"
+                )
+            try:
+                await self._run_checkout_step(
+                    spec.clone_command(str(staging)),
+                    spec.key,
+                    env,
+                    str(staging.parent),
+                    timeout=remaining,
+                )
+                return
+            except RuntimeError as error:
+                if attempt == _ACP_CHECKOUT_CLONE_ATTEMPTS:
+                    raise
+                backoff = min(
+                    _ACP_CHECKOUT_CLONE_BACKOFF * 2 ** (attempt - 1),
+                    max(deadline - time.monotonic(), 0.0),
+                )
+                logger.warning(
+                    "ACP provider clone attempt %d/%d failed for %s; "
+                    "retrying in %.0fs: %s",
+                    attempt,
+                    _ACP_CHECKOUT_CLONE_ATTEMPTS,
+                    spec.key,
+                    backoff,
+                    error,
+                )
+                # A failed transfer can still have written part of the tree,
+                # and `git clone` refuses a destination that exists.
+                shutil.rmtree(staging, ignore_errors=True)
+                await asyncio.sleep(backoff)
 
     async def _prepare_git_checkout(
         self,
@@ -2675,12 +2750,7 @@ class ACPAgent(AgentBase):
             shutil.rmtree(staging, ignore_errors=True)
             staging.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             try:
-                await self._run_checkout_step(
-                    spec.clone_command(str(staging)),
-                    spec.key,
-                    env,
-                    str(staging.parent),
-                )
+                await self._clone_pinned_ref(spec, staging, env)
                 try:
                     staging.rename(checkout_dir)
                 except OSError:
@@ -2693,7 +2763,11 @@ class ACPAgent(AgentBase):
 
         resolved = (
             await self._run_checkout_step(
-                spec.resolved_commit_command(), spec.key, env, str(checkout_dir)
+                spec.resolved_commit_command(),
+                spec.key,
+                env,
+                str(checkout_dir),
+                timeout=_ACP_CHECKOUT_VERIFY_TIMEOUT,
             )
         ).strip()
         if resolved != spec.source.commit:
@@ -2736,7 +2810,11 @@ class ACPAgent(AgentBase):
             if not marker.is_file():
                 self._executor.run_async(
                     self._prepare_git_checkout(spec, checkout_dir, env),
-                    timeout=_ACP_CHECKOUT_INSTALL_TIMEOUT * 2 + 5,
+                    timeout=(
+                        _ACP_CHECKOUT_INSTALL_TIMEOUT * 2
+                        + _ACP_CHECKOUT_VERIFY_TIMEOUT
+                        + 5
+                    ),
                 )
         return checkout_dir / ".venv" / "bin"
 

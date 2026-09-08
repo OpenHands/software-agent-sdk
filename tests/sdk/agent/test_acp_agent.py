@@ -319,6 +319,107 @@ class TestGitCheckoutInstall:
 
         assert [self._label(command) for command, _ in calls] == ["verify", "sync"]
 
+    async def test_a_throttled_clone_is_retried_and_can_still_succeed(self, tmp_path):
+        """GitHub answers a burst against this repository class with HTTP 429,
+        which git reports as a failed RPC. Losing the whole cold install to one
+        of those would leave the provider unusable until the next launch."""
+        checkout = tmp_path / "checkout"
+        calls: list[str] = []
+        clones = 0
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            nonlocal clones
+            calls.append(self._label(command))
+            if command[:2] == ("git", "clone"):
+                clones += 1
+                dest = pathlib.Path(command[-1])
+                if clones == 1:
+                    # A throttled transfer leaves a partial tree behind.
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / "half-written").write_text("")
+                    process = MagicMock()
+                    process.returncode = 128
+                    process.communicate = AsyncMock(
+                        return_value=(b"", b"error: RPC failed; HTTP 429")
+                    )
+                    return process
+                assert not dest.exists(), "the partial tree was not cleared"
+                dest.mkdir(parents=True, exist_ok=True)
+            return self._stub_step(command)
+
+        with (
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_exec,
+            ),
+            patch("openhands.sdk.agent.acp_agent.asyncio.sleep", new=AsyncMock()),
+        ):
+            await _make_agent()._prepare_git_checkout(self._spec(), checkout, {})
+
+        assert calls == ["clone", "clone", "verify", "sync"]
+        assert (checkout / _ACP_CHECKOUT_READY_FILE).is_file()
+
+    async def test_clone_gives_up_after_the_attempt_budget(self, tmp_path):
+        """Retrying is bounded: a genuinely unreachable ref must surface its own
+        error rather than loop until the caller's timeout."""
+        calls: list[str] = []
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            calls.append(self._label(command))
+            process = MagicMock()
+            process.returncode = 128
+            process.communicate = AsyncMock(
+                return_value=(b"", b"error: RPC failed; HTTP 429")
+            )
+            return process
+
+        with (
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_exec,
+            ),
+            patch("openhands.sdk.agent.acp_agent.asyncio.sleep", new=AsyncMock()),
+            pytest.raises(RuntimeError, match="HTTP 429"),
+        ):
+            await _make_agent()._prepare_git_checkout(
+                self._spec(), tmp_path / "checkout", {}
+            )
+
+        assert calls == ["clone"] * acp_agent_module._ACP_CHECKOUT_CLONE_ATTEMPTS
+
+    async def test_clone_retries_back_off_and_share_one_deadline(self, tmp_path):
+        """Each wait doubles, and none of them may outlive the phase budget the
+        caller's timeout is sized against."""
+        delays: list[float] = []
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            process = MagicMock()
+            process.returncode = 128
+            process.communicate = AsyncMock(return_value=(b"", b"429"))
+            return process
+
+        async def _record(delay):
+            delays.append(delay)
+
+        with (
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_fake_exec,
+            ),
+            patch("openhands.sdk.agent.acp_agent.asyncio.sleep", new=_record),
+            pytest.raises(RuntimeError),
+        ):
+            await _make_agent()._prepare_git_checkout(
+                self._spec(), tmp_path / "checkout", {}
+            )
+
+        base = acp_agent_module._ACP_CHECKOUT_CLONE_BACKOFF
+        assert delays == [
+            base * 2**i
+            for i in range(acp_agent_module._ACP_CHECKOUT_CLONE_ATTEMPTS - 1)
+        ]
+        assert sum(delays) < acp_agent_module._ACP_CHECKOUT_INSTALL_TIMEOUT
+
     async def test_refuses_a_tree_whose_head_is_not_the_pinned_commit(self, tmp_path):
         """A tag can be moved, and `uv sync` executes the checkout's own build
         backend — so what the ref resolved to has to be checked before any of
