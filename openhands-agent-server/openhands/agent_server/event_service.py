@@ -1833,6 +1833,65 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
 
+    async def reconnect_mcp(self) -> list[dict[str, object]]:
+        """Reconnect this conversation's MCP clients and report per-server status.
+
+        Collects the MCP executors attached to the conversation's agent, then
+        force-reconnects each distinct MCP client (requires
+        ``MCPClient.reconnect`` from OpenHands SDK). The conversation should be
+        idle before calling this.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        from openhands.sdk.mcp.tool import MCPToolExecutor
+
+        def collect() -> list[dict[str, object]]:
+            agent = self._conversation.agent
+            tools_map = getattr(agent, "tools_map", None) or {}
+            clients: dict[int, dict[str, object]] = {}
+            for name, tool in tools_map.items():
+                executor = getattr(tool, "executor", None)
+                if not isinstance(executor, MCPToolExecutor):
+                    continue
+                client = executor.client
+                key = id(client)
+                if key not in clients:
+                    clients[key] = {"client": client, "tools": []}
+                clients[key]["tools"].append(name)
+            return [
+                {"client": item["client"], "tools": item["tools"]}
+                for item in clients.values()
+            ]
+
+        loop = asyncio.get_running_loop()
+        entries = await loop.run_in_executor(None, collect)
+
+        results: list[dict[str, object]] = []
+        for entry in entries:
+            client = entry["client"]
+            tools = entry["tools"]
+            server = str(tools[0]).partition("_")[0] if tools else "mcp"
+            try:
+                await client.reconnect()
+                connected = bool(client.is_connected())
+                reconnected = True
+                error: str | None = None
+            except Exception as exc:  # noqa: BLE001
+                connected = False
+                reconnected = False
+                error = str(exc)
+            results.append(
+                {
+                    "server": server,
+                    "tools": tools,
+                    "connected": connected,
+                    "reconnected": reconnected,
+                    "error": error,
+                }
+            )
+        return results
+
     async def navigate_to(self, event_id: str | None) -> None:
         """Move the conversation HEAD to an existing event (in-place re-root).
 

@@ -643,6 +643,31 @@ async def condense_conversation(
 
 
 @conversation_router.post(
+    "/{conversation_id}/reconnect_mcp",
+    responses={404: {"description": "Conversation not found"}},
+)
+async def reconnect_conversation_mcp(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> dict[str, object]:
+    """Reconnect every MCP server attached to a conversation.
+
+    A chat whose MCP tools were lost because the underlying transport dropped
+    (e.g. a desktop bridge restarted or a network blip) can recover in place:
+    each MCP client is force-disconnected and reconnected, and the response
+    reports per-server status. The conversation must be idle.
+
+    Returns ``{"servers": [{"server", "tools", "connected", "reconnected",
+    "error"}]}``.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    servers = await event_service.reconnect_mcp()
+    return {"servers": servers}
+
+
+@conversation_router.post(
     "/{conversation_id}/fork",
     responses={
         201: {"description": "Forked conversation created"},
