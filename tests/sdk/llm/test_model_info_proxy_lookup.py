@@ -13,9 +13,13 @@ aliases (claude-opus-4-8 vision still off).
 
 from unittest.mock import patch
 
+import litellm
+from litellm import model_cost
+
 from openhands.sdk.llm.utils.model_info import (
     _get_model_info_from_litellm_proxy,
     _merge_raw_model_metadata,
+    _register_proxy_alias_pricing,
     get_litellm_model_info,
 )
 
@@ -52,8 +56,8 @@ def _patched_httpx_get(*_a, **_kw):
 
 
 def setup_function(_):
-    # Both functions are lru_cache'd; clear between tests so cache_key reuse
-    # across tests does not mask behavior.
+    # `_get_model_info_from_litellm_proxy` is lru_cache'd; clear between tests
+    # so cache_key reuse across tests does not mask behavior.
     _get_model_info_from_litellm_proxy.cache_clear()
 
 
@@ -138,3 +142,172 @@ def test_raw_registry_capabilities_survive_typed_model_info_projection():
     assert info["supports_reasoning"] is True
     assert info["supports_adaptive_thinking"] is True
     assert info["supports_sampling_params"] is False
+
+
+# --- alias pricing registration (issue #4816) ---
+
+# Each test uses a distinct custom alias so litellm's internal caches (which
+# remember a previously-registered alias as priceable even after it is popped
+# out of `model_cost`) cannot pollute a later test's priceability check.
+_UNDERLYING = "claude-sonnet-4-5-20250929"
+
+
+def _pop(alias):
+    model_cost.pop(alias, None)
+
+
+def test_register_proxy_alias_makes_alias_priceable():
+    """Registering a custom alias flips cost_per_token from raising to a value."""
+    alias = "prod/claude-sonnet-4-5-bedrock-a"
+    _pop(alias)
+    # Sanity: the alias is not priceable before registration.
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        pre_raises = False
+    except Exception:
+        pre_raises = True
+    assert pre_raises
+
+    underlying = model_cost[_UNDERLYING]
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info=None,
+    )
+    cost = (0.0, 0.0)
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+        post_raises = False
+    except Exception:
+        post_raises = True
+
+    assert not post_raises
+    # (prompt_cost, completion_cost); both must be non-zero.
+    assert cost[0] > 0
+    assert cost[1] > 0
+    _pop(alias)
+
+
+def test_register_proxy_alias_skips_already_priceable_models():
+    """A provider-prefixed real model is priceable natively; do not clobber."""
+    alias = "anthropic/claude-sonnet-4-5-20250929"
+    before = dict(model_cost.get(alias, {}))
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=model_cost[_UNDERLYING],
+        proxy_model_info={"input_cost_per_token": 999},
+    )
+    # Entry unchanged: registration was skipped.
+    assert model_cost.get(alias, {}) == before
+
+
+def test_register_proxy_proxy_overrides_win():
+    """Proxy-side pricing overrides take precedence over the underlying model."""
+    alias = "prod/claude-sonnet-4-5-bedrock-b"
+    _pop(alias)
+    underlying = model_cost[_UNDERLYING]
+    override = {"input_cost_per_token": 1.0, "output_cost_per_token": 2.0}
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info=override,
+    )
+    entry = model_cost[alias]
+    assert entry["input_cost_per_token"] == 1.0
+    assert entry["output_cost_per_token"] == 2.0
+    # Underlying cache/max/provider fields still carried over.
+    assert entry["litellm_provider"] == underlying["litellm_provider"]
+    _pop(alias)
+
+
+def test_register_proxy_alias_bedrock_converse_provider_normalized():
+    """A bedrock_converse provider label must be normalized to bedrock.
+
+    ``get_llm_provider`` resolves ``bedrock_converse`` only for model ids already
+    present in litellm's builtin bedrock_converse set; an unknown alias id with that
+    label raises, leaving the span priced $0. Registering with ``bedrock`` makes
+    ``cost_per_token`` resolve without an explicit ``custom_llm_provider`` (#4836).
+    """
+    alias = "prod/claude-sonnet-4-5-bedrock-e"
+    _pop(alias)
+    # Sanity: the alias is not priceable before registration.
+
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        pre_raises = False
+    except Exception:
+        pre_raises = True
+    assert pre_raises
+
+    # The proxy advertises ``bedrock_converse`` (the Anthropic-on-Bedrock route),
+    # which would otherwise override the underlying provider in the merged entry.
+
+    underlying = model_cost["us.anthropic.claude-sonnet-4-5-20250929-v1:0"]
+    assert underlying["litellm_provider"] == "bedrock_converse"
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=underlying,
+        proxy_model_info={"litellm_provider": "bedrock_converse"},
+    )
+    assert model_cost[alias]["litellm_provider"] == "bedrock"
+    cost = (0.0, 0.0)
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+        post_raises = False
+    except Exception:
+        post_raises = True
+    assert not post_raises
+    assert cost[0] > 0
+    assert cost[1] > 0
+    _pop(alias)
+
+
+def test_register_proxy_alias_no_pricing_logs_and_skips():
+    """When no pricing can be derived, the alias stays unregistered (no $0 entry)."""
+    alias = "prod/claude-sonnet-4-5-bedrock-c"
+    _pop(alias)
+    _register_proxy_alias_pricing(
+        alias=alias,
+        underlying_model_info=None,
+        proxy_model_info={"supports_vision": True},
+    )
+    assert alias not in model_cost
+
+
+def test_get_model_info_from_proxy_registers_alias_pricing():
+    """End-to-end: fetching proxy model info registers the alias into model_cost."""
+    alias = "prod/claude-sonnet-4-5-bedrock-d"
+    _pop(alias)
+    proxy_response = {
+        "data": [
+            {
+                "model_name": alias,
+                "litellm_params": {"model": _UNDERLYING},
+                "model_info": {"supports_vision": True},
+            }
+        ]
+    }
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        lambda *_a, **_kw: _FakeResponse(proxy_response),
+    ):
+        _get_model_info_from_litellm_proxy.cache_clear()
+        _get_model_info_from_litellm_proxy(
+            secret_api_key="k",
+            base_url="https://proxy.example",
+            model=f"litellm_proxy/{alias}",
+            cache_key=42,
+        )
+    assert alias in model_cost
+    try:
+        cost = litellm.cost_per_token(
+            model=alias, prompt_tokens=100, completion_tokens=50
+        )
+    except Exception:
+        cost = None
+    assert cost is not None and cost[0] > 0
+    _pop(alias)
