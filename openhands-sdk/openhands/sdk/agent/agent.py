@@ -4,6 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pydantic import PrivateAttr, ValidationError, model_validator
@@ -573,19 +574,65 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
+        *,
+        emit_actions: bool = False,
     ) -> None:
         """Prepare a batch, emit results, and handle finish."""
         state = conversation.state
-        batch = _ActionBatch.prepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-            span_owner=conversation,
-        )
-        batch.emit(conversation, on_event)
+        action_events, has_finish = _ActionBatch._truncate_at_finish(action_events)
+
+        def tool_runner(action_event: ActionEvent) -> list[Event]:
+            return self._execute_action_event(conversation, action_event)
+
+        if self.tool_concurrency_limit == 1:
+            blocked_reasons = {}
+            results_by_id = {}
+            emitted_actions = []
+            for action_event in action_events:
+                if emit_actions:
+                    action_event = action_event.model_copy(
+                        update={"timestamp": datetime.now().isoformat()}
+                    )
+                    on_event(action_event)
+                emitted_actions.append(action_event)
+                item = _ActionBatch.prepare(
+                    [action_event],
+                    state=state,
+                    executor=self._parallel_executor,
+                    tool_runner=tool_runner,
+                    tools=self.tools_map,
+                    cancel_token=conversation.cancel_token,
+                    span_owner=conversation,
+                )
+                item.emit(conversation, on_event)
+                blocked_reasons.update(item.blocked_reasons)
+                results_by_id.update(item.results_by_id)
+            batch = _ActionBatch(
+                action_events=emitted_actions,
+                has_finish=has_finish,
+                blocked_reasons=blocked_reasons,
+                results_by_id=results_by_id,
+            )
+        else:
+            if emit_actions:
+                action_events = [
+                    action_event.model_copy(
+                        update={"timestamp": datetime.now().isoformat()}
+                    )
+                    for action_event in action_events
+                ]
+                for action_event in action_events:
+                    on_event(action_event)
+            batch = _ActionBatch.prepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=tool_runner,
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+                span_owner=conversation,
+            )
+            batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
             check_iterative_refinement=lambda ae: (
@@ -603,6 +650,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         conversation: LocalConversation,
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
+        *,
+        emit_actions: bool = False,
     ) -> None:
         """Async variant of :meth:`_execute_actions`.
 
@@ -611,16 +660,60 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
-        batch = await _ActionBatch.aprepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-            span_owner=conversation,
-        )
-        batch.emit(conversation, on_event)
+        action_events, has_finish = _ActionBatch._truncate_at_finish(action_events)
+
+        def tool_runner(action_event: ActionEvent) -> list[Event]:
+            return self._execute_action_event(conversation, action_event)
+
+        if self.tool_concurrency_limit == 1:
+            blocked_reasons = {}
+            results_by_id = {}
+            emitted_actions = []
+            for action_event in action_events:
+                if emit_actions:
+                    action_event = action_event.model_copy(
+                        update={"timestamp": datetime.now().isoformat()}
+                    )
+                    on_event(action_event)
+                emitted_actions.append(action_event)
+                item = await _ActionBatch.aprepare(
+                    [action_event],
+                    state=state,
+                    executor=self._parallel_executor,
+                    tool_runner=tool_runner,
+                    tools=self.tools_map,
+                    cancel_token=conversation.cancel_token,
+                    span_owner=conversation,
+                )
+                item.emit(conversation, on_event)
+                blocked_reasons.update(item.blocked_reasons)
+                results_by_id.update(item.results_by_id)
+            batch = _ActionBatch(
+                action_events=emitted_actions,
+                has_finish=has_finish,
+                blocked_reasons=blocked_reasons,
+                results_by_id=results_by_id,
+            )
+        else:
+            if emit_actions:
+                action_events = [
+                    action_event.model_copy(
+                        update={"timestamp": datetime.now().isoformat()}
+                    )
+                    for action_event in action_events
+                ]
+                for action_event in action_events:
+                    on_event(action_event)
+            batch = await _ActionBatch.aprepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=tool_runner,
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+                span_owner=conversation,
+            )
+            batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
             check_iterative_refinement=lambda ae: (
@@ -1338,7 +1431,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     update={"critic_result": critic_result}
                 )
 
-        on_event(action_event)
         return action_event
 
     def _execute_action_event(

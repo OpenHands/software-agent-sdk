@@ -7,7 +7,7 @@ combined time of all failed attempts plus the successful one.
 """
 
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from litellm.exceptions import APIConnectionError
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
@@ -127,6 +127,68 @@ def test_telemetry_records_only_successful_attempt_latency(mock_litellm_completi
     assert recorded_latency < 0.5, (
         f"Recorded latency ({recorded_latency:.3f}s) should be < 0.5s for a mocked call"
     )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_request_log_callback_runs_before_transport(mock_litellm_completion):
+    events = []
+    mock_response = create_mock_response()
+
+    def request_callback(llm_call_id: str, log_data: str) -> None:
+        events.append(("request", llm_call_id))
+
+    def transport(*args, **kwargs):
+        events.append(("transport", None))
+        return mock_response
+
+    mock_litellm_completion.side_effect = transport
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+        usage_id="test-service",
+    )
+    llm.telemetry.log_enabled = True
+    llm.telemetry.set_log_requests_callback(request_callback)
+
+    llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="Hello!")])]
+    )
+
+    assert [event[0] for event in events] == ["request", "transport"]
+    assert events[0][1]
+
+
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_request_log_callback_runs_before_async_transport(
+    mock_litellm_acompletion,
+):
+    events = []
+    mock_response = create_mock_response()
+
+    def request_callback(llm_call_id: str, log_data: str) -> None:
+        events.append(("request", llm_call_id))
+
+    async def transport(*args, **kwargs):
+        events.append(("transport", None))
+        return mock_response
+
+    mock_litellm_acompletion.side_effect = transport
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+        usage_id="test-service",
+    )
+    llm.telemetry.log_enabled = True
+    llm.telemetry.set_log_requests_callback(request_callback)
+
+    await llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="Hello!")])]
+    )
+
+    assert [event[0] for event in events] == ["request", "transport"]
+    assert events[0][1]
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

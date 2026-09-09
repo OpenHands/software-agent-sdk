@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,6 +23,36 @@ from openhands.sdk.llm import TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.workspace import LocalWorkspace
+
+
+def test_flight_recorder_captures_llm_completion_log(tmp_path: Path) -> None:
+    service = EventService(
+        stored=_stored(uuid4(), tmp_path / "workspace"),
+        conversations_dir=tmp_path / "conversations",
+    )
+    recorder = MagicMock(spec=Recorder)
+    service._flight_recorder = recorder
+    request_callbacks = []
+    completion_callbacks = []
+    llm = MagicMock(log_completions=False, usage_id="agent", model="gpt-4o")
+    llm.telemetry.set_log_requests_callback.side_effect = request_callbacks.append
+    llm.telemetry.set_log_completions_callback.side_effect = completion_callbacks.append
+
+    service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+    request_callbacks[0]("call-1", '{"llm_call_id":"call-1"}')
+    completion_callbacks[0](
+        "completion.json",
+        '{"llm_call_id":"call-1","response":{"id":"response-1"}}',
+    )
+
+    assert llm.telemetry.log_enabled is True
+    recorder.on_llm_request.assert_called_once_with(
+        "call-1", '{"llm_call_id":"call-1"}'
+    )
+    recorder.on_completion_log.assert_called_once_with(
+        "completion.json",
+        '{"llm_call_id":"call-1","response":{"id":"response-1"}}',
+    )
 
 
 @pytest.mark.asyncio

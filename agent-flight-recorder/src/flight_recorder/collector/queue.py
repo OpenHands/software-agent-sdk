@@ -19,20 +19,29 @@ class RecordQueue:
         self.dropped = 0
 
     def put(self, record: Record) -> bool:
+        return self.put_many((record,))
+
+    def put_many(self, records: tuple[Record, ...]) -> bool:
+        if not records:
+            return True
         with self._lock:
-            if len(self._records) < self._maxsize:
-                self._records.append(record)
+            required_space = len(records) - (self._maxsize - len(self._records))
+            if required_space <= 0:
+                self._records.extend(records)
                 return True
-            if record.kind in _DROPPABLE_KINDS:
-                self.dropped += 1
-                return False
-            for queued in self._records:
-                if queued.kind in _DROPPABLE_KINDS:
+            droppable = tuple(
+                queued for queued in self._records if queued.kind in _DROPPABLE_KINDS
+            )
+            if (
+                all(record.kind not in _DROPPABLE_KINDS for record in records)
+                and len(droppable) >= required_space
+            ):
+                for queued in droppable[:required_space]:
                     self._records.remove(queued)
-                    self._records.append(record)
-                    self.dropped += 1
-                    return True
-            self.dropped += 1
+                self._records.extend(records)
+                self.dropped += required_space
+                return True
+            self.dropped += len(records)
             return False
 
     def drain(self, limit: int = 256) -> list[Record]:

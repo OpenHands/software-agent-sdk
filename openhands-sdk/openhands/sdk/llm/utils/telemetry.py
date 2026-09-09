@@ -44,8 +44,12 @@ class Telemetry(BaseModel):
 
     # --- Runtime fields (not serialized) ---
     _req_start: float = PrivateAttr(default=0.0)
+    _req_id: str | None = PrivateAttr(default=None)
     _req_ctx: dict[str, Any] = PrivateAttr(default_factory=dict)
     _last_latency: float = PrivateAttr(default=0.0)
+    _log_requests_callback: Callable[[str, str], None] | None = PrivateAttr(
+        default=None
+    )
     _log_completions_callback: Callable[[str, str], None] | None = PrivateAttr(
         default=None
     )
@@ -56,6 +60,12 @@ class Telemetry(BaseModel):
     )
 
     # ---------- Lifecycle ----------
+    def set_log_requests_callback(
+        self, callback: Callable[[str, str], None] | None
+    ) -> None:
+        """Set a callback for request payloads immediately before transport."""
+        self._log_requests_callback = callback
+
     def set_log_completions_callback(
         self, callback: Callable[[str, str], None] | None
     ) -> None:
@@ -78,7 +88,22 @@ class Telemetry(BaseModel):
 
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
+        self._req_id = str(uuid.uuid4())
         self._req_ctx = telemetry_ctx or {}
+        if self._log_requests_callback is None:
+            return
+        try:
+            data = {
+                **self._req_ctx,
+                "llm_call_id": self._req_id,
+                "timestamp": self._req_start,
+            }
+            self._log_requests_callback(
+                self._req_id,
+                json.dumps(data, default=_safe_json, ensure_ascii=False),
+            )
+        except Exception as exc:
+            warnings.warn(f"Telemetry request logging failed: {exc}")
 
     def on_response(
         self,
@@ -142,6 +167,7 @@ class Telemetry(BaseModel):
             )
 
             data = self._req_ctx.copy()
+            data["llm_call_id"] = self._req_id
             data["error"] = {
                 "type": type(_err).__name__,
                 "message": str(_err),
@@ -309,6 +335,7 @@ class Telemetry(BaseModel):
             )
 
             data = self._req_ctx.copy()
+            data["llm_call_id"] = self._req_id
             data["response"] = (
                 resp  # ModelResponse | ResponsesAPIResponse;
                 # serialized via _safe_json

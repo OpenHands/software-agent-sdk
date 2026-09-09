@@ -923,11 +923,8 @@ def _batch_action_event(call_id: str, response_id: str) -> ActionEvent:
     )
 
 
-def test_claim_batch_primary_tracks_consecutive_batches():
-    """Parallel tool calls share one llm_response_id and render consecutively;
-    only the first ActionEvent of each batch claims the per-request metrics
-    (#4189). Detection tracks just the previous response id -- O(1), no scan --
-    so it must be called once per event in render order."""
+def test_claim_batch_primary_ignores_interleaved_non_action_events():
+    """Only the first action for an LLM response claims per-request metrics."""
     visualizer = DefaultConversationVisualizer()
 
     a1 = _batch_action_event("call_1", "resp_batch")

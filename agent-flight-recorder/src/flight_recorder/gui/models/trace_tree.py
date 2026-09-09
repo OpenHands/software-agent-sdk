@@ -1,3 +1,4 @@
+from flight_recorder.gui.timeline.items import record_label
 from flight_recorder.models.view_models import TimelineView
 from PySide6.QtCore import QModelIndex, QObject
 from PySide6.QtGui import QStandardItem, QStandardItemModel
@@ -20,7 +21,7 @@ class TraceTreeModel(QStandardItemModel):
         )
         if not has_agent_hierarchy:
             for record in timeline.records:
-                item = QStandardItem(record.kind)
+                item = QStandardItem(record_label(record))
                 item.setData(record.record_id)
                 self.invisibleRootItem().appendRow(item)
             return
@@ -41,7 +42,7 @@ class TraceTreeModel(QStandardItemModel):
             (parent or self.invisibleRootItem()).appendRow(item)
 
         for record in timeline.records:
-            item = QStandardItem(record.kind)
+            item = QStandardItem(record_label(record))
             item.setData(record.record_id)
             parent = span_items.get(record.span_id or record.parent_span_id or "")
             (parent or self.invisibleRootItem()).appendRow(item)

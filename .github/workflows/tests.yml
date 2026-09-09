@@ -23,11 +23,11 @@ jobs:
               run: |
                   # Allowed top-level directories under tests/
                   # Each must have a corresponding CI job or workflow that runs them.
-                  #   tests.yml:             sdk, tools, workspace, agent_server, cross
+                  #   tests.yml:             sdk, tools, workspace, agent_server, cross, agent_flight_recorder
                   #   run-examples.yml:      examples
                   #   integration-runner.yml: integration
                   #   (data-only):           fixtures
-                  ALLOWED="sdk tools workspace agent_server cross examples integration fixtures"
+                  ALLOWED="sdk tools workspace agent_server cross agent_flight_recorder examples integration fixtures"
 
                   violations=""
                   for entry in tests/*/; do
@@ -65,6 +65,41 @@ jobs:
                     exit 1
                   fi
                   echo "✓ All test directories are in the allowlist"
+
+    agent-flight-recorder-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+              with: {fetch-depth: 0}
+
+            - name: Detect flight recorder changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      agent-flight-recorder/**
+                      tests/agent_flight_recorder/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install dependencies
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run package and headless GUI tests
+              if: steps.changed.outputs.any_changed == 'true'
+              env:
+                  QT_QPA_PLATFORM: offscreen
+              run: uv run pytest tests/agent_flight_recorder
 
     sdk-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404

@@ -3456,6 +3456,7 @@ def test_llm_io_logging_is_disabled_by_default(event_service: EventService) -> N
 
     event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
 
+    llm.telemetry.set_log_requests_callback.assert_not_called()
     llm.telemetry.set_log_completions_callback.assert_not_called()
 
 

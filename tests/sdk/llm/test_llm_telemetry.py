@@ -485,6 +485,7 @@ class TestTelemetryLogging:
             assert data["context_window"] == 4096
             assert data["instructions"] == "test instructions"
             assert data["input"][0]["type"] == "reasoning"
+            assert data["llm_call_id"]
             assert "error" in data
             assert data["error"]["type"] == "ValueError"
             assert data["error"]["message"] == "boom"
@@ -887,6 +888,46 @@ class TestTelemetryEdgeCases:
 
 class TestTelemetryCallbacks:
     """Test callback functionality for log streaming and stats updates."""
+
+    def test_request_callback_precedes_correlated_completion(
+        self, basic_telemetry, mock_response
+    ):
+        events = []
+
+        def request_callback(llm_call_id: str, log_data: str) -> None:
+            events.append(("request", llm_call_id, json.loads(log_data)))
+
+        def completion_callback(filename: str, log_data: str) -> None:
+            events.append(("response", filename, json.loads(log_data)))
+
+        basic_telemetry.log_enabled = True
+        basic_telemetry.set_log_requests_callback(request_callback)
+        basic_telemetry.set_log_completions_callback(completion_callback)
+
+        with patch.object(basic_telemetry, "_compute_cost", return_value=None):
+            basic_telemetry.on_request(
+                {"messages": [{"role": "user", "content": "hello"}]}
+            )
+            basic_telemetry.on_response(mock_response)
+
+        assert [event[0] for event in events] == ["request", "response"]
+        request_id = events[0][1]
+        assert events[0][2]["llm_call_id"] == request_id
+        assert events[0][2]["messages"][0]["content"] == "hello"
+        assert events[1][2]["llm_call_id"] == request_id
+        assert events[1][2]["response"]["id"] == "test-response-id"
+
+    def test_request_callback_failure_does_not_escape(self, basic_telemetry):
+        def failing_callback(llm_call_id: str, log_data: str) -> None:
+            raise RuntimeError("request log failed")
+
+        basic_telemetry.set_log_requests_callback(failing_callback)
+
+        with pytest.warns(UserWarning, match="Telemetry request logging failed"):
+            basic_telemetry.on_request({"messages": []})
+
+        assert basic_telemetry._req_ctx == {"messages": []}
+        assert basic_telemetry._req_id is not None
 
     def test_set_log_callback(self, basic_telemetry):
         """Test setting log callback."""

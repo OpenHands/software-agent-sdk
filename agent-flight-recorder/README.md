@@ -114,6 +114,22 @@ workspace changes, model context provenance and differences, delegated agents,
 usage, and evidence-backed findings. Reconstructed or inferred information is
 explicitly labeled and unresolved evidence remains visible.
 
+An `llm.request` record is persisted immediately before each provider transport
+attempt. The exact outbound data is under `payload.request`. A correlated
+`llm.response` record is persisted when the provider returns or the final attempt
+fails; its payload contains the response or error, usage, cost, and latency. Both
+records carry the same `llm_call_id`, while the response also carries the
+provider's `llm_response_id` when available. They appear together under **LLM
+Interaction**, with **Request** and **Response** sub-rows. OpenHands-level messages
+appear separately under **User Conversation**, with **User Input** and **Agent
+Response** sub-rows. Legacy combined records are projected into the provider
+sub-rows without modifying the source bundle. Traces recorded without completion
+logging still show their conversation messages, but the missing provider exchange
+cannot be added retroactively. Tool activity appears under **Tool**, with
+**Action** and **Result** sub-rows. With sequential tool execution, each action is
+recorded immediately before its tool runs and its result immediately afterward.
+Parallel batches record all overlapping starts before their ordered results.
+
 ## Package For Linux
 
 ```bash

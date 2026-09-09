@@ -5,8 +5,10 @@ from flight_recorder.recorder import Recorder
 from flight_recorder.services.bundles import BundleService
 from flight_recorder.services.repository import TraceRepository
 
+from openhands.sdk import Agent, Conversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.llm import Metrics
+from openhands.sdk.llm import Message, MessageToolCall, Metrics, TextContent
+from openhands.sdk.testing import TestLLM
 from tests.agent_flight_recorder.fixtures.conversation import (
     run_deterministic_conversation,
 )
@@ -45,3 +47,65 @@ def test_record_and_replay_preserves_run_and_usage(tmp_path: Path) -> None:
     assert run.total_usage.prompt_tokens == 10
     assert run.total_usage.completion_tokens == 4
     assert run.total_cost == 0.25
+
+
+def test_sequential_tool_events_are_recorded_in_execution_order(tmp_path: Path) -> None:
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-1",
+                        name="think",
+                        arguments='{"thought":"first"}',
+                        origin="completion",
+                    ),
+                    MessageToolCall(
+                        id="call-2",
+                        name="think",
+                        arguments='{"thought":"second"}',
+                        origin="completion",
+                    ),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        ]
+    )
+    index = TraceIndex(tmp_path / "trace.db")
+    recorder = Recorder(tmp_path / "trace.afr", index)
+    conversation = Conversation(
+        agent=Agent(llm=llm, tools=[]),
+        callbacks=[recorder],
+        visualizer=None,
+    )
+    try:
+        conversation.send_message("Run two thoughts.")
+        conversation.run()
+    finally:
+        conversation.close()
+        recorder.close()
+
+    tool_records = [
+        record
+        for record in index.iter_records(recorder.trace_id)
+        if record.payload.get("event_type") in {"ActionEvent", "ObservationEvent"}
+    ]
+    assert [record.payload["event_type"] for record in tool_records] == [
+        "ActionEvent",
+        "ObservationEvent",
+        "ActionEvent",
+        "ObservationEvent",
+    ]
+    assert [record.payload["tool_call_id"] for record in tool_records] == [
+        "call-1",
+        "call-1",
+        "call-2",
+        "call-2",
+    ]
+    timestamps = []
+    for record in tool_records:
+        assert record.source_timestamp is not None
+        timestamps.append(record.source_timestamp)
+    assert timestamps == sorted(timestamps)

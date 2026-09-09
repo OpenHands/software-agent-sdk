@@ -1,7 +1,11 @@
 import json
 
 from flight_recorder.adapter.conversation import normalize_event
-from flight_recorder.adapter.llm import normalize_completion_log, normalize_metrics
+from flight_recorder.adapter.llm import (
+    normalize_completion_log,
+    normalize_metrics,
+    normalize_request_log,
+)
 from flight_recorder.collector.normalize import make_record
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -10,15 +14,53 @@ from openhands.sdk.llm import Metrics
 
 
 def test_completion_log_preserves_response_correlation() -> None:
-    record = normalize_completion_log(
+    request = normalize_request_log(
+        "call-1",
+        json.dumps(
+            {
+                "llm_call_id": "call-1",
+                "input": [{"type": "message", "role": "user"}],
+                "tools": [{"name": "terminal"}],
+                "timestamp": 1_788_545_603.75,
+            }
+        ),
+        producer_id="producer",
+        trace_id="trace",
+    )
+    response = normalize_completion_log(
         "completion.json",
-        json.dumps({"response_id": "response-1", "model": "test"}),
+        json.dumps(
+            {
+                "llm_call_id": "call-1",
+                "response": {"id": "response-1", "model": "test"},
+                "timestamp": 1_788_545_605.25,
+                "latency_sec": 1.5,
+            }
+        ),
         producer_id="producer",
         trace_id="trace",
     )
 
-    assert record.kind == "llm.response"
-    assert record.llm_response_id == "response-1"
+    assert request.kind == "llm.request"
+    assert response.kind == "llm.response"
+    assert request.llm_call_id == response.llm_call_id == "call-1"
+    assert request.llm_response_id is None
+    assert response.llm_response_id == "response-1"
+    assert request.payload == {
+        "request": {
+            "input": [{"type": "message", "role": "user"}],
+            "tools": [{"name": "terminal"}],
+        },
+    }
+    assert response.payload == {
+        "filename": "completion.json",
+        "response": {"id": "response-1", "model": "test"},
+        "timestamp": 1_788_545_605.25,
+        "latency_sec": 1.5,
+    }
+    assert request.source_timestamp is not None
+    assert response.source_timestamp is not None
+    assert (response.source_timestamp - request.source_timestamp).total_seconds() == 1.5
 
 
 def test_condensation_preserves_response_correlation() -> None:

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from flight_recorder.models.envelopes import Record
+from flight_recorder.models.envelopes import ProvenanceKind, Record
 from flight_recorder.models.view_models import RunQuery
 from flight_recorder.services.repository import TraceRepository
 
@@ -83,6 +83,100 @@ def test_repository_projects_span_detail_and_workspace_changes(trace_index) -> N
     assert [(item.path, item.created_sequence) for item in changes] == [
         ("src/app.py", 2)
     ]
+
+
+def test_agent_span_requires_explicit_finish_record(trace_index) -> None:
+    trace_index.add_records(
+        [
+            record(
+                "start",
+                "trace",
+                1,
+                "agent.started",
+                span_id="agent",
+                agent_span_id="agent",
+            ),
+            record(
+                "activity",
+                "trace",
+                2,
+                "conversation.event",
+                span_id="agent",
+                agent_span_id="agent",
+            ),
+        ]
+    )
+    repository = TraceRepository(trace_index)
+
+    active = repository.get_span("trace", "agent").span
+
+    assert active.status == "incomplete"
+    assert active.end_sequence is None
+    assert active.ended_at is None
+
+    trace_index.add_records(
+        [
+            record(
+                "finish",
+                "trace",
+                3,
+                "agent.finished",
+                span_id="agent",
+                agent_span_id="agent",
+            )
+        ]
+    )
+
+    finished = repository.get_span("trace", "agent").span
+
+    assert finished.status == "completed"
+    assert finished.end_sequence == 3
+    assert finished.ended_at == datetime(2026, 9, 1, 12, 0, 3)
+
+
+def test_repository_projects_legacy_llm_exchange_without_mutating_index(
+    trace_index,
+) -> None:
+    legacy = record(
+        "completion",
+        "trace",
+        1,
+        "llm.response",
+        payload={
+            "filename": "completion.json",
+            "completion": {
+                "input": [{"type": "message", "role": "user"}],
+                "response": {"id": "response-1"},
+                "timestamp": datetime(2026, 9, 1, 12, 0, 5).timestamp(),
+                "latency_sec": 1.5,
+            },
+        },
+    )
+    trace_index.add_records([legacy])
+    repository = TraceRepository(trace_index)
+
+    timeline = repository.get_timeline("trace")
+
+    assert [item.kind for item in timeline.records] == [
+        "llm.request",
+        "llm.response",
+    ]
+    assert [item.record_id for item in timeline.records] == [
+        "completion/request",
+        "completion/response",
+    ]
+    assert {item.llm_call_id for item in timeline.records} == {"completion"}
+    assert timeline.records[0].payload["request"]["input"][0]["role"] == "user"
+    assert timeline.records[1].payload["response"]["id"] == "response-1"
+    assert timeline.records[0].source_timestamp == datetime(
+        2026, 9, 1, 12, 0, 3, 500000
+    )
+    assert timeline.records[1].source_timestamp == datetime(2026, 9, 1, 12, 0, 5)
+    assert all(
+        item.provenance.kind is ProvenanceKind.DERIVED for item in timeline.records
+    )
+    assert repository.get_record("trace", "completion/request") == timeline.records[0]
+    assert trace_index.iter_records("trace") == [legacy]
 
 
 def test_primary_agent_duration_excludes_recorder_shutdown_idle_time(

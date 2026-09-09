@@ -28,6 +28,9 @@ def run(recorder: Recorder) -> int:
         base_url=os.environ.get("LLM_BASE_URL"),
         usage_id="primary-agent",
     )
+    llm.telemetry.log_enabled = True
+    llm.telemetry.set_log_requests_callback(recorder.on_llm_request)
+    llm.telemetry.set_log_completions_callback(recorder.on_completion_log)
     agent = Agent(
         llm=llm,
         tools=[

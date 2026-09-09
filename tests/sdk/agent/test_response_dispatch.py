@@ -357,16 +357,8 @@ def test_tool_calls_response_executes_actions():
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
-def test_batch_action_events_are_emitted_consecutively():
-    """Pin the invariant the metrics visualizer relies on (#4189).
-
-    Parallel tool calls from one LLM response are emitted as a consecutive run
-    of ActionEvents that share one llm_response_id, in tool-call order, and only
-    the first carries the turn's thought. ``DefaultConversationVisualizer.
-    _claim_batch_primary`` tracks only the *previous* response id to spot batch
-    siblings in O(1); if emission ever stops being consecutive, that shortcut
-    would silently mislabel metrics -- this test should catch it first.
-    """
+def test_sequential_batch_emits_each_action_with_its_result():
+    """Sequential tool events reflect execution order without duplicating metrics."""
     tool_calls = [
         MessageToolCall(
             id="tc-1",
@@ -388,12 +380,23 @@ def test_batch_action_events_are_emitted_consecutively():
     )
     events, _ = _run_single_step(_make_llm_response(msg))
 
-    action_events = [e for e in events if isinstance(e, ActionEvent)]
+    tool_events = [
+        event for event in events if isinstance(event, (ActionEvent, ObservationEvent))
+    ]
+    action_events = [event for event in tool_events if isinstance(event, ActionEvent)]
     assert len(action_events) == 2
-    # One LLM response -> one shared llm_response_id for the whole batch.
     assert len({a.llm_response_id for a in action_events}) == 1
-    # Emitted as a consecutive run (nothing of another response interleaves),
-    # in tool-call order.
     assert [a.tool_call_id for a in action_events] == ["tc-1", "tc-2"]
-    # Only the first event of the batch carries the turn's thought.
     assert action_events[0].thought and not action_events[1].thought
+    assert [type(event) for event in tool_events] == [
+        ActionEvent,
+        ObservationEvent,
+        ActionEvent,
+        ObservationEvent,
+    ]
+    assert [event.tool_call_id for event in tool_events] == [
+        "tc-1",
+        "tc-1",
+        "tc-2",
+        "tc-2",
+    ]

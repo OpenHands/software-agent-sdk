@@ -5,7 +5,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from flight_recorder.adapter.conversation import normalize_event
-from flight_recorder.adapter.llm import normalize_completion_log, normalize_metrics
+from flight_recorder.adapter.llm import (
+    normalize_completion_log,
+    normalize_metrics,
+    normalize_request_log,
+)
 from flight_recorder.collector.normalize import make_record
 from flight_recorder.collector.persistence import Collector
 from flight_recorder.collector.queue import RecordQueue
@@ -111,6 +115,16 @@ class Recorder:
         self._capture(
             lambda: normalize_completion_log(
                 filename, log_data, producer_id=self.producer_id, trace_id=self.trace_id
+            )
+        )
+
+    def on_llm_request(self, llm_call_id: str, log_data: str) -> None:
+        self._capture(
+            lambda: normalize_request_log(
+                llm_call_id,
+                log_data,
+                producer_id=self.producer_id,
+                trace_id=self.trace_id,
             )
         )
 

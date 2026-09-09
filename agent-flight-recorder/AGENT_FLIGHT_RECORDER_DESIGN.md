@@ -149,10 +149,11 @@ default. The completed response is the durable record.
 
 ### 8.3 Exact LLM calls
 
-Enable OpenHands completion logging and register
-`llm.telemetry.set_log_completions_callback(...)`. The callback receives a
-filename and JSON log payload containing request context, response, cost,
-timestamp, latency, and usage information.
+Enable OpenHands completion logging and register both telemetry callbacks.
+`llm.telemetry.set_log_requests_callback(...)` receives the exact request context
+immediately before each provider transport attempt. The completion callback
+receives the response or final error, cost, timestamp, latency, and usage. A
+generated `llm_call_id` correlates each request with its result.
 
 For remote conversations, consume `LLMCompletionLogEvent`, whose `log_data`
 contains the JSON-encoded completion record and whose fields include model and
@@ -312,6 +313,7 @@ Trace: one user task or orchestration run
   "monotonic_ns": 8273649123000,
   "kind": "llm.response",
   "openhands_event_id": "uuid-or-null",
+  "llm_call_id": "request-attempt-uuid-or-null",
   "llm_response_id": "provider-response-id-or-null",
   "payload": {},
   "content_ref": "sha256-or-null"
@@ -1072,7 +1074,7 @@ The first implementation should remain deliberately small:
 
 1. Wrap the condenser example in a recorder-enabled conversation.
 2. Capture conversation events with a callback.
-3. Capture exact LLM logs with the telemetry completion callback.
+3. Capture exact LLM requests and responses with both telemetry callbacks.
 4. Append normalized records to an `.afr` bundle.
 5. Build the SQLite index and open the run in a PySide6 `QMainWindow`.
 6. Render stable agent swimlanes with duration, status, tokens, and cost, and

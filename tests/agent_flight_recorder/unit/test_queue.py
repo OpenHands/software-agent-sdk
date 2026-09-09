@@ -24,3 +24,15 @@ def test_queue_never_blocks_when_full() -> None:
     queue = RecordQueue(maxsize=1)
     assert queue.put(record("run.started", "start"))
     assert not queue.put(record("llm.stream_delta", "delta"))
+
+
+def test_queue_never_partially_enqueues_llm_exchange() -> None:
+    queue = RecordQueue(maxsize=1)
+    exchange = (
+        record("llm.request", "request"),
+        record("llm.response", "response"),
+    )
+
+    assert not queue.put_many(exchange)
+    assert queue.drain() == []
+    assert queue.dropped == 2

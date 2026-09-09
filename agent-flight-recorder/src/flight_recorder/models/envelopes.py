@@ -54,6 +54,7 @@ class Record(FrozenModel):
     monotonic_ns: int | None = Field(default=None, ge=0)
     kind: str
     openhands_event_id: str | None = None
+    llm_call_id: str | None = None
     llm_response_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     content_ref: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")

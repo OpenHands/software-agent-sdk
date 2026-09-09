@@ -17,6 +17,7 @@ def make_record(
     parent_span_id: str | None = None,
     agent_span_id: str | None = None,
     openhands_event_id: str | None = None,
+    llm_call_id: str | None = None,
     llm_response_id: str | None = None,
     source_timestamp: datetime | None = None,
 ) -> Record:
@@ -29,6 +30,7 @@ def make_record(
         agent_span_id=agent_span_id,
         kind=kind,
         openhands_event_id=openhands_event_id,
+        llm_call_id=llm_call_id,
         llm_response_id=llm_response_id,
         source_timestamp=source_timestamp,
         payload=payload,

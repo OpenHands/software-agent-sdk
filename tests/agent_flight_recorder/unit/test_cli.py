@@ -31,8 +31,13 @@ def test_cli_records_with_attachment_target(
     module = ModuleType("recording_target")
 
     def run(recorder: Recorder) -> None:
+        recorder.on_llm_request(
+            "call-1",
+            json.dumps({"llm_call_id": "call-1", "messages": []}),
+        )
         recorder.on_completion_log(
-            "completion.json", json.dumps({"response_id": "response-1"})
+            "completion.json",
+            json.dumps({"llm_call_id": "call-1", "response_id": "response-1"}),
         )
 
     module.__dict__["run"] = run
@@ -46,7 +51,14 @@ def test_cli_records_with_attachment_target(
     )
 
     assert result == 0
-    assert BundleService().validate_bundle(output).record_count == 5
+    assert BundleService().validate_bundle(output).record_count == 6
+    records = [
+        json.loads(line) for line in (output / "records.jsonl").read_text().splitlines()
+    ]
+    assert [record["kind"] for record in records[2:4]] == [
+        "llm.request",
+        "llm.response",
+    ]
     assert capsys.readouterr().out.strip()
 
 

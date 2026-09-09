@@ -16,7 +16,12 @@ from pydantic import Field, ValidationError
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
+from openhands.sdk.event import (
+    ActionEvent,
+    AgentErrorEvent,
+    ObservationEvent,
+    UserRejectObservation,
+)
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import Action, Observation, Tool, ToolExecutor, register_tool
@@ -217,6 +222,116 @@ def test_sequential_execution_with_default_limit():
     assert len(obs_events) == 2
     assert obs_events[0].tool_call_id == "call_0"
     assert obs_events[1].tool_call_id == "call_1"
+    tool_events = [
+        event
+        for event in collected
+        if isinstance(event, (ActionEvent, ObservationEvent))
+    ]
+    assert [type(event) for event in tool_events] == [
+        ActionEvent,
+        ObservationEvent,
+        ActionEvent,
+        ObservationEvent,
+    ]
+    assert [event.tool_call_id for event in tool_events] == [
+        "call_0",
+        "call_0",
+        "call_1",
+        "call_1",
+    ]
+    assert tool_events[0].timestamp <= tool_events[1].timestamp
+    assert tool_events[1].timestamp <= tool_events[2].timestamp
+
+
+async def test_async_sequential_execution_emits_each_action_with_its_result():
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    _tool_call("call_0", "slow_tool", '{"delay": 0.0, "label": "a"}'),
+                    _tool_call("call_1", "slow_tool", '{"delay": 0.0, "label": "b"}'),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+    collected = []
+    conversation = Conversation(agent=agent, callbacks=[collected.append])
+    conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
+
+    await agent.astep(conversation, on_event=collected.append)
+
+    tool_events = [
+        event
+        for event in collected
+        if isinstance(event, (ActionEvent, ObservationEvent))
+    ]
+    assert [type(event) for event in tool_events] == [
+        ActionEvent,
+        ObservationEvent,
+        ActionEvent,
+        ObservationEvent,
+    ]
+    assert [event.tool_call_id for event in tool_events] == [
+        "call_0",
+        "call_0",
+        "call_1",
+        "call_1",
+    ]
+    assert tool_events[0].timestamp <= tool_events[1].timestamp
+    assert tool_events[1].timestamp <= tool_events[2].timestamp
+
+
+def test_sequential_action_hook_blocks_before_execution() -> None:
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    _tool_call(
+                        "call_0", "slow_tool", '{"delay": 0.0, "label": "blocked"}'
+                    ),
+                    _tool_call(
+                        "call_1", "slow_tool", '{"delay": 0.0, "label": "runs"}'
+                    ),
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[Tool(name="SlowTool")])
+    collected = []
+    conversation = Conversation(agent=agent, callbacks=[])
+    conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
+
+    def on_event(event) -> None:
+        collected.append(event)
+        if isinstance(event, ActionEvent) and event.tool_call_id == "call_0":
+            conversation.state.block_action(event.id, "blocked by hook")
+
+    agent.step(conversation, on_event=on_event)
+
+    tool_events = [
+        event
+        for event in collected
+        if isinstance(event, (ActionEvent, ObservationEvent, UserRejectObservation))
+    ]
+    assert [type(event) for event in tool_events] == [
+        ActionEvent,
+        UserRejectObservation,
+        ActionEvent,
+        ObservationEvent,
+    ]
+    assert [event.tool_call_id for event in tool_events] == [
+        "call_0",
+        "call_0",
+        "call_1",
+        "call_1",
+    ]
 
 
 def test_limit_one_preserves_sequential_semantics():

@@ -3,8 +3,10 @@ from datetime import datetime
 from typing import Any
 
 from flight_recorder.gui.timeline.rows import (
+    ACTIVITY_CATEGORY_TYPES_BY_KEY,
     ACTIVITY_ROW_TYPES_BY_KEY,
     classify_record,
+    row_key_for_category,
 )
 from flight_recorder.models.envelopes import Finding, Record, TokenUsage
 from flight_recorder.models.view_models import AgentDetail, RunSummary
@@ -34,7 +36,8 @@ def explain_run(run: RunSummary) -> str:
         "HOW TO READ THIS\n"
         "The timeline groups recorded entries by agent and activity category. "
         "Lifecycle bars show agent boundaries, while markers show messages, "
-        "actions, results, delegation, context changes, state changes, metrics, "
+        "tool actions and results, delegation, context changes, state changes, "
+        "metrics, "
         "and errors. Selecting an agent or marker replaces this explanation with "
         "details about that evidence.\n\n"
         "EVIDENCE LIMITS\n"
@@ -92,7 +95,7 @@ def explain_agent(detail: AgentDetail) -> str:
         "This explanation is derived from captured evidence. The lifecycle shows "
         "recorded boundaries and attribution, not whether the agent's reasoning "
         "was correct or its work was valuable. Inspect this agent's Messages, "
-        "Actions, Results, Context, Errors, and the evidence attached to findings "
+        "Tool, Context, Errors, and the evidence attached to findings "
         "before drawing a causal conclusion."
     )
 
@@ -133,7 +136,14 @@ def explain_finding(finding: Finding) -> str:
 
 
 def explain_record(record: Record) -> str:
-    category = ACTIVITY_ROW_TYPES_BY_KEY[classify_record(record)]
+    category_key = classify_record(record)
+    category = ACTIVITY_CATEGORY_TYPES_BY_KEY[category_key]
+    row = ACTIVITY_ROW_TYPES_BY_KEY[row_key_for_category(category_key)]
+    location = (
+        f"{row.label} / {category.label} sub-row"
+        if category_key != row.key
+        else f"{row.label} row"
+    )
     source_time = (
         _format_datetime(record.source_timestamp)
         if record.source_timestamp is not None
@@ -143,7 +153,7 @@ def explain_record(record: Record) -> str:
         "Recorded activity\n\n"
         "WHAT THIS REPRESENTS\n"
         f"This is one immutable trace record of kind {record.kind!r}. It appears "
-        f"in the {category.label} row because {category.description.lower()} "
+        f"in the {location} because {category.description.lower()} "
         f"{_record_kind_text(record)}\n\n"
         "ORDER AND TIME\n"
         f"Sequence: {record.sequence if record.sequence is not None else 'unknown'}\n"

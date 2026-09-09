@@ -2,7 +2,7 @@ from flight_recorder.models.envelopes import ProvenanceKind, Record
 from flight_recorder.services.repository import TraceRepository
 
 
-def test_context_prefers_authoritative_completion_log(trace_index) -> None:
+def test_context_prefers_authoritative_llm_request(trace_index) -> None:
     trace_index.add_records(
         [
             Record(
@@ -10,11 +10,9 @@ def test_context_prefers_authoritative_completion_log(trace_index) -> None:
                 producer_id="producer",
                 trace_id="trace",
                 sequence=1,
-                kind="llm.response",
+                kind="llm.request",
                 payload={
-                    "completion": {
-                        "messages": [{"role": "user", "content": "Exact input"}]
-                    }
+                    "request": {"input": [{"role": "user", "content": "Exact input"}]}
                 },
             )
         ]

@@ -14,7 +14,7 @@ from flight_recorder.gui.timeline.rows import (
 )
 from flight_recorder.gui.timeline.view import TimelineViewWidget
 from flight_recorder.models.envelopes import Finding
-from flight_recorder.models.view_models import RunQuery
+from flight_recorder.models.view_models import RunQuery, Selection
 from flight_recorder.services.repository import TraceRepository
 from PySide6.QtCore import QByteArray, QModelIndex, QSettings, Qt
 from PySide6.QtGui import QAction, QCloseEvent
@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
         center_layout.addLayout(timeline_controls)
         self.timeline.span_activated.connect(self.navigate_to_agent)
         self.timeline.record_activated.connect(self.navigate_to_record)
+        self.selection.selection_changed.connect(self._selection_changed)
         changes = QLabel("Workspace changes")
         changes.setObjectName("workspace-changes")
         center_layout.addWidget(self.timeline)
@@ -220,6 +221,9 @@ class MainWindow(QMainWindow):
             return
         self.timeline.timeline_scene.set_enabled_row_types(enabled)
         self._sync_timeline_row_actions()
+
+    def _selection_changed(self, selection: Selection) -> None:
+        self.timeline.timeline_scene.set_selected_record(selection.record_id)
 
     def navigate_to_agent(self, span_id: str) -> None:
         self.selection.select_span(span_id)

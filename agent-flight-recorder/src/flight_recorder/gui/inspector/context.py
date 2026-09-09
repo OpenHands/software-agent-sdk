@@ -1,5 +1,6 @@
-import json
+from html import escape
 
+from flight_recorder.gui.inspector.summary import format_readable_data
 from flight_recorder.models.envelopes import ProvenanceKind
 from flight_recorder.models.view_models import CondensationView, ContextView
 from PySide6.QtCore import Signal
@@ -39,7 +40,7 @@ class ContextInspector(QWidget):
             f'<a href="{source_id}">{source_id}</a>'
             for source_id in context.provenance.source_ids
         )
-        messages = json.dumps(context.messages, indent=2)
+        messages = escape(format_readable_data(list(context.messages)))
         self.context.setHtml(f"<p>{source_links}</p><pre>{messages}</pre>")
 
     def set_condensation(self, condensation: CondensationView) -> None:
@@ -47,8 +48,10 @@ class ContextInspector(QWidget):
             f'<a href="{record_id}">{record_id}</a>'
             for record_id in condensation.resolved_ids
         )
-        unresolved = ", ".join(condensation.unresolved_ids) or "None"
-        summary = condensation.summary or "No replacement summary recorded"
+        unresolved = escape(", ".join(condensation.unresolved_ids) or "None")
+        summary = escape(
+            condensation.summary or "No replacement summary recorded"
+        ).replace("\n", "<br>")
         self.condensation.setHtml(
             f"<p>Forgotten events: {resolved}</p>"
             f"<p>Unresolved: {unresolved}</p><p>Replacement: {summary}</p>"

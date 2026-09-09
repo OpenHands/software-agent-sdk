@@ -4,26 +4,104 @@ from flight_recorder.gui.timeline.items import (
     HEADER_HEIGHT,
     LABEL_WIDTH,
     LANE_HEIGHT,
+    RECORD_HEIGHT,
+    RECORD_TOP,
     SEQUENCE_WIDTH,
     TimelineRecordItem,
+    TimelineSequenceArrowItem,
     TimelineSpanItem,
     record_label,
+    record_width,
 )
 from flight_recorder.gui.timeline.layout import SpanLayout, project_spans
 from flight_recorder.gui.timeline.rows import (
     ACTIVITY_ROW_TYPES,
     DEFAULT_ACTIVITY_ROW_TYPES,
+    ActivityRowType,
     classify_record,
+    row_key_for_category,
 )
 from flight_recorder.gui.timeline.time import (
     RecordInterval,
     project_record_intervals,
 )
 from flight_recorder.models.envelopes import Record, Span
-from PySide6.QtCore import QLineF, QRectF, Qt, Signal
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene
 from shiboken6 import isValid
+
+
+_RECORD_SEQUENCE_GAP = 6.0
+_GROUP_HEADER_HEIGHT = 28.0
+_SUBROW_HEIGHT = 32.0
+
+
+def _row_height(row_type: ActivityRowType) -> float:
+    if not row_type.subrows:
+        return LANE_HEIGHT
+    return _GROUP_HEADER_HEIGHT + len(row_type.subrows) * _SUBROW_HEIGHT
+
+
+def _record_display_y(
+    row_top: float,
+    row_type: ActivityRowType,
+    category: str,
+) -> float:
+    if not row_type.subrows:
+        return row_top + RECORD_TOP
+    subrow_index = next(
+        index for index, subrow in enumerate(row_type.subrows) if subrow.key == category
+    )
+    return (
+        row_top
+        + _GROUP_HEADER_HEIGHT
+        + subrow_index * _SUBROW_HEIGHT
+        + (_SUBROW_HEIGHT - RECORD_HEIGHT) / 2
+    )
+
+
+def _project_record_layouts(
+    records: Sequence[Record],
+    row_by_record: dict[str, int],
+    intervals: dict[str, RecordInterval],
+    pixels_per_second: float,
+) -> tuple[dict[str, float], list[tuple[str, str]]]:
+    indexed_records = [
+        (source_index, record)
+        for source_index, record in enumerate(records)
+        if record.record_id in row_by_record and record.sequence is not None
+    ]
+    ordered_records = [
+        record
+        for _, record in sorted(
+            indexed_records,
+            key=lambda item: (
+                item[1].sequence or 0,
+                item[0],
+            ),
+        )
+    ]
+    display_start_by_record = {}
+    transitions = []
+    previous_record = None
+    for record in ordered_records:
+        interval = intervals[record.record_id]
+        display_start = interval.start_seconds * pixels_per_second
+        if previous_record is not None:
+            previous_start = display_start_by_record[previous_record.record_id]
+            previous_interval = intervals[previous_record.record_id]
+            previous_end = previous_start + record_width(
+                previous_interval, pixels_per_second
+            )
+            display_start = max(
+                display_start,
+                previous_end + _RECORD_SEQUENCE_GAP,
+            )
+            transitions.append((previous_record.record_id, record.record_id))
+        display_start_by_record[record.record_id] = display_start
+        previous_record = record
+    return display_start_by_record, transitions
 
 
 class TimelineScene(QGraphicsScene):
@@ -36,6 +114,8 @@ class TimelineScene(QGraphicsScene):
         self._record_lanes: dict[str, tuple[int, int]] = {}
         self._record_intervals: dict[str, RecordInterval] = {}
         self._record_labels: dict[str, str] = {}
+        self._record_items: dict[str, TimelineRecordItem] = {}
+        self._selected_record_id: str | None = None
         self._span_lanes: dict[str, int] = {}
         self._floating_labels: list[tuple[QGraphicsItem, float]] = []
         self._spans: tuple[Span, ...] = ()
@@ -70,6 +150,7 @@ class TimelineScene(QGraphicsScene):
         self._record_lanes = {}
         self._record_intervals = {}
         self._record_labels = {}
+        self._record_items = {}
         self._span_lanes = {}
         time_projection = project_record_intervals(list(records))
         self.elapsed_seconds = time_projection.elapsed_seconds
@@ -112,7 +193,7 @@ class TimelineScene(QGraphicsScene):
         for record in records:
             agent_id = record.agent_span_id or default_agent_id
             present_by_agent.setdefault(agent_id, set()).add(
-                category_by_record[record.record_id]
+                row_key_for_category(category_by_record[record.record_id])
             )
         for layout in self._layouts:
             span = spans_by_id[layout.span_id]
@@ -143,23 +224,53 @@ class TimelineScene(QGraphicsScene):
                     agent_id, set()
                 ):
                     row_by_agent_type[(agent_id, row_type.key)] = len(rows)
-                    rows.append(
-                        (
-                            agent_id,
-                            agent_names[agent_id],
-                            row_type.label,
-                            row_type.color,
-                            row_type.description,
-                        )
-                    )
+                    rows.append((agent_id, agent_names[agent_id], row_type))
         self.lane_names = tuple(
-            f"{row_label} · {agent_name}" for _, agent_name, row_label, _, _ in rows
+            f"{row_type.label} · {agent_name}" for _, agent_name, row_type in rows
         )
 
-        scene_width = (
-            LABEL_WIDTH + max(1.0, self.elapsed_seconds) * self.pixels_per_second + 24
+        row_by_record = {}
+        for record in records:
+            agent_id = record.agent_span_id or default_agent_id
+            row = row_by_agent_type.get(
+                (
+                    agent_id,
+                    row_key_for_category(category_by_record[record.record_id]),
+                )
+            )
+            if row is not None:
+                row_by_record[record.record_id] = row
+        display_start_by_record, sequence_transitions = _project_record_layouts(
+            records,
+            row_by_record,
+            time_projection.intervals,
+            self.pixels_per_second,
         )
-        scene_height = HEADER_HEIGHT + max(1, len(rows)) * LANE_HEIGHT
+        row_heights = [_row_height(row_type) for _, _, row_type in rows]
+        row_tops = []
+        next_row_top = HEADER_HEIGHT
+        for row_height in row_heights:
+            row_tops.append(next_row_top)
+            next_row_top += row_height
+
+        drawn_record_end = max(
+            (
+                display_start_by_record[record.record_id]
+                + record_width(
+                    time_projection.intervals[record.record_id],
+                    self.pixels_per_second,
+                )
+                for record in records
+                if record.record_id in display_start_by_record
+            ),
+            default=0.0,
+        )
+        timeline_width = max(
+            max(1.0, self.elapsed_seconds) * self.pixels_per_second,
+            drawn_record_end,
+        )
+        scene_width = LABEL_WIDTH + timeline_width + 24
+        scene_height = max(HEADER_HEIGHT + LANE_HEIGHT, next_row_top)
         self.setBackgroundBrush(QBrush(QColor("#f4f6f5")))
         header = self.addRect(
             QRectF(0, 0, scene_width, HEADER_HEIGHT),
@@ -197,33 +308,28 @@ class TimelineScene(QGraphicsScene):
             tick += tick_step
         self.axis_labels = tuple(axis_labels)
 
-        for lane, (
-            _,
-            agent_name,
-            row_label,
-            row_color,
-            row_description,
-        ) in enumerate(rows):
-            y = HEADER_HEIGHT + lane * LANE_HEIGHT
+        for lane, (_, agent_name, row_type) in enumerate(rows):
+            y = row_tops[lane]
+            row_height = row_heights[lane]
             fill = QColor("#ffffff") if lane % 2 == 0 else QColor("#eef2f0")
             self.addRect(
-                QRectF(0, y, scene_width, LANE_HEIGHT),
+                QRectF(0, y, scene_width, row_height),
                 QPen(QColor("#d4dad7"), 1),
                 QBrush(fill),
             ).setZValue(-2)
             label_background = self.addRect(
-                QRectF(0, y, LABEL_WIDTH, LANE_HEIGHT),
+                QRectF(0, y, LABEL_WIDTH, row_height),
                 QPen(QColor("#d4dad7"), 1),
                 QBrush(fill),
             )
             label_background.setZValue(3)
-            row_tooltip = f"{row_label} · {agent_name}\n{row_description}"
+            row_tooltip = f"{row_type.label} · {agent_name}\n{row_type.description}"
             label_background.setToolTip(row_tooltip)
             self._floating_labels.append((label_background, 0.0))
             row_marker = self.addRect(
                 QRectF(6, y + 16, 4, 24),
                 QPen(Qt.PenStyle.NoPen),
-                QBrush(QColor(row_color)),
+                QBrush(QColor(row_type.color)),
             )
             row_marker.setZValue(4)
             row_marker.setToolTip(row_tooltip)
@@ -231,13 +337,46 @@ class TimelineScene(QGraphicsScene):
             display_agent = (
                 agent_name if len(agent_name) <= 27 else agent_name[:24] + "..."
             )
-            display_name = f"{row_label}\n{display_agent}"
-            text = self.addText(display_name)
-            text.setPos(16, y + 10)
-            text.setDefaultTextColor(QColor("#26332e"))
-            text.setToolTip(row_tooltip)
-            text.setZValue(4)
-            self._floating_labels.append((text, 16.0))
+            if row_type.subrows:
+                title = self.addText(f"{row_type.label} · {display_agent}")
+                title.setPos(16, y + 2)
+                title.setDefaultTextColor(QColor("#26332e"))
+                title.setToolTip(row_tooltip)
+                title.setZValue(4)
+                self._floating_labels.append((title, 16.0))
+                for subrow_index, subrow in enumerate(row_type.subrows):
+                    subrow_top = (
+                        y + _GROUP_HEADER_HEIGHT + subrow_index * _SUBROW_HEIGHT
+                    )
+                    self.addLine(
+                        QLineF(0, subrow_top, scene_width, subrow_top),
+                        QPen(QColor("#d4dad7"), 1),
+                    ).setZValue(-1)
+                    subrow_tooltip = (
+                        f"{row_type.label} / {subrow.label} · {agent_name}\n"
+                        f"{subrow.description}"
+                    )
+                    subrow_marker = self.addRect(
+                        QRectF(16, subrow_top + 9, 3, 14),
+                        QPen(Qt.PenStyle.NoPen),
+                        QBrush(QColor(subrow.color)),
+                    )
+                    subrow_marker.setToolTip(subrow_tooltip)
+                    subrow_marker.setZValue(4)
+                    self._floating_labels.append((subrow_marker, 0.0))
+                    subrow_text = self.addText(subrow.label)
+                    subrow_text.setPos(24, subrow_top + 4)
+                    subrow_text.setDefaultTextColor(QColor("#52615b"))
+                    subrow_text.setToolTip(subrow_tooltip)
+                    subrow_text.setZValue(4)
+                    self._floating_labels.append((subrow_text, 24.0))
+            else:
+                text = self.addText(f"{row_type.label}\n{display_agent}")
+                text.setPos(16, y + 10)
+                text.setDefaultTextColor(QColor("#26332e"))
+                text.setToolTip(row_tooltip)
+                text.setZValue(4)
+                self._floating_labels.append((text, 16.0))
 
         for layout in self._layouts:
             span = spans_by_id[layout.span_id]
@@ -261,16 +400,36 @@ class TimelineScene(QGraphicsScene):
                 for record in span_records
                 if record.record_id in time_projection.intervals
             ]
-            start_seconds = (
-                min(interval.start_seconds for interval in span_intervals)
-                if span_intervals
-                else 0.0
-            )
-            end_seconds = (
-                max(interval.end_seconds for interval in span_intervals)
-                if span_intervals
-                else self.elapsed_seconds
-            )
+            display_bounds = [
+                (
+                    display_start_by_record[record.record_id],
+                    display_start_by_record[record.record_id]
+                    + record_width(
+                        time_projection.intervals[record.record_id],
+                        self.pixels_per_second,
+                    ),
+                )
+                for record in span_records
+                if record.record_id in display_start_by_record
+            ]
+            if display_bounds:
+                start_seconds = (
+                    min(start for start, _ in display_bounds) / self.pixels_per_second
+                )
+                end_seconds = (
+                    max(end for _, end in display_bounds) / self.pixels_per_second
+                )
+            else:
+                start_seconds = (
+                    min(interval.start_seconds for interval in span_intervals)
+                    if span_intervals
+                    else 0.0
+                )
+                end_seconds = (
+                    max(interval.end_seconds for interval in span_intervals)
+                    if span_intervals
+                    else self.elapsed_seconds
+                )
             self.addItem(
                 TimelineSpanItem(
                     layout,
@@ -279,31 +438,70 @@ class TimelineScene(QGraphicsScene):
                     self.span_activated.emit,
                     self.pixels_per_second,
                     row,
+                    row_tops[row],
                 )
             )
+        record_items = {}
         for record in records:
             if record.sequence is None:
                 continue
-            agent_id = record.agent_span_id or default_agent_id
-            lane = row_by_agent_type.get(
-                (agent_id, category_by_record[record.record_id])
-            )
+            lane = row_by_record.get(record.record_id)
             if lane is None:
                 continue
             self._record_lanes[record.record_id] = (record.sequence, lane)
             self._record_labels[record.record_id] = record_label(record)
             interval = time_projection.intervals[record.record_id]
             self._record_intervals[record.record_id] = interval
-            self.addItem(
-                TimelineRecordItem(
-                    record,
-                    interval,
-                    lane=lane,
-                    on_activated=self.record_activated.emit,
-                    pixels_per_second=self.pixels_per_second,
-                )
+            item = TimelineRecordItem(
+                record,
+                interval,
+                lane=lane,
+                on_activated=self.record_activated.emit,
+                pixels_per_second=self.pixels_per_second,
+                row_top=row_tops[lane],
+                display_start_pixels=display_start_by_record[record.record_id],
+                display_y=_record_display_y(
+                    row_tops[lane],
+                    rows[lane][2],
+                    category_by_record[record.record_id],
+                ),
             )
+            record_items[record.record_id] = item
+            item.set_selected(record.record_id == self._selected_record_id)
+            self.addItem(item)
+        self._record_items = record_items
+        records_by_id = {record.record_id: record for record in records}
+        for previous_id, next_id in sequence_transitions:
+            previous_item = record_items[previous_id]
+            next_item = record_items[next_id]
+            previous_rect = previous_item.rect()
+            next_rect = next_item.rect()
+            arrow = TimelineSequenceArrowItem(
+                previous_id,
+                next_id,
+                QPointF(previous_rect.right(), previous_rect.center().y()),
+                QPointF(next_rect.left(), next_rect.center().y()),
+            )
+            previous_sequence = records_by_id[previous_id].sequence
+            next_sequence = records_by_id[next_id].sequence
+            arrow.setToolTip(f"Sequence {previous_sequence} to {next_sequence}")
+            self.addItem(arrow)
         self.setSceneRect(QRectF(0, 0, scene_width, scene_height))
+
+    def set_selected_record(self, record_id: str | None) -> None:
+        if self._selected_record_id == record_id:
+            return
+        previous = self._record_items.get(self._selected_record_id or "")
+        if previous is not None:
+            previous.set_selected(False)
+        self._selected_record_id = record_id
+        selected = self._record_items.get(record_id or "")
+        if selected is not None:
+            selected.set_selected(True)
+
+    @property
+    def selected_record_id(self) -> str | None:
+        return self._selected_record_id
 
     def set_label_offset(self, offset: float) -> None:
         self._floating_labels = [

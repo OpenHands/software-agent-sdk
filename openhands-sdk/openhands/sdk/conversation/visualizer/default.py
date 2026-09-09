@@ -288,8 +288,8 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         self._console = _create_console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
-        # Previous ActionEvent's response id; used by ``_claim_batch_primary``
-        # to spot parallel tool-call siblings (#4189).
+        # Previous ActionEvent's response id; non-action events do not disturb it,
+        # so sequential action/result pairs still share one metrics primary (#4189).
         self._last_action_response_id: str | None = None
 
     def on_event(self, event: Event) -> None:
@@ -420,8 +420,8 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         Parallel tool calls share one ``llm_response_id`` and one per-request
         ``TokenUsage``; showing it under every sibling reads as N separate
         requests (#4189), so only the first "claims" the per-request numbers.
-        Stateful -- call once per event in render order. Batches render
-        consecutively, so tracking the previous response id is enough (O(1)).
+        Stateful -- call once per event in render order. Non-action events do not
+        change the tracked response id, so tracking the previous action is enough.
         """
         if not isinstance(event, ActionEvent):
             return True

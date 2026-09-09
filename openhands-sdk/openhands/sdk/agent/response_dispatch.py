@@ -113,6 +113,8 @@ class ResponseDispatchMixin:
             conversation: LocalConversation,
             action_events: list[ActionEvent],
             on_event: ConversationCallbackType,
+            *,
+            emit_actions: bool = False,
         ) -> None: ...
 
         async def _aexecute_actions(
@@ -120,6 +122,8 @@ class ResponseDispatchMixin:
             conversation: LocalConversation,
             action_events: list[ActionEvent],
             on_event: ConversationCallbackType,
+            *,
+            emit_actions: bool = False,
         ) -> None: ...
 
         def _requires_user_confirmation(
@@ -178,10 +182,14 @@ class ResponseDispatchMixin:
             action_events.append(action_event)
 
         if self._requires_user_confirmation(state, action_events):
+            for action_event in action_events:
+                on_event(action_event)
             return
 
         if action_events:
-            self._execute_actions(conversation, action_events, on_event)
+            self._execute_actions(
+                conversation, action_events, on_event, emit_actions=True
+            )
 
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
@@ -228,10 +236,14 @@ class ResponseDispatchMixin:
             action_events.append(action_event)
 
         if self._requires_user_confirmation(state, action_events):
+            for action_event in action_events:
+                on_event(action_event)
             return
 
         if action_events:
-            await self._aexecute_actions(conversation, action_events, on_event)
+            await self._aexecute_actions(
+                conversation, action_events, on_event, emit_actions=True
+            )
 
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 

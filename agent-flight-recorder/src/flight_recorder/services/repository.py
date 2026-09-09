@@ -1,6 +1,8 @@
 """Read-only trace query service."""
 
+import math
 from collections.abc import Iterable
+from datetime import datetime, timedelta
 
 from flight_recorder.errors import SpanNotFound, TraceNotFound
 from flight_recorder.models.database import TraceIndex
@@ -23,6 +25,100 @@ from flight_recorder.models.view_models import (
     SpanDetail,
     TimelineView,
 )
+
+
+_LLM_RESPONSE_FIELDS = {
+    "llm_call_id",
+    "response",
+    "response_id",
+    "id",
+    "raw_response",
+    "error",
+    "usage_summary",
+    "cost",
+    "timestamp",
+    "latency_sec",
+}
+
+
+def _legacy_completion_times(
+    completion: dict[str, object],
+) -> tuple[datetime | None, datetime | None]:
+    timestamp = completion.get("timestamp")
+    if isinstance(timestamp, bool) or not isinstance(timestamp, int | float):
+        return None, None
+    timestamp = float(timestamp)
+    if not math.isfinite(timestamp):
+        return None, None
+    try:
+        response_time = datetime.fromtimestamp(timestamp)
+    except (OSError, OverflowError, ValueError):
+        return None, None
+    latency = completion.get("latency_sec")
+    if (
+        isinstance(latency, bool)
+        or not isinstance(latency, int | float)
+        or not math.isfinite(latency)
+        or latency < 0
+    ):
+        return response_time, response_time
+    return response_time - timedelta(seconds=latency), response_time
+
+
+def _project_legacy_llm_exchange(record: Record) -> tuple[Record, ...]:
+    completion = record.payload.get("completion")
+    if record.kind != "llm.response" or not isinstance(completion, dict):
+        return (record,)
+    request_payload = {
+        key: value
+        for key, value in completion.items()
+        if key not in _LLM_RESPONSE_FIELDS
+    }
+    if not request_payload:
+        return (record,)
+    provenance = Provenance(
+        kind=ProvenanceKind.DERIVED,
+        source_ids=(record.record_id,),
+        description="Projected from a legacy combined LLM completion record",
+    )
+    common_payload = {"filename": record.payload.get("filename")}
+    request_time, response_time = _legacy_completion_times(completion)
+    llm_call_id = record.llm_call_id or record.record_id
+    request = record.model_copy(
+        update={
+            "record_id": f"{record.record_id}/request",
+            "kind": "llm.request",
+            "llm_call_id": llm_call_id,
+            "payload": {**common_payload, "request": request_payload},
+            "provenance": provenance,
+            "source_timestamp": request_time,
+        }
+    )
+    response = record.model_copy(
+        update={
+            "record_id": f"{record.record_id}/response",
+            "llm_call_id": llm_call_id,
+            "payload": {
+                **common_payload,
+                **{
+                    key: value
+                    for key, value in completion.items()
+                    if key in _LLM_RESPONSE_FIELDS
+                },
+            },
+            "provenance": provenance,
+            "source_timestamp": response_time,
+        }
+    )
+    return request, response
+
+
+def _project_timeline_records(records: tuple[Record, ...]) -> tuple[Record, ...]:
+    return tuple(
+        projected
+        for record in records
+        for projected in _project_legacy_llm_exchange(record)
+    )
 
 
 def _recorder_shutdown_record_ids(records: tuple[Record, ...]) -> frozenset[str]:
@@ -51,10 +147,11 @@ class TraceRepository:
         return self.index.iter_records(trace_id, after_sequence)
 
     def get_record(self, trace_id: str, record_id: str) -> Record:
+        records = tuple(self.index.iter_records(trace_id))
         record = next(
             (
                 item
-                for item in self.index.iter_records(trace_id)
+                for item in (*records, *_project_timeline_records(records))
                 if item.record_id == record_id
             ),
             None,
@@ -110,7 +207,11 @@ class TraceRepository:
             record.span_id for record in records if record.span_id is not None
         )
         spans = tuple(self.get_span(trace_id, span_id).span for span_id in span_ids)
-        return TimelineView(trace_id=trace_id, records=records, spans=spans)
+        return TimelineView(
+            trace_id=trace_id,
+            records=_project_timeline_records(records),
+            spans=spans,
+        )
 
     def get_run(self, trace_id: str) -> RunSummary:
         records = tuple(self.index.iter_records(trace_id))
@@ -132,31 +233,45 @@ class TraceRepository:
     def get_span(self, trace_id: str, span_id: str) -> SpanDetail:
         trace_records = tuple(self.index.iter_records(trace_id))
         records = tuple(record for record in trace_records if record.span_id == span_id)
-        if not records:
+        first_record = next(iter(records), None)
+        if first_record is None:
             raise SpanNotFound(span_id)
-        terminal = len(records) > 1
+        span_type = first_record.kind.partition(".")[0]
+        if span_type == "agent":
+            terminal_record = next(
+                (
+                    record
+                    for record in reversed(records)
+                    if record.kind == "agent.finished"
+                ),
+                None,
+            )
+        else:
+            terminal_record = (
+                next(reversed(records), None) if len(records) > 1 else None
+            )
         parent_resolves = any(
-            record.span_id == records[0].parent_span_id for record in trace_records
+            record.span_id == first_record.parent_span_id for record in trace_records
         )
-        if records[0].parent_span_id is not None and not parent_resolves:
+        if first_record.parent_span_id is not None and not parent_resolves:
             relationship_status = RelationshipStatus.UNRESOLVED
-        elif records[0].provenance.kind is ProvenanceKind.DERIVED:
+        elif first_record.provenance.kind is ProvenanceKind.DERIVED:
             relationship_status = RelationshipStatus.INFERRED
         else:
             relationship_status = RelationshipStatus.VERIFIED
         span = Span(
             span_id=span_id,
             trace_id=trace_id,
-            span_type=records[0].kind.partition(".")[0],
-            name=str(records[0].payload.get("name", span_id)),
-            parent_span_id=records[0].parent_span_id,
-            agent_span_id=records[0].agent_span_id,
+            span_type=span_type,
+            name=str(first_record.payload.get("name", span_id)),
+            parent_span_id=first_record.parent_span_id,
+            agent_span_id=first_record.agent_span_id,
             relationship_status=relationship_status,
-            start_sequence=records[0].sequence or 1,
-            end_sequence=records[-1].sequence if terminal else None,
-            started_at=records[0].observed_at,
-            ended_at=records[-1].observed_at if terminal else None,
-            status="completed" if terminal else "incomplete",
+            start_sequence=first_record.sequence or 1,
+            end_sequence=terminal_record.sequence if terminal_record else None,
+            started_at=first_record.observed_at,
+            ended_at=terminal_record.observed_at if terminal_record else None,
+            status="completed" if terminal_record else "incomplete",
         )
         return SpanDetail(span=span, records=records)
 
@@ -191,14 +306,18 @@ class TraceRepository:
         )
         if target is None:
             raise TraceNotFound(trace_id)
-        completion = target.payload.get("completion")
-        if isinstance(completion, dict):
-            messages = completion.get("messages")
-            if isinstance(messages, list):
+        request = target.payload.get("request")
+        if not isinstance(request, dict):
+            request = target.payload.get("completion")
+        if isinstance(request, dict):
+            context_items = request.get("messages")
+            if not isinstance(context_items, list):
+                context_items = request.get("input")
+            if isinstance(context_items, list):
                 return ContextView(
                     record_id=record_id,
                     messages=tuple(
-                        message for message in messages if isinstance(message, dict)
+                        item for item in context_items if isinstance(item, dict)
                     ),
                     provenance=Provenance(),
                 )

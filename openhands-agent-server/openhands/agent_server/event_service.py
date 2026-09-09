@@ -1041,14 +1041,17 @@ class EventService:
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
         log_to_server = _llm_io_logging_enabled()
+        recorder = self._flight_recorder
         for llm in agent.get_all_llms():
             log_to_events = llm.log_completions
-            if not log_to_events and not log_to_server:
+            if not log_to_events and not log_to_server and recorder is None:
                 continue
 
             # Telemetry only captures request context when logging is enabled.
             # The callback below owns the destination in agent-server mode.
             llm.telemetry.log_enabled = True
+            if recorder is not None:
+                llm.telemetry.set_log_requests_callback(recorder.on_llm_request)
 
             # Capture variables for closure
             usage_id = llm.usage_id
@@ -1061,9 +1064,12 @@ class EventService:
                 model=model_name,
                 emit_event=log_to_events,
                 emit_server_log=log_to_server,
+                flight_recorder=recorder,
             ) -> None:
                 """Callback to emit LLM completion logs as events."""
                 try:
+                    if flight_recorder is not None:
+                        flight_recorder.on_completion_log(filename, log_data)
                     if emit_server_log:
                         _log_llm_io(
                             conversation_id=self.stored.id,

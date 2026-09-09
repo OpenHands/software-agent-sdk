@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from flight_recorder.models.database import TraceIndex
@@ -14,6 +15,34 @@ def test_bad_callback_data_does_not_escape(tmp_path: Path) -> None:
     recorder.close()
 
     assert recorder.errors == 1
+
+
+def test_llm_request_is_committed_without_waiting_for_completion(
+    tmp_path: Path,
+) -> None:
+    index = TraceIndex(tmp_path / "index.db")
+    recorder = Recorder(tmp_path / "trace.afr", index)
+
+    recorder.on_llm_request(
+        "call-1",
+        json.dumps(
+            {
+                "llm_call_id": "call-1",
+                "timestamp": 1_788_545_603.75,
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        ),
+    )
+    recorder.close()
+
+    requests = [
+        record
+        for record in index.iter_records(recorder.trace_id)
+        if record.kind == "llm.request"
+    ]
+    assert len(requests) == 1
+    assert requests[0].llm_call_id == "call-1"
+    assert requests[0].payload["request"]["messages"][0]["content"] == "hello"
 
 
 def test_metrics_capture_and_close_are_failure_isolated(tmp_path: Path) -> None:
