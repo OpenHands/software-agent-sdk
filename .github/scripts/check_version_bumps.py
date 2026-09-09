@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -11,11 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-PACKAGE_PYPROJECTS: dict[str, Path] = {
+PACKAGE_FILES: dict[str, Path] = {
     "openhands-sdk": Path("openhands-sdk/pyproject.toml"),
     "openhands-tools": Path("openhands-tools/pyproject.toml"),
     "openhands-workspace": Path("openhands-workspace/pyproject.toml"),
     "openhands-agent-server": Path("openhands-agent-server/pyproject.toml"),
+    "typescript-client": Path("clients/typescript/package.json"),
 }
 
 _VERSION_PATTERN = r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?"
@@ -31,24 +33,27 @@ class VersionChange:
     current_version: str
 
 
-def _read_version_from_pyproject_text(text: str, source: str) -> str:
-    data = tomllib.loads(text)
-    version = data.get("project", {}).get("version")
+def _read_version(text: str, source: str) -> str:
+    if source.endswith("package.json"):
+        data = json.loads(text)
+        version = data.get("version")
+    else:
+        data = tomllib.loads(text)
+        version = data.get("project", {}).get("version")
     if not isinstance(version, str):
-        raise SystemExit(f"Unable to determine project.version from {source}")
+        raise SystemExit(f"Unable to determine package version from {source}")
     return version
 
 
-def _read_current_version(repo_root: Path, pyproject: Path) -> str:
-    return _read_version_from_pyproject_text(
-        (repo_root / pyproject).read_text(),
-        str(pyproject),
-    )
+def _read_current_version(repo_root: Path, package_file: Path) -> str:
+    return _read_version((repo_root / package_file).read_text(), str(package_file))
 
 
-def _read_version_from_git_ref(repo_root: Path, git_ref: str, pyproject: Path) -> str:
+def _read_version_from_git_ref(
+    repo_root: Path, git_ref: str, package_file: Path
+) -> str:
     result = subprocess.run(
-        ["git", "show", f"{git_ref}:{pyproject.as_posix()}"],
+        ["git", "show", f"{git_ref}:{package_file.as_posix()}"],
         cwd=repo_root,
         check=False,
         capture_output=True,
@@ -57,9 +62,9 @@ def _read_version_from_git_ref(repo_root: Path, git_ref: str, pyproject: Path) -
     if result.returncode != 0:
         message = result.stderr.strip() or result.stdout.strip() or "unknown git error"
         raise SystemExit(
-            f"Unable to read {pyproject} from git ref {git_ref}: {message}"
+            f"Unable to read {package_file} from git ref {git_ref}: {message}"
         )
-    return _read_version_from_pyproject_text(result.stdout, f"{git_ref}:{pyproject}")
+    return _read_version(result.stdout, f"{git_ref}:{package_file}")
 
 
 def _base_ref_candidates(base_ref: str) -> list[str]:
@@ -72,15 +77,17 @@ def find_version_changes(repo_root: Path, base_ref: str) -> list[VersionChange]:
     changes: list[VersionChange] = []
     candidates = _base_ref_candidates(base_ref)
 
-    for package, pyproject in PACKAGE_PYPROJECTS.items():
-        current_version = _read_current_version(repo_root, pyproject)
+    for package, package_file in PACKAGE_FILES.items():
+        if package == "typescript-client":
+            continue
+        current_version = _read_current_version(repo_root, package_file)
         previous_error: SystemExit | None = None
         previous_version: str | None = None
 
         for candidate in candidates:
             try:
                 previous_version = _read_version_from_git_ref(
-                    repo_root, candidate, pyproject
+                    repo_root, candidate, package_file
                 )
                 break
             except SystemExit as exc:
@@ -94,13 +101,32 @@ def find_version_changes(repo_root: Path, base_ref: str) -> list[VersionChange]:
             changes.append(
                 VersionChange(
                     package=package,
-                    path=pyproject,
+                    path=package_file,
                     previous_version=previous_version,
                     current_version=current_version,
                 )
             )
 
     return changes
+
+
+def validate_package_version_consistency(repo_root: Path) -> list[str]:
+    versions = {
+        package: _read_current_version(repo_root, package_file)
+        for package, package_file in PACKAGE_FILES.items()
+    }
+    expected = versions["openhands-sdk"]
+    mismatched = [
+        f"{package} ({version})"
+        for package, version in versions.items()
+        if version != expected
+    ]
+    if mismatched:
+        return [
+            "Package versions must match openhands-sdk "
+            f"({expected}); mismatched packages: {', '.join(mismatched)}."
+        ]
+    return []
 
 
 def get_release_pr_version(
@@ -172,8 +198,11 @@ def main() -> int:
     pr_title = os.environ.get("PR_TITLE", "")
     pr_head_ref = os.environ.get("PR_HEAD_REF", "")
 
+    consistency_errors = validate_package_version_consistency(repo_root)
     changes = find_version_changes(repo_root, base_ref)
-    errors = validate_version_changes(changes, pr_title, pr_head_ref)
+    errors = consistency_errors + validate_version_changes(
+        changes, pr_title, pr_head_ref
+    )
 
     if errors:
         for error in errors:

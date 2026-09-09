@@ -692,7 +692,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             "load_project": load_project,
             "load_org": load_org,
             "project_dir": project_dir,
-            "org_config": None,
             "sandbox_config": None,
         }
 
