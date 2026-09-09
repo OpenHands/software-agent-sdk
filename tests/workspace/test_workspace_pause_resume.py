@@ -265,14 +265,32 @@ def test_cloud_workspace_resume_repoints_client_at_refreshed_connection(
             {"name": AGENT_SERVER, "url": "https://agent-server-2.example.com/"}
         ]
 
+    # The fixture leaves the sandbox's key on the private attribute; a live
+    # workspace has had it pushed onto api_key by _apply_ready_connection.
+    workspace.api_key = workspace._session_api_key
+
+    # Prime the cached client so this exercises the replacement rather than a
+    # first-time construction, and leave reset_client real: mocking it would only
+    # prove the helper was called, not that later requests reach the new sandbox.
+    stale_client = workspace.client
+    assert str(stale_client.base_url).rstrip("/") == "https://agent-server.example.com"
+    assert stale_client.headers["X-Session-API-Key"] == "session-key"
+
     with patch.object(workspace, "_resume_sandbox"):
         with patch.object(workspace, "_wait_until_sandbox_ready", side_effect=ready):
-            with patch.object(type(workspace), "reset_client") as mock_reset:
-                workspace.resume()
+            workspace.resume()
 
     assert workspace.host == "https://agent-server-2.example.com"
     assert workspace.api_key == "rotated-key"
-    mock_reset.assert_called_once()
+
+    refreshed_client = workspace.client
+    assert stale_client.is_closed, "the client for the previous sandbox must be closed"
+    assert refreshed_client is not stale_client
+    assert (
+        str(refreshed_client.base_url).rstrip("/")
+        == "https://agent-server-2.example.com"
+    )
+    assert refreshed_client.headers["X-Session-API-Key"] == "rotated-key"
 
 
 def test_cloud_workspace_resume_raises_if_no_sandbox():
