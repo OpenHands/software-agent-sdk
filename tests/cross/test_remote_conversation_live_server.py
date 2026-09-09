@@ -13,6 +13,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 from uuid import UUID
 
@@ -20,6 +21,7 @@ import httpx
 import pytest
 import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
+from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
@@ -107,6 +109,7 @@ def live_server_env(
 
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
 
     if import_modules is not None:
@@ -115,7 +118,9 @@ def live_server_env(
     # Build app after env is set
     from openhands.agent_server.api import create_app
     from openhands.agent_server.config import Config
+    from openhands.agent_server.persistence import reset_stores
 
+    reset_stores()
     cfg_obj = Config.model_validate_json(cfg_file.read_text())
 
     app = create_app(cfg_obj)
@@ -162,6 +167,7 @@ def live_server_env(
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
+        reset_stores()
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
@@ -775,7 +781,7 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "content": "Hello from patched LLM",
                 }
 
-                from openai import OpenAI
+                from openai import BadRequestError, OpenAI
 
                 openai_client = OpenAI(
                     api_key="unused",
@@ -840,6 +846,15 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert responses_result.usage.input_tokens == 7
                 assert responses_result.usage.output_tokens == 5
                 assert responses_result.usage.total_tokens == 12
+                assert responses_result.id.startswith("resp_")
+                UUID(hex=responses_result.id.removeprefix("resp_"))
+                response_system_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "system"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
                 response_user_text = "\n".join(
                     part.text
                     for message in patched_llm[-1]
@@ -847,7 +862,8 @@ def test_openai_chat_completions_gateway_over_real_server(
                     for part in message.content
                     if isinstance(part, TextContent)
                 )
-                assert "Answer briefly." in response_user_text
+                assert "Answer briefly." in response_system_text
+                assert "Answer briefly." not in response_user_text
                 assert "Say hello through Responses." in response_user_text
 
                 responses_conversation_id = raw_response.headers[
@@ -855,75 +871,61 @@ def test_openai_chat_completions_gateway_over_real_server(
                 ]
                 UUID(responses_conversation_id)
 
-                continued_raw_response = (
-                    openai_client.responses.with_raw_response.create(
+                llm_calls_before_rejected_continuation = len(patched_llm)
+                with pytest.raises(BadRequestError) as exc_info:
+                    openai_client.responses.create(
                         model="openhands_smoke",
-                        instructions="Answer even more briefly.",
-                        input=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "input_text",
-                                        "text": "Say hello again.",
-                                    }
-                                ],
-                            }
-                        ],
+                        input="This must not continue server-side.",
                         previous_response_id=responses_result.id,
                         store=False,
                     )
+                assert exc_info.value.status_code == 400
+                assert exc_info.value.response.json()["detail"] == (
+                    "previous_response_id is not supported; replay input items instead"
                 )
-                continued_result = continued_raw_response.parse()
-                assert continued_result.id != responses_result.id
-                assert continued_result.previous_response_id == responses_result.id
-                assert continued_result.output_text == "Hello from patched LLM"
-                assert continued_result.usage is not None
-                assert continued_result.usage.input_tokens == 7
-                assert continued_result.usage.output_tokens == 5
-                assert continued_result.usage.total_tokens == 12
-                assert (
-                    continued_raw_response.headers["X-OpenHands-ServerConversation-ID"]
-                    == responses_conversation_id
-                )
-                continued_user_text = "\n".join(
-                    part.text
-                    for message in patched_llm[-1]
-                    if message.role == "user"
-                    for part in message.content
-                    if isinstance(part, TextContent)
-                )
-                assert "Answer even more briefly." in continued_user_text
-                assert "Say hello again." in continued_user_text
+                assert len(patched_llm) == llm_calls_before_rejected_continuation
 
                 second_stateless_response = (
                     openai_client.responses.with_raw_response.create(
                         model="openhands_smoke",
                         input=[
-                            {"role": "user", "content": "First question."},
                             {
-                                "id": "msg_prior",
-                                "type": "message",
-                                "role": "assistant",
-                                "status": "completed",
-                                "content": [
-                                    {
-                                        "type": "output_text",
-                                        "text": "Prior answer.",
-                                        "annotations": [],
-                                    }
-                                ],
+                                "role": "developer",
+                                "content": "Use replayed context.",
                             },
-                            {"role": "user", "content": "Follow up."},
+                            {
+                                "role": "user",
+                                "content": "Say hello through Responses.",
+                            },
+                            *[
+                                cast(
+                                    ResponseInputItemParam,
+                                    item.model_dump(mode="json", exclude_none=True),
+                                )
+                                for item in responses_result.output
+                            ],
+                            {
+                                "role": "user",
+                                "content": "Follow up using the prior answer.",
+                            },
                         ],
                         store=False,
                     )
                 )
+                second_stateless_result = second_stateless_response.parse()
+                assert second_stateless_result.output_text == "Hello from patched LLM"
                 assert (
                     second_stateless_response.headers[
                         "X-OpenHands-ServerConversation-ID"
                     ]
                     != responses_conversation_id
+                )
+                stateless_system_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "system"
+                    for part in message.content
+                    if isinstance(part, TextContent)
                 )
                 stateless_history_text = "\n".join(
                     part.text
@@ -932,41 +934,13 @@ def test_openai_chat_completions_gateway_over_real_server(
                     for part in message.content
                     if isinstance(part, TextContent)
                 )
+                assert "Use replayed context." in stateless_system_text
+                assert "Use replayed context." not in stateless_history_text
                 assert '<message role="user">' in stateless_history_text
                 assert '<message role="assistant">' in stateless_history_text
-                assert "First question." in stateless_history_text
-                assert "Prior answer." in stateless_history_text
-                assert "Follow up." in stateless_history_text
-
-                invalid_previous_response = client.post(
-                    f"{env['host']}/v1/responses",
-                    json={
-                        "model": "openhands_smoke",
-                        "input": "This must not run.",
-                        "previous_response_id": "resp_invalid",
-                        "store": False,
-                    },
-                    timeout=2.0,
-                )
-                assert invalid_previous_response.status_code == 400
-                assert invalid_previous_response.json()["detail"] == (
-                    "Invalid previous_response_id"
-                )
-
-                missing_previous_response = client.post(
-                    f"{env['host']}/v1/responses",
-                    json={
-                        "model": "openhands_smoke",
-                        "input": "This must not start a new conversation.",
-                        "previous_response_id": f"resp_40{'0' * 30}_{'1' * 32}",
-                        "store": False,
-                    },
-                    timeout=2.0,
-                )
-                assert missing_previous_response.status_code == 404
-                assert missing_previous_response.json()["detail"] == (
-                    "Previous response conversation not found"
-                )
+                assert "Say hello through Responses." in stateless_history_text
+                assert "Hello from patched LLM" in stateless_history_text
+                assert "Follow up using the prior answer." in stateless_history_text
 
                 streaming_response = client.post(
                     f"{env['host']}/v1/responses",
