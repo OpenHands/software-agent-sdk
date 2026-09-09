@@ -9,6 +9,13 @@
  * To add or modify a provider, edit `acp_providers.py` in software-agent-sdk
  * first, then mirror the change in `acp-providers.json` here. CI will fail
  * until the two match.
+ *
+ * This registry describes which harnesses exist, not which ones a product
+ * offers. Clients that surface a subset declare `SURFACED_ACP_PROVIDERS`
+ * independently and enforce that policy themselves. They assert only that
+ * surfaced keys remain in this registry: a rename or removal fails, while a
+ * registry addition is a no-op. A complementary not-surfaced list would make
+ * every upstream addition a required client edit and must not be used.
  */
 
 import providersData from './acp-providers.json';
