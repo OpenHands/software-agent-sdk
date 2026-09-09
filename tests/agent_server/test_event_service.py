@@ -3377,12 +3377,13 @@ def test_llm_log_callback_swallows_emit_failures(
 
 
 def test_llm_io_logging_emits_paired_records_without_transport_kwargs(
-    event_service: EventService, caplog, monkeypatch
+    event_service: EventService, caplog, monkeypatch, tmp_path
 ) -> None:
     callbacks = []
     llm = MagicMock(log_completions=False, usage_id="test-usage", model="gpt-4o")
     llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
     monkeypatch.setenv("OH_LOG_LLM_IO", "true")
+    monkeypatch.setattr("openhands.agent_server.event_service.ENV_LOG_DIR", tmp_path)
 
     event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
     log_data = json.dumps(
@@ -3403,13 +3404,51 @@ def test_llm_io_logging_emits_paired_records_without_transport_kwargs(
     with caplog.at_level("INFO", logger="openhands.agent_server.event_service"):
         callbacks[0]("completion.json", log_data)
 
-    assert "llm_input" in caplog.text
-    assert "llm_output" in caplog.text
-    assert '"content":"hello"' in caplog.text
-    assert '"content":"hello back"' in caplog.text
-    assert '"tool_names":["terminal"]' in caplog.text
+    input_record = next(
+        record for record in caplog.records if record.event == "llm_input"
+    )
+    output_record = next(
+        record for record in caplog.records if record.event == "llm_output"
+    )
+    assert input_record.llm_io["messages"][0]["content"] == "hello"
+    assert input_record.llm_io["tool_names"] == ["terminal"]
+    assert output_record.llm_io["response"]["choices"][0]["message"]["content"] == (
+        "hello back"
+    )
     assert "must-not-be-logged" not in caplog.text
     assert llm.telemetry.log_enabled is True
+
+    exchanges = [
+        json.loads(line)
+        for line in (tmp_path / "llm-io.jsonl").read_text().splitlines()
+    ]
+    assert exchanges == [
+        {
+            "event": "llm_exchange",
+            "conversation_id": str(event_service.stored.id),
+            "usage_id": "test-usage",
+            "model": "gpt-4o",
+            "completion_id": "completion.json",
+            "api": "chat_completions",
+            "request": {
+                "messages": [{"role": "user", "content": "hello"}],
+                "instructions": None,
+                "input": None,
+                "tools": [{"name": "terminal", "description": "large schema"}],
+                "tool_names": ["terminal"],
+            },
+            "result": {
+                "response": {
+                    "id": "response-1",
+                    "choices": [{"message": {"content": "hello back"}}],
+                },
+                "raw_response": None,
+                "usage": {"prompt_tokens": 2, "completion_tokens": 2},
+                "cost": 0.01,
+                "latency_sec": 0.5,
+            },
+        }
+    ]
 
 
 def test_llm_io_logging_is_disabled_by_default(event_service: EventService) -> None:
@@ -3421,12 +3460,13 @@ def test_llm_io_logging_is_disabled_by_default(event_service: EventService) -> N
 
 
 def test_llm_io_logging_emits_error_record(
-    event_service: EventService, caplog, monkeypatch
+    event_service: EventService, caplog, monkeypatch, tmp_path
 ) -> None:
     callbacks = []
     llm = MagicMock(log_completions=False, usage_id="test-usage", model="gpt-4o")
     llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
     monkeypatch.setenv("OH_LOG_LLM_IO", "true")
+    monkeypatch.setattr("openhands.agent_server.event_service.ENV_LOG_DIR", tmp_path)
     event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
 
     log_data = json.dumps(
@@ -3441,8 +3481,19 @@ def test_llm_io_logging_emits_error_record(
 
     assert "llm_input" in caplog.text
     assert "llm_error" in caplog.text
-    assert "provider failed" in caplog.text
     assert "llm_output" not in caplog.text
+    error_record = next(
+        record for record in caplog.records if record.event == "llm_error"
+    )
+    assert error_record.llm_io["error"] == {
+        "type": "RuntimeError",
+        "message": "provider failed",
+    }
+    exchange = json.loads((tmp_path / "llm-io.jsonl").read_text())
+    assert exchange["error"] == {
+        "type": "RuntimeError",
+        "message": "provider failed",
+    }
 
 
 def _make_stored(tmp_path: Path) -> StoredConversation:

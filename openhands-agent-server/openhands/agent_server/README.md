@@ -63,7 +63,7 @@ The server can be configured using environment variables or a JSON configuration
 | `OH_TELEMETRY_CONSENT` | `granted` or `denied`. Seeds or overrides the persisted consent value. | Unset |
 | `OH_TELEMETRY_CONSENT_MODE` | `seed` (applies only while consent is `unset`) or `override` (wins over settings). | `seed` |
 | `OH_TELEMETRY_SALT` | Key used to pseudonymize conversation ids. Falls back to `OH_SECRET_KEY`, then to a per-process random salt. | None |
-| `OH_LOG_LLM_IO` | Set to `true` to write paired `llm_input` and `llm_output`/`llm_error` records to agent-server logs. Includes full prompt and response content; use only for local debugging. | `false` |
+| `OH_LOG_LLM_IO` | Set to `true` to write structured `llm_input` and `llm_output`/`llm_error` records to the application log and complete exchanges to `${LOG_DIR}/llm-io.jsonl`. Includes full prompt and response content; use only for local debugging. | `false` |
 | `DO_NOT_TRACK` | Set to `1` to force telemetry off, overriding consent and env. | Unset |
 
 ### Configuration File
@@ -111,7 +111,7 @@ It is **disabled by default** and does nothing unless a deployment opts in.
 |---|---|---|
 | **Telemetry** (this section) | Allowlisted lifecycle/failure events. Never prompts, messages, file contents, paths, secrets, request/response bodies, or tracebacks. | PostHog, when configured |
 | **LLM completion logging** (`log_completions`) | Full prompts, responses, and raw provider payloads — deliberately high fidelity for debugging. | Local disk only |
-| **LLM I/O server logging** (`OH_LOG_LLM_IO=true`) | Full normalized prompts and responses, tool names, usage, cost, and latency. Omits transport kwargs and tool schemas, but message content may still contain sensitive data. | Agent-server application log |
+| **LLM I/O server logging** (`OH_LOG_LLM_IO=true`) | Full normalized prompts and responses, tool names, usage, cost, and latency. Omits transport kwargs, but message content and tool schemas may still contain sensitive data. | Native `llm_io` objects in the application log and one complete exchange per line in `${LOG_DIR}/llm-io.jsonl` |
 | **Laminar / OpenTelemetry tracing** | Distributed traces and spans for latency analysis. | Your OTel/Laminar backend |
 
 Nothing from completion logging or tracing is ever forwarded to telemetry.

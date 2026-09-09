@@ -3,12 +3,15 @@
 import logging
 from typing import Any
 
-from pythonjsonlogger.json import JsonFormatter
+from openhands.sdk.logger import (
+    ENV_JSON,
+    ENV_LOG_LEVEL,
+    IN_CI,
+    ExecutionContextJsonFormatter,
+)
 
-from openhands.sdk.logger import ENV_JSON, ENV_LOG_LEVEL, IN_CI
 
-
-class UvicornAccessJsonFormatter(JsonFormatter):
+class UvicornAccessJsonFormatter(ExecutionContextJsonFormatter):
     """JSON formatter for uvicorn access logs that extracts HTTP fields.
 
     Uvicorn access logs pass structured data in record.args as a tuple:

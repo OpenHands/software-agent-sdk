@@ -9,9 +9,11 @@ Usage:
     logger.info("Hello from this module!")
 """
 
+import asyncio
 import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
+from typing import Any
 
 import litellm
 from pythonjsonlogger.json import JsonFormatter
@@ -51,6 +53,30 @@ ENV_RICH_TRACEBACKS = os.getenv("LOG_RICH_TRACEBACKS", "true").lower() in {
 
 ENV_AUTO_CONFIG = os.getenv("LOG_AUTO_CONFIG", "true").lower() in {"1", "true", "yes"}
 ENV_DEBUG_LLM = os.getenv("DEBUG_LLM", "false").lower() in {"1", "true", "yes"}
+
+
+class ExecutionContextJsonFormatter(JsonFormatter):
+    """Add process, thread, and asyncio task identity to structured logs."""
+
+    def add_fields(
+        self,
+        log_data: dict[str, Any],
+        record: logging.LogRecord,
+        message_dict: dict[str, Any],
+    ) -> None:
+        super().add_fields(log_data, record, message_dict)
+        log_data["process_id"] = record.process
+        log_data["process_name"] = record.processName
+        log_data["thread_id"] = record.thread
+        log_data["thread_name"] = record.threadName
+
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is not None:
+            log_data["task_id"] = id(task)
+            log_data["task_name"] = task.get_name()
 
 
 # ========= LiteLLM controls =========
@@ -123,7 +149,7 @@ def setup_logging(
             ch = logging.StreamHandler()
             ch.setLevel(lvl)
             ch.setFormatter(
-                JsonFormatter(
+                ExecutionContextJsonFormatter(
                     fmt="%(asctime)s %(levelname)s %(name)s "
                     "%(filename)s %(lineno)d %(message)s"
                 )
@@ -151,7 +177,7 @@ def setup_logging(
         fh.setLevel(lvl)
         if ENV_JSON:
             fh.setFormatter(
-                JsonFormatter(
+                ExecutionContextJsonFormatter(
                     fmt="%(asctime)s %(levelname)s %(name)s "
                     "%(filename)s %(lineno)d %(message)s"
                 )

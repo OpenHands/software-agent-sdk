@@ -40,9 +40,6 @@ from openhands.agent_server.dependencies import (
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.execution_environment import (
-    log_async_execution_environment,
-)
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -160,7 +157,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         _cleanup_stale_tmux_sessions()
 
         config: Config = api.state.config
-        log_async_execution_environment(max_concurrent_runs=config.max_concurrent_runs)
         deferred = config.deferred_init
 
         # Deferred pods boot with telemetry disabled and are rebuilt by

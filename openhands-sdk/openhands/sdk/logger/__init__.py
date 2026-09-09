@@ -4,6 +4,7 @@ from .logger import (
     ENV_LOG_DIR,
     ENV_LOG_LEVEL,
     IN_CI,
+    ExecutionContextJsonFormatter,
     get_logger,
     setup_logging,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "ENV_JSON",
     "ENV_LOG_LEVEL",
     "ENV_LOG_DIR",
+    "ExecutionContextJsonFormatter",
     "IN_CI",
     "rolling_log_view",
 ]

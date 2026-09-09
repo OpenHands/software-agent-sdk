@@ -5,13 +5,15 @@ import importlib
 import os
 import signal
 import sys
+from pathlib import Path
 from types import FrameType
 
 import uvicorn
 from uvicorn import Config
 
+from openhands.agent_server.execution_environment import ExecutionEnvironmentTracker
 from openhands.agent_server.logging_config import LOGGING_CONFIG
-from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.logger import DEBUG, ENV_LOG_DIR, get_logger
 
 
 logger = get_logger(__name__)
@@ -179,6 +181,14 @@ class LoggingServer(uvicorn.Server):
     termination signals are received, ensuring visibility into why the
     server is shutting down.
     """
+
+    def run(self, sockets=None) -> None:
+        tracker = ExecutionEnvironmentTracker(Path(ENV_LOG_DIR))
+        tracker.start()
+        try:
+            super().run(sockets=sockets)
+        finally:
+            tracker.stop()
 
     def handle_exit(self, sig: int, frame: FrameType | None) -> None:
         """Handle exit signals with logging before delegating to parent."""

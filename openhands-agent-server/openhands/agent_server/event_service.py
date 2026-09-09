@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import threading
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -72,6 +73,7 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
+from openhands.sdk.logger import ENV_LOG_DIR
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
@@ -86,6 +88,8 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 LLM_IO_LOGGING_ENV = "OH_LOG_LLM_IO"
+LLM_IO_LOG_FILENAME = "llm-io.jsonl"
+_LLM_IO_FILE_LOCK = threading.Lock()
 
 
 logger = get_logger(__name__)
@@ -112,6 +116,16 @@ def _tool_names(tools: object) -> list[str]:
     return names
 
 
+def _write_llm_exchange(exchange: dict[str, object]) -> None:
+    """Append one complete, natively structured LLM exchange as JSON Lines."""
+    log_path = Path(ENV_LOG_DIR) / LLM_IO_LOG_FILENAME
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(exchange, ensure_ascii=False, separators=(",", ":"))
+    with _LLM_IO_FILE_LOCK, log_path.open("a", encoding="utf-8") as handle:
+        handle.write(serialized)
+        handle.write("\n")
+
+
 def _log_llm_io(
     *,
     conversation_id: UUID,
@@ -135,10 +149,15 @@ def _log_llm_io(
         "input": data.get("input"),
         "tool_names": _tool_names(data.get("tools")),
     }
-    logger.info(
-        "llm_input %s",
-        json.dumps(llm_input, ensure_ascii=False, separators=(",", ":")),
-    )
+    logger.info("llm_input", extra={"event": "llm_input", "llm_io": llm_input})
+
+    request = {
+        "messages": data.get("messages"),
+        "instructions": data.get("instructions"),
+        "input": data.get("input"),
+        "tools": data.get("tools"),
+        "tool_names": llm_input["tool_names"],
+    }
 
     if "error" in data:
         error = data.get("error")
@@ -152,9 +171,15 @@ def _log_llm_io(
             else error,
             "latency_sec": data.get("latency_sec"),
         }
-        logger.info(
-            "llm_error %s",
-            json.dumps(llm_error, ensure_ascii=False, separators=(",", ":")),
+        logger.info("llm_error", extra={"event": "llm_error", "llm_io": llm_error})
+        _write_llm_exchange(
+            {
+                "event": "llm_exchange",
+                **common,
+                "request": request,
+                "error": llm_error["error"],
+                "latency_sec": llm_error["latency_sec"],
+            }
         )
         return
 
@@ -165,9 +190,20 @@ def _log_llm_io(
         "cost": data.get("cost"),
         "latency_sec": data.get("latency_sec"),
     }
-    logger.info(
-        "llm_output %s",
-        json.dumps(llm_output, ensure_ascii=False, separators=(",", ":")),
+    logger.info("llm_output", extra={"event": "llm_output", "llm_io": llm_output})
+    _write_llm_exchange(
+        {
+            "event": "llm_exchange",
+            **common,
+            "request": request,
+            "result": {
+                "response": llm_output["response"],
+                "raw_response": data.get("raw_response"),
+                "usage": llm_output["usage"],
+                "cost": llm_output["cost"],
+                "latency_sec": llm_output["latency_sec"],
+            },
+        }
     )
 
 
