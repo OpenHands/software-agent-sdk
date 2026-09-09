@@ -352,8 +352,12 @@ def _resolve_agent_from_profile(
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
-) -> "tuple[AgentBase, LaunchedAgentProfile]":
+) -> "tuple[AgentBase, LaunchedAgentProfile, set[str] | None]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
+
+    The third element is the profile's secret allow-list (``None`` = unrestricted).
+    It is returned rather than applied here because the secrets ride the start
+    request, not the agent.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
@@ -375,7 +379,11 @@ def _resolve_agent_from_profile(
         get_agent_profile_store,
         get_llm_profile_store,
     )
-    from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
+    from openhands.sdk.profiles.resolver import (
+        ProfileNotFound,
+        allowed_secret_names,
+        resolve_agent_profile,
+    )
     from openhands.sdk.settings.model import OpenHandsAgentSettings
 
     store = get_agent_profile_store()
@@ -450,7 +458,7 @@ def _resolve_agent_from_profile(
         agent_profile_id=profile.id,
         revision=profile.revision,
     )
-    return agent, launched
+    return agent, launched, allowed_secret_names(profile)
 
 
 def _compose_conversation_info(
@@ -1595,14 +1603,27 @@ class ConversationService:
 
         if request.agent_profile_id is not None:
             mcp_config = settings.agent_settings.mcp_config
-            resolved_agent, launched_agent_profile = await asyncio.to_thread(
+            (
+                resolved_agent,
+                launched_agent_profile,
+                allowed_secrets,
+            ) = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
                 acp_skill_sourcing=self.acp_skill_sourcing,
             )
-            request = request.model_copy(update={"agent": resolved_agent})
+            updates: dict[str, Any] = {"agent": resolved_agent}
+            # Enforced here, not client-side: a caller that sends more secrets
+            # than the profile allows must not widen the agent's scope.
+            if allowed_secrets is not None:
+                updates["secrets"] = {
+                    name: value
+                    for name, value in request.secrets.items()
+                    if name in allowed_secrets
+                }
+            request = request.model_copy(update=updates)
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to

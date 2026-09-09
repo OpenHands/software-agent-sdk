@@ -29,7 +29,7 @@ Resource-specific secret channels:
 from __future__ import annotations
 
 import shlex
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, SecretStr
@@ -108,6 +108,12 @@ class AgentProfileDiagnostics(BaseModel):
     # disabled).
     disabled_skills: list[str] = Field(default_factory=list)
     resolved_skills: list[str] = Field(default_factory=list)
+
+    # Secret scope (both variants). ``None`` = every secret the conversation is
+    # started with; a list = only those names (plus, for ACP, the provider
+    # credentials in the fields below). No dangling report: this is an
+    # allow-list over what a launch supplies, so an unmatched name is a no-op.
+    secret_refs: list[str] | None = None
 
     # ACP provider credential channels the editor/materialize checks (ACP only).
     # These are NOT jointly required: authentication needs the API key *or* one
@@ -216,6 +222,40 @@ def _acp_credential_channels(
         return None, None, []
     file_names = [spec.secret_name for spec in info.file_secrets]
     return info.api_key_env_var, info.base_url_env_var, file_names
+
+
+def allowed_secret_names(
+    profile: OpenHandsAgentProfile | ACPAgentProfile,
+) -> set[str] | None:
+    """Secret names ``profile`` may receive, or ``None`` for no restriction.
+
+    ``secret_refs`` is an allow-list over the secrets a conversation is started
+    with; the values never pass through here (they ride ``request.secrets`` as
+    ``LookupSecret``s the agent-server resolves from its own store).
+
+    An ACP profile's own provider credentials are always included: they travel
+    the same channel as the user's saved secrets, so filtering them out would
+    leave the subprocess unable to authenticate.
+    """
+    if profile.secret_refs is None:
+        return None
+    allowed = set(profile.secret_refs)
+    if isinstance(profile, ACPAgentProfile):
+        api_key, base_url, file_secrets = _acp_credential_channels(profile.acp_server)
+        allowed.update(name for name in (api_key, base_url) if name)
+        allowed.update(file_secrets)
+    return allowed
+
+
+def filter_profile_secrets[T](
+    profile: OpenHandsAgentProfile | ACPAgentProfile,
+    secrets: Mapping[str, T],
+) -> dict[str, T]:
+    """Narrow a conversation's secrets to what ``profile`` allows."""
+    allowed = allowed_secret_names(profile)
+    if allowed is None:
+        return dict(secrets)
+    return {name: value for name, value in secrets.items() if name in allowed}
 
 
 def _build_openhands_settings(
@@ -374,6 +414,7 @@ def resolve_agent_profile_dry_run(
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved,
         dangling_mcp_server_refs=dangling,
+        secret_refs=profile.secret_refs,
     )
     if dangling:
         diagnostics.errors.append(
