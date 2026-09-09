@@ -1,0 +1,2 @@
+{"record_id":"fn-1","producer_id":"fixture","trace_id":"failure-negative","sequence":1,"kind":"tool.error","payload":{"error":"permission denied"}}
+{"record_id":"fn-2","producer_id":"fixture","trace_id":"failure-negative","sequence":2,"kind":"tool.error","payload":{"error":"timeout"}}

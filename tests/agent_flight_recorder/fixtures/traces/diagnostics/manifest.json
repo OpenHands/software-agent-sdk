@@ -1,0 +1,10 @@
+{
+  "cases": [
+    {"file": "repeat-positive.jsonl", "detector": "repeated-tool-call", "positive": true},
+    {"file": "repeat-negative.jsonl", "detector": "repeated-tool-call", "positive": false},
+    {"file": "failure-positive.jsonl", "detector": "recurring-failure", "positive": true},
+    {"file": "failure-negative.jsonl", "detector": "recurring-failure", "positive": false},
+    {"file": "progress-positive.jsonl", "detector": "no-progress", "positive": true},
+    {"file": "progress-negative.jsonl", "detector": "no-progress", "positive": false}
+  ]
+}

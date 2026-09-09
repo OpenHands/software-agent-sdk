@@ -28,7 +28,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.conversation.types import TraceMetadataValue
+from openhands.sdk.conversation.types import SubagentEventCallback, TraceMetadataValue
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
@@ -103,6 +103,7 @@ class TaskManager:
         self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
+        self._subagent_callbacks: dict[str, tuple[SubagentEventCallback, ...]] = {}
         self._tasks_lock = threading.Lock()
 
         # Set once in _ensure_parent: uses the parent's subagents dir
@@ -213,12 +214,19 @@ class TaskManager:
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
             with detached_delegate_context() as link:
+                callbacks = self.parent_conversation.create_subagent_callbacks(
+                    task_id=resume,
+                    subagent_type=subagent_type,
+                    description=None,
+                )
+                self._subagent_callbacks[resume] = tuple(callbacks)
                 conversation = LocalConversation(
                     agent=worker_agent,
                     workspace=self.parent_conversation.state.workspace.working_dir,
                     persistence_dir=self._persistence_dir,
                     conversation_id=conversation_id,
                     hook_config=factory.definition.hooks,
+                    callbacks=list(callbacks),
                     delete_on_close=True,
                     observability_metadata=self._delegate_observability_metadata(
                         task_id=resume, subagent_type=subagent_type, link=link
@@ -312,6 +320,12 @@ class TaskManager:
             visualizer = parent_visualizer.create_sub_visualizer(label)
 
         with detached_delegate_context() as link:
+            callbacks = parent.create_subagent_callbacks(
+                task_id=task_id,
+                subagent_type=subagent_type,
+                description=description,
+            )
+            self._subagent_callbacks[task_id] = tuple(callbacks)
             return LocalConversation(
                 agent=worker_agent,
                 workspace=parent.state.workspace.working_dir,
@@ -321,6 +335,7 @@ class TaskManager:
                 max_iteration_per_run=max_iteration_per_run,
                 max_budget_per_run=max_budget_per_run,
                 hook_config=hook_config,
+                callbacks=list(callbacks),
                 delete_on_close=True,
                 prompt_cache_key=str(parent.state.id),
                 observability_metadata=self._delegate_observability_metadata(
@@ -405,10 +420,31 @@ class TaskManager:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
+            self._finish_subagent_callbacks(task)
             self._update_parent_metrics(parent, task)
             self._evict_task(task)
 
         return task
+
+    def _finish_subagent_callbacks(self, task: Task) -> None:
+        with self._tasks_lock:
+            callbacks = self._subagent_callbacks.pop(task.id, ())
+        if task.conversation is None:
+            return
+        for callback in callbacks:
+            try:
+                callback.finish_subagent(
+                    status=task.status.value,
+                    result=task.result,
+                    error=task.error,
+                    stats=task.conversation.conversation_stats,
+                )
+            except Exception:
+                logger.warning(
+                    "Subagent observer cleanup failed for task %s",
+                    task.id,
+                    exc_info=True,
+                )
 
     @staticmethod
     def _run_stop_detail(
@@ -494,3 +530,4 @@ class TaskManager:
 
         with self._tasks_lock:
             self._tasks.clear()
+            self._subagent_callbacks.clear()

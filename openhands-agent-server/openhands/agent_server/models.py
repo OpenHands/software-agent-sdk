@@ -74,6 +74,13 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
+class FlightRecorderTraceInfo(BaseModel):
+    conversation_id: UUID
+    trace_id: str
+    bundle_path: str
+    active: bool
+
+
 class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 

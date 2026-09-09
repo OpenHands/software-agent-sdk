@@ -1,6 +1,6 @@
 # UV workspace configuration
 [tool.uv.workspace]
-members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands-agent-server"]
+members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands-agent-server", "agent-flight-recorder"]
 
 # Security: Apply workspace-wide dependency guardrails.
 [tool.uv]
@@ -24,6 +24,7 @@ openhands-sdk = { workspace = true }
 openhands-tools = { workspace = true }
 openhands-workspace = { workspace = true }
 openhands-agent-server = { workspace = true }
+openhands-agent-flight-recorder = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -39,6 +40,7 @@ dev = [
     "pytest-asyncio>=1.1.0",
     "pytest-forked>=1.6.0",
     "pytest-xdist>=3.6.0",
+    "pytest-qt>=4.5.0",
     "tabulate>=0.9.0",
     "pyinstaller>=6.16.0",
     "streamlit>=1.49.1",
@@ -112,13 +114,15 @@ include = [
     "openhands-agent-server",
     "examples",
     "tests",
-    "scripts"
+    "scripts",
+    "agent-flight-recorder",
 ]
 extraPaths = [
     "openhands-sdk",
     "openhands-tools",
     "openhands-workspace",
-    "openhands-agent-server"
+    "openhands-agent-server",
+    "agent-flight-recorder/src"
 ]
 venvPath = "."
 venv = ".venv"

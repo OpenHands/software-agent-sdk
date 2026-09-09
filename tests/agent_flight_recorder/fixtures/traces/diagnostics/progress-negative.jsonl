@@ -1,0 +1,3 @@
+{"record_id":"pn-1","producer_id":"fixture","trace_id":"progress-negative","sequence":1,"kind":"iteration.finished","payload":{"made_progress":false}}
+{"record_id":"pn-2","producer_id":"fixture","trace_id":"progress-negative","sequence":2,"kind":"iteration.finished","payload":{"made_progress":true}}
+{"record_id":"pn-3","producer_id":"fixture","trace_id":"progress-negative","sequence":3,"kind":"iteration.finished","payload":{"made_progress":false}}

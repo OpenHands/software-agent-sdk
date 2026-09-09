@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -9,7 +11,7 @@ from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -23,6 +25,7 @@ from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
     EventSortOrder,
+    FlightRecorderTraceInfo,
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
@@ -56,6 +59,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.types import ConversationCallbackType
 from openhands.sdk.credential import (
     CredentialBindingError,
     CredentialNeedsReauthentication,
@@ -93,6 +97,10 @@ _LLM_IO_FILE_LOCK = threading.Lock()
 
 
 logger = get_logger(__name__)
+
+
+if TYPE_CHECKING:
+    from flight_recorder.recorder import Recorder
 
 
 def _llm_io_logging_enabled() -> bool:
@@ -246,7 +254,12 @@ class EventService:
     )
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    enable_flight_recorder: bool = False
     _conversation: LocalConversation | None = field(default=None, init=False)
+    _flight_recorder: Recorder | None = field(default=None, init=False)
+    _flight_recorder_info: FlightRecorderTraceInfo | None = field(
+        default=None, init=False
+    )
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
@@ -281,6 +294,70 @@ class EventService:
     @property
     def conversation_dir(self):
         return self.conversations_dir / self.stored.id.hex
+
+    @property
+    def flight_recorder_metadata_path(self) -> Path:
+        return self.conversation_dir / "flight-recorder" / "latest.json"
+
+    def get_flight_recorder_info(self) -> FlightRecorderTraceInfo | None:
+        if self._flight_recorder_info is not None:
+            return self._flight_recorder_info
+        try:
+            return FlightRecorderTraceInfo.model_validate_json(
+                self.flight_recorder_metadata_path.read_text()
+            )
+        except (OSError, ValueError):
+            return None
+
+    def _write_flight_recorder_info(self, *, active: bool) -> None:
+        info = self._flight_recorder_info
+        if info is None:
+            return
+        info = info.model_copy(update={"active": active})
+        self._flight_recorder_info = info
+        path = self.flight_recorder_metadata_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, info.model_dump_json())
+
+    def _start_flight_recorder(self) -> Recorder | None:
+        if not self.enable_flight_recorder:
+            return None
+        try:
+            from flight_recorder.models.database import TraceIndex
+            from flight_recorder.recorder import Recorder
+        except ImportError as exc:
+            raise RuntimeError(
+                "OH_ENABLE_FLIGHT_RECORDER requires the agent-server "
+                "flight-recorder extra"
+            ) from exc
+        trace_dir = self.conversation_dir / "flight-recorder"
+        bundle = trace_dir / f"{uuid4().hex}.afr"
+        index = TraceIndex(self.conversations_dir / ".flight-recorder" / "index.db")
+        recorder = Recorder(bundle, index)
+        self._flight_recorder = recorder
+        self._flight_recorder_info = FlightRecorderTraceInfo(
+            conversation_id=self.stored.id,
+            trace_id=recorder.trace_id,
+            bundle_path=str(bundle.resolve()),
+            active=True,
+        )
+        self._write_flight_recorder_info(active=True)
+        return recorder
+
+    def _close_flight_recorder(self) -> None:
+        recorder = self._flight_recorder
+        info = self._flight_recorder_info
+        if recorder is None or info is None:
+            return
+        recorder.close()
+        try:
+            from flight_recorder.services.bundles import BundleService
+
+            BundleService().finalize_bundle(Path(info.bundle_path))
+        except Exception:
+            logger.exception("Failed to finalize flight recorder trace")
+        self._flight_recorder = None
+        self._write_flight_recorder_info(active=False)
 
     async def load_meta(self):
         meta_file = self.conversation_dir / "meta.json"
@@ -1193,27 +1270,38 @@ class EventService:
                     reasoning_content=reasoning if isinstance(reasoning, str) else None,
                 )
 
-        conversation = LocalConversation(
-            agent=agent,
-            workspace=workspace,
-            plugins=self.stored.plugins,
-            persistence_dir=str(self.conversations_dir),
-            conversation_id=self.stored.id,
-            callbacks=[self._callback_wrapper],
-            token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
-            max_iteration_per_run=self.stored.max_iterations,
-            stuck_detection=self.stored.stuck_detection,
-            visualizer=None,
-            secrets=self.stored.secrets,
-            cipher=self.cipher,
-            hook_config=self.stored.hook_config,
-            tags=self.stored.tags,
-            user_id=self.stored.user_id,
-            observability_metadata=self.stored.observability_metadata,
-            observability_tags=self.stored.observability_tags,
-            observability_span_name=self.stored.observability_span_name,
-            mcp_tool_provider=self.mcp_tool_provider,
-        )
+        recorder = self._start_flight_recorder()
+        assert self._callback_wrapper is not None
+        callbacks: list[ConversationCallbackType] = [self._callback_wrapper]
+        if recorder is not None:
+            callbacks.append(recorder)
+        try:
+            conversation = LocalConversation(
+                agent=agent,
+                workspace=workspace,
+                plugins=self.stored.plugins,
+                persistence_dir=str(self.conversations_dir),
+                conversation_id=self.stored.id,
+                callbacks=callbacks,
+                token_callbacks=(
+                    [_token_streaming_callback] if streaming_enabled else []
+                ),
+                max_iteration_per_run=self.stored.max_iterations,
+                stuck_detection=self.stored.stuck_detection,
+                visualizer=None,
+                secrets=self.stored.secrets,
+                cipher=self.cipher,
+                hook_config=self.stored.hook_config,
+                tags=self.stored.tags,
+                user_id=self.stored.user_id,
+                observability_metadata=self.stored.observability_metadata,
+                observability_tags=self.stored.observability_tags,
+                observability_span_name=self.stored.observability_span_name,
+                mcp_tool_provider=self.mcp_tool_provider,
+            )
+        except Exception:
+            self._close_flight_recorder()
+            raise
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
@@ -1375,6 +1463,10 @@ class EventService:
                     # misleading non-error state.
                     await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:
+                    if self._flight_recorder is not None:
+                        self._flight_recorder.record_metrics(
+                            conversation.conversation_stats
+                        )
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status
@@ -1865,6 +1957,7 @@ class EventService:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)
             self._conversation = None
+        await asyncio.to_thread(self._close_flight_recorder)
         self.credential_bindings = {}
 
         if self._lease is not None and self._lease_generation is not None:
@@ -1872,9 +1965,7 @@ class EventService:
         self._lease_generation = None
         self._lease = None
 
-    async def generate_title(
-        self, llm: "LLM | None" = None, max_length: int = 50
-    ) -> str:
+    async def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation.
 
         Resolves the provided LLM via the conversation's registry if a usage_id is

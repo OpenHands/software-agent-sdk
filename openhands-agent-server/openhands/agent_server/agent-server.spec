@@ -67,6 +67,7 @@ PATHEX = [
     project_root / "openhands-sdk",
     project_root / "openhands-tools",
     project_root / "openhands-workspace",
+    project_root / "agent-flight-recorder" / "src",
 ]
 
 # Entry script for the agent server package (namespace: openhands/agent_server/__main__.py)
@@ -142,6 +143,7 @@ a = Analysis(
         *copy_metadata("openhands-sdk"),
         *copy_metadata("openhands-tools"),
         *copy_metadata("openhands-workspace"),
+        *copy_metadata("openhands-agent-flight-recorder"),
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),
 
@@ -154,6 +156,7 @@ a = Analysis(
         *collect_submodules("openhands.tools"),
         *collect_submodules("openhands.workspace"),
         *collect_submodules("openhands.agent_server"),
+        *collect_submodules("flight_recorder"),
 
         # Third-party dynamic imports
         *collect_submodules("tiktoken"),

@@ -29,6 +29,7 @@ from openhands.sdk.conversation.types import (
     ConversationID,
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
+    SubagentEventCallback,
     TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
@@ -183,6 +184,7 @@ class LocalConversation(BaseConversation):
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
+    _external_callbacks: tuple[ConversationCallbackType, ...]
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
@@ -424,6 +426,7 @@ class LocalConversation(BaseConversation):
                 self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
+        self._external_callbacks = tuple(callback_list)
         composed_list = callback_list + [_default_callback]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
@@ -2541,6 +2544,33 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.confirmation_policy = policy
         logger.info(f"Confirmation policy set to: {policy}")
+
+    def create_subagent_callbacks(
+        self,
+        *,
+        task_id: str,
+        subagent_type: str,
+        description: str | None,
+    ) -> list[SubagentEventCallback]:
+        callbacks = []
+        for callback in self._external_callbacks:
+            if not isinstance(callback, SubagentEventCallback):
+                continue
+            try:
+                callbacks.append(
+                    callback.for_subagent(
+                        task_id=task_id,
+                        subagent_type=subagent_type,
+                        description=description,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Subagent observer setup failed for task %s",
+                    task_id,
+                    exc_info=True,
+                )
+        return callbacks
 
     def set_token_callbacks(
         self, token_callbacks: list[ConversationTokenCallbackType] | None

@@ -64,6 +64,17 @@ The server can be configured using environment variables or a JSON configuration
 | `OH_TELEMETRY_CONSENT_MODE` | `seed` (applies only while consent is `unset`) or `override` (wins over settings). | `seed` |
 | `OH_TELEMETRY_SALT` | Key used to pseudonymize conversation ids. Falls back to `OH_SECRET_KEY`, then to a per-process random salt. | None |
 | `OH_LOG_LLM_IO` | Set to `true` to write structured `llm_input` and `llm_output`/`llm_error` records to the application log and complete exchanges to `${LOG_DIR}/llm-io.jsonl`. Includes full prompt and response content; use only for local debugging. | `false` |
+| `OH_ENABLE_FLIGHT_RECORDER` | Record local web conversations and delegated subagents as portable `.afr` traces. Intended for local debugging. | `false` |
+
+Flight recording requires the `openhands-agent-server[flight-recorder]` optional
+extra. Repository development environments created with `make build` already
+include the workspace package.
+
+For local web development, start the frontend with
+`OH_ENABLE_FLIGHT_RECORDER=true` alongside `OH_AGENT_SERVER_LOCAL_PATH`. The
+newest trace for a conversation is available from
+`GET /api/conversations/{conversation_id}/flight-recorder`; the response provides
+the local bundle path and whether its event service is still active.
 | `DO_NOT_TRACK` | Set to `1` to force telemetry off, overriding consent and env. | Unset |
 
 ### Configuration File

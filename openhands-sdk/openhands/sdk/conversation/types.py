@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import re
 import uuid
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -9,8 +11,37 @@ from openhands.sdk.event.base import Event
 from openhands.sdk.llm.streaming import TokenCallbackType
 
 
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+
+
 ConversationCallbackType = Callable[[Event], None]
 """Type alias for event callback functions."""
+
+
+@runtime_checkable
+class SubagentEventCallback(Protocol):
+    """Event callback that opts into delegated conversation observation."""
+
+    def __call__(self, event: Event) -> None: ...
+
+    def for_subagent(
+        self,
+        *,
+        task_id: str,
+        subagent_type: str,
+        description: str | None,
+    ) -> SubagentEventCallback: ...
+
+    def finish_subagent(
+        self,
+        *,
+        status: str,
+        result: str | None,
+        error: str | None,
+        stats: ConversationStats,
+    ) -> None: ...
+
 
 ConversationTokenCallbackType = TokenCallbackType
 """Callback type invoked for streaming LLM deltas."""

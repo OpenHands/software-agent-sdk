@@ -1,0 +1,36 @@
+[project]
+name = "openhands-agent-flight-recorder"
+version = "0.1.0"
+description = "Local observability and diagnostics for OpenHands agent runs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openhands-sdk",
+    "platformdirs>=4.2",
+    "pydantic>=2.12.5",
+    "pyside6>=6.8",
+    "zstandard>=0.23",
+]
+
+[project.optional-dependencies]
+package = ["pyinstaller>=6.16"]
+
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"flight_recorder" = ["py.typed"]
+
+[project.scripts]
+agent-flight-recorder = "flight_recorder.__main__:main"

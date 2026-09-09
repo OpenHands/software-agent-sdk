@@ -19,6 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+flight-recorder = ["openhands-agent-flight-recorder"]
 # Product-analytics exporter. Optional on purpose: the core server and every
 # library/headless consumer must be able to run without a vendor analytics SDK
 # on the import path. Pinned to the major already resolved in uv.lock (6.7.7,

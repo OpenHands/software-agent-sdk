@@ -28,6 +28,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    FlightRecorderTraceInfo,
     LaunchedAgentProfile,
     StartConversationRequest,
     StoredConversation,
@@ -640,6 +641,7 @@ class ConversationService:
     conversation_worktree_root: Path = field(
         default=Path("/tmp/conversation-worktrees")
     )
+    enable_flight_recorder: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -653,6 +655,9 @@ class ConversationService:
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
+    )
+    _flight_recorder_merge_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False
     )
 
     def _load_catalog_sync(self) -> dict[UUID, _ConversationRecord]:
@@ -1794,6 +1799,97 @@ class ConversationService:
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
 
+    async def get_flight_recorder_info(
+        self, conversation_id: UUID
+    ) -> FlightRecorderTraceInfo | None:
+        root = await self._get_single_flight_recorder_info(conversation_id)
+        if root is None:
+            return None
+
+        descendants = []
+        pending = list(self._children_of(conversation_id))
+        while pending:
+            child_id = pending.pop(0)
+            child = await self._get_single_flight_recorder_info(child_id)
+            if child is not None:
+                descendants.append((child_id, child))
+            pending.extend(self._children_of(child_id))
+        if not descendants:
+            return root
+
+        async with self._flight_recorder_merge_lock:
+            from flight_recorder.services.bundles import (
+                BundleMergeSource,
+                BundleService,
+            )
+
+            info_by_conversation = {
+                conversation_id: root,
+                **dict(descendants),
+            }
+            root_title = self._conversation_records[conversation_id].stored.title
+            sources = [
+                BundleMergeSource(
+                    Path(root.bundle_path),
+                    agent_name=root_title or "Primary agent",
+                )
+            ]
+            for child_id, child in descendants:
+                parent_id = self._conversation_records[
+                    child_id
+                ].stored.parent_conversation_id
+                parent = info_by_conversation.get(parent_id) if parent_id else None
+                sources.append(
+                    BundleMergeSource(
+                        Path(child.bundle_path),
+                        parent_trace_id=parent.trace_id if parent else None,
+                        agent_name=(
+                            self._conversation_records[child_id].stored.title
+                            or "Child agent"
+                        ),
+                    )
+                )
+            destination = (
+                self.conversations_dir
+                / conversation_id.hex
+                / "flight-recorder"
+                / "orchestration.afr"
+            )
+            validation = await asyncio.to_thread(
+                BundleService().merge_bundles,
+                sources,
+                destination,
+            )
+        return FlightRecorderTraceInfo(
+            conversation_id=conversation_id,
+            trace_id=validation.trace_id,
+            bundle_path=str(destination.resolve()),
+            active=root.active or any(info.active for _, info in descendants),
+        )
+
+    async def _get_single_flight_recorder_info(
+        self, conversation_id: UUID
+    ) -> FlightRecorderTraceInfo | None:
+        if conversation_id not in self._conversation_records:
+            return None
+        event_services = self._event_services
+        if event_services is not None:
+            event_service = event_services.get(conversation_id)
+            if event_service is not None:
+                return event_service.get_flight_recorder_info()
+        path = (
+            self.conversations_dir
+            / conversation_id.hex
+            / "flight-recorder"
+            / "latest.json"
+        )
+        try:
+            return FlightRecorderTraceInfo.model_validate_json(
+                await asyncio.to_thread(path.read_text)
+            )
+        except (OSError, ValueError):
+            return None
+
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
     ) -> str | None:
@@ -2178,6 +2274,7 @@ class ConversationService:
             lease_ttl_seconds=config.lease_ttl_seconds,
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
+            enable_flight_recorder=config.enable_flight_recorder,
         )
 
     async def _start_event_service(
@@ -2206,6 +2303,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            enable_flight_recorder=self.enable_flight_recorder,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.

@@ -48,6 +48,13 @@ def test_load_config_reads_telemetry_deployment_kind_from_env(monkeypatch, tmp_p
     assert load_config().telemetry.deployment_kind == "remote"
 
 
+def test_load_config_enables_flight_recorder_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.setenv("OH_ENABLE_FLIGHT_RECORDER", "true")
+
+    assert load_config().enable_flight_recorder is True
+
+
 def test_conversation_idle_ttl_defaults_to_twenty_minutes():
     assert DEFAULT_CONVERSATION_IDLE_TTL_SECONDS == 1200.0
     assert Config().conversation_idle_ttl_seconds == 1200.0

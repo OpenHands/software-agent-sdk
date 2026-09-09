@@ -1,0 +1,2 @@
+{"record_id":"rp-1","producer_id":"fixture","trace_id":"repeat-positive","sequence":1,"kind":"tool.request","payload":{"tool":"terminal","command":"pytest"}}
+{"record_id":"rp-2","producer_id":"fixture","trace_id":"repeat-positive","sequence":2,"kind":"tool.request","payload":{"tool":"terminal","command":"pytest"}}

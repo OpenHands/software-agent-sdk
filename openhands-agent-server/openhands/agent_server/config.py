@@ -322,6 +322,13 @@ class Config(BaseModel):
         default=False,
         description="Whether to enable VNC desktop functionality",
     )
+    enable_flight_recorder: bool = Field(
+        default=False,
+        description=(
+            "Record each active local conversation as a portable Agent Flight "
+            "Recorder trace. Intended for local development and debugging."
+        ),
+    )
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",

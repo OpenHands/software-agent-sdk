@@ -32,6 +32,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    FlightRecorderTraceInfo,
     ForkConversationRequest,
     NavigateConversationRequest,
     SendMessageRequest,
@@ -177,6 +178,21 @@ async def get_conversation_agent_final_response(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     response = await event_service.get_agent_final_response()
     return AgentResponseResult(response=response)
+
+
+@conversation_router.get(
+    "/{conversation_id}/flight-recorder",
+    responses={404: {"description": "Flight recorder trace not found"}},
+)
+async def get_flight_recorder_trace(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> FlightRecorderTraceInfo:
+    """Return the newest local flight-recorder trace for a conversation."""
+    info = await conversation_service.get_flight_recorder_info(conversation_id)
+    if info is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return info
 
 
 @conversation_router.get("")
