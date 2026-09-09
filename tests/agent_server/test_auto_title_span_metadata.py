@@ -144,9 +144,7 @@ def test_auto_title_llm_span_joins_the_conversation_trace() -> None:
     assert len(llm_spans) == 1
     title_llm = llm_spans[0]
 
-    sdk_llm_spans = [
-        span for span in probe["spans"] if span["name"] == "llm.gpt-4o"
-    ]
+    sdk_llm_spans = [span for span in probe["spans"] if span["name"] == "llm.gpt-4o"]
     assert len(sdk_llm_spans) == 1
     sdk_llm = sdk_llm_spans[0]
 
