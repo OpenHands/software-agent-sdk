@@ -1,7 +1,0 @@
-{
-  "result": "PASS",
-  "mode": "restart",
-  "old_native_conversation_status": 404,
-  "manual_replay_recalled_nonce": true,
-  "fresh_conversation_after_storage_reset": true
-}
