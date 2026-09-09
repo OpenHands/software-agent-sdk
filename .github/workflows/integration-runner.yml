@@ -240,6 +240,7 @@ jobs:
                   ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
+                  RUN_API_COMPLIANCE: ${{ github.event.inputs.run_api_compliance || 'false' }}
                   REASON: ${{ github.event.inputs.reason }}
                   WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
@@ -247,11 +248,12 @@ jobs:
                   SANITIZED_REASON=$(printf '%s' "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   SANITIZED_MODEL_IDS=$(printf '%s' "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   COMMENT_BODY=$(cat <<EOF
-                  **Integration Tests Triggered**
+                  **Test Suites Triggered**
 
                   - **Reason:** $SANITIZED_REASON
                   - **Test type:** $TEST_TYPE
                   - **Models:** $SANITIZED_MODEL_IDS
+                  - **API compliance:** $RUN_API_COMPLIANCE
                   - **Workflow run:** $WORKFLOW_RUN_URL
 
                   Results will be posted here when complete.
@@ -590,11 +592,17 @@ jobs:
                     github.event.inputs.issue_number != ''))
               env:
                   GH_TOKEN: ${{ github.token }}
+                  EVENT_NAME: ${{ github.event_name }}
                   ISSUE_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.issue_number }}
               run: |
                   REPORT=$(find compliance-results -name compliance_report.md -type f -print -quit)
                   if [ -n "$REPORT" ]; then
                     COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < "$REPORT")
-                    printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" \
-                      --repo "$GITHUB_REPOSITORY" --body-file -
+                    if [ "$EVENT_NAME" = "pull_request_target" ]; then
+                      printf '%s' "$COMMENT_BODY" | gh pr comment "$ISSUE_NUMBER" \
+                        --repo "$GITHUB_REPOSITORY" --body-file -
+                    else
+                      printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" \
+                        --repo "$GITHUB_REPOSITORY" --body-file -
+                    fi
                   fi
