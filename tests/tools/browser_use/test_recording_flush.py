@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import tempfile
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -310,6 +311,214 @@ class TestConcurrentFlushSafety:
                 with open(filepath) as f:
                     events = json.load(f)
                 assert isinstance(events, list)
+
+
+class TestRecordingLifecycle:
+    """Tests for recording controller lifecycle serialization."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_start_keeps_real_session_and_flush_task(
+        self, server_with_mock_browser, mock_cdp_session, tmp_path
+    ):
+        """A duplicate start must retain the real session's sole flush task."""
+        mock_cdp_session.cdp_client.send.Page.addScriptToEvaluateOnNewDocument = (
+            AsyncMock(return_value={"identifier": "script-1"})
+        )
+        mock_cdp_session.cdp_client.send.Runtime.evaluate = AsyncMock(
+            side_effect=[
+                {"result": {"value": {"success": True}}},
+                {"result": {"value": {"status": "started"}}},
+                {"result": {"value": None}},
+                {"result": {"value": json.dumps({"events": [{"type": 3}]})}},
+                {"result": {"value": None}},
+            ]
+        )
+
+        first_result = await server_with_mock_browser._start_recording(str(tmp_path))
+        first_session = server_with_mock_browser._recording_session
+        first_task = first_session._flush_task
+
+        second_result = await server_with_mock_browser._start_recording(
+            str(tmp_path / "different-output")
+        )
+
+        assert first_result == "Recording started"
+        assert second_result == "Already recording"
+        assert server_with_mock_browser._recording_session is first_session
+        assert first_task is not None
+        assert not first_task.done()
+        assert mock_cdp_session.cdp_client.send.Runtime.evaluate.await_count == 3
+
+        await server_with_mock_browser._cleanup_recording()
+
+        assert first_task.done()
+        assert first_session._flush_task is None
+        assert server_with_mock_browser._recording_session is None
+
+    @pytest.mark.asyncio
+    async def test_duplicate_start_keeps_active_controller(
+        self, server_with_mock_browser, monkeypatch
+    ):
+        """An active recording must not be replaced by a duplicate start."""
+
+        class FakeRecordingSession:
+            instances: ClassVar[list] = []
+
+            def __init__(self, output_dir=None):
+                self.output_dir = output_dir
+                self.is_active = False
+                self.start_calls = 0
+                self.stop_calls = 0
+                self.__class__.instances.append(self)
+
+            async def start(self, browser_session):
+                self.start_calls += 1
+                self.is_active = True
+                return "Recording started"
+
+            async def stop(self, browser_session):
+                self.stop_calls += 1
+                self.is_active = False
+                return "Recording stopped"
+
+            def reset(self):
+                self.is_active = False
+
+        monkeypatch.setattr(
+            "openhands.tools.browser_use.server.RecordingSession",
+            FakeRecordingSession,
+        )
+
+        first_result = await server_with_mock_browser._start_recording("first")
+        first_session = server_with_mock_browser._recording_session
+
+        second_result = await server_with_mock_browser._start_recording("second")
+
+        assert first_result == "Recording started"
+        assert second_result == "Already recording"
+        assert server_with_mock_browser._recording_session is first_session
+        assert len(FakeRecordingSession.instances) == 1
+        assert first_session.start_calls == 1
+
+        await server_with_mock_browser._cleanup_recording()
+        assert first_session.stop_calls == 1
+        assert server_with_mock_browser._recording_session is None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_start_creates_one_controller(
+        self, server_with_mock_browser, monkeypatch
+    ):
+        """Concurrent starts must serialize around browser startup."""
+        start_entered = asyncio.Event()
+        release_start = asyncio.Event()
+
+        class FakeRecordingSession:
+            instances: ClassVar[list] = []
+
+            def __init__(self, output_dir=None):
+                self.output_dir = output_dir
+                self.is_active = False
+                self.__class__.instances.append(self)
+
+            async def start(self, browser_session):
+                start_entered.set()
+                await release_start.wait()
+                self.is_active = True
+                return "Recording started"
+
+            async def stop(self, browser_session):
+                self.is_active = False
+                return "Recording stopped"
+
+            def reset(self):
+                self.is_active = False
+
+        monkeypatch.setattr(
+            "openhands.tools.browser_use.server.RecordingSession",
+            FakeRecordingSession,
+        )
+
+        first_task = asyncio.create_task(
+            server_with_mock_browser._start_recording("first")
+        )
+        await start_entered.wait()
+        second_task = asyncio.create_task(
+            server_with_mock_browser._start_recording("second")
+        )
+        await asyncio.sleep(0)
+
+        assert len(FakeRecordingSession.instances) == 1
+
+        release_start.set()
+        first_result, second_result = await asyncio.gather(first_task, second_task)
+
+        assert first_result == "Recording started"
+        assert second_result == "Already recording"
+        assert (
+            server_with_mock_browser._recording_session
+            is FakeRecordingSession.instances[0]
+        )
+
+        await server_with_mock_browser._cleanup_recording()
+
+    @pytest.mark.asyncio
+    async def test_stop_then_start_creates_new_controller(
+        self, server_with_mock_browser, monkeypatch
+    ):
+        """A new recording run may use a fresh controller after stop."""
+
+        class FakeRecordingSession:
+            instances: ClassVar[list] = []
+
+            def __init__(self, output_dir=None):
+                self.output_dir = output_dir
+                self.is_active = False
+                self.__class__.instances.append(self)
+
+            async def start(self, browser_session):
+                self.is_active = True
+                return "Recording started"
+
+            async def stop(self, browser_session):
+                self.is_active = False
+                return "Recording stopped"
+
+            def reset(self):
+                self.is_active = False
+
+        monkeypatch.setattr(
+            "openhands.tools.browser_use.server.RecordingSession",
+            FakeRecordingSession,
+        )
+
+        await server_with_mock_browser._start_recording("first")
+        first_session = server_with_mock_browser._recording_session
+        assert await server_with_mock_browser._stop_recording() == "Recording stopped"
+
+        await server_with_mock_browser._start_recording("second")
+        second_session = server_with_mock_browser._recording_session
+
+        assert second_session is not first_session
+        assert first_session.output_dir == "first"
+        assert second_session.output_dir == "second"
+
+        await server_with_mock_browser._cleanup_recording()
+
+
+class TestRecordingSessionLifecycle:
+    """Tests for RecordingSession start idempotence."""
+
+    @pytest.mark.asyncio
+    async def test_start_when_active_returns_already_recording(
+        self, mock_browser_session
+    ):
+        session = RecordingSession()
+        session._is_recording = True
+
+        result = await session.start(mock_browser_session)
+
+        assert result == "Already recording"
+        mock_browser_session.get_or_create_cdp_session.assert_not_awaited()
 
 
 class TestRecordingIsolation:
