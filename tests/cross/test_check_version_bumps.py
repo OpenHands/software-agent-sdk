@@ -46,6 +46,11 @@ def _init_repo_with_versions(tmp_path: Path, version: str) -> Path:
         package_path = repo_root / package_dir
         package_path.mkdir()
         _write_version(package_path / "pyproject.toml", version)
+    (repo_root / "clients").mkdir()
+    (repo_root / "clients" / "typescript").mkdir()
+    (repo_root / "clients" / "typescript" / "package.json").write_text(
+        f'{{"name": "@openhands/typescript-client", "version": "{version}"}}\n'
+    )
 
     subprocess.run(["git", "init", "-b", "main"], cwd=repo_root, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo_root, check=True)
@@ -134,4 +139,22 @@ def test_find_version_changes_detects_agent_server_package(tmp_path: Path):
             previous_version="1.14.0",
             current_version="1.15.0",
         )
+    ]
+
+
+def test_validate_package_version_consistency_accepts_matching_versions(tmp_path: Path):
+    repo_root = _init_repo_with_versions(tmp_path, "1.44.1")
+
+    assert _prod.validate_package_version_consistency(repo_root) == []
+
+
+def test_validate_package_version_consistency_rejects_typescript_drift(tmp_path: Path):
+    repo_root = _init_repo_with_versions(tmp_path, "1.44.1")
+    (repo_root / "clients/typescript/package.json").write_text(
+        '{"name": "@openhands/typescript-client", "version": "1.39.0"}\n'
+    )
+
+    assert _prod.validate_package_version_consistency(repo_root) == [
+        "Package versions must match openhands-sdk (1.44.1); "
+        "mismatched packages: typescript-client (1.39.0)."
     ]

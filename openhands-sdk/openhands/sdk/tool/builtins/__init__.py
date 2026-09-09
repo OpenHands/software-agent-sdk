@@ -1,8 +1,9 @@
-"""Implementing essential tools that doesn't interact with the environment.
+"""SDK-resident tools that do not interact with the environment.
 
-These are built in and are *required* for the agent to work.
+`BUILT_IN_TOOLS` contains tools attached to every agent. `BUILT_IN_TOOL_CLASSES`
+also includes optional SDK tools that are resolved by name from agent setup.
 
-For tools that require interacting with the environment, add them to `openhands-tools`.
+Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
 from openhands.sdk.tool.builtins.finish import (

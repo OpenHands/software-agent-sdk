@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -13,8 +13,8 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
+    ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
-    StartACPConversationRequest as StartACPConversationRequest,
     StartConversationRequest as StartConversationRequest,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -38,7 +38,6 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     OpenHandsModel,
@@ -75,15 +74,17 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(StartConversationRequest):
+class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 
-    Extends StartConversationRequest with server-assigned fields.
+    Extends :class:`ConversationConfig` (the agent-less shared config) with
+    server-assigned fields. It deliberately does NOT carry the ``agent``: the
+    single source of truth for the agent / runtime state is
+    ``ConversationState`` persisted to ``base_state.json``. Because
+    ``StoredConversation`` is not a ``StartConversationRequest``, the agent
+    cannot silently re-appear in ``meta.json``.
     """
 
-    # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
-    # the persistence payload so it does not re-appear in meta.json.
-    agent_profile_id: UUID | None = Field(default=None, exclude=True)
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
 
     id: OpenHandsUUID
@@ -390,36 +391,6 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
         update={"agent_context": trimmed_agent_context}
     )
     return info.model_copy(update={"agent": trimmed_agent})
-
-
-# Deprecated compatibility aliases for the old ACP-specific response names.
-# Keep runtime assignment aliases so existing imports still resolve to the
-# canonical Pydantic models; PEP 695 ``type`` aliases would not preserve that.
-if TYPE_CHECKING:
-    ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
-    ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
-
-
-_DEPRECATED_ACP_RESPONSE_ALIASES: dict[str, type[BaseModel]] = {
-    "ACPConversationInfo": ConversationInfo,
-    "ACPConversationPage": ConversationPage,
-}
-
-
-def __getattr__(name: str) -> Any:
-    if name in _DEPRECATED_ACP_RESPONSE_ALIASES:
-        warn_deprecated(
-            f"openhands.agent_server.models.{name}",
-            deprecated_in="1.36.0",
-            removed_in="1.41.0",
-            details=(
-                "The ACP-specific response model names are compatibility aliases. "
-                "Use ConversationInfo or ConversationPage instead."
-            ),
-            stacklevel=2,
-        )
-        return _DEPRECATED_ACP_RESPONSE_ALIASES[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ConfirmationResponseRequest(BaseModel):

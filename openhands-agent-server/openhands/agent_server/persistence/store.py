@@ -29,9 +29,11 @@ from openhands.agent_server.persistence.models import (
     Secrets,
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 # fcntl is Unix-only; on Windows, use msvcrt for file locking
@@ -372,7 +374,7 @@ class FileSettingsStore(SettingsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if settings.llm_api_key_is_set:
+            if settings.has_any_secret:
                 logger.warning(
                     "Saving settings with secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
@@ -541,7 +543,7 @@ class FileSecretsStore(SecretsStore):
         else:
             context = {"expose_secrets": "plaintext"}
             # Warn about plaintext secret storage (only if secrets exist)
-            if secrets.custom_secrets:
+            if secrets.has_any_secret:
                 logger.warning(
                     "Saving secrets in PLAINTEXT (no cipher configured). "
                     "Configure OH_SECRET_KEY for production deployments."
@@ -790,6 +792,7 @@ class FileWorkspacesStore(WorkspacesStore):
 
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
+_provider_connections_store: ProviderConnectionStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
 _llm_profile_store: LLMProfileStore | None = None
 _agent_profile_store: AgentProfileStore | None = None
@@ -798,16 +801,13 @@ _store_lock = threading.Lock()
 
 def _get_persistence_dir(config: Config | None = None) -> Path:
     """Get the persistence directory from config or default."""
-    # Check environment variable first
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    if env_dir:
-        return Path(env_dir)
-
-    # Use config's conversations_path parent if available
-    if config is not None:
-        return config.conversations_path.parent / ".openhands"
-
-    return DEFAULT_PERSISTENCE_DIR
+    # Absent OH_PERSISTENCE_DIR, fall back to config's conversations_path parent.
+    default = (
+        config.conversations_path.parent / ".openhands"
+        if config is not None
+        else DEFAULT_PERSISTENCE_DIR
+    )
+    return get_user_persistence_dir(default)
 
 
 def _get_profile_persistence_dir() -> Path:
@@ -818,10 +818,7 @@ def _get_profile_persistence_dir() -> Path:
     rather than the workspace-relative agent-server default, keeping bare
     local profile secrets in the expected user config directory.
     """
-    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
-    if env_dir:
-        return Path(env_dir)
-    return Path.home() / ".openhands"
+    return get_user_persistence_dir()
 
 
 def _get_cipher(config: Config | None = None) -> Cipher | None:
@@ -895,6 +892,27 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
         return _secrets_store
 
 
+def get_provider_connections_store(
+    config: Config | None = None,  # noqa: ARG001
+) -> ProviderConnectionStore:
+    """Get the global provider connections store instance (thread-safe).
+
+    Stored at ``<dir>/provider-connections`` alongside ``profiles`` /
+    ``agent-profiles``. The store itself is cipher-agnostic; callers pass the
+    request cipher per call so keys are encrypted at rest.
+    """
+    global _provider_connections_store
+    if _provider_connections_store is not None:
+        return _provider_connections_store
+
+    with _store_lock:
+        if _provider_connections_store is None:
+            _provider_connections_store = ProviderConnectionStore(
+                base_dir=_get_profile_persistence_dir() / "provider-connections",
+            )
+        return _provider_connections_store
+
+
 def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
     """Get the global workspaces store instance (thread-safe).
 
@@ -927,10 +945,15 @@ def get_llm_profile_store() -> LLMProfileStore:
     if _llm_profile_store is not None:
         return _llm_profile_store
 
+    # Resolve the provider store first: it takes ``_store_lock`` itself, and
+    # ``_store_lock`` is non-reentrant, so calling it while already holding the
+    # lock below would deadlock.
+    provider_store = get_provider_connections_store()
     with _store_lock:
         if _llm_profile_store is None:
             _llm_profile_store = LLMProfileStore(
                 base_dir=_get_profile_persistence_dir() / "profiles",
+                provider_store=provider_store,
             )
         return _llm_profile_store
 
@@ -956,11 +979,12 @@ def get_agent_profile_store() -> AgentProfileStore:
 
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
-    global _settings_store, _secrets_store, _workspaces_store
-    global _llm_profile_store, _agent_profile_store
+    global _settings_store, _secrets_store, _provider_connections_store
+    global _workspaces_store, _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
+        _provider_connections_store = None
         _workspaces_store = None
         _llm_profile_store = None
         _agent_profile_store = None

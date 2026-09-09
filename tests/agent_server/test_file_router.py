@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -165,6 +166,108 @@ def test_download_file_query_param_directory_fails(client, tmp_path):
 def test_download_file_query_param_missing_path(client):
     """Test that download without path parameter returns 422."""
     response = client.get("/api/file/download")
+
+    assert response.status_code == 422
+
+
+# =============================================================================
+# Create Directory Tests - POST /api/file/create_directory
+# =============================================================================
+
+
+def test_create_directory_success(client, tmp_path):
+    """Test successful directory creation."""
+    target_path = tmp_path / "new_directory"
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert target_path.is_dir()
+
+
+def test_create_directory_creates_missing_parents(client, tmp_path):
+    """Test that intermediate directories are created."""
+    target_path = tmp_path / "parent" / "child" / "grandchild"
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 200
+    assert target_path.is_dir()
+
+
+def test_create_directory_existing_directory_succeeds(client, tmp_path):
+    """Test that creating an existing directory is idempotent."""
+    target_path = tmp_path / "already_here"
+    target_path.mkdir()
+    (target_path / "keep.txt").write_text("untouched")
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert (target_path / "keep.txt").read_text() == "untouched"
+
+
+def test_create_directory_relative_path_fails(client):
+    """Test that creating with a relative path returns 400."""
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": "relative/path/dir"},
+    )
+
+    assert response.status_code == 400
+    assert "must be absolute" in response.json()["detail"]
+
+
+def test_create_directory_existing_file_fails(client, tmp_path):
+    """Test that creating over an existing file returns 400, not 500."""
+    target_path = tmp_path / "a_file.txt"
+    target_path.write_text("do not clobber me")
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 400
+    assert "not a directory" in response.json()["detail"].lower()
+    assert target_path.read_text() == "do not clobber me"
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses directory write permissions",
+)
+def test_create_directory_permission_denied(client, tmp_path):
+    """Test that an unwritable parent returns 403."""
+    parent = tmp_path / "readonly"
+    parent.mkdir()
+    parent.chmod(0o500)
+    try:
+        response = client.post(
+            "/api/file/create_directory",
+            params={"path": str(parent / "child")},
+        )
+
+        assert response.status_code == 403
+        assert "permission denied" in response.json()["detail"].lower()
+    finally:
+        parent.chmod(0o700)
+
+
+def test_create_directory_missing_path(client):
+    """Test that creating without a path parameter returns 422."""
+    response = client.post("/api/file/create_directory")
 
     assert response.status_code == 422
 

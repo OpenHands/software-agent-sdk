@@ -367,14 +367,14 @@ async def test_direct_conversations_share_rotated_canonical_value(tmp_path) -> N
     workspace = LocalWorkspace(working_dir=tmp_path / "workspace")
 
     first = await service._resolve_credential_bindings(
-        StoredConversation(id=uuid4(), agent=agent, workspace=workspace)
+        StoredConversation(id=uuid4(), workspace=workspace), agent=agent
     )
     first_binding = first["CODEX_AUTH_JSON"]
     initial = await first_binding.load()
     await first_binding.replace(initial.version, "r1")
 
     second = await service._resolve_credential_bindings(
-        StoredConversation(id=uuid4(), agent=agent, workspace=workspace)
+        StoredConversation(id=uuid4(), workspace=workspace), agent=agent
     )
     assert (await second["CODEX_AUTH_JSON"].load()).value == "r1"
 
@@ -571,11 +571,13 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
 
         assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
         assert "KEEP" in event_service.stored.secrets
-        assert event_service.stored.agent.agent_context is not None
-        assert "CODEX_AUTH_JSON" not in (
-            event_service.stored.agent.agent_context.secrets or {}
-        )
-        assert "KEEP" in (event_service.stored.agent.agent_context.secrets or {})
+        # The agent is no longer stored on meta.json; it lives on the live
+        # conversation / base_state.json. Assert the scrub there.
+        assert event_service._conversation is not None
+        live_agent = event_service._conversation.agent
+        assert live_agent.agent_context is not None
+        assert "CODEX_AUTH_JSON" not in (live_agent.agent_context.secrets or {})
+        assert "KEEP" in (live_agent.agent_context.secrets or {})
         assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
         assert "KEEP" in state.secret_registry.secret_sources
         assert state.agent.agent_context is not None
@@ -585,7 +587,8 @@ async def test_managed_start_scrubs_all_durable_credential_copies(tmp_path) -> N
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
         assert "CODEX_AUTH_JSON" not in meta["secrets"]
-        assert "CODEX_AUTH_JSON" not in meta["agent"]["agent_context"]["secrets"]
+        # meta.json no longer carries the agent at all.
+        assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
         assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]
         artifacts = json.dumps(meta) + json.dumps(base_state)
@@ -667,16 +670,17 @@ async def test_late_binding_scrubs_open_uninitialized_conversation(tmp_path) -> 
         assert event_service.credential_bindings["CODEX_AUTH_JSON"] is binding
         assert "CODEX_AUTH_JSON" not in event_service.stored.secrets
         assert "CODEX_AUTH_JSON" not in state.secret_registry.secret_sources
-        assert event_service.stored.agent.agent_context is not None
-        assert "CODEX_AUTH_JSON" not in (
-            event_service.stored.agent.agent_context.secrets or {}
-        )
+        # The agent is on the live conversation / base_state.json, not meta.json.
+        assert event_service._conversation is not None
+        live_agent = event_service._conversation.agent
+        assert live_agent.agent_context is not None
+        assert "CODEX_AUTH_JSON" not in (live_agent.agent_context.secrets or {})
 
         conversation_dir = tmp_path / "conversations" / info.id.hex
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
         assert "CODEX_AUTH_JSON" not in meta["secrets"]
-        assert "CODEX_AUTH_JSON" not in meta["agent"]["agent_context"]["secrets"]
+        assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
         assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]
         durable = json.dumps(meta) + json.dumps(base_state)
@@ -939,7 +943,7 @@ async def test_failed_resume_does_not_retain_plaintext_fallback(
         event_service = service._event_services.pop(info.id)
         await event_service.close()
 
-        async def fail_load(conversation_id):
+        async def fail_load(conversation_id, **kwargs):
             assert conversation_id == info.id
             raise RuntimeError("resume failed")
 
@@ -1090,8 +1094,9 @@ async def test_resume_removes_legacy_persisted_credential(tmp_path) -> None:
         meta = json.loads((conversation_dir / "meta.json").read_text())
         base_state = json.loads((conversation_dir / "base_state.json").read_text())
         assert "CODEX_AUTH_JSON" not in meta["secrets"]
-        assert "CODEX_AUTH_JSON" not in meta["agent"]["agent_context"]["secrets"]
-        assert "KEEP" in meta["agent"]["agent_context"]["secrets"]
+        # meta.json no longer carries the agent; the agent (and its scrubbed
+        # agent_context) lives solely in base_state.json.
+        assert "agent" not in meta
         assert "CODEX_AUTH_JSON" not in base_state["agent"]["agent_context"]["secrets"]
         assert "KEEP" in base_state["agent"]["agent_context"]["secrets"]
         assert "CODEX_AUTH_JSON" not in base_state["secret_registry"]["secret_sources"]

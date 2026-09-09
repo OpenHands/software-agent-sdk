@@ -88,6 +88,9 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
             normalized = normalized.removeprefix(prefix)
             break
 
+    if normalized == "kimi-k3":
+        return "moonshot/kimi-k3"
+
     return normalized
 
 
@@ -136,6 +139,10 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-8",
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     "claude-opus-5",
+    # Claude Sonnet 5 supports prompt caching but is not covered by any
+    # "claude-sonnet-4*" entry above; without this, every input token bills
+    # uncached, which cancels the tier's price advantage on agent workloads.
+    "claude-sonnet-5",
     # https://www.anthropic.com/news/claude-fable-5
     "claude-fable-5",
     # Do NOT add Gemini: explicit cache_control markers freeze its cache at the
@@ -217,14 +224,12 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 ]
 
 # Match token -> canonical LiteLLM ID for vision metadata overrides.
-VISION_MODEL_OVERRIDES = {"kimi-k3": "moonshot/kimi-k3"}
+VISION_MODEL_OVERRIDES: dict[str, str] = {}
 
 
 @cache
 def _model_supports_vision(model: str | None) -> bool:
-    """Return whether LiteLLM or our override list marks the model as visual."""
-    if model and model_matches(model, VISION_MODEL_OVERRIDES.keys()):
-        return True
+    """Return whether LiteLLM marks the model as visual."""
     normalized = _normalize_model_for_litellm(model)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

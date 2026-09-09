@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.condenser import CondensationSummaryEvent
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     AgentErrorEvent,
@@ -18,7 +19,9 @@ from openhands.sdk.llm import (
     ImageContent,
     Message,
     MessageToolCall,
+    ReasoningItemModel,
     TextContent,
+    ThinkingBlock,
 )
 from openhands.sdk.tool import Action, Observation
 
@@ -136,6 +139,85 @@ class TestEventsToMessages:
             "Implement the feature",
             "Relevant project context",
         ]
+
+    def test_user_message_merge_cascades_across_three_events(self):
+        """A merged message stays a plain user turn, so the merge cascades."""
+        first = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="one")]),
+        )
+        second = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="two")]),
+        )
+        third = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="three")]),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [first, second, third])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert [message.role for message in messages] == ["user"]
+        assert [
+            content.text
+            for content in messages[0].content
+            if isinstance(content, TextContent)
+        ] == ["one", "two", "three"]
+
+    def test_user_message_merge_preserves_mixed_content_order(self):
+        """Merged content concatenates in log order, text and images alike."""
+        text_first = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="what is in this image?")]
+            ),
+        )
+        image_second = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[ImageContent(image_urls=["http://example.com/a.png"])],
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [text_first, image_second])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert len(messages) == 1
+        assert [type(content) for content in messages[0].content] == [
+            TextContent,
+            ImageContent,
+        ]
+
+    def test_condensation_summary_merges_with_adjacent_user_message(self):
+        """A summary event converts to a plain user message, so it coalesces.
+
+        The summarizing condenser inserts the summary where the forgotten
+        block began (summary_offset == forgetting_start), and the kept suffix
+        can legally begin with a user message — so this adjacency is
+        reachable, and the fusion erases the summary's structural boundary.
+        """
+        summary_event = CondensationSummaryEvent(
+            summary="Earlier we refactored the module."
+        )
+        user_after = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="Now continue.")]
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [summary_event, user_after])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert len(messages) == 1
+        assert messages[0].role == "user"
+        assert [
+            content.text
+            for content in messages[0].content
+            if isinstance(content, TextContent)
+        ] == ["Earlier we refactored the module.", "Now continue."]
 
     def test_user_messages_with_tool_call_id_not_merged(self):
         """Tool-result user messages must not be coalesced."""
@@ -320,14 +402,83 @@ class TestEventsToMessages:
         assert len(tool_calls) == 3
 
         # Verify tool call details
-        tool_call_ids = [tc.id for tc in tool_calls]
-        assert "call_SF" in tool_call_ids
-        assert "call_Tokyo" in tool_call_ids
-        assert "call_Paris" in tool_call_ids
+        # Exact sequence, not membership: order within the batch is log order.
+        assert [tc.id for tc in tool_calls] == ["call_SF", "call_Tokyo", "call_Paris"]
 
         # All should be weather function calls
         for tool_call in tool_calls:
             assert tool_call.name == "get_current_weather"
+
+    def test_parallel_batch_preserves_first_event_reasoning(self):
+        """The combined message keeps the first event's reasoning state.
+
+        ThinkingBlock's own docstring requires these blocks be preserved and
+        passed back to the API for tool use scenarios — so a batched message
+        must carry them exactly like a singleton does.
+        """
+        first = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="batching two calls")],
+            reasoning_content="step-by-step reasoning",
+            thinking_blocks=[ThinkingBlock(thinking="let me think", signature="sig-1")],
+            action=EventsToMessagesMockAction(command="one"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=create_tool_call("call_1", "terminal", {"command": "one"}),
+            llm_response_id="response_reasoning",
+        )
+        second = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="two"),
+            tool_name="terminal",
+            tool_call_id="call_2",
+            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
+            llm_response_id="response_reasoning",
+        )
+
+        events = [first, second]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 1
+        combined = messages[0]
+        assert combined.reasoning_content == "step-by-step reasoning"
+        assert len(combined.thinking_blocks) == 1
+        assert combined.thinking_blocks[0].thinking == "let me think"  # type: ignore
+
+    def test_parallel_batch_preserves_responses_reasoning_item(self):
+        """A singleton keeps its responses reasoning item; a batch must too."""
+        first = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="batching two calls")],
+            responses_reasoning_item=ReasoningItemModel(
+                id="rs_1", summary=["reasoned about the batch"]
+            ),
+            action=EventsToMessagesMockAction(command="one"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=create_tool_call("call_1", "terminal", {"command": "one"}),
+            llm_response_id="response_reasoning_item",
+        )
+        second = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="two"),
+            tool_name="terminal",
+            tool_call_id="call_2",
+            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
+            llm_response_id="response_reasoning_item",
+        )
+
+        events = [first, second]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 1
+        combined = messages[0]
+        # Whole-item equality, not just the id — future field loss fails here.
+        assert combined.responses_reasoning_item == ReasoningItemModel(
+            id="rs_1", summary=["reasoned about the batch"]
+        )
 
     def test_multiple_separate_action_events(self):
         """Test multiple ActionEvents with different response_ids (separate calls)."""

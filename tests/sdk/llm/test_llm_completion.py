@@ -1,12 +1,12 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
 import asyncio
-import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deprecation import DeprecatedWarning
 from litellm import ChatCompletionMessageToolCall, CustomStreamWrapper
 from litellm.types.utils import (
     Choices,
@@ -79,179 +79,38 @@ def default_config():
     )
 
 
-def test_litellm_modify_params_context_serializes_threads():
-    first_llm = LLM.model_construct(modify_params=True)
-    second_llm = LLM.model_construct(modify_params=False)
-    original = getattr(llm_module.litellm, "modify_params", None)
+async def test_modify_params_is_process_wide_and_calls_overlap(monkeypatch):
+    active_calls = 0
+    peak_active_calls = 0
+    both_active = asyncio.Event()
 
-    entered_first = threading.Event()
-    release_first = threading.Event()
-    started_second = threading.Event()
-    entered_second = threading.Event()
-    observed: list[tuple[str, bool]] = []
-    errors: list[BaseException] = []
-
-    def run_first():
+    async def completion(**kwargs):
+        nonlocal active_calls, peak_active_calls
+        active_calls += 1
+        peak_active_calls = max(peak_active_calls, active_calls)
+        if active_calls == 2:
+            both_active.set()
         try:
-            with first_llm._litellm_modify_params_ctx(True):
-                observed.append(("first", llm_module.litellm.modify_params))
-                entered_first.set()
-                release_first.wait(timeout=2)
-        except BaseException as exc:
-            errors.append(exc)
+            await asyncio.wait_for(both_active.wait(), timeout=1)
+            assert llm_module.litellm.modify_params is True
+            return create_mock_response()
+        finally:
+            active_calls -= 1
 
-    def run_second():
-        entered_first.wait(timeout=2)
-        started_second.set()
-        try:
-            with second_llm._litellm_modify_params_ctx(False):
-                observed.append(("second", llm_module.litellm.modify_params))
-                entered_second.set()
-        except BaseException as exc:
-            errors.append(exc)
+    monkeypatch.setattr(llm_module, "litellm_acompletion", completion)
+    with pytest.warns(DeprecatedWarning, match="LLM.modify_params"):
+        first = LLM(model="gpt-4o", api_key="test", modify_params=True)
+    with pytest.warns(DeprecatedWarning, match="LLM.modify_params"):
+        second = LLM(model="gpt-4o", api_key="test", modify_params=False)
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    first_thread = threading.Thread(target=run_first)
-    second_thread = threading.Thread(target=run_second)
-    try:
-        first_thread.start()
-        assert entered_first.wait(timeout=2)
+    await asyncio.gather(
+        first.acompletion(messages),
+        second.acompletion(messages),
+    )
 
-        second_thread.start()
-        assert started_second.wait(timeout=2)
-        assert not entered_second.wait(timeout=0.2)
-
-        release_first.set()
-        first_thread.join(timeout=2)
-        second_thread.join(timeout=2)
-    finally:
-        release_first.set()
-        llm_module.litellm.modify_params = original
-
-    assert not first_thread.is_alive()
-    assert not second_thread.is_alive()
-    assert errors == []
-    assert observed == [("first", True), ("second", False)]
-    assert llm_module.litellm.modify_params == original
-
-
-class _CountingLock:
-    """threading.Lock wrapper that counts successful acquires/releases.
-
-    Lets a test deterministically wait for a release that happens on a
-    different thread than the one that acquired -- here, the release scheduled
-    by the async guard's cancellation done-callback.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._counter_lock = threading.Lock()
-        self.acquired = 0
-        self.released = 0
-
-    def acquire(self, *args, **kwargs) -> bool:
-        got = self._lock.acquire(*args, **kwargs)
-        if got:
-            with self._counter_lock:
-                self.acquired += 1
-        return got
-
-    def release(self) -> None:
-        self._lock.release()
-        with self._counter_lock:
-            self.released += 1
-
-    def locked(self) -> bool:
-        return self._lock.locked()
-
-
-async def _await_condition(pred, timeout: float = 2.0) -> bool:
-    """Poll ``pred`` off-loop-friendly: yields so scheduled callbacks run."""
-    for _ in range(int(timeout / 0.01)):
-        if pred():
-            return True
-        await asyncio.sleep(0.01)
-    return pred()
-
-
-async def test_alitellm_modify_params_ctx_releases_lock_on_cancel(monkeypatch):
-    """Regression: cancelling the async modify-params guard while it waits for
-    the lock must not leak the lock.
-
-    The acquire runs on an uninterruptible worker thread, so it still takes the
-    lock after the coroutine is cancelled. If that acquisition is not released,
-    every subsequent LLM call in the process wedges forever -- worse than the
-    freeze this guard was added to fix.
-    """
-    # Isolate from the process-wide class lock so a regression here cannot
-    # wedge the rest of the suite.
-    lock = _CountingLock()
-    monkeypatch.setattr(LLM, "_litellm_modify_params_lock", lock)
-    llm = LLM.model_construct(modify_params=True)
-
-    # Simulate a concurrent *sync* holder (condenser / non-async agent step)
-    # that owns the lock for the whole round trip.
-    assert lock.acquire()
-
-    async def enter_guard():
-        async with llm._alitellm_modify_params_ctx(True):
-            pass  # never reached while the sync holder owns the lock
-
-    task = asyncio.ensure_future(enter_guard())
-    # Let the coroutine reach the blocking acquire() on the worker thread.
-    await asyncio.sleep(0.1)
-    assert not task.done()
-
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    # Release the sync holder so the (uninterruptible) worker-thread acquire
-    # can now complete -- this is what would leak the lock without the fix.
-    lock.release()
-
-    # The worker acquire completes (acquired == 2); the done-callback must then
-    # release it (released == 2). Poll deterministically on the counters rather
-    # than racing the callback for the lock's state.
-    settled = await _await_condition(lambda: lock.acquired >= 2 and lock.released >= 2)
-    assert settled, "cancelled acquire never released the lock (leak)"
-    assert not lock.locked(), "modify_params lock left held after cancellation"
-
-
-async def test_alitellm_modify_params_ctx_waits_off_event_loop(monkeypatch):
-    """The async guard must wait for the lock off the event-loop thread.
-
-    While a concurrent sync holder owns the lock, entering the guard must not
-    freeze the loop: a heartbeat coroutine keeps ticking, and the guard only
-    proceeds once the holder releases.
-    """
-    lock = threading.Lock()
-    monkeypatch.setattr(LLM, "_litellm_modify_params_lock", lock)
-    llm = LLM.model_construct(modify_params=True)
-
-    assert lock.acquire()  # sync holder
-
-    entered = asyncio.Event()
-
-    async def enter_guard():
-        async with llm._alitellm_modify_params_ctx(True):
-            entered.set()
-
-    task = asyncio.ensure_future(enter_guard())
-
-    # The loop stays responsive while the guard blocks on the held lock.
-    ticks = 0
-    for _ in range(10):
-        await asyncio.sleep(0.01)
-        ticks += 1
-    assert ticks == 10
-    assert not entered.is_set()
-    assert not task.done()
-
-    # Release -> guard acquires, runs its body, and releases cleanly.
-    lock.release()
-    await asyncio.wait_for(task, timeout=2)
-    assert entered.is_set()
-    assert not lock.locked()
+    assert peak_active_calls == 2
+    assert llm_module.litellm.modify_params is True
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

@@ -4,6 +4,9 @@ import pytest
 
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.manager import HookManager
+from openhands.sdk.hooks.types import HookDecision
+from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.testing import TestLLM
 from tests.command_utils import python_command, sleep_command, touch_command
 
 
@@ -161,6 +164,74 @@ class TestHookManager:
         # Not blocked
         results = [HookResult(success=True)]
         assert manager.get_blocking_reason(results) is None
+
+
+def _prompt_decision(decision: str, reason: str) -> Message:
+    return Message(
+        role="assistant",
+        content=[
+            TextContent(text=f'{{"decision": "{decision}", "reason": "{reason}"}}')
+        ],
+    )
+
+
+def test_pre_tool_use_prompt_deny_blocks(tmp_path):
+    config = HookConfig.from_dict(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "BashTool",
+                        "hooks": [
+                            {
+                                "type": "prompt",
+                                "prompt": "Block destructive commands",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    )
+    llm = TestLLM.from_messages([_prompt_decision("deny", "Destructive command")])
+    manager = HookManager(config=config, working_dir=str(tmp_path), llm=llm)
+
+    should_continue, results = manager.run_pre_tool_use(
+        "BashTool", {"command": "rm -rf build"}
+    )
+
+    assert not should_continue
+    assert len(results) == 1
+    assert results[0].decision == HookDecision.DENY
+    assert results[0].reason == "Destructive command"
+
+
+def test_stop_prompt_deny_keeps_agent_running(tmp_path):
+    config = HookConfig.from_dict(
+        {
+            "hooks": {
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "prompt",
+                                "prompt": "Require every requested task to be complete",
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    )
+    llm = TestLLM.from_messages([_prompt_decision("deny", "Task is incomplete")])
+    manager = HookManager(config=config, working_dir=str(tmp_path), llm=llm)
+
+    should_stop, results = manager.run_stop(reason="Agent requested finish")
+
+    assert not should_stop
+    assert len(results) == 1
+    assert results[0].blocked
+    assert results[0].reason == "Task is incomplete"
 
 
 class TestAsyncHookManager:

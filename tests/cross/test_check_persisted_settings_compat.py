@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
@@ -55,6 +55,16 @@ class _AdditiveSettings(BaseModel):
     items: list[_AdditiveItem]
 
 
+class _LegacyAgentProfileWithoutSkills(BaseModel):
+    """Simulates removing a persisted profile field without a version bump."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: int
+    name: str
+    llm_profile_ref: str
+
+
 def _load_and_flatten_mcp_settings(data: Any) -> _FlattenedMCPSettings:
     payload = dict(data)
     payload["schema_version"] = 1
@@ -66,6 +76,12 @@ def _load_and_flatten_mcp_settings(data: Any) -> _FlattenedMCPSettings:
 
 def _load_additive_settings(data: Any) -> _AdditiveSettings:
     return _AdditiveSettings.model_validate(data)
+
+
+def _load_legacy_agent_profile_without_skills(
+    data: Any,
+) -> _LegacyAgentProfileWithoutSkills:
+    return _LegacyAgentProfileWithoutSkills.model_validate(data)
 
 
 _SHAPE_CHANGING_SURFACE = SurfaceConfig(
@@ -81,6 +97,14 @@ _ADDITIVE_SURFACE = SurfaceConfig(
     display_name="AgentSettings",
     current_version=1,
     loader=_load_additive_settings,
+    migration_guidance="Bump the schema version and add a migration.",
+)
+
+_PROFILE_SHAPE_CHANGING_SURFACE = SurfaceConfig(
+    key="agent_profile",
+    display_name="AgentProfile",
+    current_version=1,
+    loader=_load_legacy_agent_profile_without_skills,
     migration_guidance="Bump the schema version and add a migration.",
 )
 
@@ -114,6 +138,7 @@ def test_collect_fixture_cases_and_validate_current_repo_fixtures() -> None:
 
     assert versions_by_surface == {
         "agent_settings": {1, 2, 3, 4, 5},
+        "agent_profile": {1, 2},
         "conversation_settings": {1},
         "persisted_settings": {1, 2},
     }
@@ -283,6 +308,31 @@ def test_validate_baseline_rejects_shape_change_without_version_bump() -> None:
         validate_baseline_payload_cases(
             [case],
             surfaces={"agent_settings": _SHAPE_CHANGING_SURFACE},
+        )
+
+
+def test_validate_baseline_rejects_profile_field_removal_without_version_bump() -> None:
+    case = BaselinePayloadCase(
+        source="PyPI baseline openhands-sdk==1.0.0",
+        key="agent_profile/default",
+        surface_key="agent_profile",
+        payload={
+            "schema_version": 1,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "skills": [],
+        },
+    )
+
+    with pytest.raises(
+        PersistedSettingsCompatError,
+        match=(
+            "did not preserve persisted field 'skills' without advancing "
+            "schema_version 1"
+        ),
+    ):
+        validate_baseline_payload_cases(
+            [case], surfaces={"agent_profile": _PROFILE_SHAPE_CHANGING_SURFACE}
         )
 
 

@@ -104,7 +104,10 @@ async def build_telemetry_sink(config: Config) -> TelemetrySink:
 
     spec = config.telemetry
     _event_factory = DiagnosticEventFactory(
-        runtime=build_runtime_properties(deferred_init=config.deferred_init),
+        runtime=build_runtime_properties(
+            deferred_init=config.deferred_init,
+            deployment_kind=spec.deployment_kind,
+        ),
         salt=(
             spec.salt.get_secret_value()
             if spec.salt is not None

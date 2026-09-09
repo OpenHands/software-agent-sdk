@@ -1,6 +1,7 @@
 """Utility functions for MCP integration."""
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
@@ -46,6 +47,7 @@ class MCPToolProvider(Protocol):
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient: ...
 
 
@@ -58,8 +60,31 @@ class DefaultMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: ToolsChangedCallback | None = None,
+        on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
-        return create_mcp_tools(mcp_config, timeout, on_tools_changed=on_tools_changed)
+        return create_mcp_tools(
+            mcp_config,
+            timeout,
+            on_tools_changed=on_tools_changed,
+            on_tools_reconciled=on_tools_reconciled,
+        )
+
+
+def provider_supports_on_tools_reconciled(provider: MCPToolProvider) -> bool:
+    """Whether ``provider.create_tools`` accepts ``on_tools_reconciled``.
+
+    Custom ``MCPToolProvider`` implementations written before this parameter
+    existed only accept ``on_tools_changed``; passing the new keyword to
+    them would raise ``TypeError``. Callers should check this first and omit
+    the keyword for providers that don't support it.
+    """
+    try:
+        params = inspect.signature(provider.create_tools).parameters
+    except (TypeError, ValueError):
+        return False
+    return "on_tools_reconciled" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _oauth_auth_from_authentication_config(

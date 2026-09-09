@@ -126,8 +126,9 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     service = ConversationService(conversations_dir=tmp_path)
     service._event_services = {}
 
-    async def capture_start(stored, **_kwargs):
+    async def capture_start(stored, **kwargs):
         captured["stored"] = stored
+        captured["agent"] = kwargs.get("agent")
         return _mock_event_service(state)
 
     with (
@@ -145,10 +146,11 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
         await service.start_conversation(request)
 
     stored = captured["stored"]
-    assert stored.agent.agent_context is not None
-    suffix = stored.agent.agent_context.system_message_suffix
+    agent = captured["agent"]
+    assert agent.agent_context is not None
+    suffix = agent.agent_context.system_message_suffix
     assert suffix == f"PROFILE_BASELINE\n\n{_RUNTIME_SERVICES}"
-    assert [tool.name for tool in stored.agent.tools] == ["canvas_ui_client"]
+    assert [tool.name for tool in agent.tools] == ["canvas_ui_client"]
     assert stored.agent_launch_additions is None
     assert stored.client_tools == [_CANVAS_UI]
     assert stored.tool_module_qualnames == {}
@@ -157,10 +159,11 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     else:
         resolve_profile.assert_not_called()
 
-    restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
-    assert restored.agent.agent_context is not None
-    restored_suffix = restored.agent.agent_context.system_message_suffix
+    restored_agent = type(agent).model_validate(agent.model_dump(mode="json"))
+    assert restored_agent.agent_context is not None
+    restored_suffix = restored_agent.agent_context.system_message_suffix
     assert restored_suffix is not None
     assert restored_suffix.count("<RUNTIME_SERVICES>") == 1
-    assert [tool.name for tool in restored.agent.tools] == ["canvas_ui_client"]
+    assert [tool.name for tool in restored_agent.tools] == ["canvas_ui_client"]
+    restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.client_tools == [_CANVAS_UI]

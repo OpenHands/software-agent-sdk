@@ -52,13 +52,14 @@ def profile_store(tmp_path, monkeypatch):
     return store
 
 
-def _make_conversation() -> LocalConversation:
+def _make_conversation(profile_store_dir: Path | None = None) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
             llm=_make_llm("default-model", "test-llm"),
             tools=[],
         ),
         workspace=Path.cwd(),
+        profile_store_dir=profile_store_dir,
     )
 
 
@@ -265,6 +266,17 @@ def test_switch_profile(profile_store):
     assert conv.agent.llm.model == "fast-model"
     conv.switch_profile("slow")
     assert conv.agent.llm.model == "slow-model"
+
+
+def test_switch_profile_uses_custom_profile_store(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(profile_dir)
+    store.save("fast", _make_llm("fast-model", "fast"))
+
+    conv = _make_conversation(profile_store_dir=profile_dir)
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model"
 
 
 def test_switch_profile_updates_state(profile_store):
@@ -692,7 +704,7 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     assert conv.agent.llm.model == "fast-model"
 
 
-def test_switch_llm_to_subscription_profile_disables_condenser(
+def test_switch_llm_to_subscription_profile_keeps_condenser(
     monkeypatch, empty_profile_store
 ):
     import openhands.sdk.conversation.impl.local_conversation as local_conversation
@@ -734,8 +746,10 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     )
 
     assert conv.agent.llm.is_subscription
-    assert conv.agent.condenser is None
-    assert conv.state.agent.condenser is None
+    # Condenser must NOT be disabled for subscription LLMs — the condenser's
+    # own LLM config differs from the agent's, so it is preserved as-is.
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
 
     conv.switch_llm(_make_llm("regular-model", "regular"))
 

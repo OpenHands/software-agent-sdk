@@ -461,9 +461,16 @@ class RemoteEventsList(EventsListBase):
             if event.id not in self._cached_event_ids:
                 self._add_event_unsafe(event)
 
-    def append(self, event: Event) -> None:
-        """Add a new event to the list (for compatibility with EventLog interface)."""
+    def append(self, event: Event) -> int:
+        """Add a new event to the list (for compatibility with EventLog interface).
+
+        Unlike ``EventLog``, this cache orders by event timestamp (not call
+        order) and merges some ACP pairs in place, so there is no per-event
+        sequence number to hand back. Returns the cache's length after the
+        write, only to satisfy ``EventsListBase``.
+        """
         self.add_event(event)
+        return len(self._cached_events) - 1
 
     def create_default_callback(self) -> ConversationCallbackType:
         """Create a default callback that adds events to this list."""
@@ -583,18 +590,6 @@ class RemoteState(ConversationStateProtocol):
                 "execution_status missing in conversation info: " + str(info)
             )
         return ConversationExecutionStatus(status_str)
-
-    @execution_status.setter
-    def execution_status(self, value: ConversationExecutionStatus) -> None:
-        """Set execution status is No-OP for RemoteConversation.
-
-        # For remote conversations, execution status is managed server-side
-        # This setter is provided for test compatibility but doesn't actually change remote state  # noqa: E501
-        """  # noqa: E501
-        raise NotImplementedError(
-            f"Setting execution_status on RemoteState has no effect. "
-            f"Remote execution status is managed server-side. Attempted to set: {value}"
-        )
 
     @property
     def confirmation_policy(self) -> ConfirmationPolicyBase:
@@ -1159,6 +1154,7 @@ class RemoteConversation(BaseConversation):
         # subscription snapshot from being mistaken for the post-run snapshot.
         self._run_armed.clear()
         self._drain_terminal_status_queue()
+        run_start_event_count = len(self._state.events)
 
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -1184,7 +1180,9 @@ class RemoteConversation(BaseConversation):
             # after the run was triggered are treated as run-completion signals.
             self._run_armed.set()
             try:
-                self._wait_for_run_completion(poll_interval, timeout)
+                self._wait_for_run_completion(
+                    poll_interval, timeout, run_start_event_count
+                )
             finally:
                 self._run_armed.clear()
 
@@ -1192,6 +1190,7 @@ class RemoteConversation(BaseConversation):
         self,
         poll_interval: float = 1.0,
         timeout: float = 1800.0,
+        since: int = 0,
     ) -> None:
         """Wait for the conversation run to complete.
 
@@ -1246,7 +1245,7 @@ class RemoteConversation(BaseConversation):
             try:
                 ws_status = self._terminal_status_queue.get(timeout=poll_interval)
                 # Raises ConversationRunError on ERROR/STUCK; no-op otherwise.
-                self._handle_conversation_status(ws_status)
+                self._handle_conversation_status(ws_status, since)
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
@@ -1279,7 +1278,7 @@ class RemoteConversation(BaseConversation):
                 terminal_first_seen_at = None
             else:
                 # Raises ConversationRunError for ERROR/STUCK states
-                self._handle_conversation_status(status)
+                self._handle_conversation_status(status, since)
 
                 if status and ConversationExecutionStatus(status).is_terminal():
                     # ERROR/STUCK have already been handled above. FINISHED from
@@ -1340,15 +1339,20 @@ class RemoteConversation(BaseConversation):
         info = resp.json()
         return info.get("execution_status")
 
-    def _handle_conversation_status(self, status: str | None) -> bool:
+    def _handle_conversation_status(self, status: str | None, since: int = 0) -> bool:
         """Handle non-running statuses; return True if the run is complete."""
         if status == ConversationExecutionStatus.RUNNING.value:
             return False
         if status == ConversationExecutionStatus.ERROR.value:
-            detail = self._get_last_error_detail()
+            self._state.events.reconcile()
+            error = self._get_last_conversation_error(since)
+            detail = (
+                f"{error.code}: {error.detail}".strip(": ")
+                if error
+                else "Remote conversation ended with error"
+            )
             raise ConversationRunError(
-                self._id,
-                RuntimeError(detail or "Remote conversation ended with error"),
+                self._id, RuntimeError(detail), conversation_error=error
             )
         if status == ConversationExecutionStatus.STUCK.value:
             raise ConversationRunError(
@@ -1386,17 +1390,16 @@ class RemoteConversation(BaseConversation):
             return
         raise ConversationRunError(self._id, exc) from exc
 
-    def _get_last_error_detail(self) -> str | None:
-        """Return the most recent ConversationErrorEvent detail, if available."""
+    def _get_last_conversation_error(
+        self, since: int = 0
+    ) -> ConversationErrorEvent | None:
+        """Return the most recent structured conversation error, if available."""
         events = self._state.events
-        for idx in range(len(events) - 1, -1, -1):
+        for idx in range(len(events) - 1, since - 1, -1):
             event = events[idx]
             if isinstance(event, ConversationErrorEvent):
-                detail = event.detail.strip()
-                code = event.code.strip()
-                if detail and code:
-                    return f"{code}: {detail}"
-                return detail or code or None
+                return event
+        return None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}

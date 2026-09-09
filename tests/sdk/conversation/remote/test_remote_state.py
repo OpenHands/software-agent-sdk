@@ -106,24 +106,6 @@ def test_remote_state_execution_status(
     assert state.execution_status == expected
 
 
-def test_remote_state_execution_status_setter_not_implemented(
-    mock_client, conversation_id
-):
-    """Test that setting execution_status raises NotImplementedError."""
-    mock_events_response = Mock()
-    mock_events_response.raise_for_status.return_value = None
-    mock_events_response.json.return_value = {"items": [], "next_page_id": None}
-    mock_client.request.return_value = mock_events_response
-
-    state = RemoteState(mock_client, conversation_id)
-
-    with pytest.raises(
-        NotImplementedError,
-        match="Setting execution_status on RemoteState has no effect",
-    ):
-        state.execution_status = ConversationExecutionStatus.PAUSED
-
-
 def test_remote_state_confirmation_policy(mock_client, conversation_id, mock_agent):
     """Test confirmation_policy property."""
     conversation_info = create_mock_conversation_info(

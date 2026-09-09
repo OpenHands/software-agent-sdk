@@ -31,6 +31,7 @@ from openhands.sdk.tool.builtins import ThinkTool
 class EmptyMCPClient:
     def __init__(self):
         self.tools = []
+        self._tools_reconciled_callback: Any = None
 
 
 class RecordingMCPToolProvider:
@@ -41,7 +42,7 @@ class RecordingMCPToolProvider:
         state_locked: Callable[[], bool] | None = None,
     ):
         self.created = created
-        self.client = client or EmptyMCPClient()
+        self.client: Any = client or EmptyMCPClient()
         self.state_locked = state_locked
 
     def create_tools(
@@ -50,11 +51,13 @@ class RecordingMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         if self.state_locked is None:
             self.created.append(mcp_config)
         else:
             self.created.append((mcp_config, self.state_locked()))
+        self.client._tools_reconciled_callback = on_tools_reconciled
         return cast(MCPClient, self.client)
 
 

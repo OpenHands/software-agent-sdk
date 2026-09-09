@@ -60,6 +60,9 @@ def mock_llm() -> LLM:
     mock_llm.completion.return_value = create_completion_result(
         "Summary of forgotten events"
     )
+    mock_llm.acompletion = AsyncMock(return_value=mock_llm.completion.return_value)
+    mock_llm.uses_responses_api = lambda: False
+    mock_llm.requires_streaming = False
     mock_llm.format_messages_for_llm = lambda messages: messages
 
     # Mock the required attributes that the LLM validator reads
@@ -95,7 +98,9 @@ def mock_llm() -> LLM:
 
     # Helper method to set mock response content
     def set_mock_response_content(content: str):
-        mock_llm.completion.return_value = create_completion_result(content)
+        result = create_completion_result(content)
+        mock_llm.completion.return_value = result
+        mock_llm.acompletion = AsyncMock(return_value=result)
 
     mock_llm.set_mock_response_content = set_mock_response_content
 
@@ -181,6 +186,23 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
 
     # LLM should be called once
     cast(MagicMock, mock_llm.completion).assert_called_once()
+
+
+def test_condense_uses_responses_api_when_required(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=3)
+    cast(Any, mock_llm).set_mock_response_content("Summary from responses")
+    mock_llm.uses_responses_api = lambda: True
+    cast(Any, mock_llm.responses).return_value = cast(
+        Any, mock_llm.completion
+    ).return_value
+
+    view = View.from_events([message_event(f"Event {i}") for i in range(11)])
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary from responses"
+    cast(MagicMock, mock_llm.responses).assert_called_once()
+    cast(MagicMock, mock_llm.completion).assert_not_called()
 
 
 def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
@@ -277,6 +299,7 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     # Prepare a view that triggers condensation
     events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
@@ -307,6 +330,7 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     # Mock get_token_count to return predictable values based on message content length
     def mock_token_count(messages, **_kwargs):
@@ -343,6 +367,61 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
 
     # Verify forgotten events were calculated based on token reduction
     assert len(result.forgotten_event_ids) > 0
+
+
+@pytest.mark.parametrize(
+    ("configured_limit", "agent_limit", "token_count", "expected_trigger"),
+    [(500, 100, 200, True), (100, 500, 200, True), (100, 500, 50, False)],
+)
+def test_token_limit_uses_stricter_configured_or_agent_limit(
+    mock_llm: LLM,
+    configured_limit: int,
+    agent_limit: int,
+    token_count: int,
+    expected_trigger: bool,
+) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=configured_limit, keep_first=2
+    )
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = agent_limit
+    agent_llm.get_token_count.return_value = token_count
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+
+    assert (Reason.TOKENS in reasons) is expected_trigger
+
+
+def test_token_limit_inherits_agent_effective_input_limit(
+    mock_llm: LLM,
+) -> None:
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=1000, keep_first=2)
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = 100
+    agent_llm.get_token_count.return_value = 200
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+
+    assert Reason.TOKENS in reasons
+
+
+def test_token_reduction_uses_agent_effective_input_limit(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=500, keep_first=2
+    )
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = 100
+    agent_llm.get_token_count.return_value = 200
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    forgotten_events, _ = condenser._get_forgotten_events(view, agent_llm=agent_llm)
+
+    assert forgotten_events
 
 
 def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
@@ -405,6 +484,7 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     # Mock get_token_count to return predictable values
     def mock_token_count(messages, **_kwargs):
@@ -453,6 +533,7 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     def mock_token_count(messages, **_kwargs):
         total_chars = 0
@@ -499,6 +580,7 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     def mock_token_count(messages, **_kwargs):
         total_chars = 0

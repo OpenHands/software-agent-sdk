@@ -97,15 +97,6 @@ through JSON (`model_dump` → revalidate), which strips `TestLLM`'s private
 7. **POSIX-only** — the suite uses `psutil.num_fds()`, file locks, bash pipelines,
    and shell builtins. No Windows shims.
 
-### Known-bug xfail markers
-
-Known agent-server bugs are surfaced as `@pytest.mark.xfail(strict=True)` in
-`tests/agent_server/test_*.py` (outside the stress directory). Each marker
-includes a `reason` string with a description and a tracking issue link
-(under [#3117](https://github.com/OpenHands/software-agent-sdk/issues/3117)).
-If a test starts passing (`XPASS`), the bug is fixed and the marker should be
-removed.
-
 ## Live server integration tests
 
 Small endpoint additions or changes to server behaviour should be covered by a

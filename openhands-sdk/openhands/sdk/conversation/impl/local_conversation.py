@@ -72,8 +72,14 @@ from openhands.sdk.mcp.utils import (
     MCPToolProvider,
     ToolsChangedCallback,
     ToolsReconciledCallback,
+    provider_supports_on_tools_reconciled,
 )
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    observe,
+    record_tool_result,
+)
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
@@ -137,11 +143,19 @@ def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bo
     prevents a stale source="agent" event from a prior run from suppressing the error
     event for an unrelated exception in a subsequent run on the same conversation.
     """
+    latest = _latest_conversation_error(events, since)
+    return latest is not None and latest.source == "agent"
+
+
+def _latest_conversation_error(
+    events: Sequence[Event], since: int = 0
+) -> ConversationErrorEvent | None:
+    """Return the latest conversation error emitted during the current run."""
     for i in range(len(events) - 1, since - 1, -1):
         event = events[i]
         if isinstance(event, ConversationErrorEvent):
-            return event.source == "agent"
-    return False
+            return event
+    return None
 
 
 def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
@@ -188,12 +202,11 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
 
     def __init__(
         self,
-        agent: AgentBase,
+        agent: AgentBase | None,
         workspace: str | Path | LocalWorkspace,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
@@ -224,6 +237,7 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        profile_store_dir: str | Path | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -282,6 +296,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+            profile_store_dir: Optional directory containing saved LLM profiles.
+                Defaults to ``~/.openhands/profiles``.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -300,7 +316,6 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
-        self._subscription_disabled_condenser = None
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -313,12 +328,31 @@ class LocalConversation(BaseConversation):
         # or, when resuming a persisted conversation without re-supplying them,
         # from the persisted agent's tool specs — mirroring the server resume
         # path so a fresh process can re-register the dynamic tools.
+        # Client tools are injected into the caller-supplied agent. When
+        # ``agent`` is None the agent is resumed from base_state.json (which
+        # already carries its persisted tool specs), so there is nothing to
+        # inject here — but the ``ClientTool`` classes still need re-registering
+        # from those persisted specs (done below, after the agent is loaded).
         resolved_client_tools = list(client_tools or [])
-        if not resolved_client_tools and persistence_dir is not None:
+        if agent is None and resolved_client_tools:
+            # On resume the client tools are recovered from the persisted agent
+            # (see below), so caller-supplied ``client_tools`` cannot be injected
+            # into a caller-supplied agent — warn rather than drop them silently.
+            logger.warning(
+                "client_tools were passed with agent=None (resume); the "
+                "caller-supplied specs are not re-injected — the conversation's "
+                "client tools are recovered from the persisted agent in "
+                "base_state.json instead, so they remain executable."
+            )
+        if (
+            agent is not None
+            and not resolved_client_tools
+            and persistence_dir is not None
+        ):
             resolved_client_tools = self._recover_persisted_client_tools(
                 persistence_dir, desired_id
             )
-        if resolved_client_tools:
+        if agent is not None and resolved_client_tools:
             from openhands.sdk.tool.client_tool import register_client_tools
 
             client_tool_specs = register_client_tools(resolved_client_tools)
@@ -328,8 +362,6 @@ class LocalConversation(BaseConversation):
             ]
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
-
-        self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
@@ -353,6 +385,27 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+        # base_state.json is the source of truth for the agent. On resume with
+        # ``agent=None`` the state holds the persisted agent; adopt it here so
+        # ``self.agent`` and ``self._state.agent`` are the same object.
+        if agent is None:
+            agent = self._state.agent
+            # The persisted agent carries client-tool ``Tool`` specs, but in a
+            # fresh process the ``ClientTool`` *classes* are absent from the
+            # global registry. Re-register them from the persisted specs so
+            # client tools stay executable on this resume path (the agent-server
+            # also does this via ``stored.client_tools``; this covers direct SDK
+            # ``LocalConversation(agent=None)`` resume). ``register_client_tools``
+            # is idempotent, so a double-register is harmless.
+            from openhands.sdk.tool.client_tool import (
+                extract_client_tool_specs,
+                register_client_tools,
+            )
+
+            recovered_specs = extract_client_tool_specs(agent.tools)
+            if recovered_specs:
+                register_client_tools(recovered_specs)
+        self.agent = agent
 
         self._bind_conversation_context(self.agent.llm)
 
@@ -372,7 +425,14 @@ class LocalConversation(BaseConversation):
                 self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
-        composed_list = callback_list + [_default_callback]
+        # _default_callback (persist) runs before the caller-supplied callbacks
+        # (e.g. a PubSub publish), so no subscriber is told about an event that
+        # is not on disk yet. compose_callbacks' plain for-loop has no
+        # try/except, so if persist raises here, the callbacks after it in the
+        # list never run. The visualizer is prepended below and so still renders
+        # ahead of persist — that is local terminal output, not an announcement
+        # a client can act on.
+        composed_list = [_default_callback] + callback_list
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -394,7 +454,7 @@ class LocalConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Compose the base callback chain (visualizer -> user callbacks -> default)
+        # Compose the base callback chain (visualizer -> default -> user callbacks)
         base_callback = BaseConversation.compose_callbacks(composed_list)
         self._base_callback = base_callback  # Store for _ensure_plugins_loaded
 
@@ -432,7 +492,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
+        self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
@@ -626,6 +686,15 @@ class LocalConversation(BaseConversation):
     @property
     def conversation_stats(self):
         return self._state.stats
+
+    def _latest_acp_prompt_message_id(self) -> str | None:
+        """Id of the most recent ACP prompt message, or None if there is none."""
+        acp_prompt_messages = [
+            event
+            for event in self._state.active_branch()
+            if _is_acp_prompt_message(event)
+        ]
+        return acp_prompt_messages[-1].id if acp_prompt_messages else None
 
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
@@ -1288,12 +1357,18 @@ class LocalConversation(BaseConversation):
         mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
             return []
+        create_kwargs: dict[str, Any] = {"on_tools_changed": on_tools_changed}
+        if provider_supports_on_tools_reconciled(self._mcp_tool_provider):
+            create_kwargs["on_tools_reconciled"] = on_tools_reconciled
+        elif on_tools_reconciled is not None:
+            logger.debug(
+                "%s does not accept on_tools_reconciled; dynamic MCP tool "
+                "removals/updates won't reach the agent for this provider",
+                type(self._mcp_tool_provider).__name__,
+            )
         client = self._mcp_tool_provider.create_tools(
-            mcp_config,
-            _RUNTIME_MCP_TIMEOUT_SECS,
-            on_tools_changed=on_tools_changed,
+            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
         )
-        client._tools_reconciled_callback = on_tools_reconciled
         return list(client.tools)
 
     def _on_mcp_tools_reconciled(
@@ -1601,21 +1676,10 @@ class LocalConversation(BaseConversation):
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
             update: dict[str, object] = {"llm": new_llm}
-            if new_llm.is_subscription:
-                if self.agent.condenser is not None:
-                    self._subscription_disabled_condenser = self.agent.condenser
-                update["condenser"] = None
-            elif (
-                self.agent.condenser is None
-                and self._subscription_disabled_condenser is not None
-            ):
-                update["condenser"] = self._subscription_disabled_condenser
-                self._subscription_disabled_condenser = None
-            else:
-                update["condenser"] = self._condenser_for_switched_llm(
-                    self.agent.llm,
-                    new_llm,
-                )
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
@@ -1779,7 +1843,6 @@ class LocalConversation(BaseConversation):
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
 
-            # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
 
@@ -2002,7 +2065,12 @@ class LocalConversation(BaseConversation):
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         finally:
             self._cancel_token = None
@@ -2180,6 +2248,7 @@ class LocalConversation(BaseConversation):
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
+                        last_user_message_id = self._state.last_user_message_id
                         try:
                             await self.agent.astep(
                                 self,
@@ -2190,6 +2259,59 @@ class LocalConversation(BaseConversation):
                             self._step_holds_state_lock = False
                         iteration += 1
 
+                        # astep releases the state lock for the LLM call, so a
+                        # message can land mid-step with status still RUNNING and
+                        # go unrecorded; without this rescan the loop would break
+                        # (or hang behind a stale pending confirmation) with it
+                        # unread (agent-canvas#1900). Mirrors the ACP branch's
+                        # rescan below. step_finished is captured before this
+                        # rescan can flip status back to RUNNING, so the budget
+                        # carve-out below still sees the step's real outcome.
+                        step_finished = (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        )
+                        step_awaiting_confirmation = (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        )
+                        new_message_arrived = (
+                            self._state.last_user_message_id != last_user_message_id
+                        )
+                        if new_message_arrived and (
+                            step_finished or step_awaiting_confirmation
+                        ):
+                            if step_awaiting_confirmation:
+                                # Reject up front, regardless of whether we
+                                # continue running or go IDLE below: astep()
+                                # executes any pending action it finds as an
+                                # implicit confirmation, so leaving it
+                                # unmatched would let it run on the very next
+                                # call, silently overriding the new message.
+                                logger.info(
+                                    "User message arrived while awaiting "
+                                    "confirmation; rejecting the pending action"
+                                )
+                                self.reject_pending_actions(
+                                    "Superseded by a new user message"
+                                )
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived during final iteration; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            if not step_awaiting_confirmation:
+                                logger.info(
+                                    "User message arrived during step; continuing run"
+                                )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+
                         if (
                             self.state.execution_status
                             == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -2197,10 +2319,7 @@ class LocalConversation(BaseConversation):
                             break
 
                         budget_detail = self._budget_exceeded_detail()
-                        if budget_detail and (
-                            self._state.execution_status
-                            != ConversationExecutionStatus.FINISHED
-                        ):
+                        if budget_detail and not step_finished:
                             self._emit_run_limit_error(
                                 "MaxBudgetReached", budget_detail
                             )
@@ -2237,13 +2356,8 @@ class LocalConversation(BaseConversation):
                 # for each individual mutation.
                 if acp_step_user_message is None:
                     with self._state:
-                        acp_prompt_messages = [
-                            event
-                            for event in self._state.active_branch()
-                            if _is_acp_prompt_message(event)
-                        ]
                         latest_acp_prompt_message_id = (
-                            acp_prompt_messages[-1].id if acp_prompt_messages else None
+                            self._latest_acp_prompt_message_id()
                         )
                         acp_prompt_message_changed = (
                             latest_acp_prompt_message_id is not None
@@ -2335,14 +2449,7 @@ class LocalConversation(BaseConversation):
                         )
                         break
 
-                    acp_prompt_messages = [
-                        event
-                        for event in self._state.active_branch()
-                        if _is_acp_prompt_message(event)
-                    ]
-                    latest_acp_prompt_message_id = (
-                        acp_prompt_messages[-1].id if acp_prompt_messages else None
-                    )
+                    latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
                     acp_prompt_message_changed = (
                         latest_acp_prompt_message_id is not None
                         and latest_acp_prompt_message_id
@@ -2458,7 +2565,12 @@ class LocalConversation(BaseConversation):
                         )
                     )
             raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
+                self._state.id,
+                e,
+                persistence_dir=self._state.persistence_dir,
+                conversation_error=_latest_conversation_error(
+                    self._state.events, _run_start_event_count
+                ),
             ) from e
         finally:
             # A cancelled token must stay observable: interrupted tool calls run
@@ -2473,6 +2585,23 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.confirmation_policy = policy
         logger.info(f"Confirmation policy set to: {policy}")
+
+    def set_token_callbacks(
+        self, token_callbacks: list[ConversationTokenCallbackType] | None
+    ) -> None:
+        """Replace the token-streaming callbacks after construction.
+
+        On resume the agent is unknown at construction time (it is loaded from
+        ``base_state.json``), so a caller may only learn whether the resolved
+        agent can emit token deltas afterwards. Use this to enable or disable
+        token streaming at that point. Passing ``None`` or an empty list
+        disables it.
+        """
+        self._on_token = (
+            BaseConversation.compose_callbacks(token_callbacks)
+            if token_callbacks
+            else None
+        )
 
     def reject_pending_actions(self, reason: str = "User rejected the action") -> None:
         """Reject all pending actions from the agent.
@@ -2503,6 +2632,13 @@ class LocalConversation(BaseConversation):
                     tool_name=action_event.tool_name,
                     tool_call_id=action_event.tool_call_id,
                     rejection_reason=reason,
+                )
+                record_tool_result(
+                    self,
+                    name=extract_action_name(action_event),
+                    tool_call_id=action_event.tool_call_id,
+                    tool_input=action_event.action,
+                    tool_output=rejection_event.to_llm_message(),
                 )
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
@@ -2718,7 +2854,7 @@ class LocalConversation(BaseConversation):
         )
 
         messages = prepare_llm_messages(
-            self.state.view, additional_messages=[user_message]
+            self.state.enforced_view_snapshot(), additional_messages=[user_message]
         )
 
         # Get or create the specialized ask-agent LLM
