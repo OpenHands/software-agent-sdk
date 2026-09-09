@@ -88,6 +88,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        max_budget_per_run: float | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -117,6 +118,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        max_budget_per_run: float | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -146,6 +148,7 @@ class Conversation:
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        max_budget_per_run: float | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -197,6 +200,7 @@ class Conversation:
                 token_callbacks=token_callbacks,
                 hook_config=hook_config,
                 max_iteration_per_run=max_iteration_per_run,
+                max_budget_per_run=max_budget_per_run,
                 stuck_detection=stuck_detection,
                 stuck_detection_thresholds=stuck_detection_thresholds,
                 visualizer=visualizer,
@@ -219,6 +223,7 @@ class Conversation:
             token_callbacks=token_callbacks,
             hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,

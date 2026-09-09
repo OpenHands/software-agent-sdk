@@ -20,6 +20,7 @@ from openhands.sdk.tool.tool import ToolExecutor
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.delegate.definition import DelegateObservation
 from openhands.tools.task.workspace import (
+    SubagentWorkspace,
     SubagentWorkspaceFactory,
     close_workspace,
     enter_workspace,
@@ -250,10 +251,15 @@ class DelegateExecutor(ToolExecutor):
                         factory.definition.max_iteration_per_run
                     )
 
-                workspace = (
+                provisioned = (
                     self._workspace_factory(agent_id, agent_type)
                     if self._workspace_factory is not None
                     else None
+                )
+                workspace = (
+                    provisioned.workspace
+                    if isinstance(provisioned, SubagentWorkspace)
+                    else provisioned
                 )
                 if workspace is not None:
                     if workspace is parent_conversation.state.workspace or any(
