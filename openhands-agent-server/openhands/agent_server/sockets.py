@@ -350,12 +350,26 @@ async def events_socket(
                 data = await websocket.receive_json()
                 if _is_auth_control_message(data):
                     logger.debug(
-                        "ignoring redundant auth control frame: %s",
+                        "websocket_auth_control_received channel=conversation "
+                        "conversation_id=%s redundant=true",
                         conversation_id,
                     )
                     continue
-                logger.info(f"Received message: {conversation_id}")
                 message = Message.model_validate(data)
+                content_types = sorted(
+                    {
+                        getattr(content, "type", type(content).__name__)
+                        for content in message.content
+                    }
+                )
+                logger.info(
+                    "websocket_message_received conversation_id=%s role=%s "
+                    "content_part_count=%d content_types=%s run=true",
+                    conversation_id,
+                    message.role,
+                    len(message.content),
+                    content_types,
+                )
                 await event_service.send_message(message, True)
             except WebSocketDisconnect:
                 logger.info("Event websocket disconnected")
@@ -447,9 +461,18 @@ async def bash_events_socket(
                 # Keep the connection alive and handle any incoming messages
                 data = await websocket.receive_json()
                 if _is_auth_control_message(data):
+                    logger.debug(
+                        "websocket_auth_control_received channel=bash redundant=true"
+                    )
                     continue
-                logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
+                logger.info(
+                    "bash_websocket_request_received command_length=%d "
+                    "has_cwd=%s timeout=%d",
+                    len(request.command),
+                    request.cwd is not None,
+                    request.timeout,
+                )
                 await bash_service.start_bash_command(request)
             except WebSocketDisconnect:
                 logger.info("Bash websocket disconnected")

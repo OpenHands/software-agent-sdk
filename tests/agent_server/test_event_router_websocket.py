@@ -272,11 +272,14 @@ async def test_websocket_general_exception_continues_loop(
 
 @pytest.mark.asyncio
 async def test_websocket_successful_message_processing(
-    mock_websocket, mock_event_service, sample_conversation_id
+    mock_websocket, mock_event_service, sample_conversation_id, caplog
 ):
     """Test successful message processing before disconnect."""
-    message_data = {"role": "user", "content": "Hello"}
+    secret = "ghp_" + "m" * 36
+    message_data = {"role": "user", "content": secret}
     call_count = 0
+
+    caplog.set_level(logging.INFO, logger="openhands.agent_server.sockets")
 
     def side_effect():
         nonlocal call_count
@@ -305,6 +308,11 @@ async def test_websocket_successful_message_processing(
 
     mock_event_service.send_message.assert_called_once()
     assert mock_websocket.receive_json.call_count == 2
+    assert "websocket_message_received" in caplog.text
+    assert f"conversation_id={sample_conversation_id}" in caplog.text
+    assert "role=user" in caplog.text
+    assert "content_part_count=1" in caplog.text
+    assert secret not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -83,9 +85,90 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+LLM_IO_LOGGING_ENV = "OH_LOG_LLM_IO"
 
 
 logger = get_logger(__name__)
+
+
+def _llm_io_logging_enabled() -> bool:
+    return os.getenv(LLM_IO_LOGGING_ENV, "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _tool_names(tools: object) -> list[str]:
+    if not isinstance(tools, list):
+        return []
+    names: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if isinstance(name, str):
+            names.append(name)
+    return names
+
+
+def _log_llm_io(
+    *,
+    conversation_id: UUID,
+    usage_id: str,
+    model_name: str,
+    completion_id: str,
+    log_data: str,
+) -> None:
+    data = json.loads(log_data)
+    common = {
+        "conversation_id": str(conversation_id),
+        "usage_id": usage_id,
+        "model": model_name,
+        "completion_id": completion_id,
+        "api": data.get("llm_path", "chat_completions"),
+    }
+    llm_input = {
+        **common,
+        "messages": data.get("messages"),
+        "instructions": data.get("instructions"),
+        "input": data.get("input"),
+        "tool_names": _tool_names(data.get("tools")),
+    }
+    logger.info(
+        "llm_input %s",
+        json.dumps(llm_input, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    if "error" in data:
+        error = data.get("error")
+        llm_error = {
+            **common,
+            "error": {
+                "type": error.get("type"),
+                "message": error.get("message"),
+            }
+            if isinstance(error, dict)
+            else error,
+            "latency_sec": data.get("latency_sec"),
+        }
+        logger.info(
+            "llm_error %s",
+            json.dumps(llm_error, ensure_ascii=False, separators=(",", ":")),
+        )
+        return
+
+    llm_output = {
+        **common,
+        "response": data.get("response"),
+        "usage": data.get("usage_summary"),
+        "cost": data.get("cost"),
+        "latency_sec": data.get("latency_sec"),
+    }
+    logger.info(
+        "llm_output %s",
+        json.dumps(llm_output, ensure_ascii=False, separators=(",", ":")),
+    )
 
 
 class CredentialBindingActivationTooLate(RuntimeError):
@@ -844,26 +927,46 @@ class EventService:
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
+        log_to_server = _llm_io_logging_enabled()
         for llm in agent.get_all_llms():
-            if not llm.log_completions:
+            log_to_events = llm.log_completions
+            if not log_to_events and not log_to_server:
                 continue
+
+            # Telemetry only captures request context when logging is enabled.
+            # The callback below owns the destination in agent-server mode.
+            llm.telemetry.log_enabled = True
 
             # Capture variables for closure
             usage_id = llm.usage_id
             model_name = llm.model
 
             def log_callback(
-                filename: str, log_data: str, uid=usage_id, model=model_name
+                filename: str,
+                log_data: str,
+                uid=usage_id,
+                model=model_name,
+                emit_event=log_to_events,
+                emit_server_log=log_to_server,
             ) -> None:
                 """Callback to emit LLM completion logs as events."""
                 try:
-                    event = LLMCompletionLogEvent(
-                        filename=filename,
-                        log_data=log_data,
-                        model_name=model,
-                        usage_id=uid,
-                    )
-                    self._emit_event_from_thread(event)
+                    if emit_server_log:
+                        _log_llm_io(
+                            conversation_id=self.stored.id,
+                            usage_id=uid,
+                            model_name=model,
+                            completion_id=filename,
+                            log_data=log_data,
+                        )
+                    if emit_event:
+                        event = LLMCompletionLogEvent(
+                            filename=filename,
+                            log_data=log_data,
+                            model_name=model,
+                            usage_id=uid,
+                        )
+                        self._emit_event_from_thread(event)
                 except Exception:
                     logger.exception("Failed to emit LLM completion log event")
 

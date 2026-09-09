@@ -3376,6 +3376,75 @@ def test_llm_log_callback_swallows_emit_failures(
     assert "Failed to emit LLM completion log event" in caplog.text
 
 
+def test_llm_io_logging_emits_paired_records_without_transport_kwargs(
+    event_service: EventService, caplog, monkeypatch
+) -> None:
+    callbacks = []
+    llm = MagicMock(log_completions=False, usage_id="test-usage", model="gpt-4o")
+    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+    monkeypatch.setenv("OH_LOG_LLM_IO", "true")
+
+    event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+    log_data = json.dumps(
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"name": "terminal", "description": "large schema"}],
+            "kwargs": {"api_key": "must-not-be-logged"},
+            "response": {
+                "id": "response-1",
+                "choices": [{"message": {"content": "hello back"}}],
+            },
+            "usage_summary": {"prompt_tokens": 2, "completion_tokens": 2},
+            "cost": 0.01,
+            "latency_sec": 0.5,
+        }
+    )
+
+    with caplog.at_level("INFO", logger="openhands.agent_server.event_service"):
+        callbacks[0]("completion.json", log_data)
+
+    assert "llm_input" in caplog.text
+    assert "llm_output" in caplog.text
+    assert '"content":"hello"' in caplog.text
+    assert '"content":"hello back"' in caplog.text
+    assert '"tool_names":["terminal"]' in caplog.text
+    assert "must-not-be-logged" not in caplog.text
+    assert llm.telemetry.log_enabled is True
+
+
+def test_llm_io_logging_is_disabled_by_default(event_service: EventService) -> None:
+    llm = MagicMock(log_completions=False, usage_id="test-usage", model="gpt-4o")
+
+    event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+
+    llm.telemetry.set_log_completions_callback.assert_not_called()
+
+
+def test_llm_io_logging_emits_error_record(
+    event_service: EventService, caplog, monkeypatch
+) -> None:
+    callbacks = []
+    llm = MagicMock(log_completions=False, usage_id="test-usage", model="gpt-4o")
+    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+    monkeypatch.setenv("OH_LOG_LLM_IO", "true")
+    event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+
+    log_data = json.dumps(
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "error": {"type": "RuntimeError", "message": "provider failed"},
+            "latency_sec": 0.25,
+        }
+    )
+    with caplog.at_level("INFO", logger="openhands.agent_server.event_service"):
+        callbacks[0]("completion-error.json", log_data)
+
+    assert "llm_input" in caplog.text
+    assert "llm_error" in caplog.text
+    assert "provider failed" in caplog.text
+    assert "llm_output" not in caplog.text
+
+
 def _make_stored(tmp_path: Path) -> StoredConversation:
     return StoredConversation(
         id=uuid4(),

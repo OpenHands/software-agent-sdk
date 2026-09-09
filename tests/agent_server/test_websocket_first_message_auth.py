@@ -383,6 +383,11 @@ async def test_bash_socket_ignores_redundant_auth_before_command(
     request = mock_bash_service.start_bash_command.await_args.args[0]
     assert request.command == "printf queued-command"
     ws.send_json.assert_not_called()
+    assert "bash_websocket_request_received" in caplog.text
+    assert "command_length=21" in caplog.text
+    assert "has_cwd=False" in caplog.text
+    assert "timeout=300" in caplog.text
+    assert request.command not in caplog.text
     assert secret not in caplog.text
 
 
