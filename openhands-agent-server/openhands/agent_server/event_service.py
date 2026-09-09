@@ -1357,6 +1357,17 @@ class EventService:
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
 
+    async def wait_for_run_completion(
+        self, timeout: float | None = None
+    ) -> ConversationExecutionStatus:
+        """Wait for the active run task without cancelling it on timeout."""
+        run_task = self._run_task
+        if run_task is not None:
+            done, _ = await asyncio.wait({run_task}, timeout=timeout)
+            if not done:
+                raise TimeoutError("Conversation run timed out")
+        return await self._get_execution_status()
+
     async def start_goal_loop(
         self,
         objective: str,
