@@ -144,6 +144,14 @@ def test_planning_edit_preserves_inherited_observation_fields():
         assert observation.new_content == "# Plan\nnew line\n"
         assert observation.prev_exist is True
 
+        # The user-visible regression was the missing diff, so assert at that
+        # boundary too: `visualize` falls back to the plain agent observation
+        # unless old_content/new_content are both populated, which is exactly
+        # what the hand-maintained field list dropped.
+        rendered = observation.visualize.plain
+        assert "old line" in rendered and "new line" in rendered, rendered
+        assert plan_path in rendered, rendered
+
 
 def test_planning_observation_keeps_its_own_kind():
     """Carrying the base fields across must not turn it into the base type."""
