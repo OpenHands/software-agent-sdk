@@ -726,6 +726,7 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        require_existing: bool = False,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -736,6 +737,8 @@ class RemoteConversation(BaseConversation):
             plugins: Optional list of plugins to load on the server. Each plugin
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
+            require_existing: Fail if conversation_id is missing or the conversation
+                      no longer exists, instead of creating a new conversation.
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
@@ -764,6 +767,9 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
+        if require_existing and conversation_id is None:
+            raise ValueError("require_existing needs a conversation_id")
+
         # Client tool specs the server already has persisted for this
         # conversation (populated when re-attaching to an existing one). These
         # must be registered locally before the initial event sync so that
@@ -780,6 +786,11 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
+                if require_existing:
+                    raise ValueError(
+                        f"Remote conversation '{conversation_id}' no longer exists; "
+                        "cannot resume the subagent in its original workspace."
+                    )
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
@@ -876,33 +887,40 @@ class RemoteConversation(BaseConversation):
             workspace.register_conversation(str(conversation_id))
 
         assert conversation_id is not None
-        self._initialize_connection(
-            agent=agent,
-            workspace=workspace,
-            conversation_id=conversation_id,
-            callbacks=callbacks,
-            max_iteration_per_run=max_iteration_per_run,
-            client_tools=[*(client_tools or []), *attached_client_tools],
-            visualizer=visualizer,
-        )
+        self.delete_on_close = delete_on_close if should_create else False
+        try:
+            self._initialize_connection(
+                agent=agent,
+                workspace=workspace,
+                conversation_id=conversation_id,
+                callbacks=callbacks,
+                max_iteration_per_run=max_iteration_per_run,
+                client_tools=[*(client_tools or []), *attached_client_tools],
+                visualizer=visualizer,
+            )
 
-        # Initialize secrets if provided
-        if secrets:
-            # Convert dict[str, str] to dict[str, SecretValue]
-            secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
-            self.update_secrets(secret_values)
+            # Initialize secrets if provided
+            if secrets:
+                # Convert dict[str, str] to dict[str, SecretValue]
+                secret_values: dict[str, SecretValue] = {
+                    k: v for k, v in secrets.items()
+                }
+                self.update_secrets(secret_values)
 
-        self._start_observability_span(
-            str(self._id),
-            span_name=observability_span_name,
-            user_id=user_id,
-            metadata=observability_metadata,
-            tags=observability_tags,
-            conversation_tags=tags,
-        )
-        # All hooks (including SessionStart/SessionEnd) are executed server-side.
-        # hook_config is sent in the creation payload.
-        self.delete_on_close = delete_on_close
+            self._start_observability_span(
+                str(self._id),
+                span_name=observability_span_name,
+                user_id=user_id,
+                metadata=observability_metadata,
+                tags=observability_tags,
+                conversation_tags=tags,
+            )
+            # All hooks (including SessionStart/SessionEnd) are executed server-side.
+            # hook_config is sent in the creation payload.
+            self.delete_on_close = delete_on_close
+        except BaseException:
+            self.close()
+            raise
 
     @classmethod
     def create(
@@ -1009,6 +1027,7 @@ class RemoteConversation(BaseConversation):
         self.workspace = workspace
         self._client = workspace.client
         self._cleanup_initiated = False
+        self._ws_client = None
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
 

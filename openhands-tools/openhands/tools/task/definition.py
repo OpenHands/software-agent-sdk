@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.task.impl import TaskExecutor
     from openhands.tools.task.manager import ConfirmationHandler
+    from openhands.tools.task.workspace import SubagentWorkspaceFactory
 
 
 class TaskAction(Action):
@@ -218,6 +219,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         cls,
         conv_state: "ConversationState",  # noqa: ARG003
         confirmation_handler: "ConfirmationHandler | None" = None,
+        workspace_factory: "SubagentWorkspaceFactory | None" = None,
     ) -> list[ToolDefinition]:
         """Create the task tool.
 
@@ -227,6 +229,10 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 confirmation policy requires user approval.  Receives
                 `(task_id, pending_actions)` and must return `True` to
                 approve or `False` to reject.
+            workspace_factory: Optional factory called with (task_id, agent_type).
+                Return a dedicated RemoteWorkspace owned by this manager, or None
+                to run locally. Remote workspaces are retained for task resumes
+                and released when the tool closes.
 
         Returns:
             List containing a single TaskTool.
@@ -245,7 +251,10 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             task_tool_examples=task_tool_examples,
         )
 
-        manager = TaskManager(confirmation_handler=confirmation_handler)
+        manager = TaskManager(
+            confirmation_handler=confirmation_handler,
+            workspace_factory=workspace_factory,
+        )
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []
