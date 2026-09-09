@@ -7,16 +7,19 @@ This package contains the agent-server implementation for the OpenAI-compatible 
 - `service.py` translates Chat Completions and Responses requests into OpenHands
   conversations, waits for completion, and returns OpenAI-shaped responses.
 
-`POST /v1/responses` starts a fresh conversation when `previous_response_id` is
-absent. This is the default, stateless client flow and works with `store: false`.
-Clients that want server-owned continuity can pass the opaque response ID from a
-previous call; each response ID identifies one turn while resolving to the
-underlying OpenHands conversation.
+`POST /v1/responses` implements the stateless client flow: every request starts a
+fresh OpenHands conversation, and clients carry context forward by replaying
+input and output items with `store: false`. `previous_response_id` is rejected
+until the gateway can preserve exact response-turn lineage and branching
+semantics.
 
 Not yet supported on the Responses surface:
 
-- `store: true` is rejected with `400` because this gateway has no server-side
-  persistence and no `GET /v1/responses/{id}` to retrieve a stored response.
+- `previous_response_id` is rejected with `400`; replay input items instead.
+- `store: true` is rejected with `400` because the gateway does not retain a
+  retrievable Responses object or implement `GET /v1/responses/{id}`. The
+  backing OpenHands conversation still follows the agent-server's normal
+  persistence policy, so `store: false` is not a data-retention control.
 - `stream: true` is rejected with `400` (typed streaming events are follow-up
   scope).
 - `tools`, `tool_choice`, and `parallel_tool_calls` are accepted but ignored;
