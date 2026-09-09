@@ -9435,7 +9435,9 @@ class TestACPFileSecretProviderScoping:
         agent = ACPAgent(acp_command=["codex-acp"])
         assert self._names(agent) == {"CODEX_AUTH_JSON"}
 
-    def test_caller_supplied_specs_are_honoured_verbatim(self):
+    def test_specs_outside_the_registry_always_apply(self):
+        """A downstream CLI's spec is owned by no registered provider, so it is
+        never filtered out — whichever harness the conversation runs."""
         from openhands.sdk import ACPFileSecretSpec
 
         custom = ACPFileSecretSpec(
@@ -9447,14 +9449,54 @@ class TestACPFileSecretProviderScoping:
         agent = _make_agent(acp_server="codex", acp_file_secrets=[custom])
         assert self._names(agent) == {"MYCLI_TOKEN_JSON"}
 
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        agent = _make_agent(
+            acp_server="codex",
+            acp_file_secrets=[custom, *default_acp_file_secrets()],
+        )
+        assert self._names(agent) == {"MYCLI_TOKEN_JSON", "CODEX_AUTH_JSON"}
+
+    def test_a_list_persisted_before_a_provider_was_added_still_scopes(self):
+        """The upgrade case. A conversation written when the registry held only
+        Codex and Gemini carries that two-spec list; resumed on a newer SDK it
+        must still scope, which a comparison against today's default could not
+        do — the stored list no longer equals it.
+        """
+        from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+        pre_upgrade = [
+            *ACP_PROVIDERS["codex"].file_secrets,
+            *ACP_PROVIDERS["gemini-cli"].file_secrets,
+        ]
+        agent = _make_agent(acp_server="claude-code", acp_file_secrets=pre_upgrade)
+        assert self._names(agent) == set()
+
+        agent = _make_agent(acp_server="codex", acp_file_secrets=pre_upgrade)
+        assert self._names(agent) == {"CODEX_AUTH_JSON"}
+
+    def test_a_name_several_providers_share_is_kept(self):
+        """``owned_elsewhere`` subtracts the running provider's own names, so a
+        spec two providers both claim is not filtered from either."""
+        from openhands.sdk import ACPFileSecretSpec
+
+        shared = ACPFileSecretSpec(
+            secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            filename="gcloud-credentials.json",
+            env_var="GOOGLE_APPLICATION_CREDENTIALS",
+            subdir="gemini-cli",
+        )
+        agent = _make_agent(acp_server="gemini-cli", acp_file_secrets=[shared])
+        assert self._names(agent) == {"GOOGLE_APPLICATION_CREDENTIALS_JSON"}
+
     def test_empty_specs_stay_empty(self):
         agent = _make_agent(acp_server="codex", acp_file_secrets=[])
         assert self._names(agent) == set()
 
     def test_scoping_survives_a_serialization_round_trip(self):
-        """A resumed conversation must scope too. ``model_fields_set`` marks
-        every field as set after ``model_validate``, so the default is
-        recognised by value rather than by whether it was passed."""
+        """A resumed conversation must scope too — including one written by an
+        older SDK, which ``test_a_list_persisted_before_a_provider_was_added_
+        still_scopes`` covers."""
         agent = _make_agent(acp_server="claude-code")
         restored = ACPAgent.model_validate(agent.model_dump())
         assert self._names(restored) == set()

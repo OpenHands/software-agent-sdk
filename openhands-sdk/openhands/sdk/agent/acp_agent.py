@@ -2590,22 +2590,38 @@ class ACPAgent(AgentBase):
     def _active_file_secrets(self) -> list[ACPFileSecretSpec]:
         """The file-secret specs that apply to the provider this agent runs.
 
-        :attr:`acp_file_secrets` defaults to the union across every registered
-        provider, so without this scoping a harness added upstream would change
-        how an unrelated provider's conversation treats a secret that happens to
-        carry the new reserved name (see #4923).
+        Drops the specs that are *another registered provider's* reserved
+        credential and keeps everything else, so a harness added upstream cannot
+        change how this provider's conversation treats a secret carrying the new
+        reserved name (see #4923). A name several providers share stays: it is
+        this provider's too.
 
-        A caller-supplied list is returned verbatim — that is a deliberate
-        policy, not the built-in default. An unrecognised server also keeps the
-        union, matching :meth:`_strip_conflicting_env`: without an identity we
-        cannot tell whose credential a reserved name belongs to.
+        Deliberately no provenance test. :attr:`acp_file_secrets` defaults to the
+        union across the registry, but a persisted conversation carries whatever
+        that union was when it was written, so comparing against today's default
+        would read an older list as a caller override and silently stop scoping
+        after an upgrade. Filtering by ownership needs no such distinction, and a
+        spec for a CLI outside the registry is owned by nobody and always applies.
+
+        An unrecognised server keeps every spec, matching
+        :meth:`_strip_conflicting_env`: without an identity we cannot tell whose
+        credential a reserved name belongs to.
         """
-        if tuple(self.acp_file_secrets) != default_acp_file_secrets():
-            return list(self.acp_file_secrets)
         provider = self._resolved_provider()
         if provider is None:
             return list(self.acp_file_secrets)
-        return list(provider.file_secrets)
+        own = {spec.secret_name for spec in provider.file_secrets}
+        owned_elsewhere = {
+            spec.secret_name
+            for key, info in ACP_PROVIDERS.items()
+            if key != provider.key
+            for spec in info.file_secrets
+        } - own
+        return [
+            spec
+            for spec in self.acp_file_secrets
+            if spec.secret_name not in owned_elsewhere
+        ]
 
     def _strip_conflicting_env(self, env: dict[str, str]) -> None:
         """Remove env vars that would defeat this provider's own credential.
