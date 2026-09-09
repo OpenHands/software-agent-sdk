@@ -1,5 +1,6 @@
 """HTTP endpoints for managing named LLM configurations (profiles)."""
 
+import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
@@ -305,6 +306,22 @@ async def validate_profile(
     ]
 
     try:
+        # Restore runtime subscription credentials, mirroring ``from_persisted``.
+        # The frontend sends auth_type="subscription" but the OAuth access token
+        # lives in the credential store, not in the serialized LLM config. Without
+        # this, the pre-flight sends api_key=None and fails with
+        # "Incorrect API key provided: None".
+        #
+        # Run the synchronous factory (which may do a network token refresh)
+        # off the event loop and inside the handled path so credential errors
+        # surface as ``valid=False`` instead of a 500.
+        if getattr(llm, "auth_type", None) == "subscription":
+            from openhands.sdk.llm.auth.openai import (
+                create_subscription_llm_from_config,
+            )
+
+            llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
+
         # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
         # async so provider I/O doesn't pin the FastAPI event loop.
         if llm.uses_responses_api():
