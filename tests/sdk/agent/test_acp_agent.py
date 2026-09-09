@@ -7,6 +7,7 @@ import gc
 import json
 import os
 import pathlib
+import sys
 import sysconfig
 import threading
 import time
@@ -249,10 +250,13 @@ class TestGitCheckoutInstall:
         return {
             ("git", "clone"): "clone",
             ("git", "rev-parse"): "verify",
+            ("git", "status"): "clean",
             ("uv", "sync"): "sync",
         }[tuple(command[:2])]
 
-    def _stub_step(self, command, *, resolves_to: str | None = None):
+    def _stub_step(
+        self, command, *, resolves_to: str | None = None, tracked: str | None = None
+    ):
         """A finished subprocess for one install step.
 
         ``git rev-parse`` is answered on stdout because the install refuses to
@@ -264,6 +268,8 @@ class TestGitCheckoutInstall:
         stdout = b""
         if command[:2] == ("git", "rev-parse"):
             stdout = ((resolves_to or self.COMMIT) + "\n").encode()
+        elif command[:2] == ("git", "status"):
+            stdout = (tracked or "").encode()
         process.communicate = AsyncMock(return_value=(stdout, b""))
         return process
 
@@ -294,12 +300,14 @@ class TestGitCheckoutInstall:
         assert [self._label(command) for command, _ in calls] == [
             "clone",
             "verify",
+            "clean",
             "sync",
         ]
         assert calls[-1][0] == ("uv", "sync", "--frozen", "--extra", "acp")
-        assert (checkout / _ACP_CHECKOUT_READY_FILE).read_text() == (
-            f"https://example.test/org/proj@v1.2.3@{self.COMMIT}"
-        )
+        assert json.loads((checkout / _ACP_CHECKOUT_READY_FILE).read_text()) == {
+            "pin": f"https://example.test/org/proj@v1.2.3@{self.COMMIT}",
+            "tracked": "",
+        }
 
     async def test_installs_in_place_rather_than_in_the_staging_clone(self, tmp_path):
         """``uv sync`` writes the venv's absolute path into every console
@@ -307,7 +315,7 @@ class TestGitCheckoutInstall:
         afterwards would exec a path that no longer exists."""
         checkout, calls = await self._prepare(tmp_path)
 
-        (clone_command, _), _verify, (_, sync_cwd) = calls
+        (clone_command, _), _verify, _clean, (_, sync_cwd) = calls
         assert clone_command[-1] != str(checkout), "clone should stage, not land"
         assert sync_cwd == str(checkout), "sync must run at the final path"
 
@@ -318,7 +326,11 @@ class TestGitCheckoutInstall:
         re-running it is how that heals, and re-cloning would be waste."""
         _, calls = await self._prepare(tmp_path, exists=True)
 
-        assert [self._label(command) for command, _ in calls] == ["verify", "sync"]
+        assert [self._label(command) for command, _ in calls] == [
+            "verify",
+            "clean",
+            "sync",
+        ]
 
     async def test_a_throttled_clone_is_retried_and_can_still_succeed(self, tmp_path):
         """GitHub answers a burst against this repository class with HTTP 429,
@@ -357,7 +369,7 @@ class TestGitCheckoutInstall:
         ):
             await _make_agent()._prepare_git_checkout(self._spec(), checkout, {})
 
-        assert calls == ["clone", "clone", "verify", "sync"]
+        assert calls == ["clone", "clone", "verify", "clean", "sync"]
         assert (checkout / _ACP_CHECKOUT_READY_FILE).is_file()
 
     async def test_clone_gives_up_after_the_attempt_budget(self, tmp_path):
@@ -504,23 +516,26 @@ class TestGitCheckoutInstall:
 
         bin_dir = self._bin_dir(agent, tmp_path, self._spec(), calls)
         checkout = bin_dir.parent.parent
-        assert calls == ["clone", "verify", "sync"]
+        assert calls == ["clone", "verify", "clean", "sync"]
         assert bin_dir.parts[-2:] == (
             ".venv",
             PurePath(sysconfig.get_path("scripts", "venv")).name,
         )
 
-        # The marker, not the directory, is what lets the next launch skip it.
+        # The marker, not the directory, is what lets the next launch skip the
+        # install — but not the identity check, which every launch repeats.
+        calls.clear()
         self._bin_dir(agent, tmp_path, self._spec(), calls)
-        assert calls == ["clone", "verify", "sync"], (
-            "a completed install must not re-run"
+        assert calls == ["verify", "clean"], (
+            "a completed install must re-verify, and must not re-install"
         )
 
-        # Remove it and the install runs again — over the existing checkout,
-        # which is how a half-finished one heals.
+        # Remove the marker and the install runs again — over the existing
+        # checkout, which is how a half-finished one heals.
+        calls.clear()
         (checkout / _ACP_CHECKOUT_READY_FILE).unlink()
         self._bin_dir(agent, tmp_path, self._spec(), calls)
-        assert calls == ["clone", "verify", "sync", "verify", "sync"]
+        assert calls == ["verify", "clean", "sync"]
 
     def test_concurrent_installs_are_serialised_and_run_once(self, tmp_path):
         """Two conversations starting together must not both reach `uv sync`.
@@ -540,11 +555,17 @@ class TestGitCheckoutInstall:
 
         async def _fake_exec(*command, cwd, **kwargs):
             nonlocal peak
-            calls.append(self._label(command))
-            running.append(1)
-            peak = max(peak, len(running))
+            label = self._label(command)
+            calls.append(label)
+            # Only the mutating steps have to be exclusive; the identity check
+            # is a read every launch repeats and may legitimately overlap.
+            mutating = label in ("clone", "sync")
+            if mutating:
+                running.append(1)
+                peak = max(peak, len(running))
             await asyncio.sleep(0.02)
-            running.pop()
+            if mutating:
+                running.pop()
             if command[:2] == ("git", "clone"):
                 pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
             return self._stub_step(command)
@@ -574,10 +595,74 @@ class TestGitCheckoutInstall:
         # every real subprocess the rest of the session spawns.
         assert asyncio.create_subprocess_exec is not _fake_exec
         assert peak == 1, "install steps overlapped despite the lock"
-        assert calls == ["clone", "verify", "sync"], (
-            f"install ran more than once: {calls}"
-        )
+        assert calls.count("clone") == 1, f"cloned more than once: {calls}"
+        assert calls.count("sync") == 1, f"synced more than once: {calls}"
+        # Whoever lost the race did not inherit the winner's tree unchecked:
+        # every conversation that did not install verifies before launching.
+        assert calls.count("verify") == 3, f"a launch skipped verification: {calls}"
+        assert calls.count("clean") == 3, f"a launch skipped verification: {calls}"
         assert len(set(results)) == 1
+
+    def test_lock_serialises_on_windows_too(self, tmp_path):
+        """`fcntl` is POSIX-only, and this install path now supports the
+        Windows venv layout — so an unserialised Windows cold start would let
+        two conversations `uv sync` one venv and both flag it complete."""
+        lock_path = tmp_path / "install.lock"
+        taken: list[tuple[int, int]] = []
+
+        class _FakeMsvcrt:
+            LK_NBLCK = 1
+            # Fails once to prove the poll loop retries rather than giving up
+            # the way LK_LOCK's ~10s ceiling would on a minutes-long install.
+            calls = 0
+
+            @staticmethod
+            def locking(fd, mode, nbytes):
+                _FakeMsvcrt.calls += 1
+                if _FakeMsvcrt.calls == 1:
+                    raise OSError("held by another process")
+                taken.append((mode, nbytes))
+
+        with (
+            patch.object(acp_agent_module.sys, "platform", "win32"),
+            patch.dict(sys.modules, {"msvcrt": _FakeMsvcrt}),
+            patch.object(acp_agent_module.time, "sleep", lambda _: None),
+        ):
+            with acp_agent_module._installation_lock(lock_path):
+                pass
+
+        assert taken == [(_FakeMsvcrt.LK_NBLCK, 1)], "no Windows lock was taken"
+        assert _FakeMsvcrt.calls == 2, "the poll loop did not retry"
+
+    def test_lock_gives_up_rather_than_waiting_forever_on_windows(self, tmp_path):
+        """A holder that never finishes must surface, not hang the launch."""
+
+        class _NeverFree:
+            LK_NBLCK = 1
+
+            @staticmethod
+            def locking(fd, mode, nbytes):
+                raise OSError("still held")
+
+        with (
+            patch.object(acp_agent_module.sys, "platform", "win32"),
+            patch.dict(sys.modules, {"msvcrt": _NeverFree}),
+            patch.object(acp_agent_module.time, "sleep", lambda _: None),
+            patch.object(acp_agent_module, "_ACP_CHECKOUT_LOCK_TIMEOUT", 0.0),
+            pytest.raises(RuntimeError, match="Timed out"),
+        ):
+            with acp_agent_module._installation_lock(tmp_path / "install.lock"):
+                pass
+
+    def test_lock_only_degrades_where_neither_primitive_exists(self, tmp_path):
+        """Refusing to launch on an exotic interpreter would be worse than the
+        race, but it is the only case that proceeds unserialised."""
+        with (
+            patch.object(acp_agent_module.sys, "platform", "linux"),
+            patch.dict(sys.modules, {"fcntl": None}),
+        ):
+            with acp_agent_module._installation_lock(tmp_path / "install.lock"):
+                pass
 
     def test_lock_is_rechecked_so_a_dead_holder_does_not_strand_the_install(
         self, tmp_path
@@ -636,6 +721,90 @@ class TestGitCheckoutInstall:
         assert "PATH" in install_env
         assert install_env["UV_CACHE_DIR"].endswith("uv-cache")
         assert install_env["UV_PYTHON_INSTALL_DIR"].endswith("uv-python")
+
+    def test_a_tampered_checkout_is_refused_on_the_warm_path(self, tmp_path):
+        """The cache is shared across a sandbox's conversations and writable by
+        the user their terminals run as, so a completed install is not evidence
+        the tree is still the reviewed source. A launch that would otherwise
+        reuse it must refuse rather than run it with these credentials."""
+        agent = self._agent()
+        calls: list[str] = []
+        bin_dir = self._bin_dir(agent, tmp_path, self._spec(), calls)
+        assert (bin_dir.parent.parent / _ACP_CHECKOUT_READY_FILE).is_file()
+
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+
+        async def _tampered(*command, cwd, **kwargs):
+            # A tracked file edited after install shows up in git status.
+            return self._stub_step(command, tracked=" M hermes/agent.py")
+
+        with (
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_tampered,
+            ),
+            pytest.raises(RuntimeError, match="modified after it was installed"),
+        ):
+            agent._acp_git_checkout_bin(state, self._spec(), {})
+
+    def test_a_checkout_that_is_never_quiet_is_still_launchable(self, tmp_path):
+        """A pristine checkout is not necessarily a clean one, so the baseline
+        is what a launch compares against — not emptiness.
+
+        Hermes ships two paths differing only in case
+        (``contributors/emails/agent@{A,a}gents-Mac-mini.local``); they collide
+        on any case-insensitive filesystem, so one is permanently "modified" on
+        macOS and Windows. Demanding a quiet tree would make the provider
+        unlaunchable on both.
+        """
+        collision = " M contributors/emails/agent@Agents-Mac-mini.local"
+        agent = self._agent()
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+        calls: list[str] = []
+
+        async def _fake_exec(*command, cwd, **kwargs):
+            calls.append(self._label(command))
+            if command[:2] == ("git", "clone"):
+                pathlib.Path(command[-1]).mkdir(parents=True, exist_ok=True)
+            return self._stub_step(command, tracked=collision)
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+            new=_fake_exec,
+        ):
+            bin_dir = agent._acp_git_checkout_bin(state, self._spec(), {})
+            # The install records the collision as the baseline...
+            marker = bin_dir.parent.parent / _ACP_CHECKOUT_READY_FILE
+            assert json.loads(marker.read_text())["tracked"] == collision
+            # ...so a later launch accepts the same tree rather than refusing.
+            calls.clear()
+            assert agent._acp_git_checkout_bin(state, self._spec(), {}) == bin_dir
+
+        assert calls == ["verify", "clean"], "the warm launch skipped verification"
+
+    def test_a_moved_pin_is_refused_on_the_warm_path(self, tmp_path):
+        """Same for the commit itself: the recorded HEAD is re-read every
+        launch, not trusted from install time."""
+        agent = self._agent()
+        bin_dir = self._bin_dir(agent, tmp_path, self._spec(), [])
+        assert (bin_dir.parent.parent / _ACP_CHECKOUT_READY_FILE).is_file()
+
+        state = _make_state(tmp_path)
+        state.persistence_dir = str(tmp_path / "conversations" / "conversation-id")
+
+        async def _moved(*command, cwd, **kwargs):
+            return self._stub_step(command, resolves_to="b" * 40)
+
+        with (
+            patch(
+                "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                new=_moved,
+            ),
+            pytest.raises(RuntimeError, match="source identity mismatch"),
+        ):
+            agent._acp_git_checkout_bin(state, self._spec(), {})
 
     def test_ambient_binary_of_the_same_name_does_not_bypass_the_checkout(
         self, tmp_path
@@ -737,7 +906,9 @@ class TestGitCheckoutInstall:
         second = self._bin_dir(agent, tmp_path, self._spec(ref="v9.9.9"), calls)
 
         assert first != second
-        assert calls == ["clone", "verify", "sync"] * 2, "a new pin needs its own clone"
+        assert calls == ["clone", "verify", "clean", "sync"] * 2, (
+            "a new pin needs its own clone"
+        )
         # Same parent: one directory per pin, side by side.
         assert first.parent.parent.parent == second.parent.parent.parent
 

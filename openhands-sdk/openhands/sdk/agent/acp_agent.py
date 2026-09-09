@@ -25,6 +25,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -194,6 +195,11 @@ _ACP_CHECKOUT_VERIFY_TIMEOUT: Final[float] = 60.0
 # launch command is resolved off PATH rather than by an absolute path — so
 # prepending the wrong one leaves the CLI unfindable after a clean install.
 _VENV_BIN_DIR: Final[str] = "Scripts" if os.name == "nt" else "bin"
+# How long to wait for another conversation's install to release the lock, and
+# how often to retry, on platforms whose lock cannot simply block (Windows).
+# Sized off the install budget: the holder is doing exactly that work.
+_ACP_CHECKOUT_LOCK_TIMEOUT: float = _ACP_CHECKOUT_INSTALL_TIMEOUT * 2
+_ACP_CHECKOUT_LOCK_POLL: Final[float] = 0.5
 # Written into a git-checkout provider's directory once its install finishes.
 # The directory itself cannot carry that signal: the clone exists well before
 # the venv does.
@@ -535,32 +541,90 @@ def _npx_packages(command: list[str]) -> list[str]:
     return []
 
 
-@contextlib.contextmanager
-def _installation_lock(path: Path) -> Generator[None]:
-    """Hold an exclusive advisory lock on ``path`` for the block's duration.
+def _lock_exclusive(fd: int) -> bool:
+    """Take an exclusive inter-process lock on ``fd``, blocking until held.
 
-    Cross-process, and released by the OS if the holder dies — which is why
-    the caller still has to re-check its completion marker inside the block
-    rather than treating the lock as proof the work is unfinished.
+    POSIX and Windows expose different syscalls for this and neither is a
+    superset, so both are wired up rather than one being treated as the
+    platform. ``False`` means this interpreter offers neither, which is the
+    only case the caller may proceed unserialised on.
 
-    ``fcntl`` is POSIX-only. Where it is unavailable the block still runs,
-    unserialised: the agent-server images this guards are Linux, and refusing
-    to launch a provider on the platforms that lack it would be a worse
-    failure than the race.
+    Windows needs the loop: ``LK_LOCK`` gives up after about ten seconds,
+    while the work being guarded is a clone plus a dependency resolve and runs
+    for minutes, so the non-blocking variant is polled instead.
     """
+    if sys.platform == "win32":
+        import msvcrt
+
+        deadline = time.monotonic() + _ACP_CHECKOUT_LOCK_TIMEOUT
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Timed out after {_ACP_CHECKOUT_LOCK_TIMEOUT:.0f}s "
+                        "waiting for another conversation's ACP provider "
+                        "install to finish"
+                    ) from None
+                time.sleep(_ACP_CHECKOUT_LOCK_POLL)
+
     try:
         import fcntl
     except ImportError:
-        logger.debug("No fcntl on this platform; ACP install lock is a no-op")
-        yield
-        return
+        return False
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return True
+
+
+@contextlib.contextmanager
+def _installation_lock(path: Path) -> Generator[None]:
+    """Hold an exclusive inter-process lock on ``path`` for the block's duration.
+
+    Released by the OS if the holder dies — which is why the caller still has
+    to re-check its completion marker inside the block rather than treating
+    the lock as proof the work is unfinished.
+
+    Serialisation is not optional on any platform that can run the install:
+    two conversations reaching ``uv sync`` on one venv leave a half-written
+    environment that both then flag complete. Only an interpreter with neither
+    locking primitive proceeds without it, and it says so loudly.
+    """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if not _lock_exclusive(fd):
+            logger.warning(
+                "No fcntl or msvcrt on this platform; ACP provider install is "
+                "not serialised across conversations sharing this sandbox"
+            )
         yield
     finally:
         os.close(fd)
+
+
+def _ready_marker_payload(
+    marker: Path, spec: ACPGitCheckoutInstallSpec
+) -> dict[str, str] | None:
+    """A usable completion marker for ``spec``, or ``None``.
+
+    ``None`` covers absent, unreadable, malformed, written for another pin, or
+    missing the tracked-file baseline — all of which mean "install again"
+    rather than "launch it anyway", since the baseline is what a later launch
+    checks the tree against.
+    """
+    try:
+        payload = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("pin") != spec.source.pinned:
+        return None
+    if not isinstance(payload.get("tracked"), str):
+        return None
+    return payload
 
 
 def _git_checkout_spec(provider_key: str) -> ACPGitCheckoutInstallSpec | None:
@@ -2766,6 +2830,41 @@ class ACPAgent(AgentBase):
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
 
+        tracked = await self._verify_checkout_identity(spec, checkout_dir, env)
+
+        await self._run_checkout_step(
+            spec.sync_command(), spec.key, env, str(checkout_dir)
+        )
+        (checkout_dir / _ACP_CHECKOUT_READY_FILE).write_text(
+            json.dumps({"pin": spec.source.pinned, "tracked": tracked})
+        )
+
+    async def _verify_checkout_identity(
+        self,
+        spec: ACPGitCheckoutInstallSpec,
+        checkout_dir: Path,
+        env: dict[str, str],
+        expected_tracked: str | None = None,
+    ) -> str:
+        """Confirm ``checkout_dir`` still holds the reviewed source, or raise.
+
+        Run before the install and again before every launch. The cache is
+        shared across the conversations of one sandbox and writable by the
+        same user their terminals run as, so "it was the pinned commit when
+        installed" is not a property that survives on its own — the tree has
+        to answer for itself each time it is about to run with a
+        conversation's credentials.
+
+        A commit hash commits to its whole tree, so ``HEAD`` matching the pin
+        is what makes the source cryptographically the reviewed content. The
+        tracked-file check then catches a worktree edited after checkout,
+        compared against ``expected_tracked`` — the baseline the install
+        recorded — because a pristine checkout is not necessarily a quiet one
+        (see :meth:`ACPGitCheckoutInstallSpec.tracked_status_command`). Pass
+        ``None`` to capture that baseline instead of enforcing it.
+
+        Returns the tracked-file state, for the caller to record.
+        """
         resolved = (
             await self._run_checkout_step(
                 spec.resolved_commit_command(),
@@ -2779,15 +2878,33 @@ class ACPAgent(AgentBase):
             raise RuntimeError(
                 f"ACP provider source identity mismatch for {spec.key}: "
                 f"{spec.source.url} ref {spec.source.ref} is at {resolved!r}, "
-                f"but the catalog pins {spec.source.commit!r}. The ref moved; "
-                "re-verify the upstream release and update the recorded commit "
-                "before this provider can be installed."
+                f"but the catalog pins {spec.source.commit!r}. Either the ref "
+                "moved and the recorded commit needs re-verifying against the "
+                f"upstream release, or {checkout_dir} was modified after it "
+                "was installed."
             )
-
-        await self._run_checkout_step(
-            spec.sync_command(), spec.key, env, str(checkout_dir)
-        )
-        (checkout_dir / _ACP_CHECKOUT_READY_FILE).write_text(spec.source.pinned)
+        # rstrip only the trailing newline: porcelain's leading XY status
+        # columns are part of what is being compared.
+        tracked = (
+            await self._run_checkout_step(
+                spec.tracked_status_command(),
+                spec.key,
+                env,
+                str(checkout_dir),
+                timeout=_ACP_CHECKOUT_VERIFY_TIMEOUT,
+            )
+        ).rstrip("\n")
+        if expected_tracked is not None and tracked != expected_tracked:
+            raise RuntimeError(
+                f"ACP provider checkout for {spec.key} was modified after it "
+                f"was installed: tracked files under {checkout_dir} no longer "
+                f"match the state recorded at install time.\n"
+                f"  recorded: {expected_tracked or '(clean)'}\n"
+                f"  now:      {tracked or '(clean)'}\n"
+                "Refusing to launch it with this conversation's credentials. "
+                "Delete the directory to force a clean reinstall."
+            )
+        return tracked
 
     def _acp_git_checkout_bin(
         self,
@@ -2804,24 +2921,43 @@ class ACPAgent(AgentBase):
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", spec.source.pinned).strip("-")
         checkout_dir = self._acp_package_cache_dir(state, "acp-checkouts") / slug
         marker = checkout_dir / _ACP_CHECKOUT_READY_FILE
-        if marker.is_file():
-            return checkout_dir / ".venv" / _VENV_BIN_DIR
-        # Serialise the whole install across conversations sharing this
-        # sandbox. Staging the clone makes it crash-safe but not concurrent:
-        # two conversations starting together would both reach `uv sync` on
-        # one venv, and both would then write the marker — so a pair of syncs
-        # that trod on each other would leave a broken venv flagged complete.
-        with _installation_lock(checkout_dir.parent / f"{checkout_dir.name}.lock"):
-            if not marker.is_file():
-                self._executor.run_async(
-                    self._prepare_git_checkout(spec, checkout_dir, env),
-                    timeout=(
-                        _ACP_CHECKOUT_INSTALL_TIMEOUT * 2
-                        + _ACP_CHECKOUT_VERIFY_TIMEOUT
-                        + 5
-                    ),
-                )
-        return checkout_dir / ".venv" / _VENV_BIN_DIR
+        bin_dir = checkout_dir / ".venv" / _VENV_BIN_DIR
+        recorded = _ready_marker_payload(marker, spec)
+        if recorded is None:
+            # Serialise the whole install across conversations sharing this
+            # sandbox. Staging the clone makes it crash-safe but not
+            # concurrent: two conversations starting together would both reach
+            # `uv sync` on one venv, and both would then write the marker — so
+            # a pair of syncs that trod on each other would leave a broken venv
+            # flagged complete.
+            lock_path = checkout_dir.parent / f"{checkout_dir.name}.lock"
+            with _installation_lock(lock_path):
+                recorded = _ready_marker_payload(marker, spec)
+                if recorded is None:
+                    self._executor.run_async(
+                        self._prepare_git_checkout(spec, checkout_dir, env),
+                        timeout=(
+                            _ACP_CHECKOUT_INSTALL_TIMEOUT * 2
+                            + _ACP_CHECKOUT_VERIFY_TIMEOUT
+                            + 5
+                        ),
+                    )
+                    # Installed and verified in this call; nothing has had the
+                    # chance to touch it since.
+                    return bin_dir
+        # An install this call did not perform: either a previous launch's, or
+        # one a concurrent conversation just finished. The marker records that
+        # an install completed, not that what it produced is still the reviewed
+        # source — the tree is shared across the sandbox's conversations and
+        # writable by the same user their terminals run as. So it answers for
+        # itself before it gets this conversation's credentials.
+        self._executor.run_async(
+            self._verify_checkout_identity(
+                spec, checkout_dir, env, recorded["tracked"]
+            ),
+            timeout=_ACP_CHECKOUT_VERIFY_TIMEOUT * 2 + 5,
+        )
+        return bin_dir
 
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]

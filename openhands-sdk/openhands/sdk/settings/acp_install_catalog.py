@@ -268,6 +268,22 @@ class ACPGitCheckoutInstallSpec:
         """
         return ("git", "rev-parse", "HEAD")
 
+    def tracked_status_command(self) -> tuple[str, ...]:
+        """Report how tracked files diverge from ``HEAD``, one line each.
+
+        Blind to untracked files on purpose: an editable install leaves build
+        artefacts in the tree, so their presence is expected and only a change
+        to the reviewed content is not.
+
+        Compared against a baseline captured at install time rather than
+        required to be empty, because a clean checkout is not necessarily a
+        quiet one — Hermes carries two paths differing only in case
+        (``contributors/emails/agent@{A,a}gents-Mac-mini.local``) which collide
+        on any case-insensitive filesystem, leaving one permanently "modified"
+        on macOS and Windows.
+        """
+        return ("git", "status", "--porcelain", "--untracked-files=no")
+
     def sync_command(self) -> tuple[str, ...]:
         """Editable install of the checkout, at its own locked versions.
 

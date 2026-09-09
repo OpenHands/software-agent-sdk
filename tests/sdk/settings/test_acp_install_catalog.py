@@ -193,6 +193,16 @@ class TestACPGitCheckoutInstallSpec:
             "HEAD",
         )
 
+    def test_tracked_status_is_blind_to_untracked_files(self):
+        """An editable install leaves its own artefacts in the tree, so only a
+        change to the reviewed content may fail the check."""
+        assert self._spec().tracked_status_command() == (
+            "git",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        )
+
     def test_pin_identity_covers_the_commit_not_just_the_ref(self):
         """The pin string keys the on-disk cache, so a tree installed under a
         moved tag must not be reusable as the reviewed one."""
