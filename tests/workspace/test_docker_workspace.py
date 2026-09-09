@@ -117,16 +117,27 @@ def test_removed_mount_dir_input_fails_loudly():
 
 
 def _start_docker_workspace(**kwargs):
+    docker_env: dict[str, str] = {}
+
+    def execute(cmd):
+        if cmd[:2] == ["docker", "run"]:
+            env_file = Path(cmd[cmd.index("--env-file") + 1])
+            name, value = env_file.read_text().strip().split("=", 1)
+            docker_env[name] = value
+        return Mock(returncode=0, stdout="container_123", stderr="")
+
     with (
         patch(
             "openhands.workspace.docker.workspace.check_port_available",
             return_value=True,
         ),
-        patch("openhands.workspace.docker.workspace.execute_command") as mock_exec,
+        patch(
+            "openhands.workspace.docker.workspace.execute_command",
+            side_effect=execute,
+        ) as mock_exec,
         patch.object(DockerWorkspace, "_wait_for_health"),
         patch("openhands.workspace.docker.workspace.RemoteWorkspace.model_post_init"),
     ):
-        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
         workspace = DockerWorkspace(
             server_image="test:latest",
             host_port=32100,
@@ -139,7 +150,7 @@ def _start_docker_workspace(**kwargs):
             if call.args[0][:2] == ["docker", "run"]
         )
         workspace._container_id = None
-    return workspace, run_cmd
+    return workspace, run_cmd, docker_env
 
 
 @pytest.mark.parametrize(
@@ -150,40 +161,44 @@ def _start_docker_workspace(**kwargs):
     ],
 )
 def test_docker_workspace_binds_host_ports_to_loopback_by_default(
-    monkeypatch, extra_ports, published_ports
+    extra_ports, published_ports
 ):
-    monkeypatch.delenv("SESSION_API_KEY", raising=False)
-    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
-
-    _, run_cmd = _start_docker_workspace(extra_ports=extra_ports)
+    _, run_cmd, _ = _start_docker_workspace(extra_ports=extra_ports)
 
     assert [run_cmd[index + 1] for index, arg in enumerate(run_cmd) if arg == "-p"] == (
         published_ports
     )
 
 
-@pytest.mark.parametrize("api_key", [None, "client-key-only"])
-def test_public_docker_workspace_requires_forwarded_session_api_key(
-    monkeypatch, api_key
-):
-    monkeypatch.delenv("SESSION_API_KEY", raising=False)
-    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+def test_docker_workspace_generates_and_reuses_session_api_key():
+    workspace, run_cmd, docker_env = _start_docker_workspace()
 
-    with pytest.raises(ValidationError, match="public DockerWorkspace"):
-        with patch.object(DockerWorkspace, "_start_container"):
-            DockerWorkspace(server_image="test:latest", public=True, api_key=api_key)
+    assert workspace.api_key
+    assert docker_env == {"OH_SESSION_API_KEYS_0": workspace.api_key}
+    assert workspace._headers == {"X-Session-API-Key": workspace.api_key}
+    env_file = Path(run_cmd[run_cmd.index("--env-file") + 1])
+    assert not env_file.exists()
+    assert workspace.api_key not in run_cmd
 
 
-def test_public_docker_workspace_binds_all_interfaces_with_environment_key(
-    monkeypatch,
-):
-    monkeypatch.setenv("SESSION_API_KEY", "test-session-key")
-    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+def test_docker_workspace_does_not_use_session_key_environment(monkeypatch):
+    monkeypatch.setenv("SESSION_API_KEY", "ambient-legacy-key")
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "ambient-current-key")
 
-    workspace, run_cmd = _start_docker_workspace(public=True)
+    workspace, run_cmd, docker_env = _start_docker_workspace(
+        forward_env=["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"]
+    )
+
+    assert workspace.api_key not in {"ambient-legacy-key", "ambient-current-key"}
+    assert docker_env == {"OH_SESSION_API_KEYS_0": workspace.api_key}
+    assert all("ambient" not in arg for arg in run_cmd)
+
+
+def test_public_docker_workspace_binds_all_interfaces_with_generated_key():
+    workspace, run_cmd, docker_env = _start_docker_workspace(public=True)
 
     assert "0.0.0.0:32100:8000" in run_cmd
-    assert workspace.api_key == "test-session-key"
+    assert docker_env == {"OH_SESSION_API_KEYS_0": workspace.api_key}
 
 
 def test_cleanup_without_image_deletion(mock_docker_workspace):

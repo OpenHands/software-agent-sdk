@@ -1,11 +1,15 @@
 """Docker-based remote workspace implementation."""
 
 import os
+import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from urllib.request import urlopen
 
@@ -17,14 +21,24 @@ from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
 logger = get_logger(__name__)
-_SESSION_API_KEY_ENV_VARS = ("OH_SESSION_API_KEYS_0", "SESSION_API_KEY")
+_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
+_RESERVED_SESSION_API_KEY_ENVS = frozenset({_SESSION_API_KEY_ENV, "SESSION_API_KEY"})
 
 
-def _get_forwarded_session_api_key(forward_env: list[str]) -> str | None:
-    for name in _SESSION_API_KEY_ENV_VARS:
-        if name in forward_env and (value := os.environ.get(name)):
-            return value
-    return None
+@contextmanager
+def _session_api_key_env_file(api_key: str) -> Iterator[str]:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="openhands-docker-env-",
+        delete=False,
+    ) as env_file:
+        env_file.write(f"{_SESSION_API_KEY_ENV}={api_key}\n")
+
+    try:
+        yield env_file.name
+    finally:
+        os.unlink(env_file.name)
 
 
 def check_port_available(port: int) -> bool:
@@ -84,6 +98,13 @@ class DockerWorkspace(RemoteWorkspace):
         default="",
         description=("Remote host URL (set automatically during container startup)."),
     )
+    api_key: str | None = Field(
+        default_factory=lambda: secrets.token_urlsafe(32),
+        description=(
+            "Generated session API key used by the container and all workspace "
+            "connections."
+        ),
+    )
 
     # Docker-specific configuration
     server_image: str | None = Field(
@@ -96,18 +117,11 @@ class DockerWorkspace(RemoteWorkspace):
     )
     public: bool = Field(
         default=False,
-        description=(
-            "Whether to publish container ports on all host interfaces. Public "
-            "workspaces require a session API key."
-        ),
+        description="Whether to publish container ports on all host interfaces.",
     )
     forward_env: list[str] = Field(
-        default_factory=lambda: ["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"],
-        description=(
-            "Environment variables to forward to the container. The session "
-            "API key variables are forwarded so the sandboxed agent server can "
-            "authenticate network-bound requests."
-        ),
+        default_factory=lambda: ["DEBUG"],
+        description="Environment variables to forward to the container.",
     )
     volumes: list[str] = Field(
         default_factory=list,
@@ -163,17 +177,11 @@ class DockerWorkspace(RemoteWorkspace):
             raise ValueError("server_image must be provided")
         return self
 
-    @model_validator(mode="after")
-    def _validate_public_access(self):
-        if self.public and _get_forwarded_session_api_key(self.forward_env) is None:
-            raise ValueError(
-                "A public DockerWorkspace requires a forwarded "
-                "SESSION_API_KEY/OH_SESSION_API_KEYS_0 environment variable."
-            )
-        return self
-
     def model_post_init(self, context: Any) -> None:
         """Set up the Docker container and initialize the remote workspace."""
+        if not self.api_key:
+            object.__setattr__(self, "api_key", secrets.token_urlsafe(32))
+
         # Subclasses should call get_image() to get the image to use
         # This allows them to build or prepare the image before container startup
         image = self.get_image()
@@ -232,6 +240,8 @@ class DockerWorkspace(RemoteWorkspace):
         # Prepare Docker run flags
         flags: list[str] = []
         for key in self.forward_env:
+            if key in _RESERVED_SESSION_API_KEY_ENVS:
+                continue
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
@@ -257,25 +267,29 @@ class DockerWorkspace(RemoteWorkspace):
             flags += ["--network", self.network]
 
         # Run container
-        run_cmd = [
-            "docker",
-            "run",
-            "-d",
-            "--platform",
-            self.platform,
-            "--rm",
-            "--ulimit",
-            "nofile=65536:65536",  # prevent "too many open files" errors
-            "--name",
-            f"agent-server-{uuid.uuid4()}",
-            *flags,
-            image,
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000",
-        ]
-        proc = execute_command(run_cmd)
+        assert self.api_key is not None
+        with _session_api_key_env_file(self.api_key) as session_env_file:
+            run_cmd = [
+                "docker",
+                "run",
+                "-d",
+                "--platform",
+                self.platform,
+                "--rm",
+                "--ulimit",
+                "nofile=65536:65536",  # prevent "too many open files" errors
+                "--name",
+                f"agent-server-{uuid.uuid4()}",
+                "--env-file",
+                session_env_file,
+                *flags,
+                image,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+            ]
+            proc = execute_command(run_cmd)
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to run docker container: {proc.stderr}")
 
@@ -294,12 +308,6 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        if self.api_key is None:
-            object.__setattr__(
-                self,
-                "api_key",
-                _get_forwarded_session_api_key(self.forward_env),
-            )
 
         # Wait for container to be healthy
         self._wait_for_health(timeout=self.health_check_timeout)
