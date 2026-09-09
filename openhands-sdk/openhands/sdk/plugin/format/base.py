@@ -144,6 +144,65 @@ class PluginFormat(ABC):
         )
 
 
+def _read_hooks_config(root: Path) -> HookConfig | None:
+    """Read ``hooks/hooks.json`` under ``root``, or None if it is absent.
+
+    Shared by the concrete strategies: hooks, agents and commands use the same
+    on-disk layout in both formats — only the directory they are rooted at
+    differs (the plugin root for Claude Code, the client-extension directory for
+    Agent Plugins).
+    """
+    hooks_json = root / "hooks" / "hooks.json"
+    if not hooks_json.exists():
+        return None
+
+    try:
+        hook_config = HookConfig.load(path=hooks_json)
+        # A hooks.json that parses but declares no hooks yields an empty config.
+        # Keep that distinct from "file not present" (None). An unparseable or
+        # schema-invalid file raises out of load() and is caught below.
+        if hook_config.is_empty():
+            logger.info(f"No hooks configured in {hooks_json}")
+            return HookConfig()
+        logger.info(f"Loaded hooks from {hooks_json}")
+        return hook_config
+    except Exception as e:
+        logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
+        return None
+
+
+def _read_command_definitions(root: Path) -> list[CommandDefinition]:
+    """Read command definitions from the ``commands/`` directory under ``root``.
+
+    Commands have no counterpart to :func:`load_agents_from_dir`, so this is the
+    one loader of the three the plugin format still owns. It applies the same
+    file predicate, so ``commands/`` and ``agents/`` stay symmetric.
+    """
+    commands_dir = root / "commands"
+    if not commands_dir.is_dir():
+        return []
+
+    commands: list[CommandDefinition] = []
+    for item in sorted(commands_dir.iterdir()):
+        if (
+            not item.is_dir()
+            and item.suffix.lower() == ".md"
+            and item.name
+            not in (
+                "README.md",
+                "readme.md",
+            )
+        ):
+            try:
+                command = CommandDefinition.load(item)
+                commands.append(command)
+                logger.debug(f"Loaded command: {command.name} from {item}")
+            except Exception as e:
+                logger.warning(f"Failed to load command from {item}: {e}")
+
+    return commands
+
+
 def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
     """Load every skill under a plugin's ``skills/`` directory."""
     skills: list[Skill] = []

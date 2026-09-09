@@ -7,6 +7,8 @@ This module tests:
 4. Handling of large numbers of events without OOM
 """
 
+import logging
+import os
 import tempfile
 import time
 
@@ -144,6 +146,30 @@ def test_cache_invalidation_on_delete():
 
         # Cache should be cleared
         assert full_path not in store.cache
+
+
+def test_delete_uncached_file_succeeds_quietly(caplog):
+    """Deleting a file this store never cached is not an error.
+
+    Files written by another process are absent from this store's cache;
+    evicting them must not raise (and be swallowed into an ERROR log).
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        store = LocalFileStore(temp_dir, cache_limit_size=10)
+
+        # Written behind the store's back, as another process would.
+        outside = os.path.join(temp_dir, "outside.txt")
+        with open(outside, "w") as f:
+            f.write("content")
+
+        full_path = store.get_full_path("outside.txt")
+        assert full_path not in store.cache
+
+        with caplog.at_level(logging.ERROR):
+            store.delete("outside.txt")
+
+        assert not os.path.exists(outside)
+        assert "Error clearing local file store" not in caplog.text
 
 
 def test_cache_directory_deletion():
