@@ -106,6 +106,7 @@ def test_build_classifier_prompt_lists_categories() -> None:
     from openhands.sdk.llm.meta_profile_store import MetaProfile
 
     prompt = build_classifier_prompt(MetaProfile.model_validate(META))
+    assert prompt.startswith("You are a model-routing classifier.")
     assert "1. UI / images" in prompt
     assert "2. tests" in prompt
     assert "respond with 0" in prompt.lower()
@@ -134,6 +135,7 @@ def test_render_direct_prompt_replaces_supported_placeholders() -> None:
         "user: add parser tests",
     )
 
+    assert prompt.startswith("You are a model-routing classifier.")
     assert "{{" not in prompt
     assert "- GPT-5.4" in prompt
     assert "user: add parser tests" in prompt

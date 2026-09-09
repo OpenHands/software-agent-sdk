@@ -39,6 +39,8 @@ logger = get_logger(__name__)
 # Number of trailing conversation messages shown to the classifier.
 _RECENT_MESSAGE_LIMIT = 6
 
+_CLASSIFIER_SYSTEM_PREFIX = "You are a model-routing classifier."
+
 
 class ClassifyAndSwitchLLMAction(Action):
     """Trigger classification of the current task and switch the LLM profile."""
@@ -87,8 +89,10 @@ class ClassifyAndSwitchLLMObservation(Observation):
 def build_classifier_prompt(meta: MetaProfile) -> str:
     """Build the classifier system prompt listing the meta-profile classes."""
     lines = [
-        "You are a model-routing classifier. Based on the recent conversation, "
-        "pick the single category that best describes the current task.",
+        _CLASSIFIER_SYSTEM_PREFIX,
+        "",
+        "Based on the recent conversation, pick the single category that best "
+        "describes the current task.",
         "",
         "Categories:",
     ]
@@ -127,7 +131,8 @@ def render_direct_prompt(meta: MetaProfile, instance_text: str) -> str:
     def replace(match: re.Match[str]) -> str:
         return values.get(match.group(1), match.group(0))
 
-    return re.sub(r"{{\s*(instance_text|model_table)\s*}}", replace, prompt).strip()
+    rendered = re.sub(r"{{\s*(instance_text|model_table)\s*}}", replace, prompt).strip()
+    return f"{_CLASSIFIER_SYSTEM_PREFIX}\n\n{rendered}"
 
 
 def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
