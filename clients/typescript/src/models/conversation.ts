@@ -1,0 +1,246 @@
+/**
+ * Conversation-related models and interfaces
+ */
+
+import {
+  ConversationID,
+  ConversationExecutionStatus,
+  AgentExecutionStatus,
+  ConfirmationPolicyBase,
+  ConversationStats,
+  AgentBase,
+  Event,
+  EventPage,
+  Message,
+} from '../types/base';
+import type { HookConfig } from '../hooks';
+import type { LaunchedProfile } from './agent-profile';
+
+export enum ConversationSortOrder {
+  CREATED_AT = 'CREATED_AT',
+  UPDATED_AT = 'UPDATED_AT',
+  CREATED_AT_DESC = 'CREATED_AT_DESC',
+  UPDATED_AT_DESC = 'UPDATED_AT_DESC',
+}
+
+export interface ConversationInfo {
+  id: ConversationID;
+  /**
+   * Current execution status of the conversation.
+   * Note: This field was renamed from agent_status to execution_status in the API.
+   */
+  execution_status: ConversationExecutionStatus;
+  /**
+   * @deprecated Use execution_status instead. This field is kept for backward compatibility.
+   */
+  agent_status?: AgentExecutionStatus;
+  confirmation_policy: ConfirmationPolicyBase;
+  activated_knowledge_skills: string[];
+  invoked_skills?: string[];
+  agent: AgentBase;
+  workspace: unknown;
+  persistence_dir: string;
+  max_iterations?: number;
+  stuck_detection?: boolean;
+  conversation_stats?: ConversationStats;
+  /** API may return stats instead of conversation_stats */
+  stats?: ConversationStats;
+  hook_config?: HookConfig | null;
+  blocked_actions?: Record<string, string>;
+  blocked_messages?: Record<string, string>;
+  title?: string;
+  created_at?: string;
+  updated_at?: string;
+  tags?: Record<string, string>;
+  /**
+   * HEAD of the conversation tree: the parent of the next appended event.
+   * `null` means an empty tree (or, for pre-feature conversations, the linear
+   * tail). Moving it via `navigate` re-roots the active branch the agent runs
+   * on. See {@link ConversationClient.navigateConversation}.
+   */
+  leaf_event_id?: string | null;
+  /**
+   * Provenance of the agent profile that launched this conversation.
+   * Present when the conversation was started via `agent_profile_id`; absent
+   * for conversations started directly with `agent` or `agent_settings`.
+   * Lands with SDK PR #3784.
+   */
+  launched_profile?: LaunchedProfile | null;
+  /**
+   * @deprecated Use execution_status instead. This field is kept for backward compatibility.
+   */
+  status?: ConversationExecutionStatus;
+  [key: string]: unknown;
+}
+
+export interface ACPAgentConfig {
+  kind?: string;
+  [key: string]: unknown;
+}
+
+export type ACPConversationInfo = ConversationInfo & {
+  agent: ACPAgentConfig;
+};
+
+export interface SendMessageRequest {
+  role: 'user';
+  content: Array<{
+    type: string;
+    text?: string;
+    image_urls?: string[];
+  }>;
+  run: boolean;
+}
+
+export interface ConfirmationResponseRequest {
+  accept: boolean;
+  reason?: string;
+}
+
+export interface CreateConversationRequest {
+  agent: AgentBase;
+  initial_message?: Message;
+  max_iterations: number;
+  stuck_detection: boolean;
+  workspace: Record<string, unknown>;
+  hook_config?: HookConfig | null;
+  user_id?: string | null;
+}
+
+export interface CreateACPConversationRequest {
+  agent: ACPAgentConfig;
+  initial_message?: Message;
+  max_iterations: number;
+  stuck_detection: boolean;
+  workspace: Record<string, unknown>;
+  hook_config?: HookConfig | null;
+  user_id?: string | null;
+}
+
+export interface UpdateConversationRequest {
+  title?: string;
+  tags?: Record<string, string>;
+}
+
+export interface StaticSecret {
+  kind: 'StaticSecret';
+  value?: string | null;
+  description?: string | null;
+}
+
+export interface LookupSecret {
+  kind: 'LookupSecret';
+  url: string;
+  headers?: Record<string, string>;
+  description?: string | null;
+  /**
+   * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
+   */
+  source?: string;
+  /**
+   * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
+   */
+  key?: string;
+}
+
+export type SecretObject = StaticSecret | LookupSecret;
+
+export interface UpdateSecretsRequest {
+  secrets: Record<string, SecretObject>;
+}
+
+export interface ConversationSearchRequest {
+  page_id?: string;
+  limit?: number;
+  status?: ConversationExecutionStatus;
+  sort_order?: ConversationSortOrder;
+  tag?: string[];
+}
+
+export interface AskAgentRequest {
+  question: string;
+}
+
+/**
+ * Payload to start a `/goal` loop inside a conversation.
+ *
+ * Mirrors the agent-server's `StartGoalRequest`. The loop appends messages and
+ * runs the agent in the same conversation history/event stream as the main
+ * chat; it does not fork or create a separate conversation.
+ */
+export interface StartGoalRequest {
+  /** The goal objective to pursue and audit. Must not be empty server-side. */
+  objective: string;
+  /**
+   * Maximum audit rounds before giving up. Server requires `>= 1` and defaults
+   * to `10` when omitted.
+   */
+  max_iterations?: number;
+}
+
+export interface AskAgentResponse {
+  response: string;
+}
+
+export interface SetSecurityAnalyzerRequest {
+  security_analyzer: unknown | null;
+}
+
+export interface SetConfirmationPolicyRequest {
+  policy: ConfirmationPolicyBase;
+}
+
+export interface ConversationEventSearchOptions {
+  page_id?: string;
+  limit?: number;
+  kind?: string;
+  source?: string;
+  body?: string;
+  sort_order?: 'TIMESTAMP' | 'TIMESTAMP_DESC';
+  timestamp__gte?: string;
+  timestamp__lt?: string;
+}
+
+export type ConversationEventCountOptions = Omit<
+  ConversationEventSearchOptions,
+  'page_id' | 'limit' | 'sort_order'
+>;
+
+export interface ConversationSearchResponse {
+  items: ConversationInfo[];
+  next_page_id?: string;
+  total_count?: number;
+}
+
+export interface ACPConversationSearchResponse {
+  items: ACPConversationInfo[];
+  next_page_id?: string;
+  total_count?: number;
+}
+
+export interface ForkConversationRequest {
+  id?: string;
+  title?: string;
+  tags?: Record<string, string>;
+  reset_metrics?: boolean;
+}
+
+/**
+ * Payload to move a conversation's HEAD to an existing event (in-place
+ * re-root). Unlike a fork, this creates no new conversation — all branches
+ * stay on disk and only the active branch the agent runs on next changes.
+ */
+export interface NavigateConversationRequest {
+  /**
+   * Event to make the new HEAD, re-rooting the active branch. Omit or pass
+   * `null` to select the empty tree (a deliberate new root).
+   */
+  event_id?: string | null;
+}
+
+export interface AgentResponseResult {
+  response: string;
+}
+
+export type ConversationEvent = Event;
+export type ConversationEventPage = EventPage;

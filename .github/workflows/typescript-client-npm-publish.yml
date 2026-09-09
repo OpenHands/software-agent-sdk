@@ -1,0 +1,68 @@
+---
+name: Publish TypeScript client to npm
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Version to publish without a leading v
+                required: true
+                type: string
+
+concurrency:
+    group: typescript-client-npm-publish-${{ inputs.version }}
+    cancel-in-progress: false
+
+permissions:
+    contents: read
+    id-token: write
+
+defaults:
+    run:
+        working-directory: clients/typescript
+
+jobs:
+    publish:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Check out release tag
+              uses: actions/checkout@v4
+              with:
+                  ref: v${{ inputs.version }}
+
+            - name: Set up Node.js for npm trusted publishing
+              uses: actions/setup-node@v6
+              with:
+                  node-version: '22'
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+                  registry-url: https://registry.npmjs.org
+
+            - name: Upgrade npm for trusted publishing
+              run: npm install -g npm@latest
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run tests
+              run: npm test
+
+            - name: Validate package version
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: |
+                  current_version=$(node -p "require('./package.json').version")
+                  if [ "$current_version" != "$VERSION" ]; then
+                    echo "Package version $current_version does not match requested version $VERSION"
+                    exit 1
+                  fi
+
+            - name: Build package
+              run: npm run build
+
+            - name: Verify package contents
+              run: npm pack --dry-run
+
+            - name: Publish to npm
+              run: npm publish --access public --provenance --tag latest
