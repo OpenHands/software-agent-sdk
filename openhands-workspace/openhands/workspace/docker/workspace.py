@@ -17,6 +17,14 @@ from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
 logger = get_logger(__name__)
+_SESSION_API_KEY_ENV_VARS = ("OH_SESSION_API_KEYS_0", "SESSION_API_KEY")
+
+
+def _get_forwarded_session_api_key(forward_env: list[str]) -> str | None:
+    for name in _SESSION_API_KEY_ENV_VARS:
+        if name in forward_env and (value := os.environ.get(name)):
+            return value
+    return None
 
 
 def check_port_available(port: int) -> bool:
@@ -86,12 +94,19 @@ class DockerWorkspace(RemoteWorkspace):
         default=None,
         description="Port to bind the container to. If None, finds available port.",
     )
+    public: bool = Field(
+        default=False,
+        description=(
+            "Whether to publish container ports on all host interfaces. Public "
+            "workspaces require a session API key."
+        ),
+    )
     forward_env: list[str] = Field(
         default_factory=lambda: ["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"],
         description=(
             "Environment variables to forward to the container. The session "
             "API key variables are forwarded so the sandboxed agent server can "
-            "authenticate network-bound requests when it binds 0.0.0.0."
+            "authenticate network-bound requests."
         ),
     )
     volumes: list[str] = Field(
@@ -146,6 +161,15 @@ class DockerWorkspace(RemoteWorkspace):
         """Ensure server_image is set when using DockerWorkspace directly."""
         if self.__class__ is DockerWorkspace and self.server_image is None:
             raise ValueError("server_image must be provided")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_public_access(self):
+        if self.public and _get_forwarded_session_api_key(self.forward_env) is None:
+            raise ValueError(
+                "A public DockerWorkspace requires a forwarded "
+                "SESSION_API_KEY/OH_SESSION_API_KEYS_0 environment variable."
+            )
         return self
 
     def model_post_init(self, context: Any) -> None:
@@ -215,11 +239,12 @@ class DockerWorkspace(RemoteWorkspace):
             flags += ["-v", volume]
             logger.info(f"Adding volume mount: {volume}")
 
-        ports = ["-p", f"{self.host_port}:8000"]
+        publish_host = "0.0.0.0" if self.public else "127.0.0.1"
+        ports = ["-p", f"{publish_host}:{self.host_port}:8000"]
         if self.extra_ports:
             ports += [
                 "-p",
-                f"{self.host_port + 1}:8001",  # VSCode
+                f"{publish_host}:{self.host_port + 1}:8001",  # VSCode
             ]
         flags += ports
 
@@ -269,7 +294,12 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        object.__setattr__(self, "api_key", None)
+        if self.api_key is None:
+            object.__setattr__(
+                self,
+                "api_key",
+                _get_forwarded_session_api_key(self.forward_env),
+            )
 
         # Wait for container to be healthy
         self._wait_for_health(timeout=self.health_check_timeout)
