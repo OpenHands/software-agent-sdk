@@ -718,3 +718,55 @@ def test_get_changes_in_repo_no_remote_worktree_shows_committed_changes():
         assert changes == [
             GitChange(status=GitChangeStatus.UPDATED, path=Path("app.txt"))
         ]
+
+
+def test_get_git_changes_keeps_paths_that_merely_share_a_nested_repo_prefix():
+    """A nested repository named "foo" must not swallow "foobar/" or "foo-config".
+
+    The nested-repository filter compares path ancestry; matching on the string
+    prefix instead drops root-repository changes whose names start with the
+    nested repository's name, and they disappear from the result silently.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "README.md").write_text("base\n")
+        run_bash_command("git add -A && git commit -m init", temp_dir)
+
+        nested = Path(temp_dir) / "foo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested\n")
+        run_bash_command("git add -A && git commit -m init", str(nested))
+
+        # Root-repository changes that share "foo" as a prefix but are not in it
+        (Path(temp_dir) / "foobar").mkdir()
+        (Path(temp_dir) / "foobar" / "file.py").write_text("changed\n")
+        (Path(temp_dir) / "foo-config.yaml").write_text("changed\n")
+        (Path(temp_dir) / "README.md").write_text("changed\n")
+
+        paths = {str(change.path) for change in get_git_changes(temp_dir)}
+
+        assert "foobar/file.py" in paths
+        assert "foo-config.yaml" in paths
+        assert "README.md" in paths
+
+
+def test_get_git_changes_still_excludes_paths_inside_a_nested_repo():
+    """The filter must keep doing its job: real nested changes stay out."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "README.md").write_text("base\n")
+        run_bash_command("git add -A && git commit -m init", temp_dir)
+
+        nested = Path(temp_dir) / "foo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested\n")
+        run_bash_command("git add -A && git commit -m init", str(nested))
+        (nested / "nested.txt").write_text("changed in nested\n")
+
+        changes = get_git_changes(temp_dir)
+        nested_entries = [c for c in changes if str(c.path) == "foo/nested.txt"]
+
+        # Reported once, by the nested repository, not by the parent.
+        assert len(nested_entries) == 1

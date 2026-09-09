@@ -319,10 +319,6 @@ class Config(BaseModel):
             "For example, '/{runtime_id}/vscode' when using path-based routing."
         ),
     )
-    enable_vnc: bool = Field(
-        default=False,
-        description="Whether to enable VNC desktop functionality",
-    )
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",

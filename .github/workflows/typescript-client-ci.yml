@@ -1,0 +1,170 @@
+---
+name: TypeScript client CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+defaults:
+    run:
+        working-directory: clients/typescript
+
+jobs:
+    agent-server-api:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Use Node.js 22.12
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22.12
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Test Agent Server contract tooling
+              run: npm run test:agent-server-api-tooling
+
+            - name: Check generated Agent Server contract
+              run: npm run check:agent-server-api
+
+    public-type-budget:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Use Node.js 22.12
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22.12
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Test weak-type ratchet behavior
+              run: npm run test:public-type-budget
+
+            - name: Check public weak-type budget
+              run: npm run check:public-type-budget
+
+    test:
+        runs-on: ubuntu-latest
+
+        strategy:
+            matrix:
+                node-version: [22.12, 24.x]
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Use Node.js ${{ matrix.node-version }}
+              uses: actions/setup-node@v6
+              with:
+                  node-version: ${{ matrix.node-version }}
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run linter
+              run: npm run lint
+
+            - name: Run type check
+              run: npm run build
+
+            - name: Run tests
+              run: npm run test:coverage
+
+            - name: Check formatting
+              run: npm run format:check
+
+    build:
+        runs-on: ubuntu-latest
+        needs: test
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Use Node.js 22.x
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22.x
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Build package
+              run: npm run build
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: dist
+                  path: clients/typescript/dist/
+                  retention-days: 7
+
+    security:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Use Node.js 22.x
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22.x
+                  cache: npm
+                  cache-dependency-path: clients/typescript/package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+    # Gate production dependencies at moderate. Dev-only test tooling
+    # (jest -> babel-plugin-istanbul -> @istanbuljs/load-nyc-config -> js-yaml@3)
+    # carries advisories with no upstream fix and never ships to consumers, so
+    # auditing them here would block merges indefinitely. --omit=dev scopes the
+    # gate to what we actually publish.
+            - name: Run security audit
+              run: npm audit --audit-level=moderate --omit=dev
+
+            - name: Check for vulnerabilities
+              run: npm audit --audit-level=high --production
+
+    validate-acp-providers:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Install Python workspace
+              working-directory: .
+              run: uv sync --frozen --package openhands-sdk
+
+            - name: Check ACP_PROVIDERS matches openhands-sdk
+              working-directory: .
+              env:
+                  OPENHANDS_SUPPRESS_BANNER: '1'
+              run: uv run python clients/typescript/scripts/check-acp-drift.py

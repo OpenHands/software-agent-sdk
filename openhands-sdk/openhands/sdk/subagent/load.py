@@ -40,6 +40,7 @@ from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = get_logger(__name__)
@@ -91,8 +92,19 @@ def load_user_agents() -> list[AgentDefinition]:
         A list of ``AgentDefinition`` objects, or an empty list if no
         directories exist.
     """
-    home = Path.home()
-    return _load_agents_from_dirs([home / d for d in _FILE_BASED_AGENTS_DIR])
+    return _load_agents_from_dirs([_user_agents_dir(d) for d in _FILE_BASED_AGENTS_DIR])
+
+
+def _user_agents_dir(relative: str) -> Path:
+    """Map a file-based agents dir onto its user-level base.
+
+    ``.openhands/agents`` goes under the persistence dir, which replaces the
+    ``~/.openhands`` base; every other entry stays home-relative.
+    """
+    base, _, rest = relative.partition("/")
+    if base == ".openhands":
+        return get_user_persistence_dir() / rest
+    return Path.home() / relative
 
 
 def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
