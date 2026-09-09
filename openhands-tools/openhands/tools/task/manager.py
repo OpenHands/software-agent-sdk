@@ -39,7 +39,10 @@ from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.task.workspace import (
+    SubagentWorkspace,
     SubagentWorkspaceFactory,
+    SubagentWorkspaceReference,
+    SubagentWorkspaceResolver,
     close_workspace,
     enter_workspace,
 )
@@ -89,6 +92,7 @@ class Task(BaseModel):
     remote_workspace: RemoteWorkspace | None = Field(default=None, exclude=True)
     remote: bool = False
     subagent_type: str | None = None
+    workspace_reference: SubagentWorkspaceReference | None = None
 
     def set_result(self, result: str) -> None:
         """Set task as successful."""
@@ -110,10 +114,12 @@ class TaskManager:
         self,
         confirmation_handler: ConfirmationHandler | None = None,
         workspace_factory: SubagentWorkspaceFactory | None = None,
+        workspace_resolver: SubagentWorkspaceResolver | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
         self._workspace_factory = workspace_factory
+        self._workspace_resolver = workspace_resolver
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
@@ -256,12 +262,17 @@ class TaskManager:
             conversation_id = self._tasks[resume].conversation_id
             workspace = self._tasks[resume].remote_workspace
             if stored_task.remote and workspace is None:
-                if self._workspace_factory is None:
+                if stored_task.workspace_reference is None:
                     raise ValueError(
-                        f"Remote task '{resume}' requires its workspace_factory "
+                        f"Remote task '{resume}' has no persisted workspace identity; "
+                        "cannot reconnect safely."
+                    )
+                if self._workspace_resolver is None:
+                    raise ValueError(
+                        f"Remote task '{resume}' requires a workspace_resolver "
                         "to reconnect to the original workspace."
                     )
-                workspace = self._workspace_factory(resume, subagent_type)
+                workspace = self._workspace_resolver(stored_task.workspace_reference)
                 if workspace is None:
                     raise ValueError(f"Remote workspace for task '{resume}' is gone")
                 if workspace is self.parent_conversation.state.workspace or any(
@@ -269,6 +280,11 @@ class TaskManager:
                 ):
                     raise ValueError("Each subagent must own a distinct workspace")
                 enter_workspace(workspace)
+                if workspace.working_dir != stored_task.workspace_reference.working_dir:
+                    close_workspace(workspace)
+                    raise ValueError(
+                        "Resolved workspace has a different working directory"
+                    )
                 stored_task.remote_workspace = workspace
             with detached_delegate_context() as link:
                 conversation_class = (
@@ -355,10 +371,20 @@ class TaskManager:
 
         with self._tasks_lock:
             task_id, conversation_id = self._generate_ids()
-            workspace = (
+            provisioned = (
                 self._workspace_factory(task_id, subagent_type)
                 if self._workspace_factory is not None
                 else None
+            )
+            reference = (
+                provisioned.reference
+                if isinstance(provisioned, SubagentWorkspace)
+                else None
+            )
+            workspace = (
+                provisioned.workspace
+                if isinstance(provisioned, SubagentWorkspace)
+                else provisioned
             )
             if workspace is not None:
                 if workspace is self.parent_conversation.state.workspace or any(
@@ -369,6 +395,12 @@ class TaskManager:
 
             sub_conversation = None
             try:
+                if reference is not None and workspace is not None:
+                    if reference.working_dir != workspace.working_dir:
+                        raise ValueError(
+                            "Workspace reference must describe the child's "
+                            "working directory"
+                        )
                 sub_conversation = self._get_conversation(
                     description=description,
                     max_iteration_per_run=effective_max_iter,
@@ -402,6 +434,7 @@ class TaskManager:
                 remote_workspace=workspace,
                 remote=workspace is not None,
                 subagent_type=subagent_type,
+                workspace_reference=reference,
             )
             self._persist_remote_tasks()
             return self._tasks[task_id]

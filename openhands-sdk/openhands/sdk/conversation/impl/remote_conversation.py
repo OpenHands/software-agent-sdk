@@ -1,6 +1,7 @@
 import asyncio
 import bisect
 import json
+import math
 import os
 import threading
 import time
@@ -694,6 +695,7 @@ class RemoteConversation(BaseConversation):
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
     max_iteration_per_run: int
+    max_budget_per_run: float | None
     workspace: RemoteWorkspace
     _client: httpx.Client
     _cleanup_initiated: bool
@@ -728,6 +730,7 @@ class RemoteConversation(BaseConversation):
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
         require_existing: bool = False,
+        max_budget_per_run: float | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -740,6 +743,8 @@ class RemoteConversation(BaseConversation):
             conversation_id: Optional existing conversation id to attach to
             require_existing: Fail if conversation_id is missing or the conversation
                       no longer exists, instead of creating a new conversation.
+            max_budget_per_run: Maximum LLM cost in USD per run. On attach, a supplied
+                      budget must match the server's persisted budget.
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
@@ -770,10 +775,15 @@ class RemoteConversation(BaseConversation):
         """
         if require_existing and conversation_id is None:
             raise ValueError("require_existing needs a conversation_id")
+        if max_budget_per_run is not None and (
+            not math.isfinite(max_budget_per_run) or max_budget_per_run <= 0
+        ):
+            raise ValueError("max_budget_per_run must be a finite positive number")
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
+        self.max_budget_per_run = max_budget_per_run
         self.workspace = workspace
         self._client = workspace.client
         self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
@@ -789,6 +799,7 @@ class RemoteConversation(BaseConversation):
         # persisted ``ClientAction_*`` events can be deserialized.
         attached_client_tools: list[ClientToolSpec] = []
 
+        server_budget: float | None = None
         should_create = conversation_id is None
         if conversation_id is not None:
             # Try to attach to existing conversation
@@ -808,6 +819,15 @@ class RemoteConversation(BaseConversation):
                 should_create = True
             else:
                 info = resp.json()
+                persisted_budget = info.get("max_budget_per_run")
+                if (
+                    max_budget_per_run is not None
+                    and persisted_budget != max_budget_per_run
+                ):
+                    raise ValueError(
+                        "Remote conversation budget does not match max_budget_per_run"
+                    )
+                self.max_budget_per_run = persisted_budget
                 agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
@@ -872,6 +892,8 @@ class RemoteConversation(BaseConversation):
             }
             if user_id:
                 payload["user_id"] = user_id
+            if max_budget_per_run is not None:
+                payload["max_budget_per_run"] = max_budget_per_run
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -891,6 +913,7 @@ class RemoteConversation(BaseConversation):
                 json=payload,
             )
             data = resp.json()
+            server_budget = data.get("max_budget_per_run")
             # Expect a ConversationInfo
             cid = data.get("id") or data.get("conversation_id")
             if not cid:
@@ -903,6 +926,12 @@ class RemoteConversation(BaseConversation):
 
         self.delete_on_close = delete_on_close if should_create else False
         try:
+            if should_create and max_budget_per_run is not None:
+                if server_budget != max_budget_per_run:
+                    raise ValueError(
+                        "Agent server did not acknowledge max_budget_per_run; "
+                        "upgrade the server before running a budgeted conversation."
+                    )
             # Register client tool action types locally so WebSocket/persisted
             # events with ClientAction_* action_type can be deserialized by the
             # event loop. This must cover both the specs the caller passed in and

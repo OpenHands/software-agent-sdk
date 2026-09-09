@@ -32,7 +32,10 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.task.impl import TaskExecutor
     from openhands.tools.task.manager import ConfirmationHandler
-    from openhands.tools.task.workspace import SubagentWorkspaceFactory
+    from openhands.tools.task.workspace import (
+        SubagentWorkspaceFactory,
+        SubagentWorkspaceResolver,
+    )
 
 
 class TaskAction(Action):
@@ -220,6 +223,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         conv_state: "ConversationState",  # noqa: ARG003
         confirmation_handler: "ConfirmationHandler | None" = None,
         workspace_factory: "SubagentWorkspaceFactory | None" = None,
+        workspace_resolver: "SubagentWorkspaceResolver | None" = None,
     ) -> list[ToolDefinition]:
         """Create the task tool.
 
@@ -233,6 +237,9 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 Return a dedicated RemoteWorkspace owned by this manager, or None
                 to run locally. Remote workspaces are retained for task resumes
                 and released when the tool closes.
+                Return SubagentWorkspace with a reference to enable restart recovery.
+            workspace_resolver: Reconnect a persisted SubagentWorkspaceReference to
+                its original workspace. Used after restart instead of the factory.
 
         Returns:
             List containing a single TaskTool.
@@ -254,6 +261,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         manager = TaskManager(
             confirmation_handler=confirmation_handler,
             workspace_factory=workspace_factory,
+            workspace_resolver=workspace_resolver,
         )
         task_executor = TaskExecutor(manager=manager)
 
