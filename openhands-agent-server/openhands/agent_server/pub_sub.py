@@ -1,10 +1,9 @@
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import ClassVar, TypeVar
+from typing import TypeVar
 from uuid import UUID, uuid4
 
-from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.logger import get_logger
 
 
@@ -14,9 +13,6 @@ T = TypeVar("T")
 
 
 class Subscriber[T](ABC):
-    # Deltas arrive at token rate; consumers opt in rather than inherit them.
-    receives_streaming_deltas: ClassVar[bool] = False
-
     @abstractmethod
     async def __call__(self, event: T):
         """Invoke this subscriber"""
@@ -91,8 +87,6 @@ class PubSub[T]:
             event: The event to pass to all callbacks
         """
         subscribers = list(self._subscribers.items())
-        if isinstance(event, StreamingDeltaEvent):
-            subscribers = [s for s in subscribers if s[1].receives_streaming_deltas]
         if not subscribers:
             return
 

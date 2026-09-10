@@ -3,12 +3,13 @@ import importlib
 import json
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -62,7 +63,7 @@ from openhands.sdk.conversation.title_utils import (
     generate_title_from_message,
 )
 from openhands.sdk.credential import CredentialBindingError, VersionedCredentialBinding
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -2366,6 +2367,9 @@ class ConversationService:
             await event_service.subscribe_to_events(
                 _EventSubscriber(service=event_service)
             )
+            await event_service.subscribe_to_deltas(
+                _DeltaSubscriber(service=event_service)
+            )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
                     AutoTitleSubscriber(service=event_service)
@@ -2513,6 +2517,32 @@ def _build_telemetry_context(
         ),
         is_automation=is_automation,
     )
+
+
+# Deltas arrive at token rate; this only has to beat the runtime-api's
+# ~20 minute idle eviction.
+DELTA_HEARTBEAT_INTERVAL_SECONDS: Final[float] = 30.0
+
+
+@dataclass
+class _DeltaSubscriber(Subscriber[StreamingDeltaEvent]):
+    """Keep the idle timers alive during a stream that emits no durable event."""
+
+    service: EventService
+    # None, not 0.0: monotonic() counts from an arbitrary origin, so a zero
+    # baseline would swallow the first beat on a freshly booted host.
+    _last_beat: float | None = None
+
+    async def __call__(self, _event: StreamingDeltaEvent):
+        now = time.monotonic()
+        if (
+            self._last_beat is not None
+            and now - self._last_beat < DELTA_HEARTBEAT_INTERVAL_SECONDS
+        ):
+            return
+        self._last_beat = now
+        self.service.touch()
+        update_last_execution_time()
 
 
 @dataclass

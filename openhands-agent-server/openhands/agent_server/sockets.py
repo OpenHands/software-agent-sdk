@@ -48,6 +48,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.sdk import Event, Message
+from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.utils.paging import page_iterator
 
 
@@ -298,6 +299,9 @@ async def events_socket(
         subscriber_id = await event_service.subscribe_to_events(
             _WebSocketSubscriber(websocket)
         )
+        delta_subscriber_id = await event_service.subscribe_to_deltas(
+            _DeltaWebSocketSubscriber(websocket)
+        )
     except MaxSubscribersError:
         logger.warning(f"Subscriber limit reached for conversation {conversation_id}")
         await websocket.close(
@@ -381,6 +385,7 @@ async def events_socket(
                     return
     finally:
         await event_service.unsubscribe_from_events(subscriber_id)
+        await event_service.unsubscribe_from_deltas(delta_subscriber_id)
 
 
 @sockets_router.websocket("/bash-events")
@@ -479,7 +484,7 @@ async def bash_events_socket(
         await bash_service.unsubscribe_from_events(subscriber_id)
 
 
-async def _send_event(event: Event, websocket: WebSocket):
+async def _send_event(event: Event | StreamingDeltaEvent, websocket: WebSocket):
     if not _is_websocket_connected(websocket):
         # Client already disconnected; the pub/sub callback was racing with
         # cleanup. Avoid noisy tracebacks from starlette refusing to send.
@@ -539,12 +544,19 @@ def _is_websocket_connected(websocket: WebSocket) -> bool:
 class _WebSocketSubscriber(Subscriber):
     """WebSocket subscriber for conversation events."""
 
-    # The live socket is what token streaming is for.
-    receives_streaming_deltas = True
-
     websocket: WebSocket
 
     async def __call__(self, event: Event):
+        await _send_event(event, self.websocket)
+
+
+@dataclass(slots=True, frozen=True)
+class _DeltaWebSocketSubscriber(Subscriber[StreamingDeltaEvent]):
+    """WebSocket subscriber for streaming deltas. Same socket, separate bus."""
+
+    websocket: WebSocket
+
+    async def __call__(self, event: StreamingDeltaEvent):
         await _send_event(event, self.websocket)
 
 
