@@ -1,6 +1,7 @@
 from .classifier import (
     is_content_policy_violation,
     is_context_window_exceeded,
+    is_hard_quota_error,
     is_prompt_cache_too_small,
     is_quota_exhaustion_error,
     looks_like_auth_error,
@@ -54,6 +55,7 @@ __all__ = [
     # Helpers
     "is_content_policy_violation",
     "is_context_window_exceeded",
+    "is_hard_quota_error",
     "is_prompt_cache_too_small",
     "is_quota_exhaustion_error",
     "looks_like_auth_error",

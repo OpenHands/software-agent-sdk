@@ -5,12 +5,13 @@ from tenacity import (
     RetryCallState,
     retry,
     retry_base,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
 
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import LLMNoResponseError, is_hard_quota_error
 from openhands.sdk.logger import get_logger
 
 
@@ -96,11 +97,22 @@ class RetryMixin:
         """
         before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
-        retry_condition = (
-            retry_if_exception_type(retry_exceptions)
-            if isinstance(retry_exceptions, tuple)
-            else retry_exceptions
-        )
+        # Retry only when the exception is one of the eligible types AND is not a
+        # hard quota-exhaustion signal.  Hard quota errors (usage_limit_reached,
+        # insufficient_quota, ...) are deterministic: the same request will always
+        # fail until the account limit is raised, so burning through all retry
+        # attempts only delays the configured fallback strategy.
+        if isinstance(retry_exceptions, tuple):
+
+            def _should_retry(exc: BaseException) -> bool:
+                return isinstance(exc, retry_exceptions) and not is_hard_quota_error(exc)
+
+            retry_condition: retry_base = retry_if_exception(_should_retry)
+        else:
+            # retry_exceptions is already a tenacity retry predicate; apply a
+            # quota check on top so hard-quota errors are never retried regardless
+            # of what the caller's predicate says.
+            retry_condition = retry_exceptions & ~retry_if_exception(is_hard_quota_error)
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
