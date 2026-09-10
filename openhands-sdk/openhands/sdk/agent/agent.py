@@ -1174,6 +1174,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
+        stream: StreamContext | None = None,
     ) -> None:
         try:
             json.loads(tool_call.arguments)
@@ -1189,7 +1190,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 }
             )
 
+        minted: dict[str, Any] = {}
+        if stream is not None and (item_id := stream.claim()):
+            minted["id"] = item_id
         tc_event = ActionEvent(
+            **minted,
             source="agent",
             thought=thought or [],
             reasoning_content=reasoning_content,
@@ -1202,6 +1207,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             action=None,
         )
         on_event(tc_event)
+        if stream is not None and minted:
+            stream.commit()
         error_event = AgentErrorEvent(
             error=error,
             tool_name=tool_name,
@@ -1271,6 +1278,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     reasoning_content=reasoning_content,
                     thinking_blocks=thinking_blocks,
                     responses_reasoning_item=responses_reasoning_item,
+                    stream=stream,
                 )
                 return
 
@@ -1333,6 +1341,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 reasoning_content=reasoning_content,
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
+                stream=stream,
             )
             return
 

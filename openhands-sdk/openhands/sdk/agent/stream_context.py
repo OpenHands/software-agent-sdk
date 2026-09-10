@@ -95,6 +95,7 @@ class StreamContext:
         self._order = itertools.count()
         self._started = False
         self._opened = False
+        self._started_attempt: int | None = None
         self._reserved = False
         self._claimed = False
         self._chunk_id: str | None = None
@@ -185,7 +186,9 @@ class StreamContext:
             return
         self._claimed = True
         self._flush()
-        self._emit(StreamAborted(self.item_id, self._attempt, reason))
+        self._emit(
+            StreamAborted(self.item_id, self._started_attempt or self._attempt, reason)
+        )
 
     def __enter__(self) -> StreamContext:
         return self
@@ -209,6 +212,7 @@ class StreamContext:
         self._chunk_id = chunk_id
         if not self._started:
             self._started = self._opened = True
+            self._started_attempt = self._attempt
             self._emit(StreamStarted(self.item_id, self._attempt, self._anchor_seq))
         masker = self._masks.get(kind)
         if masker is None:
