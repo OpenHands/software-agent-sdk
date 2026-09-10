@@ -127,8 +127,8 @@ class AgentProfileBase(BaseModel):
         description=(
             "Which of the user's saved secrets to expose to this agent. "
             "null = all; [] = none; a non-null list = filter to the named keys. "
-            "An ACP profile always additionally receives its own provider "
-            "credentials, which would otherwise be filtered out."
+            "Strict: nothing is added back. An ACP profile must list its own "
+            "provider credential to receive it."
         ),
     )
 

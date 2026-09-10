@@ -224,37 +224,27 @@ def _acp_credential_channels(
     return info.api_key_env_var, info.base_url_env_var, file_names
 
 
-def allowed_secret_names(
-    profile: OpenHandsAgentProfile | ACPAgentProfile,
-) -> set[str] | None:
-    """Secret names ``profile`` may receive, or ``None`` for no restriction.
-
-    ``secret_refs`` is an allow-list over the secrets a conversation is started
-    with; the values never pass through here (they ride ``request.secrets`` as
-    ``LookupSecret``s the agent-server resolves from its own store).
-
-    An ACP profile's own provider credentials are always included: they travel
-    the same channel as the user's saved secrets, so filtering them out would
-    leave the subprocess unable to authenticate.
-    """
-    if profile.secret_refs is None:
-        return None
-    allowed = set(profile.secret_refs)
-    if isinstance(profile, ACPAgentProfile):
-        api_key, base_url, file_secrets = _acp_credential_channels(profile.acp_server)
-        allowed.update(name for name in (api_key, base_url) if name)
-        allowed.update(file_secrets)
-    return allowed
-
-
 def filter_profile_secrets[T](
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     secrets: Mapping[str, T],
 ) -> dict[str, T]:
-    """Narrow a conversation's secrets to what ``profile`` allows."""
-    allowed = allowed_secret_names(profile)
-    if allowed is None:
+    """Narrow a conversation's secrets to the profile's ``secret_refs``.
+
+    Strict: the stored list is the whole allow-list, with no derived additions.
+    An ACP profile's provider credential is *not* re-added — the picker offers
+    it like any other saved secret, so a profile that omits it omits it on
+    purpose, and the resulting auth failure is loud and recoverable. Anything
+    implicit here would make the stored list mean something other than what it
+    says.
+
+    Values never pass through: they ride ``request.secrets`` as ``LookupSecret``s
+    the agent-server resolves from its own store. A name matching no supplied
+    secret is a harmless no-op, so — unlike ``mcp_server_refs`` — a ref here can
+    never dangle.
+    """
+    if profile.secret_refs is None:
         return dict(secrets)
+    allowed = set(profile.secret_refs)
     return {name: value for name, value in secrets.items() if name in allowed}
 
 

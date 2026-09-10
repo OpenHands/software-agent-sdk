@@ -355,9 +355,9 @@ def _resolve_agent_from_profile(
 ) -> "tuple[AgentBase, LaunchedAgentProfile, set[str] | None]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
-    The third element is the profile's secret allow-list (``None`` = unrestricted).
-    It is returned rather than applied here because the secrets ride the start
-    request, not the agent.
+    The third element is the profile's secret allow-list (``None`` = unrestricted)
+    — strictly ``secret_refs``, with nothing added back. It is returned rather
+    than applied here because the secrets ride the start request, not the agent.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
@@ -379,11 +379,7 @@ def _resolve_agent_from_profile(
         get_agent_profile_store,
         get_llm_profile_store,
     )
-    from openhands.sdk.profiles.resolver import (
-        ProfileNotFound,
-        allowed_secret_names,
-        resolve_agent_profile,
-    )
+    from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
     from openhands.sdk.settings.model import OpenHandsAgentSettings
 
     store = get_agent_profile_store()
@@ -458,7 +454,8 @@ def _resolve_agent_from_profile(
         agent_profile_id=profile.id,
         revision=profile.revision,
     )
-    return agent, launched, allowed_secret_names(profile)
+    allowed_secrets = None if profile.secret_refs is None else set(profile.secret_refs)
+    return agent, launched, allowed_secrets
 
 
 def _compose_conversation_info(

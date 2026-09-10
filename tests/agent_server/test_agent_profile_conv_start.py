@@ -1234,12 +1234,10 @@ class TestProfileSecretScope:
         profile = profile.model_copy(update={"secret_refs": ["GITHUB_TOKEN"]})
         assert self._resolve(profile) == {"GITHUB_TOKEN"}
 
-    def test_a_scoped_acp_profile_keeps_its_provider_credentials(self):
+    def test_a_scoped_acp_profile_gets_no_implicit_provider_credentials(self):
+        # Strict: an ACP profile must list its own credential to receive it.
         profile = _make_acp_profile().model_copy(update={"secret_refs": []})
-        assert self._resolve(profile) == {
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_BASE_URL",
-        }
+        assert self._resolve(profile) == set()
 
     @pytest.mark.asyncio
     async def test_start_conversation_drops_secrets_the_profile_disallows(
