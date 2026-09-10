@@ -2362,6 +2362,66 @@ def test_workspace_default_llm_resolves_active_profile_despite_settings_drift(
         assert explicit_llm.usage_id == "profile:explicit-model"
 
 
+def test_workspace_named_llm_resolves_current_provider_credentials(
+    tmp_path, monkeypatch
+):
+    """Selecting a linked profile resolves credentials without activating it."""
+    with live_server_env(tmp_path, monkeypatch) as env:
+        workspace = RemoteWorkspace(
+            host=env["host"], working_dir=str(env["workspace_path"])
+        )
+        with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+            settings_before = client.get("/api/settings").json()
+            connection = client.post(
+                "/api/llm/provider-connections",
+                json={
+                    "display_name": "Automation provider",
+                    "provider": "openai",
+                    "api_key": "sk-provider-old",
+                    "base_url": "https://provider.example/v1",
+                },
+            )
+            assert connection.status_code == 201
+            connection_id = connection.json()["id"]
+            saved = client.post(
+                "/api/profiles/automation-model",
+                json={
+                    "llm": {
+                        "model": "openai/gpt-4o-mini",
+                        "provider_connection_id": connection_id,
+                    }
+                },
+            )
+            assert saved.status_code == 201
+
+            detail = client.get("/api/profiles/automation-model").json()
+            assert detail["config"]["api_key"] is None
+            assert detail["config"]["base_url"] is None
+            assert detail["api_key_set"] is True
+
+            selected = workspace.get_llm(profile_name="automation-model")
+            assert selected.model == "openai/gpt-4o-mini"
+            assert selected.base_url == "https://provider.example/v1"
+            assert selected.api_key is not None
+            _assert_secret(selected.api_key, "sk-provider-old")
+
+            rotated = client.patch(
+                f"/api/llm/provider-connections/{connection_id}",
+                json={"api_key": "sk-provider-new"},
+            )
+            assert rotated.status_code == 200
+            selected = workspace.get_llm(profile_name="automation-model")
+            assert selected.api_key is not None
+            _assert_secret(selected.api_key, "sk-provider-new")
+
+            settings_after = client.get("/api/settings").json()
+            assert settings_after["active_profile"] == settings_before["active_profile"]
+            assert (
+                settings_after["agent_settings"]["llm"]
+                == settings_before["agent_settings"]["llm"]
+            )
+
+
 def test_settings_and_secrets_api_with_live_server(server_env):
     """End-to-end test for settings and secrets API endpoints.
 
