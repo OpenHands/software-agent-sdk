@@ -371,16 +371,16 @@ def _supports_reasoning_effort(
     overrides: Mapping[str, Any] | None,
     supported_params: frozenset[str],
 ) -> bool:
-    override = _optional_bool(overrides, "supports_reasoning_effort")
-    if override is not None:
-        return override
-
     key = (model_info or {}).get("key")
     if model_matches(model, REASONING_EFFORT_UNSUPPORTED_MODELS) or model_matches(
         key if isinstance(key, str) else None,
         REASONING_EFFORT_UNSUPPORTED_MODELS,
     ):
         return False
+
+    override = _optional_bool(overrides, "supports_reasoning_effort")
+    if override is not None:
+        return override
 
     metadata_override = _optional_bool(model_info, "supports_reasoning_effort")
     if metadata_override is not None:

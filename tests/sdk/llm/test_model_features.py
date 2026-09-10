@@ -339,6 +339,15 @@ def test_minimax_m3_deny_guard_overrides_misleading_proxy_metadata():
     assert features.supports_reasoning_effort is False
 
 
+def test_minimax_m3_deny_guard_overrides_capability_override():
+    features = get_features(
+        "openhands/minimax-m3",
+        overrides={"supports_reasoning_effort": True},
+    )
+
+    assert features.supports_reasoning_effort is False
+
+
 def test_exact_reasoning_effort_metadata_enables_reasoning_effort():
     features = get_features(
         "proxy/reasoning-model",

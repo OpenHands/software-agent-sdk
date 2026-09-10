@@ -138,6 +138,30 @@ def test_minimax_m3_does_not_send_reasoning_effort_from_proxy_metadata():
     assert "reasoning_effort" not in out
 
 
+def test_minimax_m3_does_not_send_reasoning_effort_from_capability_override():
+    llm = DummyLLM(
+        model="openhands/minimax-m3",
+        capability_overrides={"supports_reasoning_effort": True},
+        reasoning_effort="high",
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+
+
+def test_minimax_m3_drops_caller_supplied_reasoning_effort():
+    llm = DummyLLM(model="openhands/minimax-m3", reasoning_effort=None)
+
+    out = select_chat_options(
+        llm,
+        user_kwargs={"reasoning_effort": "high"},
+        has_tools=True,
+    )
+
+    assert "reasoning_effort" not in out
+
+
 def test_kimi_k3_uses_reasoning_effort_and_strips_temp_top_p():
     llm = DummyLLM(
         model="litellm_proxy/moonshot/kimi-k3",
