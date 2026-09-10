@@ -151,6 +151,26 @@ Use COMMENT when you have feedback or concerns:
 
 If there are significant issues, leave detailed comments explaining the concerns—but let a human maintainer decide whether to block the PR.
 
+## Design Docs for Deep PRs
+
+A diff shows what changed line by line, not the design: the shape of the change, the API before and after, and why this approach. For a *deep* PR, expect a short design doc. The `pr-design-doc` skill in `.agents/skills/pr-design-doc/` produces a self-contained `.pr/` HTML page (big picture plus before/after, grounded to real code) linked from the PR description.
+
+A PR is "deep" when a reviewer cannot fully judge it from the diff in a couple of minutes, for example:
+
+- a new or changed public SDK API, the Agent Server REST contract, or an event/wire model;
+- a new module or subsystem, or a cross-cutting refactor or migration;
+- a behavior change in core logic (agent loop, conversation, tools, events, workspaces).
+
+Skip it for trivial PRs — a typo, a one-line guard, a config or dependency bump, a docs tweak, a small localized bug fix. If the diff is its own explanation, do not ask for a page.
+
+When a deep PR ships without a design doc, weigh the omission against the change's risk assessment:
+
+- **🔴 HIGH risk and deep, no design doc:** withhold approval. Leave a **COMMENT** review and ask for a design doc (or an equivalent write-up in the PR description) so a human can judge the proposal before merge.
+- **🟡 MEDIUM risk and deep, no design doc:** use judgment. Prefer to withhold approval and request one when the change is hard to reconstruct from the diff; a MEDIUM change that is small and self-evident does not need a page.
+- **🟢 LOW risk:** never block on a missing design doc.
+
+A design doc is a review aid, not a merge gate by itself. A well-written doc does not excuse real correctness, security, or architecture problems.
+
 ## Security
 
 ### Dependency freshness / supply-chain guardrail
