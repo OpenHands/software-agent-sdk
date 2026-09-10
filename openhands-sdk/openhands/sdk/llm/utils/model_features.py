@@ -221,6 +221,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
     "deepseek/deepseek-v4-pro",  # Dual-mode (Thinking/Non-Thinking)
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
+    "deepseek/deepseek-v4.1-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
 
 # Match token -> canonical LiteLLM ID for vision metadata overrides.

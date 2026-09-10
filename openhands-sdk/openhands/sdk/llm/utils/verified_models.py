@@ -81,6 +81,7 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
 ]
 
 VERIFIED_MOONSHOT_MODELS = [
@@ -168,6 +169,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
     "kimi-k3",
     "kimi-k2-thinking",
     "kimi-k2.7-code",
