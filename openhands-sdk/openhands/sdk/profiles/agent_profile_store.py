@@ -15,6 +15,7 @@ from filelock import FileLock, Timeout
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import validate_agent_profile
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
         OpenHandsAgentProfile,
     )
 
-_DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "agent-profiles"
+_DEFAULT_PROFILE_DIR: Final[Path] = get_user_persistence_dir() / "agent-profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # Profile names: 1-64 chars, must start with alphanumeric, then alphanumerics

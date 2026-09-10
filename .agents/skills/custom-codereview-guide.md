@@ -137,9 +137,8 @@ When reviewing or QA-ing such a PR:
   3. The author's explicit confirmation (e.g. screenshot) that the model is
      reachable via the proxy.
 
-Real preflight blockers still apply (parameter conflicts on Claude, bad
-`litellm_extra_body`, unit-test failures, regressions on existing models —
-see `.github/run-eval/AGENTS.md` "What still IS a real preflight blocker").
+Real preflight blockers still apply: parameter conflicts on Claude, bad
+`litellm_extra_body`, unit-test failures, and regressions on existing models.
 
 ### When to COMMENT
 

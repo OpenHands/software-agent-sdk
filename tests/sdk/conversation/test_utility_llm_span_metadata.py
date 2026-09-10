@@ -131,10 +131,33 @@ def _probe_exported_spans() -> list[dict[str, Any]]:
     names_by_id = {
         span.context.span_id: span.name for span in spans if span.context is not None
     }
+    parent_id_by_id = {
+        span.context.span_id: (span.parent.span_id if span.parent else None)
+        for span in spans
+        if span.context is not None
+    }
+
+    def operation_parent(span: Any) -> str | None:
+        """Nearest ancestor that isn't the SDK's synthetic ``llm.<model>`` span.
+
+        Telemetry.on_request opens an ``llm.<model>`` span that stays current
+        while the call runs (so the authoritative cost can be attached before
+        lmnr ends its ``litellm.completion`` span). That span sits between the
+        operation span and ``litellm.completion``; skip it to recover the
+        operation the LLM call belongs to.
+        """
+        pid = span.parent.span_id if span.parent else None
+        while pid is not None and names_by_id.get(pid, "").startswith("llm."):
+            pid = parent_id_by_id.get(pid)
+        return names_by_id.get(pid) if pid is not None else None
+
     return [
         {
             "name": span.name,
-            "parent": names_by_id.get(span.parent.span_id) if span.parent else None,
+            "parent": operation_parent(span),
+            "immediate_parent": (
+                names_by_id.get(span.parent.span_id) if span.parent else None
+            ),
             "attributes": {
                 key: value
                 for key, value in (span.attributes or {}).items()
@@ -165,6 +188,12 @@ def test_operation_metadata_reaches_the_exported_llm_span() -> None:
     spans = json.loads(result.stdout.splitlines()[-1])
 
     llm_spans = [span for span in spans if span["name"] == "litellm.completion"]
+    # Each litellm.completion now nests under the SDK's synthetic ``llm.<model>``
+    # cost span (Telemetry.on_request), which in turn nests under the operation
+    # span. The operation attribution below walks through that wrapper.
+    assert llm_spans and all(
+        span["immediate_parent"].startswith("llm.") for span in llm_spans
+    )
     by_parent = {span["parent"]: span for span in llm_spans}
     assert set(by_parent) == {
         "agent.step",
