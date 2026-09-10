@@ -82,6 +82,7 @@ from openhands.sdk.agent.acp_file_credentials import (
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.credential import (
@@ -1926,6 +1927,10 @@ class ACPAgent(AgentBase):
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
+    # Stream identity for the turn in flight; see stream_context.py. Held on
+    # the agent rather than threaded through the finalizers because the ACP
+    # turn already resolves through four of them.
+    _stream: StreamContext | None = PrivateAttr(default=None)
     _resumed_existing_session: bool = PrivateAttr(default=False)
     _file_credential_lifecycles: dict[str, ACPFileCredentialLifecycle] = PrivateAttr(
         default_factory=dict
@@ -3688,7 +3693,13 @@ class ACPAgent(AgentBase):
         # completed turn for eval/remote consumers, matching #2190.
         finish_action = FinishAction(message=response_text)
         tc_id = str(uuid.uuid4())
+        # An ACP turn's streamed text lands here, not in a MessageEvent, so
+        # this is the event that retires the stream's slot.
+        minted: dict[str, Any] = {}
+        if self._stream is not None and (item_id := self._stream.claim()):
+            minted["id"] = item_id
         action_event = ActionEvent(
+            **minted,
             source="agent",
             thought=[],
             reasoning_content=thought_text or None,
@@ -3704,6 +3715,8 @@ class ACPAgent(AgentBase):
             llm_response_id=str(uuid.uuid4()),
         )
         on_event(action_event)
+        if self._stream is not None and minted:
+            self._stream.commit()
         on_event(
             ObservationEvent(
                 observation=FinishObservation.from_text(text=response_text),
@@ -3865,6 +3878,19 @@ class ACPAgent(AgentBase):
         (``LocalConversation.arun``) goes through :meth:`astep`, which
         avoids the cross-thread state-lock deadlock described in #3348.
         """
+        with StreamContext.open(conversation, on_token) as stream:
+            self._stream = stream
+            try:
+                self._step(conversation, on_event, stream.token_callback)
+            finally:
+                self._stream = None
+
+    def _step(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
         state = conversation.state
 
         if self._restart_session_on_next_turn:
@@ -3933,6 +3959,8 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -3963,6 +3991,8 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -4023,6 +4053,22 @@ class ACPAgent(AgentBase):
         supplied by ``LocalConversation.arun`` is responsible for taking
         the state lock around each individual event.
         """
+        with StreamContext.open(conversation, on_token) as stream:
+            self._stream = stream
+            try:
+                await self._astep(
+                    conversation, on_event, stream.token_callback, prompt_message
+                )
+            finally:
+                self._stream = None
+
+    async def _astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
         state = conversation.state
 
         if self._restart_session_on_next_turn:
@@ -4099,6 +4145,8 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -4126,6 +4174,8 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,

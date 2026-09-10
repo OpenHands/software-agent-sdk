@@ -118,6 +118,16 @@ class DeltaFrame(SessionFrameBase):
     order: int
     kind: Literal["text", "reasoning"] = "text"
     content: str
+    chunk_id: str | None = Field(
+        default=None,
+        description=(
+            "The provider's completion id for this chunk. Corroboration only: "
+            "litellm mints a new one per retry attempt."
+        ),
+    )
+    choice_index: int | None = Field(
+        default=None, description="The provider's choice index for this chunk."
+    )
 
 
 class ItemAbortedFrame(SessionFrameBase):
