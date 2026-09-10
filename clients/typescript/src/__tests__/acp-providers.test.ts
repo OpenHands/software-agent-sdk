@@ -1,4 +1,4 @@
-import { ACP_PROVIDERS, getAcpProvider } from '../index';
+import { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from '../index';
 import type { ACPProviderKey } from '../index';
 
 /**
@@ -153,5 +153,11 @@ describe('ACP provider credential descriptors', () => {
       expect(getAcpProvider(null)).toBeNull();
       expect(getAcpProvider(undefined)).toBeNull();
     });
+  });
+});
+
+describe('ACP settings payload fields', () => {
+  it('forwards per-conversation data directory isolation', () => {
+    expect(ACP_SETTINGS_KEYS).toContain('acp_isolate_data_dir');
   });
 });
