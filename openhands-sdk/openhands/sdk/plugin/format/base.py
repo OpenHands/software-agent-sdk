@@ -18,7 +18,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
-from openhands.sdk.skills.skill import Skill
+from openhands.sdk.skills.skill import Skill, load_skills_from_dir
 from openhands.sdk.skills.utils import find_skill_md
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.path import to_posix_path
@@ -96,7 +96,14 @@ class PluginFormat(ABC):
         """
         skills_dir = plugin_dir / "skills"
         if skills_dir.is_dir():
-            return _load_skills_from_skills_dir(skills_dir)
+            repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
+                skills_dir, strict=False, recursive_md=False
+            )
+            return [
+                *repo_skills.values(),
+                *knowledge_skills.values(),
+                *agent_skills.values(),
+            ]
 
         root_skill_md = find_skill_md(plugin_dir)
         if root_skill_md is not None:
@@ -201,32 +208,6 @@ def _read_command_definitions(root: Path) -> list[CommandDefinition]:
                 logger.warning(f"Failed to load command from {item}: {e}")
 
     return commands
-
-
-def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
-    """Load every skill under a plugin's ``skills/`` directory."""
-    skills: list[Skill] = []
-    for item in sorted(skills_dir.iterdir()):
-        if item.is_dir():
-            skill_md = find_skill_md(item)
-            if skill_md:
-                try:
-                    # Skill.load() discovers resources, no need to do it again
-                    skill = Skill.load(skill_md, skills_dir, strict=False)
-                    skills.append(skill)
-                    logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
-                except Exception as e:
-                    logger.warning(f"Failed to load skill from {item}: {e}")
-        elif item.suffix == ".md" and item.name.lower() != "readme.md":
-            # Also support single .md files in skills/ directory
-            try:
-                skill = Skill.load(item, skills_dir, strict=False)
-                skills.append(skill)
-                logger.debug(f"Loaded skill: {skill.name} from {item}")
-            except Exception as e:
-                logger.warning(f"Failed to load skill from {item}: {e}")
-
-    return skills
 
 
 def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:

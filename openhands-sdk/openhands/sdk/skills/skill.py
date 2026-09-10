@@ -847,6 +847,8 @@ class Skill(BaseModel):
 
 def load_skills_from_dir(
     skill_dir: str | Path,
+    strict: bool = True,
+    recursive_md: bool = True,
 ) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -858,6 +860,9 @@ def load_skills_from_dir(
 
     Args:
         skill_dir: Path to the skills directory (e.g. .openhands/skills)
+        strict: Whether to enforce strict AgentSkills name validation.
+        recursive_md: Whether to search all descendants for loose .md files.
+            When False, only immediate children of ``skill_dir`` are considered.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
@@ -879,25 +884,39 @@ def load_skills_from_dir(
     # doesn't exist.
     skill_md_files = find_skill_md_directories(skill_dir)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-    regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
+    regular_md_files = find_regular_md_files(
+        skill_dir, skill_md_dirs, recursive=recursive_md
+    )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
-    # Wrap each load in try/except to ensure one bad skill doesn't break all loading
+    # Wrap each load in try/except to ensure one bad skill doesn't break all
+    # loading. Plugin loading relies on this per-skill isolation boundary for
+    # any failure, so one bad skill never breaks the whole load.
     for skill_md_path in skill_md_files:
         try:
             load_and_categorize(
-                skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
+                skill_md_path,
+                skill_dir,
+                repo_skills,
+                knowledge_skills,
+                agent_skills,
+                strict=strict,
             )
-        except (SkillError, OSError, yaml.YAMLError) as e:
+        except Exception as e:
             logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
     for path in regular_md_files:
         try:
             load_and_categorize(
-                path, skill_dir, repo_skills, knowledge_skills, agent_skills
+                path,
+                skill_dir,
+                repo_skills,
+                knowledge_skills,
+                agent_skills,
+                strict=strict,
             )
-        except (SkillError, OSError, yaml.YAMLError) as e:
+        except Exception as e:
             logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)

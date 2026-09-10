@@ -458,12 +458,16 @@ def find_skill_md_directories(skill_dir: Path) -> list[Path]:
     return results
 
 
-def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path]:
+def find_regular_md_files(
+    skill_dir: Path, exclude_dirs: set[Path], recursive: bool = True
+) -> list[Path]:
     """Find regular .md skill files, excluding SKILL.md and files in excluded dirs.
 
     Args:
         skill_dir: Path to the skills directory.
         exclude_dirs: Set of directories to exclude (e.g., SKILL.md directories).
+        recursive: When True, search all descendants. When False, only consider
+            immediate children of ``skill_dir``.
 
     Returns:
         List of paths to regular .md skill files.
@@ -471,8 +475,18 @@ def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path
     files: list[Path] = []
     if not skill_dir.exists():
         return files
-    for f in sorted(skill_dir.rglob("*.md")):
-        is_readme = f.name == "README.md"
+    if recursive:
+        for f in sorted(skill_dir.rglob("*.md")):
+            is_readme = f.name == "README.md"
+            is_skill_md = f.name.lower() == "skill.md"
+            is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
+            if not is_readme and not is_skill_md and not is_in_excluded_dir:
+                files.append(f)
+        return files
+    for f in sorted(skill_dir.iterdir()):
+        if not f.is_file() or f.suffix != ".md":
+            continue
+        is_readme = f.name.lower() == "readme.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
         if not is_readme and not is_skill_md and not is_in_excluded_dir:
@@ -486,6 +500,7 @@ def load_and_categorize(
     repo_skills: dict[str, Skill],
     knowledge_skills: dict[str, Skill],
     agent_skills: dict[str, Skill],
+    strict: bool = True,
 ) -> None:
     """Load a skill and categorize it.
 
@@ -497,11 +512,12 @@ def load_and_categorize(
         repo_skills: Dictionary for skills with trigger=None (permanent context).
         knowledge_skills: Dictionary for skills with triggers (progressive).
         agent_skills: Dictionary for AgentSkills standard SKILL.md files.
+        strict: Whether to enforce strict AgentSkills name validation.
     """
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import Skill
 
-    skill = Skill.load(path, skill_base_dir)
+    skill = Skill.load(path, skill_base_dir, strict=strict)
 
     # AgentSkills (SKILL.md directories) are a separate category from OpenHands skills.
     # They follow the AgentSkills standard and should be handled differently.
