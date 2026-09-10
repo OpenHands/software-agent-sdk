@@ -30,6 +30,7 @@ from openhands.agent_server.models import (
     ConversationPage,
     ConversationSortOrder,
     LaunchedAgentProfile,
+    SendMessageRequest,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -47,7 +48,7 @@ from openhands.agent_server.telemetry import (
 )
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, AgentContext, Event, Message
+from openhands.sdk import LLM, AgentContext, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
@@ -1407,6 +1408,56 @@ class ConversationService:
     ) -> tuple[ConversationInfo, bool]:
         return await self._start_conversation(request)
 
+    async def _launch_child_conversation(self, parent_id: UUID, action: object):
+        """Create and start a trusted same-server child conversation."""
+        from openhands.agent_server.child_conversation_tool import (
+            LaunchChildConversationAction,
+            LaunchChildConversationObservation,
+        )
+
+        if not isinstance(action, LaunchChildConversationAction):
+            raise TypeError("Invalid child conversation launch action")
+        parent_service = await self.get_event_service(parent_id)
+        if parent_service is None:
+            raise ValueError(f"Parent conversation not found: {parent_id}")
+        parent_conversation = parent_service.get_conversation()
+        parent_stored = parent_service.stored
+        request = StartConversationRequest(
+            agent=parent_conversation.agent,
+            workspace=parent_conversation.workspace,
+            worktree=action.isolation == "worktree",
+            parent_conversation_id=parent_id,
+            title=action.title,
+            autotitle=False,
+            # Inherit all conversation-scoped controls from the parent so the
+            # child respects the same guardrails (hooks, iteration caps,
+            # secrets, security policy, observability, tags, etc.).
+            confirmation_policy=parent_stored.confirmation_policy,
+            security_analyzer=parent_stored.security_analyzer,
+            max_iterations=parent_stored.max_iterations,
+            stuck_detection=parent_stored.stuck_detection,
+            hook_config=parent_stored.hook_config,
+            secrets=parent_stored.secrets,
+            tags=parent_stored.tags,
+            user_id=parent_stored.user_id,
+            observability_metadata=parent_stored.observability_metadata,
+            observability_tags=parent_stored.observability_tags,
+            observability_span_name=parent_stored.observability_span_name,
+            title_llm_profile=parent_stored.title_llm_profile,
+            initial_message=SendMessageRequest(
+                role="user",
+                content=[TextContent(text=action.task)],
+                run=True,
+            ),
+        )
+        info, _ = await self.start_conversation(request)
+        return LaunchChildConversationObservation(
+            conversation_id=str(info.id),
+            execution_status=info.execution_status.value,
+            workspace=info.workspace.working_dir,
+            url_path=f"/conversations/{info.id}",
+        )
+
     async def start_acp_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
@@ -1700,6 +1751,31 @@ class ConversationService:
             _register_agent_definitions(
                 request.agent_definitions,
                 context=f"conversation {conversation_id}",
+            )
+
+        # Only native server-managed agents receive the trusted launcher. ACP and
+        # client-defined tools remain unchanged because they may run elsewhere.
+        from openhands.agent_server.child_conversation_tool import (
+            LaunchChildConversationTool,
+        )
+        from openhands.sdk.agent.agent import Agent
+
+        has_child_tool = request.agent is not None and any(
+            tool.name == LaunchChildConversationTool.name
+            for tool in request.agent.tools
+        )
+        if isinstance(request.agent, Agent) and not has_child_tool:
+            request = request.model_copy(
+                update={
+                    "agent": request.agent.model_copy(
+                        update={
+                            "tools": [
+                                *request.agent.tools,
+                                Tool(name=LaunchChildConversationTool.name),
+                            ]
+                        }
+                    )
+                }
             )
 
         # Plugin loading is now handled lazily by LocalConversation.
@@ -2349,6 +2425,7 @@ class ConversationService:
             agent=agent,
             cipher=self.cipher,
             mcp_tool_provider=self.mcp_tool_provider,
+            child_launcher=self._launch_child_conversation,
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,

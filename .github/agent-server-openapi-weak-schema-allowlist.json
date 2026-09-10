@@ -270,6 +270,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/LaunchChildConversationTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/components/schemas/LLM-Input/properties/litellm_extra_body/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Provider-specific configuration is intentionally extensible.",

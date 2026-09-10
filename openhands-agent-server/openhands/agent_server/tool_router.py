@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from openhands.agent_server import child_conversation_tool  # noqa: F401
 from openhands.sdk.tool.registry import list_registered_tools
 from openhands.tools.preset.default import (
     register_builtins_agents,

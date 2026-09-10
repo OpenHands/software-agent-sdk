@@ -150,7 +150,10 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     assert agent.agent_context is not None
     suffix = agent.agent_context.system_message_suffix
     assert suffix == f"PROFILE_BASELINE\n\n{_RUNTIME_SERVICES}"
-    assert [tool.name for tool in agent.tools] == ["canvas_ui_client"]
+    assert [tool.name for tool in agent.tools] == [
+        "canvas_ui_client",
+        "launch_child_conversation",
+    ]
     assert stored.agent_launch_additions is None
     assert stored.client_tools == [_CANVAS_UI]
     assert stored.tool_module_qualnames == {}
@@ -164,6 +167,9 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     restored_suffix = restored_agent.agent_context.system_message_suffix
     assert restored_suffix is not None
     assert restored_suffix.count("<RUNTIME_SERVICES>") == 1
-    assert [tool.name for tool in restored_agent.tools] == ["canvas_ui_client"]
+    assert [tool.name for tool in restored_agent.tools] == [
+        "canvas_ui_client",
+        "launch_child_conversation",
+    ]
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.client_tools == [_CANVAS_UI]

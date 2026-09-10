@@ -238,6 +238,7 @@ class LocalConversation(BaseConversation):
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
         profile_store_dir: str | Path | None = None,
+        server_tool_context: object | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -317,6 +318,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
+        self._server_tool_context = server_tool_context
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -682,6 +684,11 @@ class LocalConversation(BaseConversation):
         But we won't be able to access methods that mutate the state.
         """
         return self._state
+
+    @property
+    def server_tool_context(self) -> object | None:
+        """Runtime-only context supplied by a trusted agent-server host."""
+        return self._server_tool_context
 
     @property
     def conversation_stats(self):

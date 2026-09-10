@@ -51,6 +51,25 @@ _client_action_schemas: dict[str, dict[str, Any]] = {}
 _client_tool_names: set[str] = set()
 _client_action_lock = threading.RLock()
 
+# Tool names that are registered natively by the server (not as client tools).
+# When an older client sends a ClientToolSpec with one of these names, the
+# spec is silently dropped instead of raising ClientToolRegistrationError, so
+# mixed-version rollouts don't break conversation creation.
+_reserved_native_tool_names: set[str] = set()
+
+
+def register_reserved_native_tool_name(name: str) -> None:
+    """Mark *name* as a reserved native (server-side) tool.
+
+    Client tool specs whose name matches a reserved native tool are silently
+    dropped during ``register_client_tools`` rather than causing a collision
+    error.  This allows the server to ship a native implementation of a
+    previously client-defined tool without breaking older clients that still
+    send the legacy ``ClientToolSpec``.
+    """
+    with _client_action_lock:
+        _reserved_native_tool_names.add(name)
+
 
 class ClientToolRegistrationError(ValueError):
     """Raised when client tool registration receives invalid input.
@@ -383,9 +402,22 @@ def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
         seen_names.add(spec.name)
 
     with _client_action_lock:
+        # Drop legacy client specs that collide with reserved native tools so
+        # mixed-version rollouts don't break conversation creation. The native
+        # implementation is injected server-side later in _start_conversation.
+        filtered_specs = [
+            spec for spec in specs if spec.name not in _reserved_native_tool_names
+        ]
+        if len(filtered_specs) < len(specs):
+            dropped = {s.name for s in specs} - {s.name for s in filtered_specs}
+            logger.info(
+                "Dropped %d legacy client tool spec(s) reserved as native: %s",
+                len(dropped),
+                ", ".join(sorted(dropped)),
+            )
         tool_specs: list[Tool] = []
         already_registered = set(list_registered_tools())
-        for spec in specs:
+        for spec in filtered_specs:
             collides_with_non_client_tool = (
                 spec.name in already_registered and spec.name not in _client_tool_names
             )
@@ -395,7 +427,7 @@ def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
                     "non-client tool. Choose a unique client tool name."
                 )
 
-        for spec in specs:
+        for spec in filtered_specs:
             _get_client_action_type(spec.name, spec.parameters)
             if spec.name not in already_registered:
                 register_tool(spec.name, ClientTool)
