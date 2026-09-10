@@ -13,11 +13,11 @@ ARG PORT=8000
 # to bundle google-cloud-aiplatform so the resulting binary supports
 # `vertex_ai/*` partner models (MiniMax, Qwen, Kimi MaaS endpoints).
 ARG ENABLE_VERTEX=0
-# Comma-separated ACP provider keys (see ACP_PROVIDERS in
-# openhands-sdk/openhands/sdk/settings/acp_providers.py) to bake into the
+# Comma-separated ACP provider keys (see ACP_INSTALL_CATALOG in
+# openhands-sdk/openhands/sdk/settings/acp_install_catalog.py) to bake into the
 # acp-providers stage below. The default reproduces the full provider set
-# shipped today; an unknown key fails the build rather than silently
-# installing nothing.
+# shipped today (DEFAULT_PREINSTALLED_ACP_PROVIDERS); an unknown key fails the
+# build rather than silently installing nothing.
 ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # Comma-separated capability keys to include in the `base-image` stage below
 # (`base-image-minimal` is unaffected). The default reproduces today's full
@@ -102,6 +102,11 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # Failures here are fatal: there is no per-BASE_IMAGE fallback for a broken build of
 # the shared payload itself (see the compatibility probe in base-image-minimal for
 # the per-target-image fallback).
+#
+# The Node pin below is a floor, not a preference: this stage installs every
+# selected provider under one runtime, so it has to clear the highest
+# `min_node_version` in ACP_INSTALL_CATALOG (asserted by
+# tests/cross/test_agent_server_build_metadata.py).
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
@@ -112,23 +117,17 @@ ARG INSTALL_ACP_PROVIDERS
 # parent, mirroring /agent-server's own top-level placement in the builder
 # stage above.
 ENV ACP_NODE_DIR=/acp-node
+# The catalog module is dependency-free (stdlib only), so it can be COPYed
+# into this bare `python` image and run as-is — no pip install, and no need
+# to pull in the rest of the SDK source (which would break the zero-context
+# fast path `build.py` uses for the `base-image-minimal` target). Adding an
+# npm provider is a catalog edit only; this stage never needs to change.
+COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py /tmp/acp_install_catalog.py
 RUN set -eux; \
     ACP_WRAPPER_DIR=/opt/acp-wrappers; \
     mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
-    PACKAGES=""; \
-    WRAPPER_BINS=""; \
-    for provider in $(echo "$INSTALL_ACP_PROVIDERS" | tr ',' ' '); do \
-      case "$provider" in \
-        claude-code) PACKAGES="$PACKAGES @agentclientprotocol/claude-agent-acp@0.63.0"; \
-          WRAPPER_BINS="$WRAPPER_BINS claude-agent-acp";; \
-        codex) PACKAGES="$PACKAGES @agentclientprotocol/codex-acp@1.1.7"; \
-          WRAPPER_BINS="$WRAPPER_BINS codex-acp";; \
-        gemini-cli) PACKAGES="$PACKAGES @google/gemini-cli@0.46.0"; \
-          WRAPPER_BINS="$WRAPPER_BINS gemini";; \
-        *) echo "Unknown ACP provider '$provider' in INSTALL_ACP_PROVIDERS" \
-             "(expected one of: claude-code, codex, gemini-cli)" >&2; exit 1;; \
-      esac; \
-    done; \
+    PLAN=$(python3 /tmp/acp_install_catalog.py "$INSTALL_ACP_PROVIDERS") || exit 1; \
+    eval "$PLAN"; \
     if [ -z "$PACKAGES" ]; then \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
@@ -139,24 +138,33 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=0b2d9f564b6594222a62c82e1df2efe119dd4a4aff29644f4dd325bf360b6bcc;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v22.19.0-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
+      # Fail the build rather than ship a wrapper that execs a missing target:
+      # a wrong binary_name is otherwise invisible until someone launches the
+      # provider, since the wrapper is only a shell script we chmod +x.
+      [ -x "$ACP_NODE_DIR/bin/$bin" ] || { \
+        echo "ACP wrapper target not installed: $ACP_NODE_DIR/bin/$bin" >&2; \
+        echo "(check binary_name in acp_install_catalog.py against the package's npm bin)" >&2; \
+        exit 1; \
+      }; \
       printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
         "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
         > "$ACP_WRAPPER_DIR/$bin"; \
       chmod +x "$ACP_WRAPPER_DIR/$bin"; \
-    done
+    done; \
+    printf '%s\n' $WRAPPER_BINS > "$ACP_NODE_DIR/acp-wrappers.txt"
 
 ####################################################################################
 # Base image (minimal)
@@ -230,7 +238,7 @@ RUN set -eux; \
     mkdir -p /workspace/project; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
-# Install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI).
+# Install the ACP servers selected by INSTALL_ACP_PROVIDERS (see the stage above).
 # The payload itself (Node.js 22 + the ACP npm packages, under $ACP_NODE_DIR) is
 # built once in the acp-providers stage above, independent of BASE_IMAGE, and
 # copied in here so the layer is byte-identical across every base image it lands
@@ -249,11 +257,16 @@ COPY --from=acp-providers /opt/acp-wrappers/. /usr/local/bin/
 # glibc-modern stage, so a failure here means "incompatible with this specific
 # BASE_IMAGE", not "the ACP install failed". When that happens we remove the
 # copied payload and wrappers so the rest of the build (and non-ACP agents)
-# still work, rather than leaving binaries in place that cannot execute.
+# still work, rather than leaving binaries in place that cannot execute. The
+# wrapper names come from the manifest the acp-providers stage wrote, so this
+# tracks INSTALL_ACP_PROVIDERS instead of a list that goes stale per provider.
 RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
       echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
+      if [ -f "$ACP_NODE_DIR/acp-wrappers.txt" ]; then \
+        while read -r bin; do rm -f "/usr/local/bin/$bin"; done \
+          < "$ACP_NODE_DIR/acp-wrappers.txt"; \
+      fi; \
       rm -rf "$ACP_NODE_DIR"/*; \
-      rm -f /usr/local/bin/claude-agent-acp /usr/local/bin/codex-acp /usr/local/bin/gemini; \
     fi
 
 # Configure Claude Code managed settings for headless operation:

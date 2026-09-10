@@ -1,8 +1,3 @@
-const fs = require('node:fs');
-
-const MARKER = '<!-- endpoint-audit-report -->';
-const REPORT_PATH = '.audit/endpoint-audit.json';
-
 function list(items) {
   return items.length ? items.map((item) => `- \`${item}\``).join('\n') : '_none_';
 }
@@ -76,7 +71,6 @@ function renderEndpointAuditReport(report) {
   ].join('\n');
 
   return [
-    MARKER,
     '## Endpoint audit',
     '',
     `**${status}** · ${mode}`,
@@ -95,27 +89,4 @@ function renderEndpointAuditReport(report) {
   ].join('\n');
 }
 
-async function postEndpointAuditReport({ github, context, core, reportPath = REPORT_PATH }) {
-  if (!fs.existsSync(reportPath)) {
-    core.warning(`No audit report at ${reportPath}; skipping PR comment.`);
-    return;
-  }
-
-  const body = renderEndpointAuditReport(JSON.parse(fs.readFileSync(reportPath, 'utf8')));
-  const { owner, repo } = context.repo;
-  const issue_number = context.issue.number;
-  const comments = await github.paginate(github.rest.issues.listComments, {
-    owner,
-    repo,
-    issue_number,
-  });
-  const existing = comments.find((comment) => comment.body && comment.body.includes(MARKER));
-
-  if (existing) {
-    await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-  } else {
-    await github.rest.issues.createComment({ owner, repo, issue_number, body });
-  }
-}
-
-module.exports = { postEndpointAuditReport, renderEndpointAuditReport };
+module.exports = { renderEndpointAuditReport };

@@ -454,6 +454,29 @@ def test_all_tags_include_short_long_sha_and_branch():
     ]
 
 
+def test_slim_flavor_has_distinct_image_and_cache_tags():
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        base_image="python:3.13",
+        custom_tags="python",
+        git_sha="abc1234567890fedcba",
+        git_ref="refs/heads/main",
+        image_flavor="slim",
+        include_base_tag=False,
+    )
+
+    assert opts.all_tags == [
+        "ghcr.io/openhands/agent-server:abc1234-python-slim",
+        "ghcr.io/openhands/agent-server:abc1234567890fedcba-python-slim",
+        "ghcr.io/openhands/agent-server:main-python-slim",
+    ]
+    assert opts.cache_tags == (
+        "buildcache-binary-python_tag_3.13-slim-main",
+        "buildcache-binary-python_tag_3.13-slim",
+    )
+
+
 def test_all_tags_includes_versioned_tags():
     """Test that all_tags includes bare semver aliases when enabled for a tag build."""
     from openhands.agent_server.docker.build import BuildOptions
@@ -864,6 +887,66 @@ def test_base_image_target_uses_real_build_context(
         build(opts)
 
     assert mock_make_context.called == expect_real_context
+
+
+def test_base_image_minimal_stages_acp_install_catalog_without_full_context(
+    tmp_path: Path,
+):
+    """base-image-minimal's empty-context fast path must still stage the
+    dependency-free ACP install catalog the Dockerfile's acp-providers stage
+    COPies in — at the same relative path a real sdist-extracted context
+    would use — without falling back to the expensive full SDK build context.
+    """
+    from openhands.agent_server.docker.build import (
+        _ACP_INSTALL_CATALOG_RELPATH,
+        BuildOptions,
+        _default_sdk_project_root,
+        build,
+    )
+
+    fake_ctx = tmp_path / "base-ctx"
+
+    def fake_run(cmd, cwd=None):
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+    sdk_project_root = _default_sdk_project_root()
+    opts = BuildOptions(
+        base_image="python:3.12",
+        custom_tags="python",
+        target="base-image-minimal",
+        git_sha="abc1234567890",
+        git_ref="refs/heads/main",
+        push=False,
+        sdk_project_root=sdk_project_root,
+    )
+
+    with (
+        patch(
+            "openhands.agent_server.docker.build.tempfile.mkdtemp",
+            return_value=str(fake_ctx),
+        ),
+        patch(
+            "openhands.agent_server.docker.build._make_build_context"
+        ) as mock_make_context,
+        patch("openhands.agent_server.docker.build._run", side_effect=fake_run),
+        patch(
+            "openhands.agent_server.docker.build._active_buildx_driver",
+            return_value="docker-container",
+        ),
+        patch(
+            "openhands.agent_server.docker.build._default_local_cache_dir",
+            return_value=tmp_path / "cache",
+        ),
+        patch("openhands.agent_server.docker.build.shutil.rmtree"),
+    ):
+        fake_ctx.mkdir()
+        build(opts)
+
+    assert not mock_make_context.called
+    staged = fake_ctx / _ACP_INSTALL_CATALOG_RELPATH
+    assert staged.read_text() == (
+        (sdk_project_root / _ACP_INSTALL_CATALOG_RELPATH).read_text()
+    )
 
 
 def test_build_with_prebuilt_sdist_preserves_tags_and_docker_args(tmp_path: Path):
