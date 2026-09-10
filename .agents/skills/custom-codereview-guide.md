@@ -159,7 +159,8 @@ A PR is "deep" when a reviewer cannot fully judge it from the diff in a couple o
 
 - a new or changed public SDK API, the Agent Server REST contract, or an event/wire model;
 - a new module or subsystem, or a cross-cutting refactor or migration;
-- a behavior change in core logic (agent loop, conversation, tools, events, workspaces).
+- a behavior change in core logic (agent loop, conversation, tools, events, workspaces); or
+- a large diff (roughly 500+ lines changed) whose intent a reviewer cannot hold in their head at once, even if no single hunk is complex.
 
 Skip it for trivial PRs — a typo, a one-line guard, a config or dependency bump, a docs tweak, a small localized bug fix. If the diff is its own explanation, do not ask for a page.
 
