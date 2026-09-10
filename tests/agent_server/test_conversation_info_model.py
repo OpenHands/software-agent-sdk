@@ -18,6 +18,7 @@ routes them into the response model.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -77,25 +78,26 @@ def test_current_model_id_is_lifted_from_acp_agent():
     assert info.current_model_id == "claude-opus-4-1"
 
 
-@pytest.mark.parametrize(
-    ("status", "was_read", "expected"),
-    [
-        (ConversationExecutionStatus.RUNNING, None, False),
-        (ConversationExecutionStatus.FINISHED, None, True),
-        (ConversationExecutionStatus.FINISHED, True, False),
-    ],
-)
-def test_unread_requires_terminal_output_newer_than_last_read(
-    status, was_read, expected
-):
+@pytest.mark.parametrize("status", list(ConversationExecutionStatus))
+@pytest.mark.parametrize("read_offset", [None, -1, 0, 1])
+def test_unread_requires_terminal_output_newer_than_last_read(status, read_offset):
     state = _make_state(ACPAgent(acp_command=["echo", "test"]))
     state.execution_status = status
     stored = _make_stored(state)
-    stored.last_read_at = utc_now() if was_read else None
+    stored.last_read_at = (
+        None
+        if read_offset is None
+        else stored.updated_at + timedelta(seconds=read_offset)
+    )
 
     info = _compose_conversation_info(stored, state)
 
-    assert info.unread is expected
+    terminal = status in {
+        ConversationExecutionStatus.FINISHED,
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    }
+    assert info.unread is (terminal and read_offset in (None, -1))
 
 
 def test_current_model_id_is_none_when_acp_agent_has_no_model():

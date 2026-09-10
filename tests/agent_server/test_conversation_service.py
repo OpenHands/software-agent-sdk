@@ -2734,8 +2734,9 @@ class TestConversationServiceUpdateConversation:
         assert mock_service.stored.updated_at == original_updated_at
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("unread", [False, True])
     async def test_update_conversation_sets_read_state(
-        self, conversation_service, sample_stored_conversation
+        self, conversation_service, sample_stored_conversation, unread
     ):
         mock_service = AsyncMock(spec=EventService)
         mock_service.stored = sample_stored_conversation
@@ -2750,19 +2751,22 @@ class TestConversationServiceUpdateConversation:
         conversation_id = sample_stored_conversation.id
         conversation_service._event_services[conversation_id] = mock_service
 
-        await conversation_service.update_conversation(
-            conversation_id, UpdateConversationRequest(unread=False)
-        )
+        mock_service.stored.last_read_at = mock_service.stored.updated_at
+        original_updated_at = mock_service.stored.updated_at
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ) as notify:
+            assert await conversation_service.update_conversation(
+                conversation_id, UpdateConversationRequest(unread=unread)
+            )
 
-        assert mock_service.stored.last_read_at is not None
-        read_at = mock_service.stored.last_read_at
-
-        await conversation_service.update_conversation(
-            conversation_id, UpdateConversationRequest(unread=True)
-        )
-
-        assert read_at is not None
-        assert mock_service.stored.last_read_at is None
+        mock_service.save_meta.assert_awaited_once()
+        assert (mock_service.stored.last_read_at is None) is unread
+        assert mock_service.stored.updated_at == original_updated_at
+        notify.assert_awaited_once()
+        info = notify.call_args.args[0]
+        assert info.unread is unread
+        assert info.last_read_at == mock_service.stored.last_read_at
 
 
 class TestConversationServiceDeleteConversation:
