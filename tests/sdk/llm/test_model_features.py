@@ -325,6 +325,20 @@ def test_generic_reasoning_metadata_does_not_enable_reasoning_effort():
     assert features.supports_reasoning_effort is False
 
 
+def test_minimax_m3_deny_guard_overrides_misleading_proxy_metadata():
+    features = get_features(
+        "litellm_proxy/minimax-m3",
+        model_info={
+            "key": "minimax/MiniMax-M3",
+            "litellm_provider": "minimax",
+            "supports_reasoning": True,
+            "supported_openai_params": ["reasoning_effort", "thinking"],
+        },
+    )
+
+    assert features.supports_reasoning_effort is False
+
+
 def test_exact_reasoning_effort_metadata_enables_reasoning_effort():
     features = get_features(
         "proxy/reasoning-model",
