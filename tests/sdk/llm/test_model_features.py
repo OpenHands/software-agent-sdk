@@ -312,6 +312,31 @@ def test_metadata_drives_adaptive_thinking_and_sampling():
     assert features.supports_prompt_cache is True
 
 
+def test_generic_reasoning_metadata_does_not_enable_reasoning_effort():
+    features = get_features(
+        "minimax/MiniMax-M3",
+        model_info={
+            "litellm_provider": "minimax",
+            "supports_reasoning": True,
+            "supported_openai_params": ["thinking", "reasoning_split"],
+        },
+    )
+
+    assert features.supports_reasoning_effort is False
+
+
+def test_exact_reasoning_effort_metadata_enables_reasoning_effort():
+    features = get_features(
+        "proxy/reasoning-model",
+        model_info={
+            "supports_reasoning": True,
+            "supported_openai_params": ["reasoning_effort"],
+        },
+    )
+
+    assert features.supports_reasoning_effort is True
+
+
 def test_gemini_metadata_does_not_enable_explicit_prompt_cache():
     features = get_features(
         "litellm_proxy/gemini-3.1-pro-preview",
