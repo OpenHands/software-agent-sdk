@@ -50,6 +50,24 @@ class _SecretRedactFilter(logging.Filter):
         return True
 
 
+def _install_libtmux_redaction_filter() -> None:
+    logger_names = [
+        "libtmux",
+        *(
+            name
+            for name, candidate in logging.Logger.manager.loggerDict.items()
+            if name.startswith("libtmux.") and isinstance(candidate, logging.Logger)
+        ),
+    ]
+    for logger_name in logger_names:
+        libtmux_logger = logging.getLogger(logger_name)
+        if not any(
+            isinstance(log_filter, _SecretRedactFilter)
+            for log_filter in libtmux_logger.filters
+        ):
+            libtmux_logger.addFilter(_SecretRedactFilter())
+
+
 # Map normalized special key names to tmux key names.
 _TMUX_SPECIALS: dict[str, str] = {
     "ENTER": "Enter",
@@ -90,6 +108,7 @@ class TmuxTerminal(TerminalInterface):
         env: Mapping[str, str] | None = None,
     ):
         super().__init__(work_dir, username)
+        _install_libtmux_redaction_filter()
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
         self._env = normalize_terminal_env(env)
 
@@ -97,12 +116,6 @@ class TmuxTerminal(TerminalInterface):
         """Initialize the tmux terminal session."""
         if self._initialized:
             return
-
-        # Install a redaction filter on the libtmux logger to prevent secrets
-        # (e.g. API keys in send-keys arguments) from leaking to stderr.
-        _libtmux_logger = logging.getLogger("libtmux")
-        if not any(isinstance(f, _SecretRedactFilter) for f in _libtmux_logger.filters):
-            _libtmux_logger.addFilter(_SecretRedactFilter())
 
         env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
