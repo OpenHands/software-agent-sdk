@@ -37,7 +37,6 @@ from openhands.sdk.llm.utils.runtime_metadata import (
     store_result,
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -471,19 +470,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
     drop_params: bool = Field(default=True, json_schema_extra=field_meta())
-    modify_params: bool = Field(
-        default=True,
-        description=(
-            "Compatibility field. LiteLLM parameter modification is enabled "
-            "process-wide so concurrent LLM calls do not mutate shared global state."
-        ),
-        deprecated=(
-            "Deprecated since v1.42.0 and scheduled for removal in v1.47.0. "
-            "LiteLLM parameter modification is enabled process-wide; remove this "
-            "argument."
-        ),
-        json_schema_extra=field_meta(),
-    )
     disable_vision: bool | None = Field(
         default=None,
         description="If model is vision capable, this option allows to disable image "
@@ -703,17 +689,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return data
         d = dict(data)
 
-        if "modify_params" in d:
-            warn_deprecated(
-                "LLM.modify_params",
-                deprecated_in="1.42.0",
-                removed_in="1.47.0",
-                details=(
-                    "LiteLLM parameter modification is enabled process-wide; "
-                    "remove this argument."
-                ),
-                stacklevel=3,
-            )
+        # ``modify_params`` was a compatibility field removed in v1.47.0 (LiteLLM
+        # parameter modification is enabled process-wide). Silently drop it so
+        # older serialized configs still load.
+        d.pop("modify_params", None)
 
         model_val = d.get("model")
         if not model_val:
