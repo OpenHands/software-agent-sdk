@@ -323,6 +323,13 @@ class Config(BaseModel):
         default=True,
         description="Whether to preload tools",
     )
+    prewarm_profile_skills: bool = Field(
+        default=True,
+        description=(
+            "Whether to populate the public skill catalog during server startup, "
+            "before profile-launched conversations can be created."
+        ),
+    )
     max_concurrent_runs: int = Field(
         default=10,
         ge=1,

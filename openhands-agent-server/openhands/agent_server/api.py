@@ -68,6 +68,7 @@ from openhands.agent_server.server_details_router import (
 from openhands.agent_server.session_socket import session_router
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
+from openhands.agent_server.skills_service import prewarm_profile_skills
 from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.sub_agents_router import sub_agents_router
 from openhands.agent_server.telemetry import (
@@ -192,10 +193,17 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("Tool preload service is disabled")
 
+        async def prewarm_skills():
+            if config.prewarm_profile_skills:
+                await prewarm_profile_skills()
+            else:
+                logger.info("Profile skill catalog prewarming is disabled")
+
         # Start all services concurrently
         results = await asyncio.gather(
             start_vscode_service(),
             start_tool_preload_service(),
+            prewarm_skills(),
             return_exceptions=True,
         )
 

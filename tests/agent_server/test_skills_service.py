@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from openhands.agent_server.skills_service import (
     load_org_skills_from_url,
     load_registered_marketplace_skills,
     merge_skills,
+    prewarm_profile_skills,
     sync_public_skills,
 )
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
@@ -764,6 +766,32 @@ class TestDiscoverProfileSkills:
         with patch(self._LOAD_ALL, side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError, match="boom"):
                 discover_profile_skills()
+
+
+async def test_prewarm_profile_skills_loads_catalog_off_event_loop():
+    event_loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def discover() -> list[Skill]:
+        worker_threads.append(threading.get_ident())
+        return [Skill(name="ready", content="ready")]
+
+    with patch(
+        "openhands.agent_server.skills_service.discover_profile_skills",
+        side_effect=discover,
+    ):
+        assert await prewarm_profile_skills() is True
+
+    assert worker_threads
+    assert worker_threads[0] != event_loop_thread
+
+
+async def test_prewarm_profile_skills_failure_is_nonfatal():
+    with patch(
+        "openhands.agent_server.skills_service.discover_profile_skills",
+        side_effect=RuntimeError("offline"),
+    ):
+        assert await prewarm_profile_skills() is False
 
 
 class TestSyncPublicSkills:

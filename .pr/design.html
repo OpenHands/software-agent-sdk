@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prewarm the server-owned profile skill catalog</title>
+<style>
+:root{--fg:#1a1a1a;--muted:#5a5a5a;--subtle:#8a8a82;--bg:#fdfdfb;--card:#fff;--elevated:#f7f6f1;--accent:#2b4eaa;--accent-soft:#e6ecfa;--rule:#e2e2dc;--rule-strong:#bdbcb4;--code-bg:#f3f1ec;--warn:#b25b0e;--ok:#2f7a3a;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans)}body{line-height:1.6;font-size:16px}.wrap{display:grid;grid-template-columns:230px minmax(0,1fr);gap:44px;max-width:1180px;margin:0 auto;padding:32px 28px 96px}nav{position:sticky;top:24px;align-self:start;font-size:13px}nav h2{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}nav ol{list-style:none;padding:0;margin:0;counter-reset:toc}nav li{counter-increment:toc;margin:5px 0}nav li:before{content:counter(toc) ". ";color:var(--muted)}nav a{color:var(--fg);text-decoration:none}nav a:hover,.src{color:var(--accent)}header{border-bottom:1px solid var(--rule);padding-bottom:22px;margin-bottom:28px}.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}h1{font-size:34px;line-height:1.2;margin:6px 0 8px;letter-spacing:-.01em}.sub{color:var(--muted);max-width:760px}h2{font-size:22px;margin:44px 0 10px}h2 .num{color:var(--muted);font-weight:500;margin-right:8px}h3{font-size:16px;margin:22px 0 8px}code{font-family:var(--mono);font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:3px}pre{font-family:var(--mono);font-size:13px;background:var(--code-bg);padding:14px 16px;border-radius:6px;overflow:auto;border:1px solid var(--rule)}table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule);vertical-align:top}th{font-weight:600;background:var(--code-bg)}.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 14px;margin:14px 0;border-radius:0 4px 4px 0;font-size:14.5px}.warn{border-color:var(--warn);background:#fbf1e6}.note{border-color:var(--muted);background:#f3f1ec}.fig{margin:18px 0 22px}.fig svg{display:block;max-width:100%;height:auto;background:#fff;border:1px solid var(--rule);border-radius:6px}.fig figcaption{font-size:13px;color:var(--muted);margin-top:6px;text-align:center}.src{font-family:var(--mono);font-size:12px;text-decoration:none;border-bottom:1px dotted var(--accent)}details{border:1px solid var(--rule);border-radius:6px;margin:12px 0}details>summary{cursor:pointer;padding:8px 12px;color:var(--muted);font-size:13px}.tag{display:inline-block;font:11px var(--mono);padding:2px 6px;border-radius:9px;background:var(--elevated);margin-right:5px}.ok{color:var(--ok)}.warn-text{color:var(--warn)}.files td:first-child{font-family:var(--mono);font-size:12px}.ba{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{border:1px solid var(--rule);border-radius:6px;padding:14px;background:var(--card)}@media(max-width:760px){.wrap{grid-template-columns:1fr}.ba{grid-template-columns:1fr}nav{position:static}}
+</style>
+</head>
+<body><div class="wrap">
+<nav><h2>Contents</h2><ol>
+<li><a href="#decision">Move clone cost to boot</a></li>
+<li><a href="#flow">Before → after flow</a></li>
+<li><a href="#contract">Configuration contract</a></li>
+<li><a href="#files">Review map</a></li>
+<li><a href="#evidence">Verification evidence</a></li>
+<li><a href="#risk">Risk and fallback</a></li>
+</ol></nav>
+<main>
+<header><div class="eyebrow">Agent-server design note · issue #3979</div><h1>Prewarm the server-owned profile skill catalog</h1><p class="sub">Profile launches already resolve skills through the agent server. This change moves the public catalog's cold Git clone from the first profile launch into server startup, while keeping offline startup nonfatal and providing an explicit opt-out.</p></header>
+<section id="decision"><h2><span class="num">1</span>The first launch no longer owns catalog setup</h2>
+<div class="callout">★ Readiness now means the profile skill catalog has had its best-effort warmup attempt. A real cold-start run cloned OpenHands/extensions and loaded <strong>60 skills</strong> before Uvicorn reported application startup complete.</div>
+<p>The existing profile path remains authoritative: <code>discover_profile_skills()</code> still builds the user + public catalog. Startup simply invokes the same function early; there is no second catalog, bundled snapshot, or alternate merge rule. Sources: <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/openhands/prewarm-profile-skills/openhands-agent-server/openhands/agent_server/skills_service.py#L435-L475">skills_service.py:435-475</a>.</p>
+</section>
+<section id="flow"><h2><span class="num">2</span>Clone and parse shift before readiness</h2>
+<figure class="fig"><svg viewBox="0 0 960 420" role="img" aria-labelledby="flow-title flow-desc"><title id="flow-title">Profile skill loading before and after startup prewarming</title><desc id="flow-desc">Before, the first profile launch cloned the catalog. After, the lifespan warms the same catalog before readiness and launches use the populated cache.</desc><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--subtle)"/></marker><marker id="arr-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--warn)"/></marker><style>.old{fill:var(--code-bg);stroke:var(--subtle);stroke-width:1.4;stroke-dasharray:5 3}.new{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2}.title{font:700 13px var(--sans);fill:var(--fg)}.detail{font:11px var(--mono);fill:var(--muted)}.label{font:700 12px var(--sans);fill:var(--muted)}.edge{stroke:var(--subtle);stroke-width:1.5;fill:none;marker-end:url(#arr)}.changed{stroke:var(--warn);stroke-width:2;stroke-dasharray:5 3;fill:none;marker-end:url(#arr-new)}.delta{font:700 11px var(--mono);fill:var(--warn)}</style></defs>
+<text class="label" x="32" y="34">BEFORE · request critical path</text>
+<rect class="old" x="32" y="60" width="190" height="68" rx="7"/><text class="title" x="127" y="87" text-anchor="middle">POST conversation</text><text class="detail" x="127" y="108" text-anchor="middle">agent_profile_id</text>
+<path class="edge" d="M222 94H276"/><rect class="old" x="276" y="60" width="190" height="68" rx="7"/><text class="title" x="371" y="87" text-anchor="middle">discover_profile_skills()</text><text class="detail" x="371" y="108" text-anchor="middle">skills_service.py:435</text>
+<path class="edge" d="M466 94H520"/><rect class="old" x="520" y="60" width="190" height="68" rx="7"/><text class="title" x="615" y="87" text-anchor="middle">Git clone + parse</text><text class="detail" x="615" y="108" text-anchor="middle">first profile launch waits</text>
+<path class="edge" d="M710 94H764"/><rect class="old" x="764" y="60" width="164" height="68" rx="7"/><text class="title" x="846" y="87" text-anchor="middle">Resolve profile</text><text class="detail" x="846" y="108" text-anchor="middle">catalog available</text>
+<text class="label" x="32" y="205">AFTER · startup critical path</text>
+<rect class="new" x="32" y="230" width="190" height="68" rx="7"/><text class="title" x="127" y="257" text-anchor="middle">api_lifespan()</text><text class="detail" x="127" y="278" text-anchor="middle">api.py:154-208</text>
+<path class="changed" d="M222 264H276"/><text class="delta" x="249" y="250" text-anchor="middle">new</text><rect class="new" x="276" y="230" width="190" height="68" rx="7"/><text class="title" x="371" y="257" text-anchor="middle">prewarm_profile_skills()</text><text class="detail" x="371" y="278" text-anchor="middle">asyncio.to_thread</text>
+<path class="changed" d="M466 264H520"/><rect class="new" x="520" y="230" width="190" height="68" rx="7"/><text class="title" x="615" y="257" text-anchor="middle">Git clone + parse</text><text class="detail" x="615" y="278" text-anchor="middle">before readiness</text>
+<path class="changed" d="M710 264H764"/><rect class="new" x="764" y="230" width="164" height="68" rx="7"/><text class="title" x="846" y="257" text-anchor="middle">Ready</text><text class="detail" x="846" y="278" text-anchor="middle">cache populated</text>
+<path class="edge" d="M846 298V352H371V326"/><rect class="new" x="276" y="326" width="190" height="60" rx="7"/><text class="title" x="371" y="350" text-anchor="middle">First profile launch</text><text class="detail" x="371" y="371" text-anchor="middle">reuses warmed catalog</text>
+</svg><figcaption>Fig 1 · The catalog source and resolver do not change; only the timing of the first load changes.</figcaption></figure>
+</section>
+<section id="contract"><h2><span class="num">3</span>The startup behavior is explicit and reversible</h2><div class="ba"><div class="card"><h3>Before</h3><pre><code>Config
+  preload_tools: bool = True
+
+# No profile catalog warmup.
+# First profile launch initializes it.</code></pre></div><div class="card"><h3>After</h3><pre><code>Config
+  preload_tools: bool = True
+  prewarm_profile_skills: bool = True
+
+# Opt out:
+OH_PREWARM_PROFILE_SKILLS=0</code></pre></div></div>
+<p>The change is additive. Existing configurations remain valid; operators that require immediate offline startup can disable the warmup. Source: <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/openhands/prewarm-profile-skills/openhands-agent-server/openhands/agent_server/config.py#L322-L332">config.py:322-332</a>.</p>
+</section>
+<section id="files"><h2><span class="num">4</span>Review map</h2><table class="files"><thead><tr><th>File</th><th>Role</th><th>Review focus</th></tr></thead><tbody>
+<tr><td>agent_server/api.py</td><td><span class="tag">logic</span></td><td>Warmup joins the existing concurrent startup gather before readiness.</td></tr>
+<tr><td>agent_server/skills_service.py</td><td><span class="tag">logic</span></td><td>The existing profile discovery path runs in a worker thread; failures return false.</td></tr>
+<tr><td>agent_server/config.py</td><td><span class="tag">API</span></td><td>Additive default-on opt-out field.</td></tr>
+<tr><td>tests/agent_server/test_api.py</td><td><span class="tag">test</span></td><td>Asserts warmup has completed inside the lifespan context.</td></tr>
+<tr><td>tests/agent_server/test_skills_service.py</td><td><span class="tag">test</span></td><td>Asserts off-loop dispatch and nonfatal failure.</td></tr>
+<tr><td>tests/agent_server/test_config.py</td><td><span class="tag">test</span></td><td>Asserts default and environment opt-out.</td></tr>
+<tr><td>tests/agent_server/conftest.py</td><td><span class="tag">test</span></td><td>Prevents unrelated tests from contacting GitHub.</td></tr>
+<tr><td>AGENTS.md</td><td><span class="tag">memory</span></td><td>Records the startup invariant for later work.</td></tr>
+</tbody></table></section>
+<section id="evidence"><h2><span class="num">5</span>Real cold start proves ordering</h2><pre><code>16:38:28.136  Cloning repository from https://github.com/OpenHands/extensions
+16:38:29.017  Loaded 60 public skills
+16:38:29.018  Prewarmed profile skill catalog with 60 skills
+16:38:29.076  Application startup complete.</code></pre>
+<p class="ok">✓ Cold cache populated at <code>/tmp/oh3979-live/cache/skills/public-skills</code>, revision <code>e43710b</code>, before <code>/ready</code> returned 200.</p>
+<p class="ok">✓ 125 affected tests passed across config, skills service, API lifespan, deferred init, and real wsproto startup.</p>
+<p class="ok">✓ Ruff format, Ruff lint, pycodestyle, Pyright, import rules, and tool registration passed.</p>
+<details><summary>Commands</summary><pre><code>make build
+uv run pytest -q tests/agent_server/test_config.py \
+  tests/agent_server/test_skills_service.py \
+  tests/agent_server/test_api.py \
+  tests/agent_server/test_init_router.py
+uv run pre-commit run --files &lt;changed files&gt;</code></pre></details>
+</section>
+<section id="risk"><h2><span class="num">6</span>Startup pays the network cost once</h2>
+<div class="callout warn">⚠ This deliberately moves clone latency to startup. It does not remove network cost, pin OpenHands/extensions, or change the 60-second refresh policy for mutable refs.</div>
+<p>Three guardrails keep the trade-off bounded: the blocking Git work runs in <code>asyncio.to_thread</code>, a failed clone cannot brick startup, and <code>OH_PREWARM_PROFILE_SKILLS=0</code> restores lazy behavior. The same startup path also runs for deferred-init pods, allowing their dormant warm-pool period to absorb catalog setup.</p>
+</section>
+</main></div></body></html>

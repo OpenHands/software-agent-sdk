@@ -15,6 +15,15 @@ def isolate_persistence_dir(tmp_path, monkeypatch):
     pass or fail depending on the machine.
     """
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    monkeypatch.setenv("OH_PREWARM_PROFILE_SKILLS", "0")
+
+    async def skip_profile_skill_prewarm() -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "openhands.agent_server.api.prewarm_profile_skills",
+        skip_profile_skill_prewarm,
+    )
     reset_stores()
     try:
         yield

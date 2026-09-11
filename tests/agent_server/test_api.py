@@ -388,6 +388,30 @@ class TestServiceParallelization:
             # Verify conversation service was set up
             assert mock_app.state.conversation_service == mock_conversation_service
 
+    async def test_profile_skills_are_prewarmed_before_ready(self):
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+            patch(
+                "openhands.agent_server.api.prewarm_profile_skills",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_prewarm,
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(config=Config(prewarm_profile_skills=True))
+
+            async with api_lifespan(mock_app):
+                mock_prewarm.assert_awaited_once()
+
     async def test_lifespan_defaults_and_restores_tmux_tmpdir(
         self, tmp_path, monkeypatch
     ):
