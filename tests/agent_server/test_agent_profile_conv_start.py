@@ -47,8 +47,9 @@ from openhands.sdk.profiles.resolver import (
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from openhands.sdk.workspace import LocalWorkspace
-
-
+from openhands.sdk.git.utils import run_git_command
+from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.profiles.agent_profile import GitIdentity
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -185,6 +186,15 @@ class TestResolveAgentFromProfile:
         # OpenHands profiles always discover the catalog (deny-list needs the
         # full set), threaded through to the resolver as available_skills.
         profile = _make_openhands_profile()
+        profile = profile.model_copy(
+            update={
+                "git_identity": GitIdentity(
+                    name="Profile User",
+                    email="profile@example.com",
+                )
+            }
+        )
+        assert isinstance(profile.git_identity, GitIdentity)
         agent = _make_agent()
 
         with (
@@ -208,13 +218,16 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, git_identity = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
         assert result_agent is agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
+        assert git_identity is not None
+        assert git_identity.name == "Profile User"
+        assert git_identity.email == "profile@example.com"
         # OpenHands discovery always runs; its result is threaded through.
         MockDiscover.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == []
@@ -250,7 +263,7 @@ class TestResolveAgentFromProfile:
             store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -377,7 +390,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -408,7 +421,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -440,7 +453,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -472,7 +485,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -553,7 +566,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = acp_agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, git_identity = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -726,6 +739,136 @@ async def _start_with_agent(
 
 class TestConversationServiceStartFromProfile:
     @pytest.mark.asyncio
+    async def test_start_from_profile_applies_git_identity_to_workspace(
+        self, tmp_path
+    ):
+        """A profile Git identity is applied to the conversation workspace."""
+        profile_id = uuid4()
+        agent = _make_agent()
+        launched_agent_profile = LaunchedAgentProfile(
+            agent_profile_id=profile_id,
+            revision=5,
+        )
+        git_identity = GitIdentity(
+            name="Profile User",
+            email="profile@example.com",
+        )
+        request = StartConversationRequest(
+            agent_profile_id=profile_id,
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        )
+
+        with patch(
+            "openhands.agent_server.conversation_service._resolve_agent_from_profile",
+            return_value=(agent, launched_agent_profile, git_identity),
+        ):
+            service = ConversationService(conversations_dir=tmp_path)
+            service._event_services = {}
+
+            mock_es = AsyncMock(spec=EventService)
+            mock_state = ConversationState(
+                id=uuid4(),
+                agent=agent,
+                workspace=request.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+            )
+            mock_es.get_state.return_value = mock_state
+            mock_es.stored = MagicMock(
+                launched_agent_profile=launched_agent_profile,
+                client_tools=[],
+                title=None,
+                metrics=None,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                forked_from_conversation_id=None,
+                forked_from_event_id=None,
+                parent_conversation_id=None,
+            )
+
+            with patch.object(
+                service,
+                "_start_event_service",
+                new_callable=AsyncMock,
+                return_value=mock_es,
+            ):
+                await service.start_conversation(request)
+
+        assert (
+            run_git_command(
+                ["git", "config", "--local", "user.name"],
+                tmp_path,
+            )
+            == "Profile User"
+        )
+        assert (
+            run_git_command(
+                ["git", "config", "--local", "user.email"],
+                tmp_path,
+            )
+            == "profile@example.com"
+        )
+    @pytest.mark.asyncio
+    async def test_start_from_profile_without_git_identity_uses_global_fallback(
+        self, tmp_path
+    ):
+        """A profile without Git identity leaves global Git config as fallback."""
+        profile_id = uuid4()
+        agent = _make_agent()
+        launched_agent_profile = LaunchedAgentProfile(
+            agent_profile_id=profile_id,
+            revision=5,
+        )
+        request = StartConversationRequest(
+            agent_profile_id=profile_id,
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        )
+
+        run_git_command(["git", "init", "-b", "main"], tmp_path)
+
+        with patch(
+            "openhands.agent_server.conversation_service._resolve_agent_from_profile",
+            return_value=(agent, launched_agent_profile, None),
+        ):
+            service = ConversationService(conversations_dir=tmp_path)
+            service._event_services = {}
+
+            mock_es = AsyncMock(spec=EventService)
+            mock_state = ConversationState(
+                id=uuid4(),
+                agent=agent,
+                workspace=request.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+            )
+            mock_es.get_state.return_value = mock_state
+            mock_es.stored = MagicMock(
+                launched_agent_profile=launched_agent_profile,
+                client_tools=[],
+                title=None,
+                metrics=None,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                forked_from_conversation_id=None,
+                forked_from_event_id=None,
+                parent_conversation_id=None,
+            )
+
+            with patch.object(
+                service,
+                "_start_event_service",
+                new_callable=AsyncMock,
+                return_value=mock_es,
+            ):
+                await service.start_conversation(request)
+
+            local_config = run_git_command(
+                ["git", "config", "--local", "--list"],
+                tmp_path,
+                expected_failure=True,
+            )
+
+            assert "user.name=" not in local_config
+            assert "user.email=" not in local_config
+    @pytest.mark.asyncio
     async def test_start_from_profile_stamps_launched_agent_profile_on_stored(
         self, tmp_path
     ):
@@ -750,7 +893,7 @@ class TestConversationServiceStartFromProfile:
 
         with patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(agent, launched_agent_profile),
+            return_value=(agent, launched_agent_profile, None),
         ):
             service = ConversationService(conversations_dir=tmp_path)
             service._event_services = {}

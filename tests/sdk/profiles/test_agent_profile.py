@@ -259,7 +259,86 @@ def test_mcp_server_refs_null_vs_empty_are_distinct() -> None:
     assert (
         validate_agent_profile(use_none.model_dump(mode="json")).mcp_server_refs == []
     )
+# ---------------------------------------------------------------------------
+# Git identity
+# ---------------------------------------------------------------------------
 
+
+def test_git_identity_round_trips_for_openhands_profile() -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        git_identity={"name": "Profile User", "email": "profile@example.com"},
+    )
+
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+
+    assert isinstance(reloaded, OpenHandsAgentProfile)
+    assert reloaded.git_identity is not None
+    assert reloaded.git_identity.name == "Profile User"
+    assert reloaded.git_identity.email == "profile@example.com"
+
+
+def test_git_identity_round_trips_for_acp_profile() -> None:
+    profile = ACPAgentProfile(
+        name="acp",
+        acp_server="claude-code",
+        git_identity={"name": "ACP User", "email": "acp@example.com"},
+    )
+
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+
+    assert isinstance(reloaded, ACPAgentProfile)
+    assert reloaded.git_identity is not None
+    assert reloaded.git_identity.name == "ACP User"
+    assert reloaded.git_identity.email == "acp@example.com"
+
+
+def test_git_identity_defaults_to_none() -> None:
+    openhands = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    acp = ACPAgentProfile(name="acp", acp_server="claude-code")
+
+    assert openhands.git_identity is None
+    assert acp.git_identity is None
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"name": "", "email": "user@example.com"},
+        {"name": "User", "email": ""},
+    ],
+)
+def test_git_identity_rejects_empty_name_or_email(
+    identity: dict[str, str],
+) -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "openhands",
+                "name": "oh",
+                "llm_profile_ref": "default",
+                "git_identity": identity,
+            }
+        )
+
+
+def test_git_identity_is_persisted_in_profile_dump() -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        git_identity={
+            "name": "Persisted User",
+            "email": "persisted@example.com",
+        },
+    )
+
+    dumped = profile.model_dump(mode="json")
+
+    assert dumped["git_identity"] == {
+        "name": "Persisted User",
+        "email": "persisted@example.com",
+    }
 
 def test_mcp_server_refs_default_is_null() -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="d")
