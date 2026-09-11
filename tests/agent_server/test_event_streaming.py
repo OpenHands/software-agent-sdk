@@ -16,6 +16,7 @@ from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event
 from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
+from openhands.sdk.agent.stream_context import StreamProgress, StreamStarted
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
@@ -366,3 +367,47 @@ async def test_delta_idle_signal_is_throttled(event_service, tmp_path, monkeypat
     monkeypatch.setattr(server_details_router, "_last_event_time", stale)
     callback(_make_chunk(content="second"))
     assert server_details_router._last_event_time == stale
+
+
+async def _start_and_capture_stream_callback(event_service, tmp_path):
+    """Start the service and return the wired stream-progress callback."""
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+
+    with _mock_local_conversation() as MockConv:
+        mock_conv = MagicMock()
+        mock_conv.state = MagicMock()
+        mock_conv.state.execution_status = "idle"
+        mock_conv._state = MagicMock()
+        mock_conv._on_event = MagicMock()
+        MockConv.return_value = mock_conv
+
+        await event_service.start()
+        return MockConv.call_args.kwargs["stream_callbacks"][0]
+
+
+class _ProgressCollector(Subscriber[StreamProgress]):
+    def __init__(self):
+        self.frames: list[StreamProgress] = []
+
+    async def __call__(self, frame: StreamProgress):
+        self.frames.append(frame)
+
+    async def close(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stream_progress_reaches_its_own_subscribers(event_service, tmp_path):
+    """Progress rides a separate fan-out, so no event-bus consumer sees it."""
+    callback = await _start_and_capture_stream_callback(event_service, tmp_path)
+
+    progress = _ProgressCollector()
+    event_service._stream_pub_sub.subscribe(progress)
+    on_the_event_bus = _CollectorSubscriber()
+    event_service._pub_sub.subscribe(on_the_event_bus)
+
+    callback(StreamStarted(item_id="item-1", attempt=1, anchor_seq=3))
+    await asyncio.sleep(0.05)
+
+    assert progress.frames == [StreamStarted("item-1", 1, 3)]
+    assert on_the_event_bus.events == []

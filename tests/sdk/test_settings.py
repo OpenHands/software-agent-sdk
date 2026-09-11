@@ -528,6 +528,25 @@ def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
     assert settings.llm.base_url is None
 
 
+def test_validate_agent_settings_migrates_v5_modify_params() -> None:
+    """Persisted ``llm.modify_params`` (removed in v1.47.0) is dropped on load."""
+    settings = validate_agent_settings(
+        {
+            "schema_version": 5,
+            "agent_kind": "openhands",
+            "llm": {
+                "model": "gpt-4o",
+                "modify_params": True,
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.llm.model == "gpt-4o"
+    assert "modify_params" not in settings.llm.model_dump()
+
+
 def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
     settings = validate_agent_settings(
         {

@@ -4,6 +4,7 @@ from typing import Any, cast
 from tenacity import (
     RetryCallState,
     retry,
+    retry_base,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -76,7 +77,9 @@ class RetryMixin:
     def retry_decorator(
         self,
         num_retries: int = 5,
-        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
+        retry_exceptions: tuple[type[BaseException], ...] | retry_base = (
+            LLMNoResponseError,
+        ),
         retry_min_wait: int = 8,
         retry_max_wait: int = 64,
         retry_multiplier: float = 2.0,
@@ -85,14 +88,25 @@ class RetryMixin:
         """
         Create a LLM retry decorator with customizable parameters.
         This is used for 429 errors, and a few other exceptions in LLM classes.
+
+        ``retry_exceptions`` may be either a tuple of exception types (retried
+        as-is) or a tenacity retry predicate (e.g. a combined
+        ``retry_if_exception_type(...) & retry_if_not_exception(...)``) for
+        finer-grained control over which exceptions are retried.
         """
         before_sleep = self._build_before_sleep(num_retries, retry_listener)
+
+        retry_condition = (
+            retry_if_exception_type(retry_exceptions)
+            if isinstance(retry_exceptions, tuple)
+            else retry_exceptions
+        )
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
             stop=stop_after_attempt(num_retries),
             reraise=True,
-            retry=retry_if_exception_type(retry_exceptions),
+            retry=retry_condition,
             wait=wait_exponential(
                 multiplier=retry_multiplier,
                 min=retry_min_wait,
