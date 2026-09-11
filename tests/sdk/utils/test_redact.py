@@ -318,8 +318,7 @@ class TestRedactApiKeyLiterals:
     def test_redacts_sk_oh_key_in_log_line(self):
         """Realistic log line with an sk-oh-* key is redacted."""
         text = (
-            'ERROR runtime stderr: api_key="sk-oh-Xk9mP2vL4nR7wQ1y" '
-            "connection refused"
+            'ERROR runtime stderr: api_key="sk-oh-Xk9mP2vL4nR7wQ1y" connection refused'
         )
         result = redact_api_key_literals(text)
         assert "sk-oh-Xk9mP2vL4nR7wQ1y" not in result
