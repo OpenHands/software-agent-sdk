@@ -39,6 +39,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.models import kind_of
@@ -86,6 +87,19 @@ class AgentLaunchAdditions(BaseModel):
         description=(
             "Deployment-controlled text appended to the resolved agent's "
             "system-message suffix."
+        ),
+    )
+    skills: list[Skill] | None = Field(
+        default=None,
+        description=(
+            "Deployment-supplied skills merged into the resolved agent's "
+            "context. For a client that ships its own skill catalog and so "
+            "cannot rely on the server's: an ``agent_profile_id`` launch sends "
+            "no ``agent_settings``, leaving it no other way to supply them. "
+            "Merged by name — a skill the resolved agent already carries wins, "
+            "and the profile's ``disabled_skills`` deny-list still applies, so "
+            "this cannot reintroduce something the profile turned off. None "
+            "(the default) adds nothing."
         ),
     )
 

@@ -68,6 +68,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.skills import Skill
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -127,6 +128,37 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     existing_suffix = (context.system_message_suffix or "").strip()
     suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
+    return agent.model_copy(update={"agent_context": updated_context})
+
+
+def _merge_launch_skills(agent: AgentBase, additions: list[Skill]) -> AgentBase:
+    """Merge deployment-supplied skills into a resolved agent's context.
+
+    For a client whose skill catalog is its own (Agent Canvas bundles the public
+    catalog at build time rather than cloning it): an ``agent_profile_id`` launch
+    sends no ``agent_settings``, so this is its only channel.
+
+    The resolved agent wins on a name collision — its skills came from the
+    profile and the server's own sources, which are the more authoritative view
+    — and the context's ``disabled_skills`` deny-list is re-applied afterwards,
+    so an addition cannot turn back on something the profile turned off.
+    ``AgentContext`` rejects duplicate names, hence the explicit de-duplication
+    rather than a concatenation.
+    """
+    context = agent.agent_context or AgentContext()
+    existing = {skill.name for skill in context.skills}
+    disabled = set(context.disabled_skills)
+    merged = [
+        *context.skills,
+        *(
+            skill
+            for skill in additions
+            if skill.name not in existing and skill.name not in disabled
+        ),
+    ]
+    if len(merged) == len(context.skills):
+        return agent
+    updated_context = context.model_copy(update={"skills": merged})
     return agent.model_copy(update={"agent_context": updated_context})
 
 
@@ -1630,6 +1662,10 @@ class ConversationService:
         if suffix:
             request = request.model_copy(
                 update={"agent": _append_system_message_suffix(request.agent, suffix)}
+            )
+        if additions and additions.skills and request.agent is not None:
+            request = request.model_copy(
+                update={"agent": _merge_launch_skills(request.agent, additions.skills)}
             )
 
         request = _prepare_request_workspace(
