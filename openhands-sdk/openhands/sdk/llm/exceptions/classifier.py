@@ -11,6 +11,7 @@ from litellm.exceptions import (
     InternalServerError,
     OpenAIError,
     PermissionDeniedError,
+    RateLimitError,
 )
 
 from .types import (
@@ -79,6 +80,17 @@ CONTENT_POLICY_PATTERNS: Final[list[str]] = [
     "content_policy",
     "content filtering policy",
     "output blocked by content filtering",
+]
+
+# Hard quota-exhaustion signals inside RateLimitError payloads.
+# These errors are deterministic: retrying the same model without raising the
+# quota will always fail, so the retry loop should be skipped entirely and the
+# configured fallback strategy consulted immediately.
+HARD_QUOTA_PATTERNS: Final[list[str]] = [
+    "usage_limit_reached",
+    "insufficient_quota",
+    "quota exceeded",
+    "exceeded your current quota",
 ]
 
 
@@ -151,3 +163,22 @@ def is_content_policy_violation(exception: Exception) -> bool:
         return False
     s = str(exception).lower()
     return any(p in s for p in CONTENT_POLICY_PATTERNS)
+
+
+def is_hard_quota_error(exception: BaseException) -> bool:
+    """Return True if the error signals a hard account-level quota exhaustion.
+
+    Hard quota errors (e.g. ``usage_limit_reached``, ``insufficient_quota``)
+    are deterministic: retrying the same request against the same model will
+    always fail until the quota resets or is raised.  The retry loop should
+    skip all backoff attempts and let the configured fallback strategy take
+    over immediately.
+
+    Only ``RateLimitError`` is inspected because transient per-minute 429s
+    (the common case) are also surfaced as ``RateLimitError`` and must keep
+    their existing retry behaviour.
+    """
+    if not isinstance(exception, RateLimitError):
+        return False
+    s = str(exception).lower()
+    return any(p in s for p in HARD_QUOTA_PATTERNS)

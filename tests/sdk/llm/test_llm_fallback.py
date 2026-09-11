@@ -619,3 +619,129 @@ async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
     fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
     assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
     assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+# =========================================================================
+# Hard quota-exhaustion: skip retries, go straight to fallback (#4936)
+# =========================================================================
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_hard_quota_error_skips_retries_and_falls_back(mock_comp):
+    """A RateLimitError with usage_limit_reached must skip all retries and
+    reach the fallback on the first failure."""
+    quota_error = RateLimitError(
+        message="usage_limit_reached for team plan",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+
+    call_count = {"n": 0}
+
+    def side_effect(**kwargs):
+        call_count["n"] += 1
+        if kwargs.get("model") == "gpt-4o":
+            raise quota_error
+        return _get_mock_response("fallback ok", model="fb")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    # num_retries=3 so that without the fix the primary is called 3 times
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy, num_retries=3)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+    # The primary must only be called once: no retries before fallback
+    assert call_count["n"] == 2  # primary (1 attempt) + fallback (1 attempt)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_insufficient_quota_error_skips_retries_and_falls_back(mock_comp):
+    """A RateLimitError with insufficient_quota must also skip retries."""
+    quota_error = RateLimitError(
+        message="You have exceeded your current quota, please check your plan",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+
+    call_count = {"n": 0}
+
+    def side_effect(**kwargs):
+        call_count["n"] += 1
+        if kwargs.get("model") == "gpt-4o":
+            raise quota_error
+        return _get_mock_response("fallback ok", model="fb")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy, num_retries=3)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+    assert call_count["n"] == 2
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_transient_rate_limit_still_retries(mock_comp):
+    """A plain transient RateLimitError (no quota keyword) must still retry."""
+    transient_error = RateLimitError(
+        message="Rate limit exceeded, please retry after 60s",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    call_count = {"n": 0}
+
+    def side_effect(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise transient_error
+        return _get_mock_response("ok after retries", model="gpt-4o")
+
+    mock_comp.side_effect = side_effect
+
+    # No fallback configured; num_retries=3 allows enough attempts
+    primary = _get_llm("gpt-4o", num_retries=3, retry_min_wait=0, retry_max_wait=0)
+
+    resp = primary.completion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "ok after retries"
+    # Should have retried (3 total calls before success)
+    assert call_count["n"] == 3
+
+
+# =========================================================================
+# Classifier unit tests
+# =========================================================================
+
+
+def test_is_hard_quota_error_classifier():
+    from openhands.sdk.llm.exceptions import is_hard_quota_error
+
+    def _rate_limit(msg: str) -> RateLimitError:
+        return RateLimitError(message=msg, llm_provider="openai", model="gpt-4o")
+
+    assert is_hard_quota_error(_rate_limit("usage_limit_reached for team plan"))
+    assert is_hard_quota_error(_rate_limit("insufficient_quota"))
+    assert is_hard_quota_error(_rate_limit("quota exceeded"))
+    assert is_hard_quota_error(
+        _rate_limit("You have exceeded your current quota, please check your plan")
+    )
+    # Transient 429 must NOT be classified as hard quota
+    assert not is_hard_quota_error(
+        _rate_limit("Rate limit exceeded, please retry after 60s")
+    )
+    # Non-RateLimitError carrying the same text must NOT match
+    assert not is_hard_quota_error(APIConnectionError(
+        message="usage_limit_reached", llm_provider="openai", model="gpt-4o"
+    ))
