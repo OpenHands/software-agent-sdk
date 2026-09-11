@@ -90,11 +90,13 @@ from litellm.utils import (
     create_pretrained_tokenizer,
     token_counter,
 )
+from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
+    is_quota_exhaustion_error,
     map_provider_exception,
 )
 
@@ -1042,10 +1044,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _make_retry_decorator(
         self,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Return a configured retry decorator using this LLM's retry settings."""
+        """Return a configured retry decorator using this LLM's retry settings.
+
+        Hard quota/usage-limit errors are excluded from retries so that, when a
+        :class:`~openhands.sdk.llm.FallbackStrategy` is configured, fallback to an
+        alternate model happens immediately instead of after the full retry
+        backoff — such errors will not recover until the limit resets or is raised.
+        """
+        retry_condition = retry_if_exception_type(LLM_RETRY_EXCEPTIONS) & (
+            retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
+        )
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=LLM_RETRY_EXCEPTIONS,
+            retry_exceptions=retry_condition,
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
