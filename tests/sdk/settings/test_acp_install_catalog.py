@@ -44,14 +44,14 @@ class TestACPInstallSpecNpxCommand:
     def test_single_package_no_trailing_args(self):
         spec = ACPInstallSpec(
             key="codex",
-            packages=(ACPPackagePin("@agentclientprotocol/codex-acp", "1.1.7"),),
+            packages=(ACPPackagePin("@agentclientprotocol/codex-acp", "1.10.0"),),
             binary_name="codex-acp",
         )
         assert spec.npx_command() == (
             "npx",
             "-y",
             "--prefer-offline",
-            "@agentclientprotocol/codex-acp@1.1.7",
+            "@agentclientprotocol/codex-acp@1.10.0",
         )
 
     def test_single_package_with_trailing_args(self):
@@ -139,7 +139,7 @@ class TestACPInstallCatalogMatchesACPProviders:
 
     def test_pinned_versions_unchanged(self):
         assert CLAUDE_AGENT_ACP_VERSION == "0.63.0"
-        assert CODEX_ACP_VERSION == "1.1.7"
+        assert CODEX_ACP_VERSION == "1.10.0"
         assert GEMINI_CLI_VERSION == "0.46.0"
 
 

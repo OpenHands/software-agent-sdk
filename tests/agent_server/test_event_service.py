@@ -1720,6 +1720,38 @@ class TestEventServiceRun:
     """Test cases for EventService.run method."""
 
     @pytest.mark.asyncio
+    async def test_wait_for_run_completion_waits_for_task_finalization(
+        self, event_service
+    ):
+        release_run = asyncio.Event()
+        event_service._get_execution_status = AsyncMock(
+            return_value=ConversationExecutionStatus.FINISHED
+        )
+        event_service._run_task = asyncio.create_task(release_run.wait())
+
+        waiter = asyncio.create_task(event_service.wait_for_run_completion(timeout=1))
+        await asyncio.sleep(0)
+
+        assert not waiter.done()
+        release_run.set()
+        assert await waiter == ConversationExecutionStatus.FINISHED
+
+    @pytest.mark.asyncio
+    async def test_wait_for_run_completion_timeout_does_not_cancel_run(
+        self, event_service
+    ):
+        release_run = asyncio.Event()
+        run_task = asyncio.create_task(release_run.wait())
+        event_service._run_task = run_task
+
+        with pytest.raises(TimeoutError, match="Conversation run timed out"):
+            await event_service.wait_for_run_completion(timeout=0.01)
+
+        assert not run_task.done()
+        release_run.set()
+        await run_task
+
+    @pytest.mark.asyncio
     async def test_run_inactive_service(self, event_service):
         """Test that run raises ValueError when conversation is not active."""
         event_service._conversation = None
