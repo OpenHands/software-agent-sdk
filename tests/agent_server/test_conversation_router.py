@@ -1620,7 +1620,7 @@ def test_update_conversation_success(
     )
 
     try:
-        request_data = {"title": "Updated Conversation Title"}
+        request_data = {"title": "Updated Conversation Title", "unread": False}
 
         response = client.patch(
             f"/api/conversations/{sample_conversation_id}", json=request_data
@@ -1635,6 +1635,7 @@ def test_update_conversation_success(
         call_args = mock_conversation_service.update_conversation.call_args
         assert call_args[0][0] == sample_conversation_id
         assert call_args[0][1].title == "Updated Conversation Title"
+        assert call_args[0][1].unread is False
     finally:
         client.app.dependency_overrides.clear()
 

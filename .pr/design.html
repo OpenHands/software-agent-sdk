@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conversation read state: server contract</title>
+<style>
+body{font:17px/1.6 system-ui,sans-serif;max-width:850px;margin:48px auto;padding:0 24px;color:#17212b;background:#fafbfc}
+h1,h2{line-height:1.2}code,pre{background:#eaf0f5;border-radius:4px}pre{padding:16px;overflow:auto}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccd5df;padding:12px;text-align:left}
+</style>
+<h1>Conversation read state: server contract</h1>
+<p>This PR provides a persisted, conversation-scoped read marker in the Agent Server
+and its TypeScript client. It supports the backend portion of
+<a href="https://github.com/OpenHands/OpenHands/issues/17140">OpenHands#17140</a>;
+it does not complete that issue's UI, per-user, or cross-window requirements.</p>
+<h2>Before and after</h2>
+<table>
+<tr><th>Surface</th><th>Before</th><th>After</th></tr>
+<tr><td>PATCH /api/conversations/{id}</td><td>title, tags</td><td>Also accepts optional unread: false to mark read, true to reset the read marker</td></tr>
+<tr><td>GET detail and /api/conversations/search</td><td>No read marker</td><td>last_read_at and derived unread on each ConversationInfo</td></tr>
+<tr><td>Metadata edits</td><td>Advance updated_at</td><td>Title, automatic title and tag edits preserve the activity timestamp</td></tr>
+</table>
+<h2>Semantics and compatibility</h2>
+<pre>unread = status in {finished, error, stuck}
+         and (last_read_at is null or updated_at &gt; last_read_at)</pre>
+<p>The timestamp comparison is strict: activity at the read timestamp is read.
+Running, idle, paused, waiting-for-confirmation and deleting conversations are not
+unread. Old metadata without last_read_at loads with null, so old terminal
+conversations initially appear unread. No persisted shape rewrite is required.
+The REST fields are additive; preserving updated_at on metadata edits is an
+intentional behavior change that downstream sort consumers should review.</p>
+<p>Read changes invalidate the cached conversation summary, persist meta.json,
+and invoke the existing conversation webhook path with the complete read state.
+That webhook is not a browser WebSocket broadcast, and this PR does not claim
+immediate cross-window synchronization.</p>
+<h2>Remaining application work</h2>
+<ul>
+<li>The stored marker is shared by callers of a conversation, not keyed by user.
+A multi-user application must define its ownership/read-state policy before
+claiming independent per-user read state.</li>
+<li>Canvas must consume a released server/client contract, mark conversations read
+on opening, and update all relevant windows through its push/state layer.</li>
+<li>Canvas owns the distinct unread badge, per-item read/unread actions, mark-all-read,
+unread sorting, and the issue-required screenshot or video.</li>
+</ul>
+<h2>Regression coverage</h2>
+<p>The model tests cover every execution status against absent, older, equal and
+newer read timestamps. Service tests check persisted read state across restart,
+metadata timestamp stability and webhook payloads. The live HTTP test exercises
+new output, read/unread toggles, title/tag edits, list/detail consistency and a
+second completed response becoming unread. LLM calls use the existing deterministic
+fixture; no live model credentials are needed.</p>
+</html>

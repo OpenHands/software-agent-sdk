@@ -688,6 +688,57 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+def test_conversation_read_state_over_real_server(server_env, patched_llm):
+    """Read state survives REST reads and new output becomes unread again."""
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    conversation = Conversation(agent=agent, workspace=workspace)
+    try:
+        conversation.send_message("Say hello")
+        conversation.run()
+        with httpx.Client(base_url=server_env["host"]) as client:
+            path = f"/api/conversations/{conversation.id}"
+            initial_response = client.get(path)
+            initial_response.raise_for_status()
+            initial = initial_response.json()
+            assert initial["unread"] is True
+            assert initial["last_read_at"] is None
+
+            client.patch(path, json={"unread": False}).raise_for_status()
+            read = client.get(path).json()
+            assert read["unread"] is False
+            assert read["last_read_at"] is not None
+            assert read["updated_at"] == initial["updated_at"]
+
+            client.patch(
+                path, json={"title": "Read conversation", "tags": {"test": "read"}}
+            ).raise_for_status()
+            metadata = client.get(path).json()
+            assert metadata["unread"] is False
+            assert metadata["updated_at"] == read["updated_at"]
+            assert metadata["last_read_at"] == read["last_read_at"]
+
+            page = client.get("/api/conversations/search").json()
+            listed = next(item for item in page["items"] if item["id"] == read["id"])
+            assert listed["unread"] is False
+            assert listed["last_read_at"] == read["last_read_at"]
+
+            client.patch(path, json={"unread": True}).raise_for_status()
+            unread = client.get(path).json()
+            assert unread["unread"] is True
+            assert unread["last_read_at"] is None
+            assert unread["updated_at"] == read["updated_at"]
+
+            client.patch(path, json={"unread": False}).raise_for_status()
+            conversation.send_message("Say hello again")
+            conversation.run()
+            assert client.get(path).json()["unread"] is True
+    finally:
+        conversation.close()
+
+
 def test_openai_chat_completions_gateway_over_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
 ):
