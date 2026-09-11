@@ -60,6 +60,11 @@ from openhands.sdk.agent.acp_file_credentials import (
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.stream_context import (
+    StreamAborted,
+    StreamDelta,
+    StreamStarted,
+)
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
@@ -2234,10 +2239,77 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=lambda _: None, on_token=on_token)
 
-        # Verify on_token was wired during the turn.
-        assert wired_during_prompt == [on_token]
+        # The bridge is wired with StreamContext's stamping wrapper, which
+        # forwards to the caller's callback unchanged.
+        assert len(wired_during_prompt) == 1
+        wired = wired_during_prompt[0]
+        assert wired is not None and wired is not on_token
+        wired("chunk")
+        on_token.assert_called_once_with("chunk")
         # And unwired afterward so a late token chunk is a no-op.
         assert mock_client.on_token is None
+
+    def test_step_retires_its_stream_on_the_turn_finish_action(self, tmp_path):
+        """An ACP turn's streamed text lands in the FinishAction, not a message.
+
+        See https://github.com/OpenHands/software-agent-sdk/issues/4682.
+        """
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        frames: list = []
+        conversation.on_stream = frames.append
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            mock_client.on_token("streamed ")
+            mock_client.on_token("text")
+            mock_client.accumulated_text.append("streamed text")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        events: list = []
+        agent.step(conversation, on_event=events.append)
+
+        started = [f for f in frames if isinstance(f, StreamStarted)]
+        deltas = [f for f in frames if isinstance(f, StreamDelta)]
+        assert len(started) == 1
+        assert [d.content for d in deltas] == ["streamed ", "text"]
+
+        action = next(e for e in events if isinstance(e, ActionEvent))
+        assert action.id == started[0].item_id
+        assert not any(isinstance(f, StreamAborted) for f in frames)
+        # The context is released with the turn.
+        assert agent._stream is None
+
+    @pytest.mark.asyncio
+    async def test_astep_opens_and_retires_the_same_slot(self, tmp_path):
+        """The async entry point gets the same guarantee as the sync one."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        frames: list = []
+        conversation.on_stream = frames.append
+
+        async def _fake_astep(_self, _conv, _on_event, on_token=None, _prompt=None):
+            assert on_token is not None
+            on_token("streamed text")
+            raise RuntimeError("the prompt died after streaming")
+
+        with patch.object(ACPAgent, "_astep", _fake_astep):
+            with pytest.raises(RuntimeError):
+                await agent.astep(conversation, on_event=lambda _: None)
+
+        started = [f for f in frames if isinstance(f, StreamStarted)]
+        aborted = [f for f in frames if isinstance(f, StreamAborted)]
+        assert len(started) == len(aborted) == 1
+        assert aborted[0].item_id == started[0].item_id
+        assert aborted[0].reason == "RuntimeError"
+        assert agent._stream is None
 
 
 # ---------------------------------------------------------------------------
