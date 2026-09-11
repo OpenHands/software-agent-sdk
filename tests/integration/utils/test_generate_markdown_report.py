@@ -1,13 +1,14 @@
 from datetime import datetime
 
 from tests.integration import schemas
+from tests.integration.schemas import TestType
 from tests.integration.utils.generate_markdown_report import (
     derive_report_title,
     generate_markdown_report,
 )
 
 
-def _model_result(test_type: str = "integration") -> schemas.ModelTestResults:
+def _model_result(test_type: TestType = "integration") -> schemas.ModelTestResults:
     return schemas.ModelTestResults(
         model_name="test-model",
         run_suffix="test_run",
