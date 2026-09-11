@@ -470,7 +470,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 5
+AGENT_SETTINGS_SCHEMA_VERSION = 6
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -680,6 +680,24 @@ def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(mcp_config, Mapping):
         migrated["mcp_config"] = _migrate_mcp_config_to_server_map(mcp_config)
     migrated["schema_version"] = 5
+    return migrated
+
+
+def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop the deprecated ``llm.modify_params`` compatibility field.
+
+    ``LLM.modify_params`` was deprecated in v1.42.0 and removed in v1.47.0
+    (LiteLLM parameter modification is enabled process-wide). Persisted payloads
+    written by older releases still carry ``llm.modify_params``; strip it so the
+    migrated payload validates against the current ``LLM`` schema.
+    """
+    migrated = dict(payload)
+    llm = migrated.get("llm")
+    if isinstance(llm, Mapping):
+        llm = dict(llm)
+        llm.pop("modify_params", None)
+        migrated["llm"] = llm
+    migrated["schema_version"] = 6
     return migrated
 
 
@@ -978,6 +996,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
+    5: _migrate_agent_settings_v5_to_v6,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
