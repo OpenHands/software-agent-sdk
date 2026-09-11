@@ -9451,6 +9451,171 @@ class TestACPFileSecretMaterialisation:
         }
 
 
+class TestACPFileSecretProviderScoping:
+    """``acp_file_secrets`` defaults to the union across every registered
+    provider, but only the running provider's specs apply (#4923). Without the
+    scoping, registering a harness upstream changes how an unrelated provider's
+    conversation treats a secret carrying the new reserved name.
+    """
+
+    _H = TestACPFileSecretMaterialisation
+
+    @staticmethod
+    def _names(agent):
+        return {spec.secret_name for spec in agent._active_file_secrets()}
+
+    @pytest.mark.parametrize(
+        "acp_server,expected",
+        [
+            ("claude-code", set()),
+            ("codex", {"CODEX_AUTH_JSON"}),
+            ("gemini-cli", {"GOOGLE_APPLICATION_CREDENTIALS_JSON"}),
+            ("kimi-code", {"KIMI_CODE_CONFIG_TOML"}),
+            ("pi", {"PI_AUTH_JSON"}),
+            ("opencode", set()),
+        ],
+    )
+    def test_scopes_to_the_running_provider(self, acp_server, expected):
+        agent = _make_agent(acp_server=acp_server)
+        assert self._names(agent) == expected
+
+    def test_no_provider_claims_another_providers_reserved_secret(self):
+        """The property the scoping exists to hold, asserted over the registry
+        so a provider added upstream is covered without editing this test."""
+        from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+        for key, info in ACP_PROVIDERS.items():
+            others = {
+                spec.secret_name
+                for other, other_info in ACP_PROVIDERS.items()
+                if other != key
+                for spec in other_info.file_secrets
+            } - {spec.secret_name for spec in info.file_secrets}
+            assert self._names(_make_agent(acp_server=key)).isdisjoint(others)
+
+    def test_unrecognised_server_keeps_the_union(self):
+        """No identity means we cannot tell whose credential a reserved name
+        belongs to, so stay conservative — as ``_strip_conflicting_env`` does."""
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        agent = ACPAgent(acp_command=["some-unknown-acp-server"])
+        assert self._names(agent) == {
+            spec.secret_name for spec in default_acp_file_secrets()
+        }
+
+    def test_custom_command_resolves_the_provider_from_the_command(self):
+        agent = ACPAgent(acp_command=["codex-acp"])
+        assert self._names(agent) == {"CODEX_AUTH_JSON"}
+
+    def test_specs_outside_the_registry_always_apply(self):
+        """A downstream CLI's spec is owned by no registered provider, so it is
+        never filtered out — whichever harness the conversation runs."""
+        from openhands.sdk import ACPFileSecretSpec
+
+        custom = ACPFileSecretSpec(
+            secret_name="MYCLI_TOKEN_JSON",
+            filename="token.json",
+            env_var="MYCLI_HOME",
+            subdir="mycli",
+        )
+        agent = _make_agent(acp_server="codex", acp_file_secrets=[custom])
+        assert self._names(agent) == {"MYCLI_TOKEN_JSON"}
+
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        agent = _make_agent(
+            acp_server="codex",
+            acp_file_secrets=[custom, *default_acp_file_secrets()],
+        )
+        assert self._names(agent) == {"MYCLI_TOKEN_JSON", "CODEX_AUTH_JSON"}
+
+    def test_a_list_persisted_before_a_provider_was_added_still_scopes(self):
+        """The upgrade case. A conversation written when the registry held only
+        Codex and Gemini carries that two-spec list; resumed on a newer SDK it
+        must still scope, which a comparison against today's default could not
+        do — the stored list no longer equals it.
+        """
+        from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+        pre_upgrade = [
+            *ACP_PROVIDERS["codex"].file_secrets,
+            *ACP_PROVIDERS["gemini-cli"].file_secrets,
+        ]
+        agent = _make_agent(acp_server="claude-code", acp_file_secrets=pre_upgrade)
+        assert self._names(agent) == set()
+
+        agent = _make_agent(acp_server="codex", acp_file_secrets=pre_upgrade)
+        assert self._names(agent) == {"CODEX_AUTH_JSON"}
+
+    def test_a_name_several_providers_share_is_kept(self):
+        """``owned_elsewhere`` subtracts the running provider's own names, so a
+        spec two providers both claim is not filtered from either."""
+        from openhands.sdk import ACPFileSecretSpec
+
+        shared = ACPFileSecretSpec(
+            secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            filename="gcloud-credentials.json",
+            env_var="GOOGLE_APPLICATION_CREDENTIALS",
+            subdir="gemini-cli",
+        )
+        agent = _make_agent(acp_server="gemini-cli", acp_file_secrets=[shared])
+        assert self._names(agent) == {"GOOGLE_APPLICATION_CREDENTIALS_JSON"}
+
+    def test_empty_specs_stay_empty(self):
+        agent = _make_agent(acp_server="codex", acp_file_secrets=[])
+        assert self._names(agent) == set()
+
+    def test_scoping_survives_a_serialization_round_trip(self):
+        """A resumed conversation must scope too — including one written by an
+        older SDK, which ``test_a_list_persisted_before_a_provider_was_added_
+        still_scopes`` covers."""
+        agent = _make_agent(acp_server="claude-code")
+        restored = ACPAgent.model_validate(agent.model_dump())
+        assert self._names(restored) == set()
+
+    def test_other_providers_blob_stays_a_plain_env_var(self, tmp_path):
+        """End to end through ``_start_acp_server``: on a claude-code
+        conversation ``PI_AUTH_JSON`` is delivered as an ordinary env var, not
+        materialised to disk with ``PI_CODING_AGENT_DIR`` set."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_server="claude-code")
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+
+        assert env.get("PI_AUTH_JSON") == "blob"
+        assert "PI_CODING_AGENT_DIR" not in env
+        assert not (agent._acp_file_secret_dir(state, "pi") / "auth.json").exists()
+
+    def test_own_blob_still_materialises(self, tmp_path):
+        """The counterpart: on a pi conversation the same secret is written to
+        disk and the data-dir var points at it."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_server="pi")
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"PI_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="pi-acp")
+            )
+
+        target = agent._acp_file_secret_dir(state, "pi") / "auth.json"
+        assert target.read_text() == "blob"
+        assert env.get("PI_CODING_AGENT_DIR") == str(target.parent)
+        assert "PI_AUTH_JSON" not in env
+
+
 # ---------------------------------------------------------------------------
 # Per-conversation CLI data-dir isolation (issue #1019)
 # ---------------------------------------------------------------------------
