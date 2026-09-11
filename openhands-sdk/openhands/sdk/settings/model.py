@@ -688,8 +688,11 @@ def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
 
     ``LLM.modify_params`` was deprecated in v1.42.0 and removed in v1.47.0
     (LiteLLM parameter modification is enabled process-wide). Persisted payloads
-    written by older releases still carry ``llm.modify_params``; strip it so the
-    migrated payload validates against the current ``LLM`` schema.
+    written by older releases still carry ``llm.modify_params``; drop it here so
+    the migrated payload is a clean current-schema shape. (``LLM`` itself uses
+    ``extra="ignore"``, so an un-migrated field would also be dropped on load,
+    but migrations should still emit canonical payloads rather than lean on
+    lenient validation.)
     """
     migrated = dict(payload)
     llm = migrated.get("llm")

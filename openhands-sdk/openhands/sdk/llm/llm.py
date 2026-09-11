@@ -689,11 +689,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return data
         d = dict(data)
 
-        # ``modify_params`` was a compatibility field removed in v1.47.0 (LiteLLM
-        # parameter modification is enabled process-wide). Silently drop it so
-        # older serialized configs still load.
-        d.pop("modify_params", None)
-
         model_val = d.get("model")
         if not model_val:
             raise ValueError("model must be specified in LLM")
