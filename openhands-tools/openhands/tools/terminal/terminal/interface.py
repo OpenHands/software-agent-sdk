@@ -158,6 +158,16 @@ class TerminalInterface(ABC):
             True if a command is running, False otherwise.
         """
 
+    def is_alive(self) -> bool:
+        """Check whether the backend can still accept commands.
+
+        Backends that own a shell process should return ``False`` once that
+        process has exited or stopped responding, so the session controller
+        can recreate the terminal instead of waiting on it.  The default
+        only reflects the initialized/closed flags.
+        """
+        return self._initialized and not self._closed
+
     @property
     def initialized(self) -> bool:
         """Check if the terminal is initialized."""
