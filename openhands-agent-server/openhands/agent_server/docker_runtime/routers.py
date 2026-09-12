@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
 import httpx
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Query,
     Request,
@@ -22,6 +24,8 @@ from fastapi import (
 )
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.docker_runtime.mediation import (
     grants_for_agent,
     has_auxiliary_subscription,
@@ -39,7 +43,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RunningConversationContainer,
 )
-from openhands.agent_server.models import ConversationRuntimeInfo
+from openhands.agent_server.models import ConversationInfo, ConversationRuntimeInfo
 from openhands.agent_server.runtime_router import add_legacy_runtime_routes
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.logger import get_logger
@@ -62,6 +66,12 @@ def _ws_get_registry(websocket: WebSocket) -> DockerConversationRegistry | None:
     return getattr(websocket.app.state, "docker_registry", None)
 
 
+def _is_archived(directory: Path) -> bool:
+    return (
+        json.loads((directory / "meta.json").read_text()).get("archived_at") is not None
+    )
+
+
 async def _workspace_or_404(
     registry: DockerConversationRegistry, conversation_id: UUID
 ) -> RunningConversationContainer:
@@ -76,6 +86,11 @@ async def _workspace_or_404(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Conversation not found: {conversation_id}",
+        )
+    if _is_archived(directory):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation is archived; unarchive it before using its runtime",
         )
     try:
         registry.provisioning.load(conversation_id)
@@ -385,10 +400,16 @@ async def reprovision_conversation_runtime(
     """Start missing infrastructure without resuming agent execution."""
     registry = get_registry(request)
     info = registry.runtime_info(conversation_id)
-    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+    directory = registry.conversation_dir(conversation_id)
+    if not directory.joinpath("meta.json").is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Conversation not found: {conversation_id}",
+        )
+    if _is_archived(directory):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation is archived; unarchive it before reprovisioning",
         )
     if not info.can_resume:
         raise HTTPException(
@@ -405,6 +426,56 @@ async def reprovision_conversation_runtime(
             detail="Could not reprovision conversation runtime",
         ) from exc
     return registry.runtime_info(conversation_id)
+
+
+async def _set_docker_archive_state(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService,
+    *,
+    archived: bool,
+) -> ConversationInfo:
+    registry = get_registry(request)
+    conversation = await conversation_service.set_conversation_archived(
+        conversation_id, archived=archived
+    )
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    if archived:
+        await registry.stop(conversation_id)
+    lifecycle = registry.runtime_info(conversation_id)
+    return conversation.model_copy(update=lifecycle.model_dump())
+
+
+@docker_conversation_proxy_router.post(
+    "/{conversation_id}/archive", response_model=ConversationInfo
+)
+async def archive_docker_conversation(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Archive outer metadata and reap only a runtime owned by this server."""
+    return await _set_docker_archive_state(
+        conversation_id, request, conversation_service, archived=True
+    )
+
+
+@docker_conversation_proxy_router.post(
+    "/{conversation_id}/unarchive", response_model=ConversationInfo
+)
+async def unarchive_docker_conversation(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Restore catalog visibility without provisioning a runtime."""
+    return await _set_docker_archive_state(
+        conversation_id, request, conversation_service, archived=False
+    )
 
 
 @docker_conversation_proxy_router.api_route(
