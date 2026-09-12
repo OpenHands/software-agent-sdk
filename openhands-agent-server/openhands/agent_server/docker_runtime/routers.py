@@ -281,6 +281,24 @@ async def _start_prepared_conversation(
     )
 
 
+@docker_conversation_proxy_router.post("/{conversation_id}/runtime/credentials")
+async def get_runtime_credentials(
+    conversation_id: UUID, request: Request
+) -> JSONResponse:
+    """Give an authenticated orchestrator access to this runtime only."""
+    registry = get_registry(request)
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+        raise HTTPException(404, "Conversation not found")
+    try:
+        identity = registry.provisioning.load(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(409, "Runtime identity is unavailable") from exc
+    return JSONResponse(
+        {"session_api_key": identity.api_key.get_secret_value()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @docker_conversation_proxy_router.delete("/{conversation_id}")
 async def docker_delete_conversation(
     conversation_id: UUID,

@@ -916,3 +916,28 @@ def test_proxy_strips_outer_credentials_and_runtime_cookies(docker_app_with_auth
     assert "cookie" not in forwarded["headers"]
     assert forwarded["query"] == {"keep": "value"}
     assert "set-cookie" not in response.headers
+
+
+def test_runtime_credentials_are_scoped_and_not_cacheable(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    identity = registry.provisioning.create(cid)
+    folder = registry.conversation_dir(cid)
+    folder.mkdir(parents=True)
+    (folder / "meta.json").write_text("{}")
+    result = client.post(f"/api/conversations/{cid}/runtime/credentials")
+    assert result.status_code == 200
+    assert result.headers["Cache-Control"] == "no-store"
+    assert result.json() == {"session_api_key": identity.api_key.get_secret_value()}
+    assert registry.get(cid) is None
+    assert (
+        client.post(f"/api/conversations/{uuid4()}/runtime/credentials").status_code
+        == 404
+    )
+
+
+def test_runtime_credentials_require_outer_auth(docker_app_with_auth):
+    client, _ = docker_app_with_auth
+    result = client.post(f"/api/conversations/{uuid4()}/runtime/credentials")
+    assert result.status_code in (401, 403)
