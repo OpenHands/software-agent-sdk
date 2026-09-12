@@ -54,25 +54,9 @@ def test_switch_llm_tool_description_lists_available_profiles(profile_store):
     assert "- slow" in tool.description
 
 
-def test_agent_settings_includes_switch_llm_tool_when_profiles_exist(profile_store):
-    # tools=[] (not the None default): these tests resolve tools for real via
-    # _ensure_agent_ready and tests/sdk registers no exec tools.
+def test_agent_settings_omits_switch_llm_tool_by_default(profile_store):
     agent = OpenHandsAgentSettings(
         llm=_make_llm("default-model", "default"), tools=[]
-    ).create_agent()
-
-    assert "SwitchLLMTool" in agent.include_default_tools
-
-    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
-    conversation._ensure_agent_ready()
-    assert "switch_llm" in agent.tools_map
-
-
-def test_agent_settings_omits_switch_llm_tool_when_disabled(profile_store):
-    agent = OpenHandsAgentSettings(
-        llm=_make_llm("default-model", "default"),
-        tools=[],
-        enable_switch_llm_tool=False,
     ).create_agent()
 
     assert "SwitchLLMTool" not in agent.include_default_tools
@@ -82,9 +66,11 @@ def test_agent_settings_omits_switch_llm_tool_when_disabled(profile_store):
     assert "switch_llm" not in agent.tools_map
 
 
-def test_agent_settings_includes_switch_llm_tool_without_profiles(empty_profile_store):
+def test_agent_settings_includes_switch_llm_tool_when_enabled(profile_store):
     agent = OpenHandsAgentSettings(
-        llm=_make_llm("default-model", "default"), tools=[]
+        llm=_make_llm("default-model", "default"),
+        tools=[],
+        enable_switch_llm_tool=True,
     ).create_agent()
 
     assert "SwitchLLMTool" in agent.include_default_tools
@@ -92,6 +78,18 @@ def test_agent_settings_includes_switch_llm_tool_without_profiles(empty_profile_
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()
     assert "switch_llm" in agent.tools_map
+
+
+def test_agent_settings_omits_switch_llm_tool_without_profiles(empty_profile_store):
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default"), tools=[]
+    ).create_agent()
+
+    assert "SwitchLLMTool" not in agent.include_default_tools
+
+    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
+    conversation._ensure_agent_ready()
+    assert "switch_llm" not in agent.tools_map
 
 
 def test_switch_llm_tool_switches_conversation_profile(profile_store):
