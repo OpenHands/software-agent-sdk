@@ -23,6 +23,8 @@ import inspect
 import json
 import os
 import re
+import signal
+import sys
 import threading
 import time
 import uuid
@@ -3000,6 +3002,9 @@ class ACPAgent(AgentBase):
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
+            spawn_kwargs: dict[str, Any] = {}
+            if sys.platform != "win32":
+                spawn_kwargs["start_new_session"] = True
             process = await asyncio.create_subprocess_exec(
                 command,
                 *args,
@@ -3008,6 +3013,7 @@ class ACPAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 limit=_STREAM_READER_LIMIT,
+                **spawn_kwargs,
             )
             assert process.stdin is not None
             assert process.stdout is not None
@@ -4529,10 +4535,7 @@ class ACPAgent(AgentBase):
         process = self._process
         if process is not None:
             try:
-                if process.returncode is None or not isinstance(
-                    process.returncode, int
-                ):
-                    process.terminate()
+                self._terminate_process_group(process)
                 if self._executor is not None:
                     self._executor.run_async(
                         self._wait_for_process,
@@ -4542,7 +4545,7 @@ class ACPAgent(AgentBase):
             except Exception as e:
                 logger.debug("Error terminating ACP process: %s", e)
                 try:
-                    process.kill()
+                    self._kill_process_group(process)
                     if self._executor is not None:
                         self._executor.run_async(
                             self._wait_for_process,
@@ -4580,6 +4583,44 @@ class ACPAgent(AgentBase):
                 failures["ACP executor"] = e
             self._executor = None
         return failures
+
+    @staticmethod
+    def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
+        """Terminate the process and its process group on POSIX systems."""
+        pid = getattr(process, "pid", None)
+        if sys.platform != "win32" and isinstance(pid, int):
+            try:
+                pgid = os.getpgid(pid)
+                if pgid != os.getpgrp():
+                    os.killpg(pgid, signal.SIGTERM)
+            except OSError:
+                try:
+                    if pid != os.getpgrp():
+                        os.killpg(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+        if process.returncode is None or not isinstance(process.returncode, int):
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+
+    @staticmethod
+    def _kill_process_group(process: asyncio.subprocess.Process) -> None:
+        """Forcefully kill the process and its process group on POSIX systems."""
+        pid = getattr(process, "pid", None)
+        if sys.platform != "win32" and isinstance(pid, int):
+            try:
+                pgid = os.getpgid(pid)
+                if pgid != os.getpgrp():
+                    os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                try:
+                    if pid != os.getpgrp():
+                        os.killpg(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        if process.returncode is None or not isinstance(process.returncode, int):
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
 
     @staticmethod
     async def _wait_for_process(process: asyncio.subprocess.Process) -> None:
