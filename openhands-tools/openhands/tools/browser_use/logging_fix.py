@@ -28,6 +28,82 @@ warn_cleanup(
     ),
 )
 
+warn_cleanup(
+    "Shim mcp 1.x Server handler decorators for browser_use under mcp 2.x",
+    cleanup_by="2.0.0",
+    details=(
+        "browser_use (<=0.13.x) pins mcp==1.26.0 and registers MCP handlers "
+        "with the decorator-style API (@server.list_tools(), "
+        "@server.call_tool(), ...) that mcp 2.x removed in favor of "
+        "constructor-based handlers plus add_request_handler(). OpenHands "
+        "never speaks MCP to this server (it calls the server's private "
+        "methods directly), but BrowserUseServer.__init__ still executes the "
+        "decorator registrations, so under mcp 2.x construction fails with "
+        "AttributeError: 'Server' object has no attribute 'list_tools'. "
+        "Remove this shim once browser_use supports mcp 2.x natively."
+    ),
+)
+
+
+def _patch_mcp2_server_compat() -> None:
+    """Re-add the mcp 1.x decorator-style handler registration under mcp 2.x.
+
+    mcp 2.x replaced the ``@server.list_tools()`` / ``@server.call_tool()``
+    decorators with constructor-based ``on_*`` handlers plus
+    ``add_request_handler``. This faithfully re-implements the decorators on
+    top of ``add_request_handler``. Under mcp 1.x the decorators already
+    exist and this is a no-op.
+    """
+    try:
+        from mcp.server.lowlevel.server import Server
+    except Exception:
+        return  # mcp not installed: nothing to shim.
+
+    if hasattr(Server, "list_tools"):
+        return  # mcp 1.x already provides the decorators; nothing to do.
+
+    import mcp.types as types
+
+    def _make_list_decorator(method, result_cls, field_name):
+        def decorator_factory(self):
+            def register(fn):
+                async def handler(_ctx, _params):
+                    items = await fn()
+                    return result_cls(**{field_name: items})
+
+                self.add_request_handler(method, types.PaginatedRequestParams, handler)
+                return fn
+
+            return register
+
+        return decorator_factory
+
+    Server.list_tools = _make_list_decorator(  # type: ignore[attr-defined]
+        "tools/list", types.ListToolsResult, "tools"
+    )
+    Server.list_resources = _make_list_decorator(  # type: ignore[attr-defined]
+        "resources/list", types.ListResourcesResult, "resources"
+    )
+    Server.list_prompts = _make_list_decorator(  # type: ignore[attr-defined]
+        "prompts/list", types.ListPromptsResult, "prompts"
+    )
+
+    def call_tool(self):
+        def register(fn):
+            async def handler(_ctx, params):
+                content = await fn(params.name, params.arguments)
+                return types.CallToolResult(content=content)
+
+            self.add_request_handler("tools/call", types.CallToolRequestParams, handler)
+            return fn
+
+        return register
+
+    Server.call_tool = call_tool  # type: ignore[attr-defined]
+
+
+_patch_mcp2_server_compat()
+
 
 def _noop(*args, **kwargs):
     """No-op replacement for functions"""
