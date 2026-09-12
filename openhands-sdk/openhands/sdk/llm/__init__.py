@@ -19,7 +19,9 @@ from openhands.sdk.llm.llm_profile_store import (
 from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
+    BaseContent,
     ImageContent,
+    MaterializedRef,
     Message,
     MessageToolCall,
     ReasoningItemModel,
@@ -66,8 +68,10 @@ __all__ = [
     # Messages
     "Message",
     "MessageToolCall",
+    "BaseContent",
     "TextContent",
     "ImageContent",
+    "MaterializedRef",
     "ThinkingBlock",
     "RedactedThinkingBlock",
     "ReasoningItemModel",
