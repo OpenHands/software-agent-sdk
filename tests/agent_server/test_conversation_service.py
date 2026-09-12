@@ -2738,6 +2738,51 @@ class TestConversationServiceUpdateConversation:
 
         assert mock_service.stored.updated_at > original_updated_at
 
+    @pytest.mark.asyncio
+    async def test_update_conversation_leaves_stored_unchanged_when_save_meta_fails(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Failed persist must not leave in-memory title/tags ahead of disk."""
+        sample_stored_conversation.title = "Original Title"
+        sample_stored_conversation.tags = {"env": "dev"}
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_service.save_meta.side_effect = RuntimeError("disk full")
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+            tags={"env": "dev"},
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+        conversation_service._conversation_records[conversation_id] = (
+            _ConversationRecord(
+                stored=sample_stored_conversation,
+                execution_status=ConversationExecutionStatus.IDLE,
+            )
+        )
+
+        original_updated_at = mock_service.stored.updated_at
+        with pytest.raises(RuntimeError, match="disk full"):
+            await conversation_service.update_conversation(
+                conversation_id,
+                UpdateConversationRequest(title="New Title", tags={"env": "prod"}),
+            )
+
+        assert mock_service.stored.title == "Original Title"
+        assert mock_service.stored.tags == {"env": "dev"}
+        assert mock_service.stored.updated_at == original_updated_at
+        assert mock_state.tags == {"env": "dev"}
+        record = conversation_service._conversation_records[conversation_id]
+        assert record.stored.title == "Original Title"
+        assert record.stored.tags == {"env": "dev"}
+        assert record.stored.updated_at == original_updated_at
+
 
 class TestConversationServiceDeleteConversation:
     """Test cases for ConversationService.delete_conversation method."""
@@ -3206,6 +3251,22 @@ class TestAutoTitle:
             await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "✨ Generated Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_leaves_title_unchanged_when_save_meta_fails(self):
+        """Failed persist must not leave the generated title in memory."""
+        service = self._make_service()
+        original_updated_at = service.stored.updated_at
+        service.save_meta.side_effect = RuntimeError("disk full")
+
+        with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.save_meta.called)
+
+        assert service.stored.title is None
+        assert service.stored.updated_at == original_updated_at
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio

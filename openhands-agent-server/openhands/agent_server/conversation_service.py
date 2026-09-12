@@ -555,6 +555,19 @@ def _update_state_tags_sync(
     return state
 
 
+async def _persist_stored(
+    event_service: EventService, stored: StoredConversation
+) -> None:
+    """Write ``stored`` to meta.json, then commit it in memory.
+
+    ``save_meta`` persists the given payload without mutating
+    ``event_service.stored``. In-memory state is updated only after the
+    write succeeds so a failed persist cannot leave memory ahead of disk.
+    """
+    await event_service.save_meta(stored)
+    event_service.stored = stored
+
+
 def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -1899,22 +1912,24 @@ class ConversationService:
 
         loop = asyncio.get_running_loop()
         state = await event_service.get_state()
+        updates: dict[str, Any] = {"updated_at": utc_now()}
         if request.title is not None:
-            event_service.stored.title = request.title.strip()
+            updates["title"] = request.title.strip()
         if request.tags is not None:
-            event_service.stored.tags = request.tags
+            updates["tags"] = request.tags
+        await _persist_stored(
+            event_service, event_service.stored.model_copy(update=updates)
+        )
+        if request.tags is not None:
             # Keep the persisted ConversationState update under the state lock so
             # autosave and state-change callbacks observe a consistent mutation.
             state = await loop.run_in_executor(
                 None, _update_state_tags_sync, state, request.tags
             )
-        event_service.stored.updated_at = utc_now()
         record = self._conversation_records.get(conversation_id)
         if record is not None:
             record.stored = event_service.stored
             record.cached_info = None
-        # Save the updated metadata to disk
-        await event_service.save_meta()
 
         # Notify conversation webhooks about the updated conversation. Compose the
         # full-state snapshot under the state lock, but do the synchronous wait in a
@@ -2594,9 +2609,12 @@ class AutoTitleSubscriber(Subscriber):
                     _on_title_error,
                 )
                 if title and self.service.stored.title is None:
-                    self.service.stored.title = title
-                    self.service.stored.updated_at = utc_now()
-                    await self.service.save_meta()
+                    await _persist_stored(
+                        self.service,
+                        self.service.stored.model_copy(
+                            update={"title": title, "updated_at": utc_now()}
+                        ),
+                    )
             except Exception:
                 logger.warning(
                     f"Auto-title generation failed for "
