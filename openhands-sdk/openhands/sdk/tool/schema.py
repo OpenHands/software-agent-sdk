@@ -143,6 +143,10 @@ def _process_schema_node(
             for t in node["anyOf"]
             if t is True or (isinstance(t, dict) and t.get("type") != "null")
         ]
+        if not non_null_types and any(t is False for t in node["anyOf"]):
+            # Every branch rejects: keep `false`'s reject-all meaning rather
+            # than silently widening the parameter to accept-all.
+            non_null_types = [False]
         if non_null_types:
             # Process the first non-null type
             processed = _process_schema_node(non_null_types[0], defs, _visiting)

@@ -399,6 +399,9 @@ class TestCircularSchemaHandling:
         ({"anyOf": [True, {"type": "string"}]}, {}),
         # ``false`` never validates, so the concrete branch wins in any position.
         ({"anyOf": [{"type": "string"}, False]}, {"type": "string"}),
+        ({"anyOf": [False, {"type": "string"}]}, {"type": "string"}),
+        # With no viable branch left, ``false`` keeps its reject-all meaning.
+        ({"anyOf": [False]}, {"not": {}}),
         (
             {"type": "object", "properties": {"anything": True}},
             {"type": "object", "properties": {"anything": {}}},
