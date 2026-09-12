@@ -574,6 +574,13 @@ class FileEditor:
                 new_lines.append(line)
                 history_lines.append(line)
 
+        # If we are inserting after the last line (insert_line == num_lines)
+        # and the file does not end with a newline, the retained last line
+        # lacks "\n". Without it the inserted content is concatenated onto
+        # the last line instead of starting a new one.
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] = new_lines[-1] + "\n"
+
         # Insert new content
         for line in new_str_lines:
             new_lines.append(line + "\n")
