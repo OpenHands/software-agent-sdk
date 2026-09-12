@@ -1037,6 +1037,17 @@ templates.",
         # Verify it's approximately the current time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
 
+    def test_current_datetime_is_not_serialized(self):
+        """Runtime time context must not be persisted between conversations."""
+        context = AgentContext(current_datetime="2024-03-15T14:30:00Z")
+
+        serialized = context.model_dump(mode="json")
+        restored = AgentContext.model_validate(serialized)
+
+        assert "current_datetime" not in serialized
+        assert restored.current_datetime != "2024-03-15T14:30:00Z"
+        assert restored.current_datetime is not None
+
     def test_get_system_message_suffix_with_datetime_only(self):
         """Test system message suffix with datetime but no other content."""
         context = AgentContext(

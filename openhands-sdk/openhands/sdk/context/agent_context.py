@@ -194,6 +194,7 @@ class AgentContext(BaseModel):
         # Timezone-aware local "now"; get_formatted_datetime renders it to the
         # minute for the prompt.
         default_factory=lambda: datetime.now().astimezone(),
+        exclude=True,
         description=(
             "Current date and time information to provide to the agent. "
             "Can be a datetime object (which will be formatted as ISO 8601) "
