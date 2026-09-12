@@ -48,13 +48,35 @@ def _remove_command_prefix(command_output: str, command: str) -> str:
 
 
 def _remove_powershell_echo(command_output: str, command: str) -> str:
+    """Strip PowerShell's echo of the submitted command from its output.
+
+    When PowerShell reads commands from a pipe it echoes each input line; a
+    multiline command is echoed as its first line followed by one ``>> ``
+    continuation line per extra line (plus the blank line that submits it).
+    """
     command_output = command_output.lstrip()
     command = command.lstrip()
-    first_line = command_output.splitlines()[0] if command_output else ""
-    if command and command in first_line:
-        _, separator, rest = command_output.partition("\n")
-        command_output = rest if separator else ""
+    command_lines = command.splitlines() or [""]
+    lines = command_output.split("\n")
+    if command_lines[0] and command_lines[0] in lines[0]:
+        lines = lines[1:]
+        # Continuation echo: at most one ">> " line per extra command line,
+        # plus the blank line that terminates the multiline input.
+        budget = len(command_lines)
+        while budget and lines and lines[0].startswith(">> "):
+            lines = lines[1:]
+            budget -= 1
+        command_output = "\n".join(lines)
     return re.sub(r"(?:\r?\n)?PS [^\r\n]*>\s*$", "", command_output).lstrip()
+
+
+_UNRESPONSIVE_TERMINAL_SUFFIX = (
+    "\n[The terminal process exited or stopped responding while this command "
+    "was running, so its result is unknown. A new terminal session will be "
+    "created automatically for your next command; environment variables, "
+    "loaded modules and working-directory changes from the old session are "
+    "gone. Avoid top-level `exit` in terminal commands.]"
+)
 
 
 class TerminalSession(TerminalSessionBase):
@@ -136,6 +158,10 @@ class TerminalSession(TerminalSessionBase):
             TerminalCommandStatus.NO_CHANGE_TIMEOUT,
             TerminalCommandStatus.HARD_TIMEOUT,
         }
+
+    def is_alive(self) -> bool:
+        """Check whether the underlying terminal can still accept commands."""
+        return self._initialized and not self._closed and self.terminal.is_alive()
 
     def _is_special_key(self, command: str) -> bool:
         """Check if the command is a special key."""
@@ -370,6 +396,49 @@ class TerminalSession(TerminalSessionBase):
             metadata=metadata,
         )
 
+    def _handle_unresponsive_terminal(
+        self,
+        command: str,
+        terminal_content: str,
+        ps1_matches: list[re.Match],
+    ) -> TerminalObservation:
+        """Handle the shell exiting or wedging while a command was running.
+
+        The session is closed so the executor recreates it on the next call;
+        the observation tells the model what happened and that nothing is
+        still running.
+        """
+        logger.warning(
+            "Terminal backend is no longer alive while running a command; "
+            "closing the session so it is recreated on the next command"
+        )
+        raw_command_output = self._combine_outputs_between_matches(
+            terminal_content, ps1_matches
+        )
+        metadata = CmdOutputMetadata(exit_code=-1, working_dir=self._cwd)
+        metadata.suffix = _UNRESPONSIVE_TERMINAL_SUFFIX
+        command_output = self._get_command_output(
+            command,
+            raw_command_output,
+            metadata,
+            continue_prefix="[Below is the output of the previous command.]\n",
+            is_final=True,
+        )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+        )
+        self.prev_status = TerminalCommandStatus.COMPLETED
+        self.prev_output = ""
+        self._query_filter.reset()
+        self.close()
+        return TerminalObservation.from_text(
+            command=command,
+            text=command_output,
+            metadata=metadata,
+            exit_code=metadata.exit_code,
+            is_error=True,
+        )
+
     def _ready_for_next_command(self) -> None:
         """Reset the content buffer for a new command."""
         # Clear the current content
@@ -431,6 +500,15 @@ class TerminalSession(TerminalSessionBase):
                 is_error=True,
             )
 
+        if not self.terminal.is_alive():
+            return self._handle_unresponsive_terminal(
+                command,
+                terminal_content=self.terminal.read_screen(),
+                ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                    self.terminal.read_screen()
+                ),
+            )
+
         # If the previous command is not completed,
         # we need to check if the command is empty
         if self.prev_status not in {
@@ -483,17 +561,42 @@ class TerminalSession(TerminalSessionBase):
         last_change_time = start_time
         last_terminal_output = initial_terminal_output
 
-        # When prev command is still running, and we are trying to send a new command
+        # After a timeout the previous command may still be running, or it may
+        # have finished on its own while nobody was polling.  Ask the backend
+        # rather than guessing from the tail of the screen: for the PowerShell
+        # backend the screen never ends with the marker while the shell is
+        # busy, but a trailing prompt or a scrolled-off marker must not make a
+        # finished command look busy either.
+        previous_command_running = (
+            self.prev_status
+            in {
+                TerminalCommandStatus.HARD_TIMEOUT,
+                TerminalCommandStatus.NO_CHANGE_TIMEOUT,
+            }
+            and self.terminal.is_running()
+        )
         if (
             self.prev_status
             in {
                 TerminalCommandStatus.HARD_TIMEOUT,
                 TerminalCommandStatus.NO_CHANGE_TIMEOUT,
             }
-            and not last_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
-            and not is_input
-            and command != ""
+            and not previous_command_running
+            and is_input
         ):
+            # There is no process left to receive keystrokes (a Ctrl+C for
+            # a command that already finished is the common case), so report
+            # the finished command's result instead of typing into the shell.
+            logger.debug(
+                "Previous command already finished; treating input %r as a "
+                "request for its output",
+                command,
+            )
+            command = ""
+            is_input = False
+
+        # When prev command is still running, and we are trying to send a new command
+        if previous_command_running and not is_input and command != "":
             _ps1_matches = CmdOutputMetadata.matches_ps1_metadata(last_terminal_output)
             # Use initial_ps1_matches if _ps1_matches is empty,
             # otherwise use _ps1_matches. This handles the case where
@@ -593,6 +696,16 @@ class TerminalSession(TerminalSessionBase):
                     ps1_matches=ps1_matches,
                 )
                 return obs
+
+            # 1b) The shell itself is gone (exited, killed, or declared
+            # unresponsive by a failed interrupt): report immediately instead
+            # of waiting out the timeout and then rejecting every command.
+            if not self.terminal.is_alive():
+                return self._handle_unresponsive_terminal(
+                    command,
+                    terminal_content=cur_terminal_output,
+                    ps1_matches=ps1_matches,
+                )
 
             # Timeout checks should only trigger if a new prompt hasn't appeared yet.
 
