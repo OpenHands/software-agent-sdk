@@ -18,8 +18,9 @@ def _load(name: str, script_name: str):
     return mod
 
 
-# Import check_pr_description first so refresh_linked_pr_checks can resolve its
-# `from check_pr_description import ...` against the module we loaded above.
+# Import markdown_sections and check_pr_description first so the scripts can
+# resolve their imports against the modules we loaded above.
+_load("markdown_sections", "markdown_sections.py")
 _load("check_pr_description", "check_pr_description.py")
 _prod = _load("refresh_linked_pr_checks", "refresh_linked_pr_checks.py")
 
@@ -78,6 +79,25 @@ def test_noop_for_unrelated_action(monkeypatch, tmp_path):
 
 def test_reruns_linked_pr_check_when_readiness_label_changes(monkeypatch, tmp_path):
     _write_event(monkeypatch, _event(), tmp_path)
+    monkeypatch.setattr(
+        _prod,
+        "_linked_open_prs",
+        lambda repo, num: [{"number": 7, "headRefOid": "abc123"}],
+    )
+    monkeypatch.setattr(_prod, "_run", lambda args: _FakeProc("Fixes #12"))
+    seen = []
+    monkeypatch.setattr(
+        _prod,
+        "_rerun_pr_description_check",
+        lambda repo, sha: (seen.append((repo, sha)) or True),
+    )
+    assert _prod.main() == 0
+    assert seen == [("org/repo", "abc123")]
+
+
+def test_reruns_linked_pr_check_when_readiness_label_removed(monkeypatch, tmp_path):
+    """Losing `ready-for-dev` must also refresh linked PR gates (unlabeled)."""
+    _write_event(monkeypatch, _event(action="unlabeled"), tmp_path)
     monkeypatch.setattr(
         _prod,
         "_linked_open_prs",

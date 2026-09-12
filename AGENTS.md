@@ -30,10 +30,10 @@ strong bias toward simplicity and maintainable code.
 This repository owns the Python SDK and Agent Server: agent and tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. Related responsibilities live elsewhere:
 
 - [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
-- [`OpenHands/typescript-client`](https://github.com/OpenHands/typescript-client) mirrors this repository's Agent Server API for browser-compatible TypeScript clients.
+- `clients/typescript/` mirrors the Agent Server API for browser-compatible TypeScript clients.
 - [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
 
-The usual flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Implement backend behavior and endpoints here first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
+The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript` → Agent Canvas. Implement backend behavior and endpoints in the Python SDK or Agent Server packages first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
 
 All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
 
@@ -148,7 +148,9 @@ consult each relevant package-level AGENTS.md.
 
 The `.pr/` directory is intentionally temporary by repository policy: the
 `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
-PR-only reviewer context and automatically removes it after PR approval.
+PR-only reviewer context. It removes the directory after approval for
+same-repository PRs. If artifacts reach `main`, the workflow opens or updates a
+cleanup PR against `main`.
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
 
@@ -170,14 +172,14 @@ mkdir -p .pr
 ## How It Works
 
 1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
-2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
-3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+2. **Approval cleanup**: For same-repository PRs, approval removes `.pr/` from the PR branch via commit
+3. **Post-merge cleanup**: If `.pr/` reaches `main`, including through a fork PR, the workflow opens or updates a cleanup PR against `main`
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+- Cleanup PRs follow the normal review and required-check protections for `main`
 
 ## When to Use
 
@@ -327,7 +329,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 
 <REPO>
 <PROJECT_STRUCTURE>
-- This is a `uv`-managed Python monorepo (single `uv.lock` at repo root) with multiple distributable packages: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- This is a monorepo with a `uv`-managed Python workspace (single `uv.lock` at repo root) and a separately managed npm package under `clients/typescript/`. The Python distributable packages are: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- `clients/typescript/` contains the browser-compatible TypeScript client, with its own `package-lock.json`, npm scripts, and Jest tests.
 - `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>
@@ -335,7 +338,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 <QUICK_COMMANDS>
 - Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
 - Lint/format: `make lint`, `make format`
-- Run tests: `uv run pytest`
+- Run Python tests: `uv run pytest`
+- Set up and validate the TypeScript client: `cd clients/typescript && npm ci && npm run lint && npm run build && npm test`
 - Run agent-server stress tests: `uv run pytest -m stress` (see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md))
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`

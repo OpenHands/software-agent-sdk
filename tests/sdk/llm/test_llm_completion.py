@@ -6,7 +6,6 @@ from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from deprecation import DeprecatedWarning
 from litellm import ChatCompletionMessageToolCall, CustomStreamWrapper
 from litellm.types.utils import (
     Choices,
@@ -79,7 +78,7 @@ def default_config():
     )
 
 
-async def test_modify_params_is_process_wide_and_calls_overlap(monkeypatch):
+async def test_litellm_modify_params_is_process_wide_and_calls_overlap(monkeypatch):
     active_calls = 0
     peak_active_calls = 0
     both_active = asyncio.Event()
@@ -98,10 +97,8 @@ async def test_modify_params_is_process_wide_and_calls_overlap(monkeypatch):
             active_calls -= 1
 
     monkeypatch.setattr(llm_module, "litellm_acompletion", completion)
-    with pytest.warns(DeprecatedWarning, match="LLM.modify_params"):
-        first = LLM(model="gpt-4o", api_key="test", modify_params=True)
-    with pytest.warns(DeprecatedWarning, match="LLM.modify_params"):
-        second = LLM(model="gpt-4o", api_key="test", modify_params=False)
+    first = LLM(model="gpt-4o", api_key="test")
+    second = LLM(model="gpt-4o", api_key="test")
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
     await asyncio.gather(
