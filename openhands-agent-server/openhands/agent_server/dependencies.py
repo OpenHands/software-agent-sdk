@@ -102,14 +102,19 @@ async def get_event_service(
     return event_service
 
 
-def get_event_history_service(
+async def get_event_history_service(
     conversation_id: UUID,
     request: Request,
-) -> EventHistoryService:
+) -> EventHistoryService | EventService:
     conversation_dir = request.app.state.config.conversations_path / conversation_id.hex
-    if not (conversation_dir / "meta.json").is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Conversation not found: {conversation_id}",
-        )
-    return EventHistoryService.from_conversation_dir(conversation_dir)
+    if conversation_dir.is_dir():
+        return EventHistoryService.from_conversation_dir(conversation_dir)
+    conversation_service = getattr(request.app.state, "conversation_service", None)
+    if conversation_service is not None:
+        event_service = await conversation_service.get_event_service(conversation_id)
+        if event_service is not None:
+            return event_service
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Conversation not found: {conversation_id}",
+    )
