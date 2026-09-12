@@ -59,6 +59,36 @@ You may find that occasionally we are opinionated about several things:
 If you’re not sure whether a change crosses these lines, please ask early. We’re happy to help think
 through the shape of a clean interface.
 
+### LLM parsing failures are upstream responsibilities
+
+Tool calls and reasoning ("thinking") blocks are produced and parsed by the model, the model
+provider, and [LiteLLM](https://github.com/BerriAI/litellm). When a model emits malformed tool
+calls or thinking blocks that fail to parse — or when LiteLLM mis-parses a provider response —
+that is the responsibility of the provider or LiteLLM, **not** OpenHands.
+
+If you encounter an issue where:
+
+- a tool call or thinking block is not parsed correctly, or
+- a model/provider returns tool calls or reasoning blocks in a malformed or unexpected shape,
+
+please report it upstream:
+
+1. **The LLM provider** (or the model vendor) — they own the format their models emit.
+2. **[LiteLLM](https://github.com/BerriAI/litellm/issues)** — if the failure happens at the
+   LiteLLM boundary (translation, serialization, or parsing of provider responses).
+
+Mitigations you can try in the meantime:
+
+- Switch to a different model or provider that emits well-formed tool calls / reasoning blocks.
+- Check whether a newer LiteLLM version fixes the parsing (the SDK pins LiteLLM; see `uv.lock`).
+- For models with non-native tool calling, note that the SDK already includes a prompt-mocked
+  conversion layer (`openhands-sdk/openhands/sdk/llm/mixins/`), but it is not a general-purpose
+  parser for arbitrary provider output.
+
+We generally will not accept PRs whose only purpose is to patch around a specific provider's or
+LiteLLM's malformed output. Instead, please open the issue (or send the fix) to the upstream
+project that owns the parsing, and we will track it there.
+
 ## Practical pointers
 
 This file is mostly about principles. For the mechanics, please see:
