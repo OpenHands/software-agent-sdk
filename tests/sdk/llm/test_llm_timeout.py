@@ -1,11 +1,21 @@
 """Tests for LLM timeout configuration."""
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
+from aiohttp import web
 from pydantic import SecretStr
 
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.exceptions import LLMTimeoutError
 
 
 # Default timeout in seconds (5 minutes)
@@ -32,6 +42,21 @@ class TestLLMTimeoutDefaults:
             "A reasonable default timeout is needed to prevent LLM calls from "
             "hanging indefinitely and causing runtime idle detection issues."
         )
+        assert llm.stream_idle_timeout == DEFAULT_LLM_TIMEOUT_SECONDS
+
+    def test_stream_idle_timeout_defaults_to_configured_timeout(self):
+        llm = LLM(model="gpt-4o-mini", usage_id="test-llm", timeout=600)
+        assert llm.stream_idle_timeout == 600
+
+    def test_stream_idle_timeout_can_be_disabled(self):
+        llm = LLM(
+            model="gpt-4o-mini",
+            usage_id="test-llm",
+            timeout=600,
+            stream_idle_timeout=None,
+        )
+        assert llm.timeout == 600
+        assert llm.stream_idle_timeout is None
 
     def test_timeout_can_be_overridden(self):
         """Test that the timeout can be explicitly set to a custom value."""
@@ -191,6 +216,121 @@ class TestLLMTimeoutPassthrough:
 
         mock_completion.assert_called_once()
         call_kwargs = mock_completion.call_args[1]
-
-        # When explicitly set to None, it should be passed as None
         assert call_kwargs["timeout"] is None
+
+
+@asynccontextmanager
+async def _hung_chat_completion_server(
+    *, keep_sending: bool = False
+) -> AsyncIterator[tuple[str, list[int]]]:
+    attempts: list[int] = []
+
+    async def completion(request: web.Request) -> web.StreamResponse:
+        await request.json()
+        attempts.append(len(attempts) + 1)
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        chunk = {
+            "id": f"chatcmpl-{attempts[-1]}",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "test-model",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hi"}}],
+        }
+        while True:
+            await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            if not keep_sending:
+                await asyncio.Event().wait()
+            await asyncio.sleep(0.01)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", completion)
+    runner = web.AppRunner(app, shutdown_timeout=0.01)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    address = runner.addresses[0]
+    assert isinstance(address, tuple)
+    port = address[1]
+    assert isinstance(port, int)
+    try:
+        yield f"http://127.0.0.1:{port}", attempts
+    finally:
+        await runner.cleanup()
+
+
+def _streaming_llm(base_url: str, **kwargs) -> LLM:
+    return LLM(
+        model="openai/test-model",
+        api_key=SecretStr("test-key"),
+        base_url=base_url,
+        usage_id="timeout-test",
+        stream=True,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_stream_idle_timeout_retries_real_http_stream() -> None:
+    async with _hung_chat_completion_server() as (base_url, attempts):
+        llm = _streaming_llm(
+            base_url,
+            timeout=2,
+            stream_idle_timeout=0.05,
+            num_retries=2,
+        )
+
+        with pytest.raises(LLMTimeoutError, match="idle timeout"):
+            await llm.acompletion(
+                messages=[Message(role="user", content=[TextContent(text="Hello")])],
+                on_token=lambda _: None,
+            )
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_async_hard_timeout_retries_active_real_http_stream() -> None:
+    async with _hung_chat_completion_server(keep_sending=True) as (base_url, attempts):
+        llm = _streaming_llm(
+            base_url,
+            timeout=0.2,
+            stream_idle_timeout=1,
+            num_retries=2,
+        )
+
+        with pytest.raises(LLMTimeoutError, match="hard timeout"):
+            await llm.acompletion(
+                messages=[Message(role="user", content=[TextContent(text="Hello")])],
+                on_token=lambda _: None,
+            )
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_exhausted_stream_timeout_transitions_conversation_to_error(
+    tmp_path,
+) -> None:
+    async with _hung_chat_completion_server() as (base_url, attempts):
+        llm = _streaming_llm(
+            base_url,
+            timeout=2,
+            stream_idle_timeout=0.05,
+            num_retries=2,
+        )
+        conversation = LocalConversation(
+            agent=Agent(llm=llm, tools=[]),
+            workspace=str(tmp_path),
+            visualizer=None,
+        )
+        conversation.send_message("Hello")
+
+        with pytest.raises(ConversationRunError):
+            await conversation.arun()
+
+    assert len(attempts) == 2
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
