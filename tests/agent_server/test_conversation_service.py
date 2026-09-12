@@ -3633,6 +3633,37 @@ class TestACPActivityHeartbeatWiring:
         assert not hasattr(agent, "_on_activity")
 
 
+@pytest.mark.asyncio
+async def test_external_catalog_sync_discovers_conversation_added_after_startup(
+    tmp_path, sample_stored_conversation
+):
+    conversations_dir = tmp_path / "conversations"
+    async with ConversationService(
+        conversations_dir=conversations_dir, sync_external_catalog=True
+    ) as service:
+        assert (await service.search_conversations()).items == []
+
+        conversation_dir = conversations_dir / sample_stored_conversation.id.hex
+        conversation_dir.mkdir(parents=True)
+        (conversation_dir / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            persistence_dir=str(conversations_dir),
+        )
+        (conversation_dir / "base_state.json").write_text(state.model_dump_json())
+
+        info = await service.get_conversation(sample_stored_conversation.id)
+        page = await service.search_conversations()
+
+    assert info is not None
+    assert info.id == sample_stored_conversation.id
+    assert [item.id for item in page.items] == [sample_stored_conversation.id]
+
+
 def _branch_events(conversation) -> list:
     """Log events excluding async ``ConversationStateUpdateEvent`` artifacts.
 
@@ -4164,3 +4195,47 @@ async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
             holder.join(timeout=2)
 
     assert [item.id for item in page.items] == [conversation_info.id]
+
+
+@pytest.mark.asyncio
+async def test_external_catalog_refreshes_metadata_without_state_change(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    directory = conversations_dir / conversation_id.hex
+    async with ConversationService(
+        conversations_dir=conversations_dir, sync_external_catalog=True
+    ) as service:
+        initial = await service.search_conversations()
+        assert initial.items[0].title is None
+        state_before = (directory / "base_state.json").read_bytes()
+        metadata = json.loads((directory / "meta.json").read_text())
+        metadata["title"] = "Generated externally"
+        (directory / "meta.json").write_text(json.dumps(metadata))
+
+        info = await service.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "Generated externally"
+        assert (await service.search_conversations()).items[0].title == info.title
+        assert (directory / "base_state.json").read_bytes() == state_before
+
+
+@pytest.mark.asyncio
+async def test_external_catalog_preserves_live_metadata(persisted_conversation):
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(
+        conversations_dir=conversations_dir, sync_external_catalog=True
+    ) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+        runtime.stored = runtime.stored.model_copy(update={"title": "Live title"})
+        metadata_path = conversations_dir / conversation_id.hex / "meta.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["title"] = "Stale disk title"
+        metadata_path.write_text(json.dumps(metadata))
+
+        info = await service.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "Live title"
+        assert (await service.search_conversations()).items[0].title == "Live title"
+        assert await service.get_event_service(conversation_id) is runtime

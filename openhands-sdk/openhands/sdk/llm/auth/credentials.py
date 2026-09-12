@@ -6,6 +6,7 @@ import json
 import os
 import time
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -160,3 +161,15 @@ class CredentialStore:
         )
         self.save(updated)
         return updated
+
+
+_credential_store_factory: Callable[[], CredentialStore] = CredentialStore
+
+
+def configure_credential_store(factory: Callable[[], CredentialStore]) -> None:
+    global _credential_store_factory
+    _credential_store_factory = factory
+
+
+def get_credential_store() -> CredentialStore:
+    return _credential_store_factory()
