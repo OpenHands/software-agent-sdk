@@ -1,3 +1,5 @@
+import asyncio
+
 from browser_use.dom.markdown_extractor import extract_clean_markdown
 
 from openhands.sdk import get_logger
@@ -27,6 +29,9 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         self._injected_script_ids: list[str] = []
         # Recording session - encapsulates all recording state and logic
         self._recording_session: RecordingSession | None = None
+        # Serialize recording lifecycle transitions so a duplicate start cannot
+        # replace an active controller while it is awaiting browser I/O.
+        self._recording_lock = asyncio.Lock()
 
     @property
     def _is_recording(self) -> bool:
@@ -39,6 +44,11 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         Stops any active recording, saves remaining events, and releases resources.
         Should be called when the browser session is being closed.
         """
+        async with self._recording_lock:
+            await self._cleanup_recording_locked()
+
+    async def _cleanup_recording_locked(self) -> None:
+        """Cleanup recording resources while holding the lifecycle lock."""
         if self._recording_session is None:
             return
 
@@ -140,9 +150,14 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         if not self.browser_session:
             return "Error: No browser session active"
 
-        # Create a new recording session with output_dir
-        self._recording_session = RecordingSession(output_dir=output_dir)
-        return await self._recording_session.start(self.browser_session)
+        async with self._recording_lock:
+            if self._recording_session and self._recording_session.is_active:
+                return "Already recording"
+
+            # A stopped recording gets a fresh controller and output directory,
+            # while an active recording retains its original controller.
+            self._recording_session = RecordingSession(output_dir=output_dir)
+            return await self._recording_session.start(self.browser_session)
 
     async def _stop_recording(self) -> str:
         """Stop rrweb recording and save remaining events.
@@ -155,13 +170,14 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         if not self.browser_session:
             return "Error: No browser session active"
 
-        if not self._recording_session or not self._recording_session.is_active:
-            return "Error: Not recording. Call browser_start_recording first."
+        async with self._recording_lock:
+            if not self._recording_session or not self._recording_session.is_active:
+                return "Error: Not recording. Call browser_start_recording first."
 
-        result = await self._recording_session.stop(self.browser_session)
-        # Reset the session after stopping
-        self._recording_session.reset()
-        return result
+            result = await self._recording_session.stop(self.browser_session)
+            # Reset the session after stopping
+            self._recording_session.reset()
+            return result
 
     async def _get_storage(self) -> str:
         """Get browser storage (cookies, local storage, session storage)."""
