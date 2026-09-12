@@ -11,6 +11,9 @@ from openhands.sdk.llm.message import (
     ReasoningItemModel,
     TextContent,
 )
+from openhands.sdk.llm.utils.tool_call_id import (
+    OPENAI_RESPONSES_TOOL_CALL_ID_POLICY,
+)
 
 
 def message_to_responses_dict(
@@ -135,13 +138,14 @@ def _tool_to_responses_items(
     if message.tool_call_id is None:
         return []
 
+    call_id = OPENAI_RESPONSES_TOOL_CALL_ID_POLICY.encode(message.tool_call_id)
     items: list[dict[str, Any]] = []
     for c in message.content:
         if isinstance(c, TextContent):
             items.append(
                 {
                     "type": "function_call_output",
-                    "call_id": message.tool_call_id,
+                    "call_id": call_id,
                     "output": message._maybe_truncate_tool_text(c.text),
                 }
             )
@@ -150,7 +154,7 @@ def _tool_to_responses_items(
                 items.append(
                     {
                         "type": "function_call_output",
-                        "call_id": message.tool_call_id,
+                        "call_id": call_id,
                         "output": [
                             {
                                 "type": "input_image",
