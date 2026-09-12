@@ -1,0 +1,9 @@
+Command: .venv/bin/python .pr/repro_chat_content.py
+Exit: 0
+PASS empty user: HTTP 200; SDK response=local-ok
+PASS blank assistant: HTTP 200; SDK response=local-ok
+PASS mixed blank/valid user blocks: HTTP 200; SDK response=local-ok
+PASS empty tool result: HTTP 200; SDK response=local-ok
+4/4 cases passed; loopback HTTP only
+
+Focused suite (recorded during implementation): 120 passed in 0.42s

@@ -12,6 +12,8 @@ Tests are organized by serialization strategy to ensure clear separation of conc
 
 import json
 
+import pytest
+
 from openhands.sdk.llm.message import (
     ImageContent,
     Message,
@@ -27,6 +29,74 @@ DEFAULT_SERIALIZATION_OPTS = {
     "force_string_serializer": False,
     "send_reasoning_content": False,
 }
+
+
+@pytest.mark.parametrize("role", ["user", "system", "assistant", "tool"])
+@pytest.mark.parametrize("text", [None, "", " \t\n"])
+def test_blank_chat_content_uses_empty_string(role, text):
+    message = Message(
+        role=role,
+        content=[] if text is None else [TextContent(text=text)],
+    )
+    stored = message.model_dump_json()
+
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
+    )
+
+    assert result["content"] == ""
+    assert message.model_dump_json() == stored
+
+
+@pytest.mark.parametrize("role", ["user", "system", "assistant", "tool"])
+def test_blank_chat_blocks_preserve_nonblank_text_and_cache(role):
+    message = Message(
+        role=role,
+        content=[
+            TextContent(text=""),
+            TextContent(text="  keep this whitespace\n", cache_prompt=True),
+            TextContent(text=" \t\n"),
+        ],
+    )
+
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
+    )
+
+    expected: dict[str, str | dict[str, str]] = {
+        "type": "text",
+        "text": "  keep this whitespace\n",
+    }
+    if role == "tool":
+        assert result["cache_control"] == {"type": "ephemeral"}
+    else:
+        expected["cache_control"] = {"type": "ephemeral"}
+    assert result["content"] == [expected]
+
+
+@pytest.mark.parametrize("vision_enabled", [False, True])
+def test_blank_chat_blocks_preserve_enabled_images(vision_enabled):
+    message = Message(
+        role="user",
+        content=[
+            TextContent(text=" \n"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "cache_enabled": True,
+            "vision_enabled": vision_enabled,
+        }
+    )
+
+    assert result["content"] == (
+        [{"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}]
+        if vision_enabled
+        else ""
+    )
 
 
 class TestStorageSerialization:
