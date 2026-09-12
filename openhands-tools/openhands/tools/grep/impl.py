@@ -258,7 +258,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     ) -> GrepObservation:
         """Execute grep content search using the system grep binary."""
         result = subprocess.run(
-            ["grep", "-R", "-I", "-l", "-i", action.pattern, str(search_path)],
+            ["grep", "-E", "-R", "-I", "-l", "-i", action.pattern, str(search_path)],
             capture_output=True,
             text=True,
             timeout=30,

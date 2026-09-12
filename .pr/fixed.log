@@ -1,0 +1,7 @@
+Command: .venv/bin/python .pr/repro_grep_regex.py
+Exit: 0 (JSON excerpt)
+{"grep_available": true, "rg": null}
+{"case": "extended", "pattern": "^(foo|bar)+[0-9]{2}$", "expected": ["matching.txt"], "actual": ["matching.txt"], "is_error": false, "passed": true}
+{"case": "escaped", "pattern": "^foo\\(bar\\)\\+$", "expected": ["matching.txt"], "actual": ["matching.txt"], "is_error": false, "passed": true}
+
+Focused suite (recorded during implementation): 85 passed, 21 warnings in 1.28s

@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -371,6 +372,29 @@ def test_grep_terminal_command_falls_back_to_grep(monkeypatch, tmp_path):
     assert command.startswith(("grep ", '"grep" '))
     assert "--include=*.py" in command
     assert "python -c" not in command
+
+
+@pytest.mark.skipif(shutil.which("grep") is None, reason="grep not available")
+def test_grep_regex_arguments_can_fall_back_to_system_grep(monkeypatch, tmp_path):
+    original_which = shutil.which
+    monkeypatch.setattr(
+        agent_utils.shutil,
+        "which",
+        lambda name: None if name == "rg" else original_which(name),
+    )
+    (tmp_path / "matching.txt").write_text("FooBAR12\n")
+    (tmp_path / "other.txt").write_text("foo12 extra\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="grep",
+        arguments={"pattern": r"^(foo|bar)+[0-9]{2}$", "path": str(tmp_path)},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    observation_event = next(e for e in events if isinstance(e, ObservationEvent))
+    assert "matching.txt:1:FooBAR12" in observation_event.observation.text
+    assert "other.txt" not in observation_event.observation.text
 
 
 def test_grep_terminal_command_falls_back_to_python_on_windows(monkeypatch, tmp_path):
