@@ -392,6 +392,11 @@
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
+        "hash": "69e5e28543d27d551b8fa6322d51917f54fed9aa61f6f2ee608476736ad6c027"
+    },
+    {
+        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
+        "name": "getattr",
         "hash": "6d766e456aa47c88cd8f444528cc79044e9ab673cb87d7ab796f42fe201816b7"
     },
     {

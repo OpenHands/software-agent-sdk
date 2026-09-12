@@ -251,26 +251,20 @@ class Telemetry(BaseModel):
         Single source of truth for both ``metrics`` and the span, so the trace
         and the app's cost cannot disagree about the buckets.
         """
-        cache_read = 0
-        p_details = usage.__dict__.get("prompt_tokens_details") or usage.__dict__.get(
-            "input_tokens_details"
-        )
-        if p_details is not None:
-            cache_read = int(p_details.__dict__.get("cached_tokens", 0) or 0)
-        # Kimi-K2-thinking populates usage.cached_tokens instead.
-        if not cache_read:
-            cache_read = int(usage.__dict__.get("cached_tokens", 0) or 0)
-        if not cache_read:
-            cache_read = int(usage.__dict__.get("cache_read_input_tokens", 0) or 0)
+        if isinstance(usage, Usage):
+            details = usage.prompt_tokens_details
+            if details is None:
+                return 0, 0
+            cache_write = (
+                details.cache_creation_tokens
+                if "cache_creation_tokens" in details.model_fields_set
+                else 0
+            )
+            return int(details.cached_tokens or 0), int(cache_write or 0)
 
-        # litellm mirrors this onto a private attr; the public one and the
-        # details dict are both populated on some provider shapes only.
-        cache_write = int(usage.__dict__.get("_cache_creation_input_tokens", 0) or 0)
-        if not cache_write:
-            cache_write = int(usage.__dict__.get("cache_creation_input_tokens", 0) or 0)
-        if not cache_write and p_details is not None:
-            cache_write = int(p_details.__dict__.get("cache_creation_tokens", 0) or 0)
-        return cache_read, cache_write
+        details = usage.input_tokens_details
+        cache_read = details.cached_tokens if details is not None else 0
+        return int(cache_read or 0), 0
 
     # ---------- Observability span ----------
     # These bracket one LLM call: ``on_request`` -> transport -> ``on_response``
@@ -421,7 +415,7 @@ class Telemetry(BaseModel):
                         usage, "prompt_tokens_details", None
                     ) or getattr(usage, "input_tokens_details", None)
                     cache_read_tokens = (
-                        int(p_details.__dict__.get("cached_tokens", 0) or 0)
+                        int(getattr(p_details, "cached_tokens", 0) or 0)
                         if p_details
                         else 0
                     )

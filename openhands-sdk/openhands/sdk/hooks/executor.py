@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from openhands.sdk.agent.utils import make_llm_completion
 from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.types import HookDecision, HookEvent
@@ -359,7 +358,7 @@ class HookExecutor:
         ]
 
         try:
-            response = make_llm_completion(hook_llm, messages)
+            response = hook_llm.generate(messages=messages, store=False)
             raw = "\n".join(content_to_str(response.message.content))
         except Exception as e:
             logger.warning(
