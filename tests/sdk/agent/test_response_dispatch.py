@@ -503,3 +503,39 @@ def test_content_response_masks_value_dropped_from_secret_sources():
 
     assert not convo.state.secret_registry.secret_sources
     assert _agent_message_text(events) == "the value is <secret-hidden> now"
+
+
+def test_thinking_blocks_mask_registered_secret():
+    """Secrets in ``thinking_blocks[].thinking`` are masked in the durable copy.
+
+    ``content`` and ``reasoning_content`` were masked by the original PR, but
+    ``thinking_blocks`` were explicitly left alone.  Anthropic extended-thinking
+    traces can echo back secret values (e.g. tokens the model reasoned about),
+    and those traces are persisted, rendered, exported and POSTed to webhooks
+    via the same ``MessageEvent.llm_message`` — so the secret leaked verbatim.
+
+    The signature is nulled because the masked thinking text no longer matches
+    the provider's signed payload.
+    """
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="done")],
+        thinking_blocks=[
+            ThinkingBlock(
+                thinking="I need to use the token supersecret to authenticate",
+                signature="abc123sig",
+            ),
+        ],
+    )
+    events, _ = _run_single_step(
+        _make_llm_response(msg), secrets={"TOKEN": "supersecret"}
+    )
+
+    msg_event = next(
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    )
+    tb = msg_event.llm_message.thinking_blocks[0]
+    assert isinstance(tb, ThinkingBlock)
+    assert "supersecret" not in tb.thinking
+    assert tb.signature is None
+    assert "supersecret" not in msg_event.llm_message.model_dump_json()
