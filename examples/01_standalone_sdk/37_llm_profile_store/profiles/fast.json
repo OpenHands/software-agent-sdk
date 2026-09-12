@@ -14,7 +14,6 @@
   "max_output_tokens": 64000,
   "stream": false,
   "drop_params": true,
-  "modify_params": true,
   "disable_stop_word": false,
   "caching_prompt": true,
   "log_completions": false,
