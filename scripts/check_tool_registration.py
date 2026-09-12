@@ -148,6 +148,9 @@ def main(files: list[str] | None = None) -> int:
     special_files = {
         "browser_use/definition.py",  # Registers BrowserToolSet for all browser tools
         "delegate/definition.py",  # May have special registration patterns
+        # TaskOutputTool and TaskStopTool are lifecycle members created by
+        # TaskToolSet so they share one parent-scoped executor.
+        "task/definition.py",
     }
 
     if files:
