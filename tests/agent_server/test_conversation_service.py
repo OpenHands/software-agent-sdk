@@ -22,6 +22,7 @@ from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
     _compose_conversation_info,
+    _configure_git_identity,
     _ConversationRecord,
     _get_worktree_start_point,
 )
@@ -55,6 +56,7 @@ from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+from openhands.sdk.profiles.agent_profile import GitIdentity
 
 
 @pytest.fixture
@@ -1680,6 +1682,33 @@ class TestConversationServiceCountConversations:
 
 class TestConversationServiceStartConversation:
     """Test cases for ConversationService.start_conversation method."""
+
+    def test_configure_git_identity_sets_workspace_git_config(self, tmp_path):
+        """Test that a profile Git identity is applied to the workspace."""
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+
+        identity = GitIdentity(
+            name="Profile User",
+            email="profile@example.com",
+        )
+
+        _configure_git_identity(repo_dir, identity)
+
+        assert (
+            run_git_command(
+                ["git", "config", "--local", "user.name"],
+                repo_dir,
+            )
+            == "Profile User"
+        )
+        assert (
+            run_git_command(
+                ["git", "config", "--local", "user.email"],
+                repo_dir,
+            )
+            == "profile@example.com"
+        )
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_secrets(self, conversation_service):

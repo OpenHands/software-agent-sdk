@@ -73,6 +73,17 @@ def build_profile_verification(
         critic_model_name=v.critic_model_name,
     )
 
+class GitIdentity(BaseModel):
+    """Git user identity applied to a conversation workspace."""
+
+    name: str = Field(
+        min_length=1,
+        description="Git user.name configured for the conversation workspace.",
+    )
+    email: str = Field(
+        min_length=1,
+        description="Git user.email configured for the conversation workspace.",
+    )
 
 class AgentProfileBase(BaseModel):
     """Shared identity + provenance fields for every ``AgentProfile`` variant.
@@ -110,6 +121,13 @@ class AgentProfileBase(BaseModel):
     # selects them by *exclusion* (``OpenHandsAgentProfile.disabled_skills``, a
     # deny-list) rather than by an allow-list of names that can dangle. See the
     # #4017 architecture discussion.
+    git_identity: GitIdentity | None = Field(
+        default=None,
+        description=(
+            "Optional Git user identity to configure in the conversation "
+            "workspace. When omitted, the user's global Git identity is used."
+        ),
+    )
     mcp_server_refs: list[str] | None = Field(
         default=None,
         description=(

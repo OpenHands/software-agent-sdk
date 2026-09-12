@@ -68,6 +68,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.profiles.agent_profile import GitIdentity
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
@@ -268,6 +269,29 @@ def _create_conversation_worktree(
     )
 
 
+def _configure_git_identity(
+    workspace: Path,
+    git_identity: GitIdentity | None,
+) -> None:
+    """Configure Git identity for a conversation workspace.
+
+    When a profile-specific identity is provided, apply it to the workspace.
+    Otherwise, leave Git configuration untouched so the global Git identity
+    remains the fallback.
+    """
+    if git_identity is None:
+        return
+
+    run_git_command(
+        ["git", "config", "user.name", git_identity.name],
+        workspace,
+    )
+    run_git_command(
+        ["git", "config", "user.email", git_identity.email],
+        workspace,
+    )
+
+
 def _prepare_request_workspace(
     request: StartConversationRequest,
     conversation_id: UUID,
@@ -352,7 +376,7 @@ def _resolve_agent_from_profile(
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
-) -> "tuple[AgentBase, LaunchedAgentProfile]":
+) -> "tuple[AgentBase, LaunchedAgentProfile, GitIdentity | None]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
@@ -375,6 +399,7 @@ def _resolve_agent_from_profile(
         get_agent_profile_store,
         get_llm_profile_store,
     )
+
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
     from openhands.sdk.settings.model import OpenHandsAgentSettings
 
@@ -450,7 +475,7 @@ def _resolve_agent_from_profile(
         agent_profile_id=profile.id,
         revision=profile.revision,
     )
-    return agent, launched
+    return agent, launched, profile.git_identity
 
 
 def _compose_conversation_info(
@@ -1562,11 +1587,11 @@ class ConversationService:
                     f"Parent conversation {request.parent_conversation_id} belongs "
                     f"to a different workspace"
                 )
-
-        # Profile resolution and the load_memory stamp must happen before
+                # Profile resolution and the load_memory stamp must happen before
         # _prepare_request_workspace (which asserts request.agent is not None)
         # and before model_dump so the resolved agent is captured in request_data.
         launched_agent_profile: LaunchedAgentProfile | None = None
+        git_identity: GitIdentity | None = None
 
         from openhands.agent_server.persistence import (
             PersistedSettings,
@@ -1595,7 +1620,7 @@ class ConversationService:
 
         if request.agent_profile_id is not None:
             mcp_config = settings.agent_settings.mcp_config
-            resolved_agent, launched_agent_profile = await asyncio.to_thread(
+            resolved_agent, launched_agent_profile, git_identity = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
@@ -1635,6 +1660,11 @@ class ConversationService:
         request = _prepare_request_workspace(
             request, conversation_id, self.conversation_worktree_root
         )
+        if git_identity is not None:
+            _configure_git_identity(
+                Path(request.workspace.working_dir),
+                git_identity,
+            )
 
         managed_codex_credential = self._is_codex_agent(request.agent) and (
             CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
