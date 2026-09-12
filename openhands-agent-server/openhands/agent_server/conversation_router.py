@@ -551,6 +551,22 @@ async def load_conversation_plugin(
 
 
 @conversation_router.post(
+    "/{conversation_id}/refresh_mcp_tools",
+    responses={404: {"description": "Conversation not found"}},
+)
+async def refresh_conversation_mcp_tools(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Re-fetch MCP tools for an active conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.refresh_mcp_tools()
+    return Success()
+
+
+@conversation_router.post(
     "/{conversation_id}/switch_acp_model",
     responses={
         400: {"description": "Agent is not ACP, or provider can't switch models"},
