@@ -21,10 +21,8 @@ from openhands.sdk.agent.response_dispatch import (
 )
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.agent.utils import (
-    amake_llm_completion,
     aprepare_llm_messages,
     fix_malformed_tool_arguments,
-    make_llm_completion,
     normalize_tool_call,
     parse_tool_call_arguments,
     prepare_llm_messages,
@@ -537,7 +535,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
-            # See make_llm_completion() in agent/utils.py for details.
+            # Agent calls always expose security risk prediction in tool schemas.
             tools=list(self.tools_map.values()),
             dynamic_context=TextContent(text=dynamic_context)
             if dynamic_context
@@ -728,10 +726,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = make_llm_completion(
-                self.llm,
-                _messages,
+            llm_response = self.llm.generate(
+                messages=_messages,
                 tools=list(self.tools_map.values()),
+                store=False,
+                add_security_risk_prediction=True,
                 on_token=stream.token_callback,
                 call_context=call_context,
             )
@@ -845,7 +844,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """Async variant of :meth:`step`.
 
         The LLM completion is performed asynchronously via
-        :func:`amake_llm_completion`.  Tool dispatch uses
+        :meth:`LLM.agenerate`.  Tool dispatch uses
         :meth:`_aexecute_actions` which runs each tool call in its own
         thread via :func:`asyncio.loop.run_in_executor` and schedules
         parallel calls with :func:`asyncio.gather`, keeping the event
@@ -935,10 +934,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # and state snapshots aren't blocked for the whole response. No-op
             # unless the run loop holds the lock (e.g. direct astep() in tests).
             async with conversation._released_state_lock_during_io():
-                llm_response = await amake_llm_completion(
-                    self.llm,
-                    _messages,
+                llm_response = await self.llm.agenerate(
+                    messages=_messages,
                     tools=list(self.tools_map.values()),
+                    store=False,
+                    add_security_risk_prediction=True,
                     on_token=stream.token_callback,
                     call_context=call_context,
                 )
@@ -1024,11 +1024,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         message: Message = llm_response.message
         response_type = classify_response(message)
         if response_type is not LLMResponseType.TOOL_CALLS:
-            # Uncached LookupSecrets may call back into this same server.
-            async with conversation._released_state_lock_during_io():
-                message = await asyncio.to_thread(
-                    self._mask_secrets, message, conversation
-                )
+            # Resolve outside the event loop and state lock. A lookup may call
+            # this server, and update_secrets() may register another source while
+            # we await it. Repeat until the registry is stable under the lock.
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    message = await asyncio.to_thread(
+                        self._mask_secrets, message, conversation
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
@@ -1037,7 +1043,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    stream,
+                    mask_secrets=False,
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1048,6 +1060,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_event,
                     stream,
                     response_type=response_type,
+                    mask_secrets=False,
                 )
 
     def _requires_user_confirmation(
