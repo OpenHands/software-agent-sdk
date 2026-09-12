@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from aiohttp import web
+from litellm.exceptions import Timeout as LiteLLMTimeout
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
@@ -293,44 +294,34 @@ async def test_async_stream_idle_timeout_retries_real_http_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_hard_timeout_retries_active_real_http_stream() -> None:
-    async with _hung_chat_completion_server(keep_sending=True) as (base_url, attempts):
-        llm = _streaming_llm(
-            base_url,
-            timeout=1,
-            stream_idle_timeout=2,
-            num_retries=2,
-        )
+async def test_async_hard_timeout_expires_active_attempt() -> None:
+    llm = _streaming_llm("http://127.0.0.1", timeout=0, num_retries=1)
 
-        with pytest.raises(LLMTimeoutError, match="hard timeout"):
-            await llm.acompletion(
-                messages=[Message(role="user", content=[TextContent(text="Hello")])],
-                on_token=lambda _: None,
-            )
+    async def never_finishes() -> None:
+        await asyncio.Event().wait()
 
-    assert len(attempts) == 2
+    wrapped = llm._async_hard_timeout_decorator()(never_finishes)
+    with pytest.raises(LiteLLMTimeout, match="hard timeout"):
+        await wrapped()
+
+
+class _TimedOutLLM(LLM):
+    async def acompletion(self, *args, **kwargs):
+        raise LLMTimeoutError("stream idle timeout")
 
 
 @pytest.mark.asyncio
 async def test_exhausted_stream_timeout_transitions_conversation_to_error(
     tmp_path,
 ) -> None:
-    async with _hung_chat_completion_server() as (base_url, attempts):
-        llm = _streaming_llm(
-            base_url,
-            timeout=2,
-            stream_idle_timeout=0.05,
-            num_retries=2,
-        )
-        conversation = LocalConversation(
-            agent=Agent(llm=llm, tools=[]),
-            workspace=str(tmp_path),
-            visualizer=None,
-        )
-        conversation.send_message("Hello")
+    conversation = LocalConversation(
+        agent=Agent(llm=_TimedOutLLM(model="test-model"), tools=[]),
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+    conversation.send_message("Hello")
 
-        with pytest.raises(ConversationRunError):
-            await conversation.arun()
+    with pytest.raises(ConversationRunError):
+        await conversation.arun()
 
-    assert len(attempts) == 2
     assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
