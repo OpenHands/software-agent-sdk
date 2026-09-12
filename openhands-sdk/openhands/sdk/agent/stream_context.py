@@ -284,7 +284,7 @@ def _split_chunk(
             continue
         # getattr, not attribute access: litellm *deletes* reasoning_content
         # when the provider omits it, declared field or not.
-        reasoning = getattr(delta, "reasoning_content", None)
+        reasoning = delta.model_dump().get("reasoning_content")
         if isinstance(reasoning, str) and reasoning:
             out.append(("reasoning", reasoning, chunk.id, choice.index))
         if isinstance(delta.content, str) and delta.content:

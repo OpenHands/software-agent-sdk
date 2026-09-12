@@ -252,24 +252,24 @@ class Telemetry(BaseModel):
         and the app's cost cannot disagree about the buckets.
         """
         cache_read = 0
-        p_details = getattr(usage, "prompt_tokens_details", None) or getattr(
-            usage, "input_tokens_details", None
+        p_details = usage.__dict__.get("prompt_tokens_details") or usage.__dict__.get(
+            "input_tokens_details"
         )
         if p_details is not None:
-            cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
+            cache_read = int(p_details.__dict__.get("cached_tokens", 0) or 0)
         # Kimi-K2-thinking populates usage.cached_tokens instead.
         if not cache_read:
-            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+            cache_read = int(usage.__dict__.get("cached_tokens", 0) or 0)
         if not cache_read:
-            cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+            cache_read = int(usage.__dict__.get("cache_read_input_tokens", 0) or 0)
 
         # litellm mirrors this onto a private attr; the public one and the
         # details dict are both populated on some provider shapes only.
-        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
+        cache_write = int(usage.__dict__.get("_cache_creation_input_tokens", 0) or 0)
         if not cache_write:
-            cache_write = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            cache_write = int(usage.__dict__.get("cache_creation_input_tokens", 0) or 0)
         if not cache_write and p_details is not None:
-            cache_write = int(getattr(p_details, "cache_creation_tokens", 0) or 0)
+            cache_write = int(p_details.__dict__.get("cache_creation_tokens", 0) or 0)
         return cache_read, cache_write
 
     # ---------- Observability span ----------
@@ -421,7 +421,7 @@ class Telemetry(BaseModel):
                         usage, "prompt_tokens_details", None
                     ) or getattr(usage, "input_tokens_details", None)
                     cache_read_tokens = (
-                        int(getattr(p_details, "cached_tokens", 0) or 0)
+                        int(p_details.__dict__.get("cached_tokens", 0) or 0)
                         if p_details
                         else 0
                     )
