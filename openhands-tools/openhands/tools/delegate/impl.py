@@ -12,7 +12,6 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
 
@@ -172,8 +171,9 @@ class DelegateExecutor(ToolExecutor):
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
+            registry = parent_conversation._agent_registry
             factories = [
-                get_agent_factory(name=agent_type)
+                registry.get_agent_factory(agent_type)
                 for agent_type in resolved_agent_types
             ]
 
@@ -220,6 +220,7 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
+                    "agent_definitions": registry.get_registered_agent_definitions(),
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

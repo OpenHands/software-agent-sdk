@@ -233,9 +233,16 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         """
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
-        agent_types_info = get_factory_info()
-
-        registered = {d.name for d in get_registered_agent_definitions()}
+        registry = conv_state._agent_registry
+        agent_types_info = (
+            registry.get_factory_info() if registry else get_factory_info()
+        )
+        definitions = (
+            registry.get_registered_agent_definitions()
+            if registry
+            else get_registered_agent_definitions()
+        )
+        registered = {d.name for d in definitions}
         task_tool_examples = "\n".join(
             ex for name, ex in TASK_TOOL_EXAMPLES.items() if name in registered
         )
