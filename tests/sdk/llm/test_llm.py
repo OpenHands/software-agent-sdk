@@ -44,6 +44,30 @@ def test_llm_init_with_default_config(default_llm):
     assert default_llm.metrics.model_name == "gpt-4o"
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "",
+        "   ",
+        "openai/",
+        "openhands/",
+        "azure/",
+        "litellm_proxy/",
+        "openrouter/",
+        " openai/ ",
+    ],
+)
+def test_llm_rejects_empty_or_provider_only_model(model: str):
+    """Empty, whitespace, and provider-only IDs must fail at construction.
+
+    LiteLLM parses ``openai/`` / ``openhands/`` as provider + empty model
+    name, which then 400s upstream. The existing empty-string guard did not
+    catch whitespace or a trailing provider slash.
+    """
+    with pytest.raises(ValueError, match="model must be specified"):
+        LLM(model=model, api_key=SecretStr("test_key"), usage_id="empty-model")
+
+
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider(mock_get):
     """Test that openhands/ remains public while transport uses the proxy."""
