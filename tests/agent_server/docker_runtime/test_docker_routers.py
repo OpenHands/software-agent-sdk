@@ -18,6 +18,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,11 +30,16 @@ from starlette.responses import JSONResponse
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.models import (
+    ConversationInfo,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
+from openhands.agent_server.utils import utc_now
+from openhands.sdk import LLM, Agent
+from openhands.sdk.workspace import LocalWorkspace
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +365,60 @@ def test_delete_proxies_then_stops_container_and_removes_host_state(docker_app):
     assert app.state.docker_registry.get(cid) is None
     assert not conversation_dir.exists()
     assert not workspace_dir.exists()
+
+
+def test_archive_stops_owned_runtime_and_unarchive_stays_cold(docker_app):
+    client, app = docker_app
+    cid = uuid4()
+    app.state.docker_registry.preregister(cid)
+    archived_at = utc_now()
+    conversation = ConversationInfo(
+        id=cid,
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test-model"), tools=[]),
+    )
+    service = AsyncMock()
+    service.set_conversation_archived.side_effect = [
+        conversation.model_copy(update={"archived_at": archived_at}),
+        conversation,
+    ]
+    app.dependency_overrides[get_conversation_service] = lambda: service
+
+    archive = client.post(f"/api/conversations/{cid}/archive")
+    assert archive.status_code == 200
+    assert archive.json()["archived_at"] == archived_at.isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert archive.json()["runtime_status"] == "missing"
+    assert app.state.docker_registry.get(cid) is None
+
+    unarchive = client.post(f"/api/conversations/{cid}/unarchive")
+    assert unarchive.status_code == 200
+    assert unarchive.json()["archived_at"] is None
+    assert unarchive.json()["runtime_status"] == "missing"
+    assert app.state.docker_registry.get(cid) is None
+    assert service.set_conversation_archived.await_args_list == [
+        ((cid,), {"archived": True}),
+        ((cid,), {"archived": False}),
+    ]
+
+
+def test_archived_runtime_cannot_be_reprovisioned_or_lazily_started(docker_app):
+    client, app = docker_app
+    cid = uuid4()
+    directory = app.state.docker_registry.conversation_dir(cid)
+    app.state.docker_registry.provisioning.create(cid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "base_state.json").write_text("{}")
+    (directory / "meta.json").write_text('{"archived_at":"2026-08-14T00:00:00+00:00"}')
+
+    reprovision = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+    assert reprovision.status_code == 409
+    assert app.state.docker_registry.get(cid) is None
+
+    proxy = client.get(f"/api/conversations/{cid}/run")
+    assert proxy.status_code == 409
+    assert app.state.docker_registry.get(cid) is None
 
 
 # ---------------------------------------------------------------------------

@@ -1224,6 +1224,57 @@ class TestConversationServiceSearchConversations:
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
+    async def test_archive_filter_is_independent_from_runtime(
+        self, conversation_service, sample_stored_conversation
+    ):
+        conversation_id = sample_stored_conversation.id
+        state = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        directory = conversation_service.conversations_dir / conversation_id.hex
+        directory.mkdir(parents=True)
+        (directory / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        (directory / "base_state.json").write_text(state.model_dump_json())
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_service.get_state.return_value = state
+        conversation_service._event_services[conversation_id] = mock_service
+        await conversation_service._reconcile_active_records(conversation_id)
+        conversation_service._event_services.pop(conversation_id)
+
+        archived = await conversation_service.set_conversation_archived(
+            conversation_id, archived=True
+        )
+        assert archived is not None
+        assert archived.archived_at is not None
+        assert conversation_id not in conversation_service._event_services
+        assert (await conversation_service.search_conversations()).items == []
+        assert [
+            item.id
+            for item in (
+                await conversation_service.search_conversations(archived=True)
+            ).items
+        ] == [conversation_id]
+
+        restored = await conversation_service.set_conversation_archived(
+            conversation_id, archived=False
+        )
+        assert restored is not None
+        assert restored.archived_at is None
+        assert conversation_id not in conversation_service._event_services
+        assert [
+            item.id
+            for item in (await conversation_service.search_conversations()).items
+        ] == [conversation_id]
+
+    @pytest.mark.asyncio
     async def test_search_conversations_with_critic_redacts_api_key(
         self, conversation_service
     ):

@@ -521,6 +521,7 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        archived_at=stored.archived_at,
         forked_from_conversation_id=stored.forked_from_conversation_id,
         forked_from_event_id=stored.forked_from_event_id,
         parent_conversation_id=stored.parent_conversation_id,
@@ -1211,7 +1212,7 @@ class ConversationService:
             return event_service
 
         record = self._conversation_records.get(conversation_id)
-        if record is None:
+        if record is None or record.stored.archived_at is not None:
             return None
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
@@ -1267,12 +1268,14 @@ class ConversationService:
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
+        archived: bool = False,
     ) -> ConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
+            archived=archived,
         )
         return ConversationPage(
             items=items,
@@ -1291,6 +1294,7 @@ class ConversationService:
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
+            archived=False,
         )
         return ConversationPage(
             items=items,
@@ -1303,6 +1307,7 @@ class ConversationService:
         limit: int,
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
+        archived: bool,
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
@@ -1318,7 +1323,10 @@ class ConversationService:
         records = [
             (conversation_id, record)
             for conversation_id, record in self._conversation_records.items()
-            if execution_status is None or record.execution_status == execution_status
+            if (record.stored.archived_at is not None) == archived
+            and (
+                execution_status is None or record.execution_status == execution_status
+            )
         ]
         if sort_order in (
             ConversationSortOrder.CREATED_AT,
@@ -1975,6 +1983,44 @@ class ConversationService:
             ", ".join(updated_fields),
         )
         return True
+
+    async def set_conversation_archived(
+        self, conversation_id: UUID, *, archived: bool
+    ) -> ConversationInfo | None:
+        """Persist archive state without loading or starting a conversation runtime."""
+        async with self._conversation_lifecycle(conversation_id):
+            await self._reconcile_active_records(conversation_id)
+            record = self._conversation_records.get(conversation_id)
+            if record is None:
+                return None
+
+            now = utc_now()
+            archived_at = (record.stored.archived_at or now) if archived else None
+            record.stored = record.stored.model_copy(
+                update={"archived_at": archived_at, "updated_at": now}
+            )
+            record.cached_info = None
+
+            event_service = (
+                self._event_services.get(conversation_id)
+                if self._event_services is not None
+                else None
+            )
+            if event_service is not None and event_service.is_open():
+                event_service.stored = record.stored
+
+            metadata = record.stored.model_dump_json(
+                context={"cipher": self._cipher_for(conversation_id)}
+            )
+            meta_file = self.conversations_dir / conversation_id.hex / "meta.json"
+            await asyncio.to_thread(meta_file.write_text, metadata)
+
+            if archived and event_service is not None and event_service.is_open():
+                await event_service.close()
+                if self._event_services is not None:
+                    self._event_services.pop(conversation_id, None)
+
+            return await self._conversation_info(conversation_id, record)
 
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
