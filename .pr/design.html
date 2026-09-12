@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Launch-time skill overlays</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5f6b7a;
+      --line: #dce2ea;
+      --panel: #ffffff;
+      --soft: #f5f7fa;
+      --blue: #2563eb;
+      --blue-soft: #eaf1ff;
+      --green: #087f5b;
+      --green-soft: #e8f7f1;
+      --amber: #9a6700;
+      --amber-soft: #fff6dc;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --shadow: 0 14px 40px rgba(31, 43, 55, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 85% -10%, #dfeaff 0, transparent 34rem),
+        #f7f8fb;
+      color: var(--ink);
+      font: 15px/1.58 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 36px auto 64px;
+    }
+
+    header {
+      position: relative;
+      overflow: hidden;
+      padding: 34px 38px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: var(--shadow);
+    }
+
+    header::after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      top: -100px;
+      width: 300px;
+      height: 300px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, rgba(37, 99, 235, 0.18), transparent 65%);
+      pointer-events: none;
+    }
+
+    h1, h2, h3 { line-height: 1.18; }
+    h1 { margin: 10px 0 12px; max-width: 760px; font-size: clamp(30px, 5vw, 48px); letter-spacing: -0.04em; }
+    h2 { margin: 0 0 18px; font-size: 24px; letter-spacing: -0.02em; }
+    h3 { margin: 0 0 10px; font-size: 16px; }
+    p { margin: 0; }
+
+    .eyebrow, .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow { color: var(--blue); }
+    .pill { padding: 5px 9px; }
+    .pill.additive { color: var(--green); background: var(--green-soft); }
+    .pill.scope { color: var(--blue); background: var(--blue-soft); }
+    .pill.order { color: var(--amber); background: var(--amber-soft); }
+
+    .lede { max-width: 780px; color: #3c4858; font-size: 17px; }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 24px;
+    }
+
+    section {
+      margin-top: 20px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 19px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--soft);
+    }
+
+    .card.before { border-top: 4px solid #98a2b3; }
+    .card.after { border-top: 4px solid var(--green); }
+    .card p { color: var(--muted); }
+
+    pre {
+      overflow: auto;
+      margin: 14px 0 0;
+      padding: 16px;
+      border-radius: 10px;
+      background: #16202c;
+      color: #edf3fb;
+      font: 13px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+      white-space: pre;
+    }
+
+    code {
+      font: 0.92em ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    :not(pre) > code {
+      padding: 2px 5px;
+      border: 1px solid #d9e1ec;
+      border-radius: 5px;
+      background: #f3f6fa;
+      color: #26374a;
+    }
+
+    .added { color: #8df0c5; }
+    .comment { color: #a9b8cb; }
+
+    .diagram {
+      overflow-x: auto;
+      padding: 8px 0 2px;
+    }
+
+    .diagram svg {
+      display: block;
+      width: 100%;
+      min-width: 850px;
+      height: auto;
+    }
+
+    .callout {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 12px;
+      margin-top: 18px;
+      padding: 15px;
+      border: 1px solid #c8d8fa;
+      border-radius: 10px;
+      background: var(--blue-soft);
+    }
+
+    .callout .icon {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: var(--blue);
+      color: white;
+      font-weight: 800;
+    }
+
+    ul, ol { margin: 10px 0 0; padding-left: 21px; }
+    li + li { margin-top: 7px; }
+
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .fact {
+      padding: 16px;
+      border-left: 3px solid var(--blue);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    .fact strong { display: block; margin-bottom: 4px; }
+    .fact span { color: var(--muted); }
+
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px 11px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; letter-spacing: 0.03em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .ok { color: var(--green); font-weight: 700; white-space: nowrap; }
+    .expected { color: var(--red); font-weight: 700; white-space: nowrap; }
+
+    .rollout {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      counter-reset: stage;
+    }
+
+    .stage {
+      position: relative;
+      padding: 18px 15px 15px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--soft);
+      counter-increment: stage;
+    }
+
+    .stage::before {
+      content: counter(stage);
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      margin-bottom: 10px;
+      border-radius: 50%;
+      background: var(--ink);
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .stage small { color: var(--muted); }
+
+    footer {
+      padding: 22px 6px 0;
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+    }
+
+    @media (max-width: 800px) {
+      header, section { padding: 22px; }
+      .grid-2, .facts, .rollout { grid-template-columns: 1fr; }
+      main { width: min(100% - 20px, 1120px); margin-top: 10px; }
+    }
+
+    @media print {
+      body { background: white; }
+      main { width: 100%; margin: 0; }
+      header, section { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Issue #16905 · SDK / Agent Server design</div>
+      <h1>Structured launch-time skill overlays</h1>
+      <p class="lede">
+        Let a deployment attach complete <code>Skill</code> objects after an agent or
+        Agent Profile is resolved, without overloading the system-message suffix or
+        changing the stored profile. This preserves native ACP skill sourcing while
+        making deployment-owned, per-turn skills available to the conversation.
+      </p>
+      <div class="meta">
+        <span class="pill additive">Additive API</span>
+        <span class="pill scope">Reusable capability</span>
+        <span class="pill order">Order-sensitive application</span>
+      </div>
+    </header>
+
+    <section aria-labelledby="problem-title">
+      <h2 id="problem-title">Why a new field?</h2>
+      <div class="facts">
+        <div class="fact">
+          <strong>Profiles are resolved server-side</strong>
+          <span>A client launching by profile id cannot place deployment context directly on the resolved agent.</span>
+        </div>
+        <div class="fact">
+          <strong>Native ACP sourcing intentionally strips skills</strong>
+          <span>Profile-managed skills are removed so a host ACP runtime can use its own home-directory skills.</span>
+        </div>
+        <div class="fact">
+          <strong>A skill is not a text suffix</strong>
+          <span>It carries a trigger, metadata, invocation policy, and potentially more than 32 KiB of content.</span>
+        </div>
+      </div>
+      <div class="callout">
+        <div class="icon">i</div>
+        <p>
+          The existing <code>system_message_suffix_append</code> is capped at 32,768
+          characters and is always-on prompt text. Encoding a skill there would lose
+          trigger semantics and inflate every turn. The new field keeps the object structured.
+        </p>
+      </div>
+    </section>
+
+    <section aria-labelledby="api-title">
+      <h2 id="api-title">Public API: before and after</h2>
+      <div class="grid-2">
+        <article class="card before">
+          <h3>Before</h3>
+          <p>Launch additions could append only a bounded text suffix.</p>
+          <pre aria-label="AgentLaunchAdditions before"><code>class AgentLaunchAdditions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    system_message_suffix_append: str | None = Field(
+        default=None,
+        max_length=32768,
+    )</code></pre>
+        </article>
+        <article class="card after">
+          <h3>After</h3>
+          <p>A full SDK <code>Skill</code> list can be supplied alongside the suffix.</p>
+          <pre aria-label="AgentLaunchAdditions after"><code>class AgentLaunchAdditions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    system_message_suffix_append: str | None = Field(
+        default=None,
+        max_length=32768,
+    )
+
+<span class="added">    skills_append: list[Skill] = Field(
+        default_factory=list,
+    )</span></code></pre>
+        </article>
+      </div>
+      <pre aria-label="REST request example"><code>{
+  "agent_profile_id": "…",
+  "agent_launch_additions": {
+    "skills_append": [{
+      "name": "openhands-automation",
+      "content": "# OpenHands Automations\n…",
+      "trigger": { "type": "keyword", "keywords": ["automation"] },
+      "disable_model_invocation": true
+    }]
+  }
+}</code></pre>
+    </section>
+
+    <section aria-labelledby="flow-title">
+      <h2 id="flow-title">Request lifecycle</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 1060 244" role="img" aria-labelledby="svg-title svg-desc">
+          <title id="svg-title">Launch-time skill overlay request flow</title>
+          <desc id="svg-desc">A request resolves a profile, applies native ACP stripping, overlays launch skills, persists the materialized agent, then activates skills on matching user turns.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8 Z" fill="#64748b"></path>
+            </marker>
+            <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#203047" flood-opacity="0.10"></feDropShadow>
+            </filter>
+          </defs>
+
+          <path d="M194 92 H220" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M406 92 H432" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M618 92 H644" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"></path>
+          <path d="M830 92 H856" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"></path>
+
+          <g filter="url(#shadow)">
+            <rect x="8" y="34" width="186" height="116" rx="12" fill="#ffffff" stroke="#cbd5e1"></rect>
+            <circle cx="32" cy="58" r="13" fill="#17202a"></circle>
+            <text x="32" y="63" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">1</text>
+            <text x="26" y="91" font-size="14" font-weight="700" fill="#17202a">Resolve agent / profile</text>
+            <text x="26" y="114" font-size="12" fill="#5f6b7a">Build a conversation-local</text>
+            <text x="26" y="132" font-size="12" fill="#5f6b7a">agent copy.</text>
+          </g>
+
+          <g filter="url(#shadow)">
+            <rect x="220" y="34" width="186" height="116" rx="12" fill="#fff8e7" stroke="#e8c66b"></rect>
+            <circle cx="244" cy="58" r="13" fill="#9a6700"></circle>
+            <text x="244" y="63" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">2</text>
+            <text x="238" y="91" font-size="14" font-weight="700" fill="#17202a">Native ACP strip</text>
+            <text x="238" y="114" font-size="12" fill="#5f6b7a">Remove managed skills and</text>
+            <text x="238" y="132" font-size="12" fill="#5f6b7a">lazy skill sources.</text>
+          </g>
+
+          <g filter="url(#shadow)">
+            <rect x="432" y="34" width="186" height="116" rx="12" fill="#eaf1ff" stroke="#7aa2f7"></rect>
+            <circle cx="456" cy="58" r="13" fill="#2563eb"></circle>
+            <text x="456" y="63" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">3</text>
+            <text x="450" y="91" font-size="14" font-weight="700" fill="#17202a">Overlay skills_append</text>
+            <text x="450" y="114" font-size="12" fill="#5f6b7a">Stable merge; existing names</text>
+            <text x="450" y="132" font-size="12" fill="#5f6b7a">and disabled list win.</text>
+          </g>
+
+          <g filter="url(#shadow)">
+            <rect x="644" y="34" width="186" height="116" rx="12" fill="#e8f7f1" stroke="#70c4a6"></rect>
+            <circle cx="668" cy="58" r="13" fill="#087f5b"></circle>
+            <text x="668" y="63" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">4</text>
+            <text x="662" y="91" font-size="14" font-weight="700" fill="#17202a">Persist resolved state</text>
+            <text x="662" y="114" font-size="12" fill="#5f6b7a">Store the materialized agent;</text>
+            <text x="662" y="132" font-size="12" fill="#5f6b7a">drop the launch wrapper.</text>
+          </g>
+
+          <g filter="url(#shadow)">
+            <rect x="856" y="34" width="196" height="116" rx="12" fill="#ffffff" stroke="#cbd5e1"></rect>
+            <circle cx="880" cy="58" r="13" fill="#17202a"></circle>
+            <text x="880" y="63" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">5</text>
+            <text x="874" y="91" font-size="14" font-weight="700" fill="#17202a">Trigger on user turns</text>
+            <text x="874" y="114" font-size="12" fill="#5f6b7a">Matching content enters the</text>
+            <text x="874" y="132" font-size="12" fill="#5f6b7a">MessageEvent extension.</text>
+          </g>
+
+          <path d="M737 151 V188 H954 V151" fill="none" stroke="#087f5b" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arrow)"></path>
+          <text x="845" y="211" text-anchor="middle" font-size="12" font-weight="700" fill="#087f5b">restart-safe: later matching turns still activate the skill</text>
+        </svg>
+      </div>
+      <div class="grid-2">
+        <article class="card">
+          <h3>Merge contract</h3>
+          <ul>
+            <li>The resolved context is the primary collection; equal-name launch skills do not overwrite it.</li>
+            <li>Names in <code>disabled_skills</code> stay disabled, including overlay entries.</li>
+            <li>Unique overlay skills are appended in request order.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Persistence contract</h3>
+          <ul>
+            <li><code>agent_launch_additions</code> remains launch-only and is excluded from stored request data.</li>
+            <li>The resulting <code>AgentContext</code> is persisted with the materialized agent.</li>
+            <li>On restart, per-turn trigger evaluation uses the same skill and full content.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="compat-title">
+      <h2 id="compat-title">Compatibility and boundaries</h2>
+      <div class="grid-2">
+        <article class="card">
+          <h3>Additive for existing clients</h3>
+          <ul>
+            <li>The field is optional and defaults to an empty list.</li>
+            <li>Requests that omit it preserve current resolution, sourcing, and persistence behavior.</li>
+            <li>No profile data or migration is required; changes are scoped to the launched conversation.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Intentional guardrails</h3>
+          <ul>
+            <li>The SDK API is agent-agnostic; downstream clients decide when to send an overlay.</li>
+            <li>The overlay happens after native ACP stripping. Reversing this order would delete the new skills.</li>
+            <li>Older servers reject this unknown field, so server and client rollout order matters.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="rollout-title">
+      <h2 id="rollout-title">Release sequence</h2>
+      <div class="rollout">
+        <div class="stage">
+          <h3>Land server capability</h3>
+          <small>SDK model, Agent Server ordering, persistence, and tests.</small>
+        </div>
+        <div class="stage">
+          <h3>Publish schema</h3>
+          <small>Release the Agent Server OpenAPI surface containing <code>skills_append</code>.</small>
+        </div>
+        <div class="stage">
+          <h3>Regenerate clients</h3>
+          <small>Publish typed clients from that released schema.</small>
+        </div>
+        <div class="stage">
+          <h3>Enable downstream use</h3>
+          <small>Send enabled deployment skills only after compatible servers are deployed.</small>
+        </div>
+      </div>
+      <div class="callout">
+        <div class="icon">↩</div>
+        <p><strong>Rollback:</strong> stop sending <code>skills_append</code>. No stored profile or database migration needs to be reversed.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="validation-title">
+      <h2 id="validation-title">Validation evidence</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Check</th><th>Evidence</th><th>Result</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Red-first API test</td>
+              <td>Before the model change, <code>skills_append</code> was rejected as <code>extra_forbidden</code>.</td>
+              <td class="expected">Failed as expected</td>
+            </tr>
+            <tr>
+              <td>Launch and restart lifecycle</td>
+              <td><code>tests/agent_server/test_agent_launch_additions.py</code>: direct and profile launch, precedence, disabled names, persistence, first and later turns.</td>
+              <td class="ok">5 passed</td>
+            </tr>
+            <tr>
+              <td>ACP sourcing and prompt boundary</td>
+              <td>Existing native sourcing coverage plus the triggered-content-to-ACP boundary.</td>
+              <td class="ok">11 passed</td>
+            </tr>
+            <tr>
+              <td>Real HTTP round trip</td>
+              <td>Live Agent Server accepted and returned a structured skill whose exact content exceeds 32 KiB.</td>
+              <td class="ok">1 passed</td>
+            </tr>
+            <tr>
+              <td>Order mutation</td>
+              <td>Moving the overlay before native stripping produced <code>skills=[]</code> and failed the lifecycle test; restoring the order passed.</td>
+              <td class="ok">Mutation killed</td>
+            </tr>
+            <tr>
+              <td>Static and schema checks</td>
+              <td>All changed-file pre-commit hooks passed. Deterministic OpenAPI export, schema quality, and Swagger validation also passed.</td>
+              <td class="ok">Passed</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      Grounded in <code>AgentLaunchAdditions</code>, <code>ConversationService._start_conversation</code>,
+      and <code>LocalConversation.send_message</code>.
+    </footer>
+  </main>
+</body>
+</html>
