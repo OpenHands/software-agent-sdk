@@ -203,6 +203,11 @@ def test_acp_conformance_probe(
     provider_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = ACP_PROVIDERS[provider_key]
+    if provider_key == "cursor":
+        pytest.skip(
+            "Cursor ACP authenticates via cursor_login (existing CLI login), "
+            "not a bogus env-var key; the credential-free probe cannot run it"
+        )
     _skip_if_node_below_floor(provider_key)
     _isolate_env(monkeypatch, tmp_path)
 
