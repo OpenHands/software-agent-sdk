@@ -93,6 +93,64 @@ async def test_runtime_info_retains_start_failure(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_stop_clears_runtime_start_failure(tmp_path, shutdown):
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
+    cid = uuid4()
+    _persisted_conversation(registry, cid)
+
+    def fail(conversation_id: UUID) -> RunningConversationContainer:
+        raise RuntimeError("container failed")
+
+    registry._build_container = fail
+    with pytest.raises(RuntimeError, match="container failed"):
+        await registry.get_or_create(cid)
+    assert registry.runtime_info(cid).runtime_status == ConversationRuntimeStatus.ERROR
+    if shutdown:
+        await registry.shutdown()
+    else:
+        await registry.stop(cid)
+    info = registry.runtime_info(cid)
+    assert info.runtime_status == ConversationRuntimeStatus.MISSING
+    assert info.can_resume is True
+    assert info.runtime_error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_stopped_start_cannot_restore_runtime_error(tmp_path, shutdown):
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
+    cid = uuid4()
+    _persisted_conversation(registry, cid)
+    started = threading.Event()
+    release = threading.Event()
+
+    def fail(conversation_id: UUID) -> RunningConversationContainer:
+        started.set()
+        assert release.wait(timeout=5)
+        raise RuntimeError("container failed")
+
+    registry._build_container = fail
+    start_task = asyncio.create_task(registry.get_or_create(cid))
+    assert await asyncio.to_thread(started.wait, 5)
+    stop_task = asyncio.create_task(
+        registry.shutdown() if shutdown else registry.stop(cid)
+    )
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(RuntimeError, match="container failed"):
+        await start_task
+    await stop_task
+    info = registry.runtime_info(cid)
+    assert info.runtime_status == ConversationRuntimeStatus.MISSING
+    assert info.runtime_error is None
+
+
+@pytest.mark.asyncio
 async def test_get_or_create_deduplicates_same_conversation_start(tmp_path):
     registry = DockerConversationRegistry(
         Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
