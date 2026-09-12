@@ -73,7 +73,16 @@ class LLMProvider:
         return api_key
 
     def as_litellm_call_kwargs(self, *, api_key: str | None = None) -> dict[str, str]:
-        kwargs = {"model": self.model}
+        # When the parsed model still starts with the provider prefix (e.g.
+        # "openai/example-model" for provider "openai"), LiteLLM re-parses and
+        # strips the prefix again on the Responses API path, sending the wrong
+        # model upstream (e.g. "example-model" instead of "openai/example-
+        # model"). Re-prefix so LiteLLM strips exactly one prefix and lands on
+        # the parsed model.
+        model = self.model
+        if self.name is not None and model.startswith(f"{self.name}/"):
+            model = f"{self.name}/{model}"
+        kwargs = {"model": model}
         if self.name is not None:
             kwargs["custom_llm_provider"] = self.name
         normalized_api_key = self.api_key_for_litellm(api_key)
