@@ -283,21 +283,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         # Wait for sandbox to become RUNNING
         self._wait_until_sandbox_ready()
 
-        # Extract agent server URL from exposed_urls
-        agent_server_url = self._get_agent_server_url()
-        if not agent_server_url:
-            raise ValueError(
-                f"Agent server URL not found in sandbox {self._sandbox_id}"
-            )
-
+        agent_server_url = self._apply_ready_connection()
         logger.info(f"Sandbox ready at {agent_server_url}")
-
-        # Set host and api_key for RemoteWorkspace operations
-        self.host = agent_server_url.rstrip("/")
-        self.api_key = self._session_api_key
-
-        # Reset HTTP client with new host and API key
-        self.reset_client()
 
         # Verify client is properly initialized
         assert self.client is not None
@@ -441,6 +428,27 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             "Cloud API pause endpoint not available"
         )
 
+    def _apply_ready_connection(self) -> str:
+        """Point this workspace at the connection the readiness poll just read.
+
+        ``_wait_until_sandbox_ready`` re-reads ``session_api_key`` and
+        ``exposed_urls`` from the sandbox, but those only take effect once they
+        are pushed onto the inherited ``host``/``api_key`` and the cached client
+        is dropped. Startup and resume both go through here so a sandbox that
+        comes back with a rotated key or a changed URL cannot leave the client
+        addressing the previous one.
+        """
+        agent_server_url = self._get_agent_server_url()
+        if not agent_server_url:
+            raise ValueError(
+                f"Agent server URL not found in sandbox {self._sandbox_id}"
+            )
+
+        self.host = agent_server_url.rstrip("/")
+        self.api_key = self._session_api_key
+        self.reset_client()
+        return agent_server_url
+
     def resume(self) -> None:
         """Resume a paused sandbox.
 
@@ -455,7 +463,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         logger.info(f"Resuming sandbox {self._sandbox_id}")
         self._resume_sandbox()
         self._wait_until_sandbox_ready()
-        logger.info(f"Sandbox resumed: {self._sandbox_id}")
+        agent_server_url = self._apply_ready_connection()
+        logger.info(f"Sandbox resumed: {self._sandbox_id} at {agent_server_url}")
 
     def _send_api_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an API request to the Cloud API with error handling."""
