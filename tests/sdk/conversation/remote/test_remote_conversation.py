@@ -2,6 +2,7 @@
 
 import time
 import uuid
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import httpx
@@ -27,6 +28,13 @@ from openhands.sdk.event.conversation_state import (
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.subagent.registry import (
+    _reset_registry_for_tests,
+    agent_definition_to_factory,
+    register_agent,
+    register_file_agents,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import RemoteWorkspace
 
 
@@ -101,6 +109,43 @@ class TestRemoteConversation:
 
         mock_client_instance.request.side_effect = request_side_effect
         return mock_client_instance
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_payload_excludes_other_workspaces_and_client_path_files(
+        self, mock_ws_client, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        _reset_registry_for_tests()
+        for project in ("unrelated", "server-path"):
+            directory = tmp_path / project / ".agents" / "agents"
+            directory.mkdir(parents=True)
+            (directory / "reviewer.md").write_text(
+                f"---\nname: {project}\ndescription: private to {project}\n---\n"
+            )
+        register_file_agents(tmp_path / "unrelated")
+        definition = AgentDefinition(name="explicit", description="shared programmatic")
+        register_agent(
+            definition.name, agent_definition_to_factory(definition), definition
+        )
+        self.workspace = RemoteWorkspace(
+            host=self.host, working_dir=str(tmp_path / "server-path")
+        )
+        client = self.setup_mock_client()
+        conversation = RemoteConversation(
+            agent=self.agent, workspace=self.workspace, visualizer=None
+        )
+        try:
+            payload = next(
+                call.kwargs["json"]
+                for call in client.request.call_args_list
+                if call.args[:2] == ("POST", "/api/conversations")
+            )
+            assert [d["name"] for d in payload["agent_definitions"]] == ["explicit"]
+        finally:
+            conversation.close()
+            _reset_registry_for_tests()
 
     def create_mock_conversation_response(self, conversation_id: str | None = None):
         """Create mock conversation creation response."""

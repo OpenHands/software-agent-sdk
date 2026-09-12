@@ -76,7 +76,6 @@ from openhands.sdk.workspace import LocalWorkspace
 
 if TYPE_CHECKING:
     from openhands.sdk.mcp.config import MCPServer
-    from openhands.sdk.subagent.schema import AgentDefinition
 
 
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
@@ -559,41 +558,6 @@ def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
     return _compose_conversation_info_sync(stored, state)
-
-
-def _register_agent_definitions(
-    agent_defs: list["AgentDefinition"],
-    *,
-    context: str,
-) -> None:
-    """Register agent definitions into the subagent registry.
-
-    Used both when creating new conversations (definitions forwarded from the
-    client) and when resuming persisted ones (definitions stored in meta.json).
-    """
-    from openhands.sdk.subagent.registry import (
-        agent_definition_to_factory,
-        register_agent_if_absent,
-    )
-
-    registered = 0
-    for agent_def in agent_defs:
-        try:
-            factory = agent_definition_to_factory(agent_def)
-            register_agent_if_absent(
-                name=agent_def.name,
-                factory_func=factory,
-                description=agent_def,
-            )
-            registered += 1
-        except Exception as e:
-            logger.warning(
-                f"Failed to register agent definition "
-                f"'{agent_def.name}' ({context}): {e}"
-            )
-    logger.debug(
-        f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
-    )
 
 
 def _state_signature(base_state_path: str) -> tuple[int, int] | None:
@@ -1102,11 +1066,6 @@ class ConversationService:
                     )
         if stored.client_tools:
             register_client_tools(stored.client_tools)
-        if stored.agent_definitions:
-            _register_agent_definitions(
-                stored.agent_definitions,
-                context=f"resuming conversation {stored.id}",
-            )
 
     def _get_conversation_lock(self, conversation_id: UUID) -> asyncio.Lock:
         lock = self._conversation_locks.get(conversation_id)
@@ -1694,13 +1653,6 @@ class ConversationService:
                 request.agent = request.agent.model_copy(
                     update={"tools": [*request.agent.tools, *new_tools]}
                 )
-
-        # Register subagent definitions forwarded from the client
-        if request.agent_definitions:
-            _register_agent_definitions(
-                request.agent_definitions,
-                context=f"conversation {conversation_id}",
-            )
 
         # Plugin loading is now handled lazily by LocalConversation.
         # Just pass the plugin specs through to StoredConversation.

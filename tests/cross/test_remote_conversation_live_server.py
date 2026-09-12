@@ -11,6 +11,7 @@ import textwrap
 import threading
 import time
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -1961,7 +1962,7 @@ def test_hook_config_sent_to_server(
 
 
 def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
-    """Agent definitions registered on the client survive the HTTP roundtrip.
+    """Agent definitions survive the HTTP roundtrip without leaking globally.
 
     This is a regression test for the bug where the server's delegate registry
     was empty because register_builtins_agents() only ran on the client.
@@ -1971,12 +1972,11 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
             ( or register_agent_if_absent(...))
         → get_registered_agent_definitions()
         → JSON payload in POST /api/conversations
-        → server start_conversation() deserializes & re-registers
+        → server LocalConversation's scoped registry
 
     Because client and server share a process in this test, we reset the
     global registry *after* building the payload, then POST directly to the
-    server. The server re-populates the registry from the HTTP payload (not
-    from any shared in-process state).
+    server. The server keeps the definitions on the created conversation.
     """
     _reset_registry_for_tests()
 
@@ -2029,14 +2029,73 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
         resp = client.post("/api/conversations", json=payload, timeout=10.0)
         resp.raise_for_status()
 
-    # The server should have re-registered both agents from the HTTP payload
+    # Conversation-specific definitions must not leak back into the process registry.
     info = get_factory_info()
-    assert "test_bash" in info
-    assert "Command execution specialist" in info
-    assert "test_reviewer" in info
-    assert "Code review specialist" in info
+    assert "test_bash" not in info
+    assert "test_reviewer" not in info
+
+    event_services = server_env["conversation_service"]._event_services
+    assert event_services is not None
+    conversation = event_services[UUID(resp.json()["id"])].get_conversation()
+    conversation.send_message("Prepare the forwarded agents")
+    restored = conversation._agent_registry.get_agent_factory(
+        "test_reviewer"
+    ).definition
+    assert restored.system_prompt == reviewer_def.system_prompt
+    assert restored.tools == reviewer_def.tools
 
     _reset_registry_for_tests()
+
+
+def test_server_conversations_isolate_same_name_subagents(server_env):
+    """Concurrent server conversations resolve their own same-name definition."""
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        tools=[],
+    )
+    agent_payload = agent.model_dump(mode="json", context={"expose_secrets": True})
+
+    def create_conversation(project: str, description: str) -> UUID:
+        definition = AgentDefinition(
+            name="shared-reviewer",
+            description=description,
+            system_prompt=description,
+            level="project",
+        )
+        payload = {
+            "agent": agent_payload,
+            "workspace": {"working_dir": f"/tmp/workspace/{project}"},
+            "agent_definitions": [definition.model_dump(mode="json")],
+        }
+        with httpx.Client(base_url=server_env["host"]) as client:
+            response = client.post("/api/conversations", json=payload, timeout=10.0)
+            response.raise_for_status()
+            return UUID(response.json()["id"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(create_conversation, project, description)
+            for project, description in [
+                ("project-a", "definition-a"),
+                ("project-b", "definition-b"),
+            ]
+        ]
+        conversation_ids = [future.result() for future in futures]
+
+    event_services = server_env["conversation_service"]._event_services
+    assert event_services is not None
+    descriptions = []
+    for conversation_id in conversation_ids:
+        conversation = event_services[conversation_id].get_conversation()
+        conversation.send_message("Prepare the reviewer")
+        worker = conversation._agent_registry.get_agent_factory(
+            "shared-reviewer"
+        ).factory_func(conversation.agent.llm)
+        assert worker.agent_context is not None
+        descriptions.append(worker.agent_context.system_message_suffix)
+
+    assert descriptions == ["definition-a", "definition-b"]
+    assert "shared-reviewer" not in get_factory_info()
 
 
 def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPatch):

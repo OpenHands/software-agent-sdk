@@ -16,6 +16,7 @@ from websockets.exceptions import ConnectionClosed
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+from openhands.sdk.subagent.registry import ConversationAgentRegistry
 
 
 if TYPE_CHECKING:
@@ -813,13 +814,13 @@ class RemoteConversation(BaseConversation):
 
         if should_create:
             # Import here to avoid circular imports
-            from openhands.sdk.subagent.registry import get_registered_agent_definitions
             from openhands.sdk.tool.registry import get_tool_module_qualnames
 
             tool_qualnames = get_tool_module_qualnames()
             logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
 
-            agent_defs = get_registered_agent_definitions()
+            # Workspace files and plugins are discovered on the server.
+            agent_defs = ConversationAgentRegistry().get_registered_agent_definitions()
             serialized_defs = [d.model_dump(mode="json") for d in agent_defs]
             logger.debug(f"Sending {len(serialized_defs)} agent_definitions to server")
 

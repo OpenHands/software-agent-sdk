@@ -52,6 +52,7 @@ from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.subagent.registry import get_agent_factory
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -68,6 +69,63 @@ from tests.agent_server.stress.scripts import (
 # EventService separately.
 def _sample_agent() -> Agent:
     return Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+
+
+async def test_resume_restores_scoped_subagents_from_disk(
+    tmp_path: Path, sample_stored_conversation, monkeypatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    stored = sample_stored_conversation.model_copy(
+        update={
+            "workspace": LocalWorkspace(working_dir=str(tmp_path / "project")),
+            "agent_definitions": [
+                AgentDefinition(
+                    name="persisted-reviewer",
+                    description="stored plugin",
+                    system_prompt="Restored plugin prompt",
+                    level="plugin",
+                )
+            ],
+        }
+    )
+    service = EventService(
+        stored=stored, agent=_sample_agent(), conversations_dir=tmp_path / "state"
+    )
+    try:
+        await service.start()
+        await asyncio.to_thread(
+            service.get_conversation().send_message, "Before restart"
+        )
+        await service.save_meta()
+    finally:
+        await service.close()
+
+    resumed = EventService(
+        stored=stored.model_copy(update={"agent_definitions": []}),
+        conversations_dir=tmp_path / "state",
+    )
+    try:
+        await resumed.load_meta()
+        await resumed.start()
+        conversation = resumed.get_conversation()
+        await asyncio.to_thread(conversation.send_message, "After restart")
+        worker = conversation._agent_registry.get_agent_factory(
+            "persisted-reviewer"
+        ).factory_func(conversation.agent.llm)
+        assert worker.agent_context is not None
+        assert worker.agent_context.system_message_suffix == "Restored plugin prompt"
+        assert any(
+            isinstance(event, MessageEvent)
+            and any(
+                isinstance(content, TextContent) and content.text == "Before restart"
+                for content in event.llm_message.content
+            )
+            for event in conversation.state.events
+        )
+        with pytest.raises(ValueError, match="Unknown agent 'persisted-reviewer'"):
+            get_agent_factory("persisted-reviewer")
+    finally:
+        await resumed.close()
 
 
 @pytest.fixture

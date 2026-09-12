@@ -1111,6 +1111,7 @@ class EventService:
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
             mcp_tool_provider=self.mcp_tool_provider,
+            agent_definitions=self.stored.agent_definitions,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
