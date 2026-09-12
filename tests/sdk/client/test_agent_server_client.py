@@ -52,7 +52,7 @@ async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous):
     await call(client.send_message(CID, "Continue"))
     await call(client.get_errors(CID))
     await call(client.interrupt(CID))
-    runtime = client.runtime(CID)
+    runtime = client.runtime_for_api_prefix(f"/api/conversations/{CID}")
     await call(runtime.upload("/runs/job/bundle.tar.gz", b"bundle"))
     await call(runtime.execute("pwd", timeout=20, cwd="/runs/job"))
     await call(runtime.start("python3 main.py", timeout=300))
@@ -104,6 +104,8 @@ def test_invalid_scope_is_rejected_before_network(value):
             client.get_conversation(value)
         with pytest.raises(ValueError):
             client.runtime(value)
+        with pytest.raises(ValueError):
+            client.runtime_for_api_prefix("/api/conversations/" + value)
         with pytest.raises(ValueError):
             AsyncAgentServerClient("https://server", "key").runtime_for_api_prefix(
                 "/api/conversations/" + value

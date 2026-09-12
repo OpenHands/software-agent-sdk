@@ -108,6 +108,9 @@ class AgentServerClient:
     def runtime(self, conversation_id: str | None = None) -> "RuntimeClient":
         return RuntimeClient(self, routes.RuntimeRequests(conversation_id))
 
+    def runtime_for_api_prefix(self, api_prefix: str) -> "RuntimeClient":
+        return RuntimeClient(self, routes.RuntimeRequests.from_api_prefix(api_prefix))
+
 
 class RuntimeClient:
     def __init__(self, server: AgentServerClient, requests: routes.RuntimeRequests):
