@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -852,6 +853,48 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
             "Lazy hydration failed to pick up an existing conversation whose "
             "lease was left orphaned by a non-graceful shutdown."
         )
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_when_pid_is_reused(tmp_path):
+    """A fast restart must not mistake a reused PID for the old server."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        conversation_id = conversation_info.id
+        assert primary._event_services is not None
+        primary_state = await primary._event_services[conversation_id].get_state()
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+
+    lease_path = conversations_dir / conversation_id.hex / LEASE_FILE_NAME
+    forged_payload = {
+        "owner_instance_id": "previous-server-instance",
+        "generation": 1,
+        "expires_at": time.time() + 3600.0,
+        "owner_host": socket.gethostname(),
+        "owner_pid": os.getpid(),
+        "owner_process_token": "previous-process",
+    }
+    lease_path.write_text(json.dumps(forged_payload))
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services is not None
+        assert conversation_id in restarted._event_services
+        restarted_event_service = await restarted.get_event_service(conversation_id)
+        assert restarted_event_service is not None, (
+            "Lazy hydration failed after the server PID was reused."
+        )
+        restarted_state = await restarted_event_service.get_state()
+        assert restarted_state.execution_status == ConversationExecutionStatus.ERROR
 
 
 @pytest.mark.asyncio
