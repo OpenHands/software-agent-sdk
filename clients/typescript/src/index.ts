@@ -252,6 +252,17 @@ export type {
 export { deriveSwitchPlan } from './profiles/derive-switch-plan';
 export type { SwitchPlan } from './profiles/derive-switch-plan';
 
+// Conversation lifecycle
+export {
+  normalizeCloudConversationLifecycle,
+  normalizeConversationLifecycle,
+} from './models/conversation-lifecycle';
+export type {
+  ConversationLifecycle,
+  ConversationLifecycleFields,
+  LegacyCloudConversationLifecycleFields,
+} from './models/conversation-lifecycle';
+
 // Conversation models
 export type {
   ConversationInfo,

@@ -26,6 +26,15 @@ export {
   startDeviceFlow,
 } from './client/device-flow-client';
 export {
+  normalizeCloudConversationLifecycle,
+  normalizeConversationLifecycle,
+} from './models/conversation-lifecycle';
+export type {
+  ConversationLifecycle,
+  ConversationLifecycleFields,
+  LegacyCloudConversationLifecycleFields,
+} from './models/conversation-lifecycle';
+export {
   AGENT_SERVER_VERSION_ERROR_CODE,
   AgentServerFeatureRequirements,
   AgentServerVersionError,
