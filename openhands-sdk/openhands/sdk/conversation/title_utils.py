@@ -116,10 +116,10 @@ def generate_title_with_llm(
                         text=(
                             f"Generate a title (maximum {max_length} characters) "
                             f"for a conversation that starts with this message:\n\n"
-                            f"{truncated_message}."
+                            f"{truncated_message}\n\n"
                             "Also make sure to include ONE most relevant emoji at "
-                            "the start of the title."
-                            f" Choose the emoji from this list:{emojis_descriptions} "
+                            "the start of the title. Choose the emoji from this "
+                            f"list:\n- {emojis_descriptions}\n"
                         )
                     )
                 ],
