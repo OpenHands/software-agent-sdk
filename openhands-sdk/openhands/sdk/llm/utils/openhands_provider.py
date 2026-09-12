@@ -14,6 +14,7 @@ OPENHANDS_LLM_PROXY_BASE_URL: Final[str] = "https://llm-proxy.app.all-hands.dev"
 class LiteLLMCallKwargs(TypedDict):
     model: str
     api_base: str | None
+    base_url: str | None
 
 
 _OPENHANDS_PROXY_BASE_URLS: Final[frozenset[str]] = frozenset(
@@ -54,8 +55,9 @@ def litellm_call_kwargs(model: str, base_url: str | None) -> LiteLLMCallKwargs:
         return {
             "model": f"{LITELLM_PROXY_PREFIX}{model_name}",
             "api_base": base_url or OPENHANDS_LLM_PROXY_BASE_URL,
+            "base_url": base_url or OPENHANDS_LLM_PROXY_BASE_URL,
         }
-    return {"model": model, "api_base": base_url}
+    return {"model": model, "api_base": base_url, "base_url": base_url}
 
 
 def canonicalize_openhands_llm_payload(payload: dict[str, Any]) -> dict[str, Any]:
