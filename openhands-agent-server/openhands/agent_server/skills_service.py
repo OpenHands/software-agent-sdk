@@ -14,6 +14,7 @@ Precedence (later overrides earlier):
 sandbox < registered marketplace/public < user < org < project
 """
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -457,6 +458,21 @@ def discover_profile_skills() -> list[Skill]:
             load_project=False,
         ).skills
     )
+
+
+async def prewarm_profile_skills() -> bool:
+    """Populate the profile skill catalog before the server accepts requests."""
+    try:
+        skills = await asyncio.to_thread(discover_profile_skills)
+    except Exception:
+        logger.warning(
+            "Failed to prewarm the profile skill catalog; continuing without it",
+            exc_info=True,
+        )
+        return False
+
+    logger.info("Prewarmed profile skill catalog with %d skills", len(skills))
+    return True
 
 
 def sync_public_skills() -> tuple[bool, str]:

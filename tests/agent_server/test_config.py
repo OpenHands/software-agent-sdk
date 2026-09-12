@@ -48,6 +48,19 @@ def test_load_config_reads_telemetry_deployment_kind_from_env(monkeypatch, tmp_p
     assert load_config().telemetry.deployment_kind == "remote"
 
 
+def test_profile_skill_prewarm_defaults_enabled_and_can_be_disabled(
+    monkeypatch, tmp_path
+):
+    config_path = tmp_path / "missing.json"
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(config_path))
+    monkeypatch.delenv("OH_PREWARM_PROFILE_SKILLS")
+
+    assert load_config().prewarm_profile_skills is True
+
+    monkeypatch.setenv("OH_PREWARM_PROFILE_SKILLS", "0")
+    assert load_config().prewarm_profile_skills is False
+
+
 def test_conversation_idle_ttl_defaults_to_twenty_minutes():
     assert DEFAULT_CONVERSATION_IDLE_TTL_SECONDS == 1200.0
     assert Config().conversation_idle_ttl_seconds == 1200.0
