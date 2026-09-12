@@ -2,7 +2,8 @@
  * Conversation manager for handling multiple conversations
  */
 
-import { HttpClient } from '../client/http-client';
+import { ServerConnection } from '../client/server-connection';
+import { RuntimeClient } from '../client/runtime-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { DesktopClient } from '../client/desktop-client';
 import { FileClient } from '../client/file-client';
@@ -77,7 +78,7 @@ export interface ConversationManagerOptions {
 }
 
 export class ConversationManager {
-  private readonly client: HttpClient;
+  private readonly client: ServerConnection;
   public readonly host: string;
   public readonly apiKey?: string;
   public readonly server: ServerClient;
@@ -102,13 +103,14 @@ export class ConversationManager {
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
 
-    this.client = new HttpClient({
-      baseUrl: this.host,
+    this.client = new ServerConnection({
+      host: this.host,
       apiKey: this.apiKey,
       timeout: 60000,
     });
 
     const clientOptions = {
+      connection: this.client,
       host: this.host,
       ...(this.apiKey ? { apiKey: this.apiKey } : {}),
     };
@@ -130,6 +132,10 @@ export class ConversationManager {
     this.hooks = new HooksClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
     this.acp = new ACPConversationNamespace(this);
+  }
+
+  runtime(conversationId: ConversationID): RuntimeClient {
+    return new RuntimeClient({ host: this.host, connection: this.client, conversationId });
   }
 
   /**
@@ -217,6 +223,7 @@ export class ConversationManager {
   ): Promise<RemoteConversation> {
     const workspace = new RemoteWorkspace({
       host: this.host,
+      connection: this.client,
       workingDir: options.workingDir || '/tmp',
       apiKey: this.apiKey,
     });
@@ -247,6 +254,7 @@ export class ConversationManager {
     const workspace = new RemoteWorkspace({
       host: this.host,
       workingDir,
+      runtime: this.runtime(conversationId),
       apiKey: this.apiKey,
     });
 

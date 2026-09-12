@@ -1,9 +1,11 @@
 import { HttpClient } from './http-client';
+import type { ServerConnection } from './server-connection';
 import { AliveStatus, HealthStatus, ReadyStatus } from '../models/api';
 import { ServerInfo } from '../types/base';
 
 export interface ServerClientOptions {
   host: string;
+  connection?: ServerConnection;
   apiKey?: string;
   timeout?: number;
 }
@@ -17,11 +19,13 @@ export class ServerClient {
   constructor(options: ServerClientOptions) {
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      apiKey: this.apiKey,
-      timeout: options.timeout || 60000,
-    });
+    this.client =
+      options.connection ??
+      new HttpClient({
+        baseUrl: this.host,
+        apiKey: this.apiKey,
+        timeout: options.timeout || 60000,
+      });
   }
 
   async getRoot<T = unknown>(): Promise<T> {
