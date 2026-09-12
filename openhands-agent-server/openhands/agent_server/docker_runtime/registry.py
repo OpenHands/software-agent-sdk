@@ -431,7 +431,9 @@ class DockerConversationRegistry:
             run_cmd, env=docker_env, capture_output=True, text=True, check=False
         )
         if proc.returncode != 0:
-            raise RuntimeError("Failed to run conversation container")
+            detail = proc.stderr.strip() or "docker returned no error output"
+            logger.error("docker run failed: %s", detail)
+            raise RuntimeError(f"Failed to run conversation container: {detail}")
 
         container_id = proc.stdout.strip()
         logger.info("Started conversation container: %s", container_id)

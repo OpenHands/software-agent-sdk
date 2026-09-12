@@ -456,6 +456,29 @@ def test_invalid_assigned_port_cleans_up_container(tmp_path, monkeypatch, bindin
     assert ["docker", "stop", "test-container"] in commands
 
 
+def test_failed_docker_run_surfaces_stderr(tmp_path, monkeypatch):
+    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+
+    def execute(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 125, stdout="", stderr="image pull failed"
+        )
+
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.subprocess.run", execute
+    )
+    with pytest.raises(RuntimeError, match="image pull failed"):
+        registry._run_container(
+            conversation_id=uuid4(),
+            image="test-image",
+            platform="linux/amd64",
+            volumes=[],
+            env={},
+            network=None,
+            api_key=None,
+        )
+
+
 def test_forwarded_environment_rejects_unsupported_names(tmp_path):
     with pytest.raises(ValidationError):
         Config.model_validate({"conversation_container_forward_env": ["OH_SECRET_KEY"]})
