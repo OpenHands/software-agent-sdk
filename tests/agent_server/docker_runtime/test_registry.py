@@ -7,7 +7,7 @@ import threading
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.registry import (
@@ -314,7 +314,6 @@ def test_container_env_forces_inner_runtime_to_local(tmp_path, monkeypatch):
     registry = DockerConversationRegistry(
         Config(
             conversations_path=tmp_path,
-            conversation_container_forward_env=["OH_CONVERSATION_RUNTIME"],
         )
     )
 
@@ -455,3 +454,12 @@ def test_invalid_assigned_port_cleans_up_container(tmp_path, monkeypatch, bindin
             api_key=None,
         )
     assert ["docker", "stop", "test-container"] in commands
+
+
+def test_forwarded_environment_rejects_unsupported_names(tmp_path):
+    with pytest.raises(ValidationError):
+        Config.model_validate({"conversation_container_forward_env": ["OH_SECRET_KEY"]})
+    assert (
+        Config(conversation_container_forward_env=[]).conversation_container_forward_env
+        == []
+    )

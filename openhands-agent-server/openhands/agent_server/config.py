@@ -368,7 +368,7 @@ class Config(BaseModel):
         default_factory=list,
         description="Additional volume mounts for conversation containers.",
     )
-    conversation_container_forward_env: list[str] = Field(
+    conversation_container_forward_env: list[Literal["DEBUG"]] = Field(
         default_factory=lambda: [
             "DEBUG",
         ],

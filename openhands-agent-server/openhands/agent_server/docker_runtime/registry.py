@@ -347,7 +347,7 @@ class DockerConversationRegistry:
         env = {
             key: os.environ[key]
             for key in cfg.conversation_container_forward_env
-            if key in os.environ and key in {"DEBUG"}
+            if key in os.environ
         }
         env.update(
             {
