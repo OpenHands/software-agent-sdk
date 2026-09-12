@@ -106,6 +106,7 @@ def _oauth_auth_from_authentication_config(
         client_name=authentication.client_name or "FastMCP Client",
         token_storage=mcp_oauth_token_storage,
         additional_client_metadata=additional_client_metadata or None,
+        callback_port=authentication.callback_port,
         client_metadata_url=authentication.client_metadata_url,
         client_id=authentication.client_id,
         client_secret=authentication.client_secret.get_secret_value()

@@ -293,6 +293,14 @@ class MCPOAuthAuthentication(_MCPBaseModel):
     client_id: str | None = None
     client_secret: SecretStr | None = None
     additional_client_metadata: dict[str, Any] | None = None
+    callback_port: int | None = Field(
+        default=8765,
+        description=(
+            "Fixed port for OAuth callback server. OAuth providers that require "
+            "pre-registered redirect URIs (e.g., Atlassian Rovo, GitLab) need a "
+            "consistent callback URL. Defaults to 8765. Set to null for a random port."
+        ),
+    )
 
     @field_validator("client_secret", mode="after")
     @classmethod
