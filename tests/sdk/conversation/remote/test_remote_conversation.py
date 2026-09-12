@@ -1,5 +1,6 @@
 """Tests for RemoteConversation."""
 
+import inspect
 import time
 import uuid
 from unittest.mock import Mock, patch
@@ -15,7 +16,10 @@ from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     WebSocketConnectionError,
 )
-from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.impl.remote_conversation import (
+    RemoteConversation,
+    WebSocketCallbackClient,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
@@ -222,6 +226,85 @@ class TestRemoteConversation:
         assert len(get_events_calls) >= 1, (
             "Should have made at least one GET call to /events/search "
             "to fetch initial events"
+        )
+
+    def test_remote_conversation_uses_injected_websocket_factory(self):
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+        websocket_client = Mock()
+        websocket_factory = Mock(return_value=websocket_client)
+
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation."
+            "WebSocketCallbackClient"
+        ) as default_factory:
+            conversation = RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                websocket_client_factory=websocket_factory,
+            )
+
+        default_factory.assert_not_called()
+        websocket_factory.assert_called_once()
+        factory_kwargs = websocket_factory.call_args.kwargs
+        assert factory_kwargs["host"] == self.host
+        assert factory_kwargs["conversation_id"] == conversation_id
+        assert callable(factory_kwargs["callback"])
+        assert factory_kwargs["api_key"] is None
+        assert callable(factory_kwargs["on_reconnect"])
+        websocket_client.start.assert_called_once_with()
+        websocket_client.wait_until_ready.assert_called_once_with(timeout=30.0)
+
+        conversation.close()
+        websocket_client.stop.assert_called_once_with()
+
+    def test_remote_conversation_defaults_to_websocket_callback_client(self):
+        """Omitting the factory must resolve WebSocketCallbackClient at call time.
+
+        The default is looked up when __init__ runs, not captured when the
+        function is defined, so patching the module attribute still takes
+        effect. Binding the class as a default argument value instead would
+        break this and every other test that patches WebSocketCallbackClient.
+        """
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation."
+            "WebSocketCallbackClient"
+        ) as default_factory:
+            websocket_client = default_factory.return_value
+            conversation = RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+            )
+
+        default_factory.assert_called_once()
+        factory_kwargs = default_factory.call_args.kwargs
+        assert factory_kwargs["host"] == self.host
+        assert factory_kwargs["conversation_id"] == conversation_id
+        assert callable(factory_kwargs["callback"])
+        assert factory_kwargs["api_key"] is None
+        assert callable(factory_kwargs["on_reconnect"])
+        websocket_client.start.assert_called_once_with()
+        websocket_client.wait_until_ready.assert_called_once_with(timeout=30.0)
+
+        conversation.close()
+        websocket_client.stop.assert_called_once_with()
+
+    def test_websocket_callback_client_matches_factory_protocol(self):
+        """The default client must accept exactly the factory's keywords.
+
+        Guards against the concrete client and the protocol drifting apart,
+        which would only surface when a connection is attempted.
+        """
+        signature = inspect.signature(WebSocketCallbackClient)
+        signature.bind(
+            host="http://localhost:8000",
+            conversation_id=str(uuid.uuid4()),
+            callback=lambda event: None,
+            api_key=None,
+            on_reconnect=lambda: None,
         )
 
     @patch(
