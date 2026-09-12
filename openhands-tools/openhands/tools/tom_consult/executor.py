@@ -281,7 +281,7 @@ class TomConsultExecutor(
         processing_history = self._load_processing_history()
 
         # Find sessions that need processing
-        sessions_to_process = []
+        sessions_to_process: dict[str, int] = {}
         for session_id in all_sessions:
             events_dir = f"{self.conversations_dir}/{session_id}/events"
             event_files = self.file_store.list(events_dir)  # type: ignore
@@ -292,12 +292,12 @@ class TomConsultExecutor(
 
             # Check if needs processing (new or has new events)
             if session_id not in processing_history:
-                sessions_to_process.append(session_id)
+                sessions_to_process[session_id] = current_event_count
                 logger.info(f"📋 Tom: Session {session_id} needs processing (new)")
             elif current_event_count > processing_history[session_id].get(
                 "last_event_count", 0
             ):
-                sessions_to_process.append(session_id)
+                sessions_to_process[session_id] = current_event_count
                 logger.info(
                     f"📋 Tom: Session {session_id} has new events "
                     f"({current_event_count} events)"
@@ -312,10 +312,12 @@ class TomConsultExecutor(
         logger.info(f"📊 Tom: Found {len(sessions_to_process)} sessions to process")
         # Collect session data for each conversation
         sessions_data = []
-        for session_id in sessions_to_process:
+        processed_event_counts: dict[str, int] = {}
+        for session_id, event_count in sessions_to_process.items():
             session_data = self._extract_session_data(session_id, conversation)
             if session_data:
                 sessions_data.append(session_data)
+                processed_event_counts[session_id] = event_count
         if not sessions_data:
             logger.info("📭 Tom: No valid session data extracted")
             return SleeptimeComputeObservation(
@@ -332,7 +334,7 @@ class TomConsultExecutor(
         )
 
         # Update processing history
-        self._save_processing_history(sessions_to_process)
+        self._save_processing_history(processed_event_counts)
 
         logger.info(f"✅ Tom: Successfully indexed {len(sessions_data)} conversations")
         return SleeptimeComputeObservation(
@@ -394,7 +396,7 @@ class TomConsultExecutor(
             logger.debug(f"Could not load processing history: {e}")
             return {}
 
-    def _save_processing_history(self, session_ids: list[str]) -> None:
+    def _save_processing_history(self, event_counts: dict[str, int]) -> None:
         """Save processing history for processed sessions."""
         try:
             from tom_swe.memory.locations import get_usermodeling_dir
@@ -402,14 +404,7 @@ class TomConsultExecutor(
             history = self._load_processing_history()
             timestamp = datetime.now().isoformat()
 
-            for session_id in session_ids:
-                events_dir = f"{self.conversations_dir}/{session_id}/events"
-                try:
-                    event_files = self.file_store.list(events_dir)
-                    event_count = len(event_files)
-                except Exception:
-                    event_count = 0
-
+            for session_id, event_count in event_counts.items():
                 history[session_id] = {
                     "processed_at": timestamp,
                     "last_event_count": event_count,
@@ -419,7 +414,7 @@ class TomConsultExecutor(
 
             self.file_store.write(history_file, json.dumps(history, indent=2))
             logger.info(
-                f"📝 Tom: Updated processing history for {len(session_ids)} sessions"
+                f"📝 Tom: Updated processing history for {len(event_counts)} sessions"
             )  # noqa: E501
         except Exception as e:
             logger.error(f"Failed to save processing history: {e}")
