@@ -1,12 +1,9 @@
-import { HttpClient } from './http-client';
+import { runtimeServiceConnections } from './runtime-transport';
+import type { RuntimeServiceOptions } from './runtime-transport';
+import type { HttpClient } from './http-client';
 import { VSCodeStatusResponse, VSCodeUrlResponse } from '../models/api';
 
-export interface VSCodeClientOptions {
-  host: string;
-  conversationId?: string;
-  apiKey?: string;
-  timeout?: number;
-}
+export type VSCodeClientOptions = RuntimeServiceOptions;
 
 export interface GetVSCodeUrlOptions {
   baseUrl?: string;
@@ -19,14 +16,10 @@ export class VSCodeClient {
   private readonly client: HttpClient;
 
   constructor(options: VSCodeClientOptions) {
-    this.host = options.host.replace(/\/$/, '');
-    this.apiKey = options.apiKey;
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      conversationId: options.conversationId,
-      apiKey: this.apiKey,
-      timeout: options.timeout || 60000,
-    });
+    const { server, runtime } = runtimeServiceConnections(options);
+    this.host = server.host;
+    this.apiKey = server.sessionApiKey;
+    this.client = runtime;
   }
 
   async getUrl(options: GetVSCodeUrlOptions = {}): Promise<string | null> {
