@@ -596,3 +596,72 @@ async def test_aresponses_streaming_accepts_async_generator(mock_aresponses):
     assert [chunk.choices[0].delta.content for chunk in received] == [
         "Hello wrapped stream"
     ]
+
+
+class _StaleCompletedResponseStream:
+    """A streaming wrapper that yields the completion and also exposes a stale None.
+
+    Reproduces https://github.com/OpenHands/software-agent-sdk/issues/4769: the
+    attribute exists, so `getattr(ret, "completed_response", default)` returns
+    its None rather than the default, discarding the event the stream yielded.
+    """
+
+    def __init__(self, events):
+        self._events = events
+        self.completed_response = None
+
+    def __iter__(self):
+        return iter(self._events)
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_streaming_keeps_the_yielded_completion(mock_responses):
+    events, completed_response = _make_wrapped_response_stream_events()
+    mock_responses.return_value = _StaleCompletedResponseStream(events)
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        num_retries=1,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received = []
+    response = llm.responses(
+        [Message(role="user", content=[TextContent(text="Hello")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert response.raw_response is completed_response
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_streaming_keeps_the_yielded_completion(mock_aresponses):
+    events, completed_response = _make_wrapped_response_stream_events()
+
+    def _return_stale_wrapper(*args, **kwargs):
+        return _StaleCompletedResponseStream(events)
+
+    mock_aresponses.side_effect = _return_stale_wrapper
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        num_retries=1,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received = []
+    response = await llm.aresponses(
+        [Message(role="user", content=[TextContent(text="Hello")])],
+        stream=True,
+        on_token=received.append,
+    )
+
+    assert response.raw_response is completed_response
