@@ -6,13 +6,19 @@ Background: https://github.com/OpenHands/software-agent-sdk/issues/2523
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+import openhands.agent_server.api as api_mod
+import openhands.agent_server.init_router as init_mod
+from openhands.agent_server import conversation_service as cs_mod
 from openhands.agent_server.api import api_lifespan, create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.init_router import (
@@ -20,6 +26,8 @@ from openhands.agent_server.init_router import (
     InitService,
     _build_initialized_config,
 )
+from openhands.agent_server.telemetry import service as telemetry_service
+from openhands.agent_server.telemetry.sink import NoOpTelemetrySink
 
 
 @pytest.fixture(autouse=True)
@@ -508,3 +516,408 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
     assert init_svc._entered_bash_service is None
     _reset_conversation_singleton()
     _reset_bash_singleton()
+
+
+# ---------------------------------------------------------------------------
+# #4658: a failed /api/init must unwind everything it staged and leave the
+# server back in a clean `dormant` state.
+# ---------------------------------------------------------------------------
+
+_INJECTED_FAILURE = "injected init failure"
+
+# Staged by every request built through ``_init_request`` so each failure phase
+# also has to undo an environment mutation.
+_STAGED_ENV = "DEFERRED_INIT_STAGED"
+
+# Each name is the step whose failure is injected: the injector raises at that
+# step, so everything before it has already completed. Between them the phases
+# cover a failure at every point in the resource-entry sequence.
+_FAILURE_PHASES = (
+    "env",  # env staged; failure before laminar init
+    "telemetry",  # failure building the sink; nothing published yet
+    "conversation_service_factory",  # failure before the service is built
+    "bash_service_factory",  # conversation service built; bash not constructed
+    "bash_service_enter",  # bash constructed; its entry failed
+    "conversation_service_enter",  # bash entered, conversation entry failed
+    "root_path",  # both services entered, nothing published yet
+)
+
+
+def _init_request(
+    tmp_path: Path,
+    name: str = "runtime",
+    conversations_path: Path | None = None,
+) -> InitRequest:
+    return InitRequest(
+        env={_STAGED_ENV: name},
+        conversations_path=conversations_path or tmp_path / name / "convs",
+        bash_events_dir=tmp_path / name / "bash",
+    )
+
+
+def _occupied_path(tmp_path: Path) -> Path:
+    """A path that already exists as a *file*, so a real ``mkdir`` fails."""
+    path = tmp_path / "occupied"
+    path.write_text("not a directory")
+    return path
+
+
+def _fail_once(original) -> Callable[..., Any]:
+    """Wrap a sync callable so its first call raises, then delegate as usual.
+
+    The failure clears itself so the retry inside each test exercises the
+    normal path again.
+    """
+    state = {"pending": True}
+
+    def wrapper(*args, **kwargs):
+        if state["pending"]:
+            state["pending"] = False
+            raise RuntimeError(_INJECTED_FAILURE)
+        return original(*args, **kwargs)
+
+    return wrapper
+
+
+def _fail_once_async(original) -> Callable[..., Any]:
+    """Async counterpart of ``_fail_once``."""
+    state = {"pending": True}
+
+    async def wrapper(*args, **kwargs):
+        if state["pending"]:
+            state["pending"] = False
+            raise RuntimeError(_INJECTED_FAILURE)
+        return await original(*args, **kwargs)
+
+    return wrapper
+
+
+def _inject_failure(phase: str, tmp_path: Path, monkeypatch) -> InitRequest:
+    """Install a one-shot failure for ``phase`` and return the request to send."""
+    if phase == "env":
+        monkeypatch.setattr(
+            init_mod, "maybe_init_laminar", _fail_once(init_mod.maybe_init_laminar)
+        )
+    elif phase == "telemetry":
+        monkeypatch.setattr(
+            init_mod,
+            "build_telemetry_sink",
+            _fail_once_async(init_mod.build_telemetry_sink),
+        )
+    elif phase == "bash_service_enter":
+        # The object is constructed but never entered, so this is the only
+        # phase where a live service exists that the stack must *not* unwind.
+        monkeypatch.setattr(
+            init_mod.BashEventService,
+            "__aenter__",
+            _fail_once_async(init_mod.BashEventService.__aenter__),
+        )
+    elif phase == "conversation_service_factory":
+        monkeypatch.setattr(
+            init_mod.ConversationService,
+            "get_instance",
+            _fail_once(init_mod.ConversationService.get_instance),
+        )
+    elif phase == "bash_service_factory":
+        monkeypatch.setattr(
+            init_mod, "BashEventService", _fail_once(init_mod.BashEventService)
+        )
+    elif phase == "root_path":
+        monkeypatch.setattr(
+            api_mod, "_get_root_path", _fail_once(api_mod._get_root_path)
+        )
+    elif phase == "conversation_service_enter":
+        # Real filesystem failure: the conversation service cannot create its
+        # persistence directory, and it is entered after the bash service.
+        return _init_request(tmp_path, conversations_path=_occupied_path(tmp_path))
+    else:
+        raise AssertionError(f"unknown failure phase: {phase}")
+    return _init_request(tmp_path)
+
+
+def _record_hook(original, label: str, events: list[str]) -> Callable[..., Any]:
+    """Record ``label`` once ``original`` completes without raising."""
+
+    async def wrapper(self, *args, **kwargs):
+        result = await original(self, *args, **kwargs)
+        events.append(label)
+        return result
+
+    return wrapper
+
+
+@pytest.fixture
+def service_lifecycle(monkeypatch):
+    """Record the __aenter__/__aexit__ calls InitService drives on the two
+    services, so enter/exit balance and teardown order stay observable."""
+    from openhands.agent_server.bash_service import BashEventService
+    from openhands.agent_server.conversation_service import ConversationService
+
+    events: list[str] = []
+    for label, cls in (
+        ("bash", BashEventService),
+        ("conversation", ConversationService),
+    ):
+        for hook in ("__aenter__", "__aexit__"):
+            monkeypatch.setattr(
+                cls, hook, _record_hook(getattr(cls, hook), f"{label}.{hook}", events)
+            )
+    return events
+
+
+@pytest.fixture
+def clean_process_state():
+    """Isolate the process-wide state InitService mutates, so a failing test
+    cannot poison later tests."""
+    _reset_conversation_singleton()
+    _reset_bash_singleton()
+    telemetry_service.reset_telemetry_sink()
+    os.environ.pop(_STAGED_ENV, None)
+    yield
+    _reset_conversation_singleton()
+    _reset_bash_singleton()
+    telemetry_service.reset_telemetry_sink()
+    os.environ.pop(_STAGED_ENV, None)
+
+
+class TestDeferredInitRollback:
+    """A failed /api/init must not leave a partially initialized runtime."""
+
+    @pytest.mark.asyncio
+    async def test_failed_init_restores_staged_runtime_state(
+        self, tmp_path, monkeypatch, clean_process_state
+    ):
+        monkeypatch.setenv("DEFERRED_INIT_PREEXISTING", "before")
+        monkeypatch.delenv("DEFERRED_INIT_STAGED", raising=False)
+
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "boot" / "convs",
+            bash_events_dir=tmp_path / "boot" / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+
+        boot_sink = NoOpTelemetrySink()
+        telemetry_service._telemetry_sink = boot_sink
+        singleton_before = cs_mod._conversation_service
+
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                await svc.initialize(
+                    InitRequest(
+                        env={
+                            "DEFERRED_INIT_PREEXISTING": "after",
+                            "DEFERRED_INIT_STAGED": "staged",
+                        },
+                        conversations_path=_occupied_path(tmp_path),
+                        bash_events_dir=tmp_path / "runtime" / "bash",
+                    )
+                )
+
+            assert excinfo.value.status_code == 500
+            assert svc.state == "dormant"
+            assert svc.snapshot().error is not None
+
+            # The staged environment is rolled back, including a pre-existing
+            # value the failed request overwrote.
+            assert os.environ["DEFERRED_INIT_PREEXISTING"] == "before"
+            assert "DEFERRED_INIT_STAGED" not in os.environ
+
+            # Nothing the failed attempt built stayed externally visible.
+            assert app.state.config is base
+            assert not hasattr(app.state, "telemetry_sink")
+            assert not hasattr(app.state, "conversation_service")
+            assert not hasattr(app.state, "bash_event_service")
+            assert cs_mod._conversation_service is singleton_before
+            assert telemetry_service._telemetry_sink is boot_sink
+
+            # Entered resources were unwound, not retained for teardown.
+            assert svc._entered_service is None
+            assert svc._entered_bash_service is None
+
+            # The pod is a clean dormant server again: a retry succeeds.
+            result = await svc.initialize(_init_request(tmp_path, "retry"))
+            assert result.state == "ready"
+        finally:
+            await svc.teardown()
+
+    @pytest.mark.asyncio
+    async def test_env_key_rejected_mid_staging_rolls_back_earlier_keys(
+        self, tmp_path, monkeypatch, clean_process_state
+    ):
+        """A key the OS rejects part-way through staging must not strand the
+        keys the same request already applied.
+
+        ``os.environ`` rejects embedded nulls on every platform, and it does so
+        only once it reaches that key -- by which point the earlier ones are
+        already set.
+        """
+        monkeypatch.setenv("DEFERRED_INIT_PREEXISTING", "before")
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "boot" / "convs",
+            bash_events_dir=tmp_path / "boot" / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                await svc.initialize(
+                    InitRequest(
+                        env={
+                            "DEFERRED_INIT_PREEXISTING": "after",
+                            "DEFERRED_INIT_REJECTED": "a\x00b",
+                        },
+                        conversations_path=tmp_path / "runtime" / "convs",
+                        bash_events_dir=tmp_path / "runtime" / "bash",
+                    )
+                )
+
+            assert excinfo.value.status_code == 500
+            assert svc.state == "dormant"
+            assert os.environ["DEFERRED_INIT_PREEXISTING"] == "before"
+            assert "DEFERRED_INIT_REJECTED" not in os.environ
+        finally:
+            await svc.teardown()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("phase", _FAILURE_PHASES)
+    async def test_failure_at_each_entry_phase_unwinds_exactly_once(
+        self, tmp_path, monkeypatch, clean_process_state, service_lifecycle, phase
+    ):
+        monkeypatch.delenv(_STAGED_ENV, raising=False)
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "boot" / "convs",
+            bash_events_dir=tmp_path / "boot" / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+
+        boot_sink = NoOpTelemetrySink()
+        telemetry_service._telemetry_sink = boot_sink
+
+        request = _inject_failure(phase, tmp_path, monkeypatch)
+        try:
+            with pytest.raises(HTTPException) as excinfo:
+                await svc.initialize(request)
+
+            assert excinfo.value.status_code == 500, phase
+            assert svc.state == "dormant", phase
+
+            entered = [e for e in service_lifecycle if e.endswith("__aenter__")]
+            exited = [e for e in service_lifecycle if e.endswith("__aexit__")]
+            assert len(entered) == len(set(entered)), (
+                f"a resource was entered more than once: {service_lifecycle}"
+            )
+            assert sorted(e.split(".")[0] for e in exited) == sorted(
+                e.split(".")[0] for e in entered
+            ), f"entered resources must be exited exactly once: {service_lifecycle}"
+
+            # No staged environment or runtime escaped the rollback.
+            assert _STAGED_ENV not in os.environ, phase
+            assert app.state.config is base, phase
+            assert not hasattr(app.state, "telemetry_sink"), phase
+            assert not hasattr(app.state, "conversation_service"), phase
+            assert not hasattr(app.state, "bash_event_service"), phase
+            assert cs_mod._conversation_service is None, phase
+            assert telemetry_service._telemetry_sink is boot_sink, phase
+            assert svc._entered_service is None, phase
+            assert svc._entered_bash_service is None, phase
+
+            # Retrying from the rolled-back dormant state succeeds.
+            result = await svc.initialize(_init_request(tmp_path, "retry"))
+            assert result.state == "ready", phase
+        finally:
+            await svc.teardown()
+
+        # Across the failed attempt, the retry and teardown, every resource that
+        # was entered was exited exactly once. A retry that double-entered, or a
+        # teardown that double-exited, would break the balance here.
+        entered = sorted(
+            e.split(".")[0] for e in service_lifecycle if e.endswith("__aenter__")
+        )
+        exited = sorted(
+            e.split(".")[0] for e in service_lifecycle if e.endswith("__aexit__")
+        )
+        assert exited == entered, (
+            f"enter/exit balance broken across retry + teardown: {service_lifecycle}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_teardown_after_successful_init_keeps_service_exit_order(
+        self, tmp_path, clean_process_state, service_lifecycle
+    ):
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "boot" / "convs",
+            bash_events_dir=tmp_path / "boot" / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+
+        result = await svc.initialize(_init_request(tmp_path))
+        assert result.state == "ready"
+        assert service_lifecycle == ["bash.__aenter__", "conversation.__aenter__"]
+
+        await svc.teardown()
+        assert service_lifecycle[-2:] == [
+            "conversation.__aexit__",
+            "bash.__aexit__",
+        ]
+        assert svc._entered_service is None
+        assert svc._entered_bash_service is None
+
+    def test_failed_init_over_http_rolls_back_and_allows_retry(self, tmp_path):
+        """Drive the failure through the real REST contract + lifespan."""
+        _reset_conversation_singleton()
+        telemetry_service.reset_telemetry_sink()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "boot" / "convs",
+            bash_events_dir=tmp_path / "boot" / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                boot_sink = app.state.telemetry_sink
+                boot_root_path = app.root_path
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "env": {"DEFERRED_INIT_E2E": "staged"},
+                        "conversations_path": str(_occupied_path(tmp_path)),
+                        "bash_events_dir": str(tmp_path / "runtime" / "bash"),
+                        # A per-user web_url would move root_path if the failed
+                        # attempt had already published the merged config.
+                        "web_url": "https://example.com/user-1/",
+                    },
+                )
+                assert resp.status_code == 500
+                assert client.get("/api/init").json()["state"] == "dormant"
+
+                # The pod is still dormant and nothing was staged.
+                assert client.get("/api/conversations/count").status_code == 503
+                assert app.state.telemetry_sink is boot_sink
+                assert not hasattr(app.state, "conversation_service")
+                assert app.root_path == boot_root_path
+                assert os.environ.get("DEFERRED_INIT_E2E") is None
+
+                # The orchestrator can retry the same pod.
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+                assert resp.json()["state"] == "ready"
+                assert client.get("/api/conversations/count").status_code == 200
+            finally:
+                os.environ.pop("DEFERRED_INIT_E2E", None)
+                _reset_conversation_singleton()
+                telemetry_service.reset_telemetry_sink()

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -28,8 +29,11 @@ from openhands.agent_server.server_details_router import mark_initialization_com
 from openhands.agent_server.telemetry import (
     build_telemetry_sink,
     emit_server_started,
+    service as telemetry_service,
     shutdown_telemetry_sink,
 )
+from openhands.agent_server.telemetry.factory import DiagnosticEventFactory
+from openhands.agent_server.telemetry.sink import TelemetrySink
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability import maybe_init_laminar
 
@@ -186,6 +190,56 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
     return base.model_copy(update=updates)
 
 
+def _stage_env(env: dict[str, str] | None, previous: dict[str, str | None]) -> None:
+    """Apply the request's environment variables, recording what they replaced.
+
+    ``previous`` is filled in place and must already be registered for restore,
+    because a key rejected part-way through the loop (Windows refuses names
+    containing ``=``) would otherwise leave its predecessors applied.
+    """
+    for key, value in (env or {}).items():
+        previous[key] = os.environ.get(key)
+        os.environ[key] = value
+
+
+def _restore_env(previous: dict[str, str | None]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+async def _restore_telemetry(
+    previous_sink: TelemetrySink | None,
+    previous_event_factory: DiagnosticEventFactory | None,
+) -> None:
+    """Undo ``build_telemetry_sink``'s process-wide publication.
+
+    The dormant server's values are snapshotted before the build and put back
+    here, so a rolled-back attempt leaves the sink, the event factory and the
+    consent decision other modules read exactly as it found them.
+    """
+    if telemetry_service._telemetry_sink is not previous_sink:
+        await shutdown_telemetry_sink()
+    telemetry_service._telemetry_sink = previous_sink
+    telemetry_service._event_factory = previous_event_factory
+
+
+async def _retire_telemetry_sink(sink: TelemetrySink | None) -> None:
+    """Close the dormant server's sink once its replacement is committed.
+
+    ``shutdown_telemetry_sink`` closes whatever is currently published, which
+    by then is the replacement, so the previous sink is closed directly here.
+    """
+    if sink is None:
+        return
+    try:
+        await sink.aclose()
+    except Exception as exc:
+        logger.debug("Telemetry shutdown failed: %s", type(exc).__name__)
+
+
 class InitService:
     """Tracks dormant→ready transition and serialises /api/init calls.
 
@@ -220,55 +274,8 @@ class InitService:
             self._state = "initializing"
             self._error = None
         try:
-            new_config = _build_initialized_config(self._base_config, req)
-            if req.env:
-                # Setting env vars before services boot lets things like
-                # the cipher pick up OH_SECRET_KEY-style overrides, and
-                # tools pick up credentials.
-                for key, value in req.env.items():
-                    os.environ[key] = value
-            maybe_init_laminar()
-
-            # Must precede get_instance(), which captures the sink. The
-            # matching emit_server_started() is deferred until the ``ready``
-            # transition below: emitting here would produce a server_started
-            # for an init that later fails and rolls back to dormant, leaving
-            # an unpaired start and letting a retry emit a second one.
-            await shutdown_telemetry_sink()
-            self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
-
-            # Reset the module-level singleton so other call sites that go
-            # through ``get_default_conversation_service`` see the new
-            # instance built from the merged config.
-            from openhands.agent_server import conversation_service as cs_mod
-
-            service = ConversationService.get_instance(new_config)
-            cs_mod._conversation_service = service
-
-            bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
-            await bash_svc.__aenter__()
-            self._entered_bash_service = bash_svc
-
-            await service.__aenter__()
-            self._entered_service = service
-            self._app.state.config = new_config
-            self._app.state.conversation_service = service
-            self._app.state.bash_event_service = bash_svc
-
-            # Re-derive root_path from the merged config so Doc URLS are valid
-            from openhands.agent_server.api import _get_root_path
-
-            new_root_path = _get_root_path(new_config)
-            self._app.root_path = new_root_path
-
-            mark_initialization_complete()
-            self._state = "ready"
-            # Emitted only now that init has actually succeeded, so a failed
-            # attempt never produces a start and a retry cannot double-emit.
-            emit_server_started()
-            logger.info("deferred_init: server transitioned to ready")
-            return self.snapshot()
-        except Exception as exc:  # pragma: no cover - logged + re-raised
+            return await self._build_runtime(req)
+        except Exception as exc:
             logger.exception("deferred_init: /api/init failed; rolling back to dormant")
             self._error = f"{type(exc).__name__}: {exc}"
             self._state = "dormant"
@@ -276,6 +283,69 @@ class InitService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=self._error,
             ) from exc
+
+    async def _build_runtime(self, req: InitRequest) -> InitStatus:
+        """Stage the per-user runtime, then publish it at one commit point.
+
+        Everything provisional is registered on ``stack``, so a failure unwinds
+        it in reverse order before ``initialize`` rolls back to ``dormant``.
+        Bootstrap state is overwritten only after the last fallible step has
+        succeeded, which is what makes ``dormant`` a promise that no staged
+        service, credential, sink or singleton is still live.
+        """
+        async with AsyncExitStack() as stack:
+            new_config = _build_initialized_config(self._base_config, req)
+            # Registered before staging so a key the loop rejects still rolls
+            # back. Setting env vars before the services boot lets the cipher
+            # pick up OH_SECRET_KEY-style overrides and tools pick up
+            # credentials.
+            staged_env: dict[str, str | None] = {}
+            stack.callback(_restore_env, staged_env)
+            _stage_env(req.env, staged_env)
+            maybe_init_laminar()
+
+            boot_sink = telemetry_service._telemetry_sink
+            boot_event_factory = telemetry_service._event_factory
+            stack.push_async_callback(_restore_telemetry, boot_sink, boot_event_factory)
+            new_sink = await build_telemetry_sink(new_config)
+
+            service = ConversationService.get_instance(new_config)
+            bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
+            await stack.enter_async_context(bash_svc)
+            await stack.enter_async_context(service)
+
+            # Re-derive root_path from the merged config so Doc URLS are valid
+            from openhands.agent_server.api import _get_root_path
+
+            new_root_path = _get_root_path(new_config)
+
+            # Commit point: nothing past here can fail, so the runtime built
+            # above becomes authoritative in one step.
+            from openhands.agent_server import conversation_service as cs_mod
+
+            # Other call sites go through ``get_default_conversation_service``,
+            # which must see the instance built from the merged config.
+            cs_mod._conversation_service = service
+            self._app.state.config = new_config
+            self._app.state.conversation_service = service
+            self._app.state.bash_event_service = bash_svc
+            self._app.state.telemetry_sink = new_sink
+            self._app.root_path = new_root_path
+
+            mark_initialization_complete()
+            self._state = "ready"
+            # Emitted only now that init has actually succeeded, so a failed
+            # attempt never produces a start and a retry cannot double-emit.
+            emit_server_started()
+            # Ownership passes to teardown() here. The handoff is the last thing
+            # that happens so nothing can raise while a service is reachable
+            # both from the stack and from ``teardown()``.
+            self._entered_bash_service = bash_svc
+            self._entered_service = service
+            stack.pop_all()
+            await _retire_telemetry_sink(boot_sink)
+            logger.info("deferred_init: server transitioned to ready")
+            return self.snapshot()
 
     async def teardown(self) -> None:
         """Tear down the conversation service if /api/init succeeded.
