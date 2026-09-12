@@ -69,15 +69,11 @@ class RunningConversationContainer:
         if self.container_id is None:
             return
         container_id = self.container_id
-        self.container_id = None
         logger.info("Stopping conversation container: %s", container_id)
         result = execute_command(["docker", "stop", container_id])
         if result.returncode != 0:
-            logger.warning(
-                "Failed to stop conversation container %s: %s",
-                container_id,
-                result.stderr,
-            )
+            raise RuntimeError(f"Failed to stop conversation container {container_id}")
+        self.container_id = None
 
 
 class DockerConversationRegistry:
@@ -258,7 +254,12 @@ class DockerConversationRegistry:
 
         stopped = False
         if container is not None:
-            await asyncio.to_thread(container.cleanup)
+            try:
+                await asyncio.to_thread(container.cleanup)
+            except Exception:
+                async with self._lock:
+                    self._containers[conversation_id] = container
+                raise
             stopped = True
         if start_task is not None:
             try:

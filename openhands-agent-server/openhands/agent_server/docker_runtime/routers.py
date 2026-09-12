@@ -375,6 +375,25 @@ async def get_conversation_runtime(
     return info
 
 
+@docker_conversation_proxy_router.delete(
+    "/{conversation_id}/runtime",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def release_conversation_runtime(
+    conversation_id: UUID, request: Request
+) -> Response:
+    """Release execution resources while retaining conversation history."""
+    registry = get_registry(request)
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    try:
+        await registry.stop(conversation_id)
+    except Exception as exc:
+        logger.exception("Could not release conversation runtime %s", conversation_id)
+        raise HTTPException(502, "Could not release conversation runtime") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @docker_conversation_proxy_router.post(
     "/{conversation_id}/runtime/reprovision",
     response_model=ConversationRuntimeInfo,

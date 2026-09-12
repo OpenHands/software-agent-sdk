@@ -573,3 +573,18 @@ def test_forwarded_environment_rejects_unsupported_names(tmp_path):
         Config(conversation_container_forward_env=[]).conversation_container_forward_env
         == []
     )
+
+
+def test_cleanup_failure_preserves_container_identity(monkeypatch):
+    from subprocess import CompletedProcess
+
+    from openhands.agent_server.docker_runtime import registry as module
+
+    container = _container(uuid4())
+    original = container.container_id
+    monkeypatch.setattr(
+        module, "execute_command", lambda args: CompletedProcess(args, 1, "", "failed")
+    )
+    with pytest.raises(RuntimeError, match="Failed to stop"):
+        container.cleanup()
+    assert container.container_id == original

@@ -423,6 +423,32 @@ def test_runtime_inspection_does_not_start_container(docker_app):
     assert registry.get(cid) is None
 
 
+def test_runtime_release_preserves_history_and_can_reprovision(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+    registry.preregister(cid)
+
+    assert client.delete(f"/api/conversations/{cid}/runtime").status_code == 204
+    assert client.delete(f"/api/conversations/{cid}/runtime").status_code == 204
+    assert (directory / "base_state.json").is_file()
+    info = client.get(f"/api/conversations/{cid}/runtime").json()
+    assert info["runtime_status"] == "missing"
+    assert info["can_resume"] is True
+    restored = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+    assert restored.json()["runtime_status"] == "available"
+
+
+def test_runtime_release_rejects_unknown_conversation(docker_app):
+    client, _ = docker_app
+    assert client.delete(f"/api/conversations/{uuid4()}/runtime").status_code == 404
+
+
 def test_runtime_reprovision_starts_infrastructure_without_run(docker_app):
     client, app = docker_app
     registry = app.state.docker_registry
