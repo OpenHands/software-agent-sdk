@@ -137,6 +137,8 @@ class RuntimeCredentialBroker:
                 oauth = OAuth(
                     mcp_url=server.url, token_storage=MCPSettingsOAuthTokenStore()
                 )
+                # FastMCP has no public refresh-only API; keep this boundary
+                # covered by the real OAuth refresh regression when upgrading it.
                 await oauth._initialize()
                 if not oauth.context.is_token_valid():
                     if not oauth.context.can_refresh_token():
