@@ -368,7 +368,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     retry_min_wait: int = Field(default=8, ge=0, json_schema_extra=field_meta())
     retry_max_wait: int = Field(default=64, ge=0, json_schema_extra=field_meta())
 
-    timeout: float | None = Field(
+    timeout: int | None = Field(
         default=300,
         ge=0,
         description=(

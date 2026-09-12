@@ -297,8 +297,8 @@ async def test_async_hard_timeout_retries_active_real_http_stream() -> None:
     async with _hung_chat_completion_server(keep_sending=True) as (base_url, attempts):
         llm = _streaming_llm(
             base_url,
-            timeout=0.2,
-            stream_idle_timeout=1,
+            timeout=1,
+            stream_idle_timeout=2,
             num_retries=2,
         )
 
