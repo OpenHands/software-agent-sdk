@@ -6,6 +6,7 @@ from fastapi.security import APIKeyCookie, APIKeyHeader
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_history_service import EventHistoryService
 from openhands.agent_server.event_service import EventService
 
 
@@ -99,3 +100,16 @@ async def get_event_service(
             detail=f"Conversation not found: {conversation_id}",
         )
     return event_service
+
+
+def get_event_history_service(
+    conversation_id: UUID,
+    request: Request,
+) -> EventHistoryService:
+    conversation_dir = request.app.state.config.conversations_path / conversation_id.hex
+    if not (conversation_dir / "meta.json").is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    return EventHistoryService.from_conversation_dir(conversation_dir)

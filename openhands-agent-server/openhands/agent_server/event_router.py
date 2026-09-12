@@ -15,10 +15,15 @@ from fastapi import (
 )
 from starlette.responses import JSONResponse
 
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.dependencies import (
+    get_event_history_service,
+    get_event_service,
+)
+from openhands.agent_server.event_history_service import EventHistoryService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
+    EventPage,
     EventSortOrder,
     SendMessageRequest,
     Success,
@@ -27,6 +32,9 @@ from openhands.sdk import Message
 from openhands.sdk.event import Event
 
 
+event_history_router = APIRouter(
+    prefix="/conversations/{conversation_id}/events", tags=["Events"]
+)
 event_router = APIRouter(
     prefix="/conversations/{conversation_id}/events", tags=["Events"]
 )
@@ -62,7 +70,11 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
         return dt
 
 
-@event_router.get("/search", responses={404: {"description": "Conversation not found"}})
+@event_history_router.get(
+    "/search",
+    response_model=EventPage,
+    responses={404: {"description": "Conversation not found"}},
+)
 async def search_conversation_events(
     page_id: Annotated[
         str | None,
@@ -98,7 +110,7 @@ async def search_conversation_events(
         datetime | None,
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventHistoryService = Depends(get_event_history_service),
 ) -> JSONResponse:
     """Search / List local events"""
     assert limit > 0
@@ -136,7 +148,9 @@ async def search_conversation_events(
     )
 
 
-@event_router.get("/count", responses={404: {"description": "Conversation not found"}})
+@event_history_router.get(
+    "/count", responses={404: {"description": "Conversation not found"}}
+)
 async def count_conversation_events(
     kind: Annotated[
         str | None,
@@ -160,7 +174,7 @@ async def count_conversation_events(
         datetime | None,
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventHistoryService = Depends(get_event_history_service),
 ) -> int:
     """Count local events matching the given filters"""
     # Normalize timezone-aware datetimes to server timezone
@@ -180,10 +194,12 @@ async def count_conversation_events(
     return count
 
 
-@event_router.get("/{event_id}", responses={404: {"description": "Item not found"}})
+@event_history_router.get(
+    "/{event_id}", responses={404: {"description": "Item not found"}}
+)
 async def get_conversation_event(
     event_id: str,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventHistoryService = Depends(get_event_history_service),
 ) -> Event:
     """Get a local event given an id"""
     event = await event_service.get_event(event_id)
@@ -192,10 +208,10 @@ async def get_conversation_event(
     return event
 
 
-@event_router.get("")
+@event_history_router.get("")
 async def batch_get_conversation_events(
     event_ids: list[str],
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventHistoryService = Depends(get_event_history_service),
 ) -> list[Event | None]:
     """Get a batch of local events given their ids, returning null for any
     missing item."""

@@ -38,7 +38,10 @@ from openhands.agent_server.models import (
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.event import MessageEvent
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -230,12 +233,18 @@ class _StubRegistry:
             and (directory / "base_state.json").is_file()
             and self.provisioning.manifest_path(cid).is_file()
         )
+        if cid in self._workspaces:
+            runtime_status = ConversationRuntimeStatus.AVAILABLE
+        elif (
+            (directory / "meta.json").is_file()
+            and (directory / "base_state.json").is_file()
+            and not self.provisioning.manifest_path(cid).is_file()
+        ):
+            runtime_status = ConversationRuntimeStatus.OWNERSHIP_LOST
+        else:
+            runtime_status = ConversationRuntimeStatus.MISSING
         return ConversationRuntimeInfo(
-            runtime_status=(
-                ConversationRuntimeStatus.AVAILABLE
-                if cid in self._workspaces
-                else ConversationRuntimeStatus.MISSING
-            ),
+            runtime_status=runtime_status,
             can_resume=can_resume,
         )
 
@@ -287,6 +296,28 @@ def docker_app(tmp_path, monkeypatch):
             yield client, app
         finally:
             client.close()
+
+
+def _persist_history(
+    registry: _StubRegistry, cid: UUID, count: int = 3
+) -> list[MessageEvent]:
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "meta.json").write_text("{}")
+    events = [
+        MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text=f"message {index}")]
+            ),
+            timestamp=f"2026-08-14T06:00:0{index}",
+        )
+        for index in range(count)
+    ]
+    event_log = EventLog(LocalFileStore(str(directory)))
+    for event in events:
+        event_log.append(event)
+    return events
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +396,7 @@ def test_delete_proxies_then_stops_container_and_removes_host_state(docker_app):
     assert app.state.docker_registry.get(cid) is None
     assert not conversation_dir.exists()
     assert not workspace_dir.exists()
+    assert client.get(f"/api/conversations/{cid}/events/search").status_code == 404
 
 
 def test_archive_stops_owned_runtime_and_unarchive_stays_cold(docker_app):
@@ -797,24 +829,51 @@ def test_customization_without_conversation(docker_app):
     assert not app.state.docker_registry._workspaces
 
 
-def test_event_search_is_served_by_container(docker_app):
+def test_event_history_is_served_from_retained_storage_without_runtime(docker_app):
     client, app = docker_app
+    registry = app.state.docker_registry
     cid = uuid4()
-    app.state.docker_registry.preregister(cid)
-    response = client.get(f"/api/conversations/{cid}/events/search")
-    assert response.status_code == 200
-    assert response.json()["items"][0]["id"] == "inner-event"
+    events = _persist_history(registry, cid)
+
+    first = client.get(f"/api/conversations/{cid}/events/search", params={"limit": 2})
+    assert first.status_code == 200
+    assert [item["id"] for item in first.json()["items"]] == [
+        events[0].id,
+        events[1].id,
+    ]
+    assert first.json()["next_page_id"] == events[2].id
+
+    second = client.get(
+        f"/api/conversations/{cid}/events/search",
+        params={"limit": 2, "page_id": first.json()["next_page_id"]},
+    )
+    assert [item["id"] for item in second.json()["items"]] == [events[2].id]
+    descending = client.get(
+        f"/api/conversations/{cid}/events/search",
+        params={"limit": 2, "sort_order": "TIMESTAMP_DESC"},
+    ).json()
+    assert [item["id"] for item in descending["items"]] == [
+        events[2].id,
+        events[1].id,
+    ]
+    assert descending["next_page_id"] == events[0].id
+
+    assert client.get(f"/api/conversations/{cid}/events/count").json() == 3
+    assert (
+        client.get(f"/api/conversations/{cid}/events/{events[1].id}").json()["id"]
+        == events[1].id
+    )
+    assert registry.get(cid) is None
 
 
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/conversations/{cid}/events/search",
         "/api/bash/sessions?cid={cid}",
         "/api/conversations/{cid}/workspace/index.html",
     ],
 )
-def test_persisted_conversation_recovers_after_registry_restart(docker_app, path):
+def test_runtime_route_recovers_after_registry_restart(docker_app, path):
     client, app = docker_app
     registry = app.state.docker_registry
     cid = uuid4()
@@ -931,6 +990,24 @@ def test_selected_project_is_not_silently_replaced(docker_app, tmp_path):
     assert selected_file.read_text() == "selected project contents"
 
 
+def test_archived_event_history_remains_readable_without_runtime(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    events = _persist_history(registry, cid)
+    (registry.conversation_dir(cid) / "meta.json").write_text(
+        '{"archived_at":"2026-08-14T00:00:00+00:00"}'
+    )
+
+    response = client.get(f"/api/conversations/{cid}/events/search")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [
+        event.id for event in events
+    ]
+    assert registry.get(cid) is None
+
+
 @pytest.mark.skipif(
     os.environ.get("RUN_DOCKER_BOUNDARY_TESTS") != "1",
     reason="Requires an existing local agent-server Docker image",
@@ -1010,16 +1087,24 @@ def test_inner_key_cannot_authenticate_outer_api(docker_app_with_auth):
     assert response.status_code == 401
 
 
-def test_legacy_recovery_fails_without_deleting_state(docker_app):
+def test_event_history_survives_runtime_ownership_loss(docker_app):
     client, app = docker_app
+    registry = app.state.docker_registry
     cid = uuid4()
-    directory = app.state.docker_registry.conversation_dir(cid)
-    directory.mkdir(parents=True)
-    (directory / "meta.json").write_text("{}")
-    (directory / "base_state.json").write_text("{}")
+    events = _persist_history(registry, cid)
+    (registry.conversation_dir(cid) / "base_state.json").write_text("{}")
+
     response = client.get(f"/api/conversations/{cid}/events/search")
-    assert response.status_code == 409
-    assert (directory / "base_state.json").read_text() == "{}"
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [
+        event.id for event in events
+    ]
+    assert (
+        registry.runtime_info(cid).runtime_status
+        == ConversationRuntimeStatus.OWNERSHIP_LOST
+    )
+    assert registry.get(cid) is None
 
 
 def test_runtime_fork_is_explicitly_unsupported(docker_app):
