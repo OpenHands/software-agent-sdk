@@ -14,7 +14,7 @@ import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastmcp.client.auth import OAuth
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 
@@ -114,7 +114,13 @@ class RuntimeCredentialBroker:
                 ),
                 thread_local=False,
             )
-            await asyncio.to_thread(lock.acquire, timeout=30)
+            async with asyncio.timeout(30):
+                while True:
+                    try:
+                        lock.acquire(blocking=False)
+                        break
+                    except Timeout:
+                        await asyncio.sleep(0.05)
             try:
                 settings = await asyncio.to_thread(
                     get_settings_store(self.store.config).load
@@ -144,7 +150,7 @@ class RuntimeCredentialBroker:
                     raise HTTPException(409, "Selected MCP login is required")
                 return {"access_token": tokens.access_token}
             finally:
-                await asyncio.to_thread(lock.release)
+                lock.release()
 
         @self.app.get("/credential/{name}")
         async def load_credential(name: str, grants=Depends(authorize)):

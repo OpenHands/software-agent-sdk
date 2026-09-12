@@ -222,23 +222,24 @@ async def _bridge_websocket_loop(client_ws: WebSocket, upstream_ws) -> None:
         except websockets.exceptions.ConnectionClosed:
             return
 
-    task_a = asyncio.create_task(_client_to_upstream())
-    task_b = asyncio.create_task(_upstream_to_client())
-    _, pending = await asyncio.wait(
-        {task_a, task_b}, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in pending:
-        task.cancel()
-    for task in pending:
+    tasks = {
+        asyncio.create_task(_client_to_upstream()),
+        asyncio.create_task(_upstream_to_client()),
+    }
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-    try:
-        await upstream_ws.close()
-    except Exception:
-        pass
-    try:
-        await client_ws.close()
-    except Exception:
-        pass
+            await upstream_ws.close()
+        except Exception as exc:
+            logger.debug("Upstream WebSocket close failed (%s)", type(exc).__name__)
+        try:
+            await client_ws.close()
+        except Exception as exc:
+            logger.debug("Client WebSocket close failed (%s)", type(exc).__name__)

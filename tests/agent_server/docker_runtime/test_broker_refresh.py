@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -171,6 +172,7 @@ async def test_native_expired_access_refreshes_once_and_keeps_refresh_outer(
 async def test_selected_mcp_expired_access_refreshes_once_and_persists_outer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
     config = _config(tmp_path, monkeypatch)
     with OAuthRefreshServer(
         "/token",
