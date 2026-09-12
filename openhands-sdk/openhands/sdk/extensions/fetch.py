@@ -58,7 +58,13 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
     source = source.strip()
 
     # GitHub shorthand: github:owner/repo
-    if source.startswith("github:"):
+    # Match the scheme case-insensitively: mobile keyboards / browser
+    # autocapitalization often turn "github:" into "Github:" or "GitHub:", and a
+    # case-sensitive check would misclassify those as a local relative path
+    # (they contain "/" and no "://") and fail with a confusing
+    # "path does not exist" error. Only the scheme token is normalized; the
+    # owner/repo remainder is preserved verbatim (repo names are case-sensitive).
+    if source[:7].lower() == "github:":
         repo_path = source[7:]  # Remove "github:" prefix
         # Validate format
         if "/" not in repo_path or repo_path.count("/") > 1:
