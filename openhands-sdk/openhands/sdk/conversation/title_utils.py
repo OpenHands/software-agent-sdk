@@ -126,14 +126,7 @@ def generate_title_with_llm(
             ),
         ]
 
-        if llm.stream and not llm.requires_streaming:
-            llm = llm.model_copy(update={"stream": False})
-
-        response = (
-            llm.responses(messages, store=False)
-            if llm.uses_responses_api()
-            else llm.completion(messages)
-        )
+        response = llm.generate(messages, store=False)
 
         # Extract the title from the response
         if response.message.content and isinstance(
