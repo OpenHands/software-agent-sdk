@@ -226,10 +226,10 @@ class DockerConversationRegistry:
             async with self._lock:
                 if self._starts.get(conversation_id) is task:
                     self._starts.pop(conversation_id, None)
-                self._runtime_errors[conversation_id] = ConversationRuntimeError(
-                    code="runtime_start_failed",
-                    message=str(exc),
-                )
+                    self._runtime_errors[conversation_id] = ConversationRuntimeError(
+                        code="runtime_start_failed",
+                        message=str(exc),
+                    )
             raise
 
         async with self._lock:
@@ -255,6 +255,7 @@ class DockerConversationRegistry:
         async with self._lock:
             container = self._containers.pop(conversation_id, None)
             start_task = self._starts.pop(conversation_id, None)
+            self._runtime_errors.pop(conversation_id, None)
 
         stopped = False
         if container is not None:
@@ -284,6 +285,7 @@ class DockerConversationRegistry:
             start_tasks = list(self._starts.values())
             self._containers.clear()
             self._starts.clear()
+            self._runtime_errors.clear()
 
         for task in start_tasks:
             try:
