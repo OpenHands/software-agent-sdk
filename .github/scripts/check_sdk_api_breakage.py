@@ -89,12 +89,20 @@ class FieldDefaultChange:
 DEPRECATION_RUNWAY_MINOR_RELEASES = 5
 FIELD_DEFAULT_CHANGE_REPORT_ENV = "SDK_API_BREAKAGE_REPORT_PATH"
 
-_ACCEPTED_REMOVED_MEMBERS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("openhands.workspace", "DockerDevWorkspace.mount_dir"),
-        ("openhands.workspace", "DockerWorkspace.mount_dir"),
-    }
-)
+_ACCEPTED_REMOVED_MEMBERS: dict[tuple[str, str], str] = {
+    ("openhands.workspace", "DockerDevWorkspace.mount_dir"): (
+        "Maintainers explicitly accepted this long-deprecated API break in "
+        "PR #3822, and that PR is labeled release-note-required."
+    ),
+    ("openhands.workspace", "DockerWorkspace.mount_dir"): (
+        "Maintainers explicitly accepted this long-deprecated API break in "
+        "PR #3822, and that PR is labeled release-note-required."
+    ),
+    ("openhands.sdk", "LLM.modify_params"): (
+        "Removed upstream in PR #4954 after its v1.42.0 to v1.47.0 "
+        "deprecation runway; legacy persisted settings are migrated on load."
+    ),
+}
 
 
 def _is_accepted_removed_member(package: str, feature: str) -> bool:
@@ -787,9 +795,8 @@ def _collect_breakages_pairs(
                             if emit_diagnostics:
                                 print(
                                     f"::notice title={title}::Accepted removal of "
-                                    f"{feature}. Maintainers explicitly accepted "
-                                    "this long-deprecated API break in PR #3822, "
-                                    "and that PR is labeled release-note-required."
+                                    f"{feature}. "
+                                    f"{_ACCEPTED_REMOVED_MEMBERS[package, feature]}"
                                 )
                             continue
 

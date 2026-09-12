@@ -617,6 +617,37 @@ def test_accepted_docker_mount_dir_removal_is_not_breaking(tmp_path, capsys):
     assert "Accepted removal of DockerWorkspace.mount_dir" in captured.out
 
 
+def test_accepted_llm_modify_params_removal_is_exact(tmp_path, capsys):
+    assert _is_accepted_removed_member("openhands.sdk", "LLM.modify_params")
+    assert not _is_accepted_removed_member("openhands.sdk", "LLM.drop_params")
+    assert not _is_accepted_removed_member("openhands.workspace", "LLM.modify_params")
+    old_pkg = _write_pkg_init(tmp_path, "old", ["LLM"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["LLM"])
+    old_pkg.joinpath("__init__.py").write_text(
+        "from pydantic import BaseModel, Field\n"
+        "__all__ = ['LLM']\n"
+        "class LLM(BaseModel):\n"
+        "    modify_params: bool = Field(default=True)\n"
+        "    drop_params: bool = Field(default=True)\n"
+    )
+    new_pkg.joinpath("__init__.py").write_text(
+        "from pydantic import BaseModel\n"
+        "__all__ = ['LLM']\n"
+        "class LLM(BaseModel):\n"
+        "    pass\n"
+    )
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+    total_breaks, removal_policy_errors = _prod._compute_breakages(
+        old_root, new_root, _SDK_CFG, current_version="1.47.0"
+    )
+    assert total_breaks == 1
+    assert removal_policy_errors == 1
+    output = capsys.readouterr().out
+    assert "Accepted removal of LLM.modify_params" in output
+    assert "PR #4954" in output
+
+
 def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):
     """Unresolvable aliases should not abort checking other exports.
 
