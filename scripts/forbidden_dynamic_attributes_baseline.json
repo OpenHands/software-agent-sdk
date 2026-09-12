@@ -145,6 +145,11 @@
         "hash": "55198caa91bfc3d6c63e77b0b2ce1a357d4a41a68b3673bfe9b59bc698ee22e1"
     },
     {
+        "file": "openhands-sdk/openhands/sdk/agent/stream_context.py",
+        "name": "getattr",
+        "hash": "d517b5f01cd8a98ec89e65429494350bbf103ea35095199c407da51d6dd0015f"
+    },
+    {
         "file": "openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py",
         "name": "getattr",
         "hash": "29cef9dd20811ee57d215d6edfe0e0448fb82133020422ec0a680a0adb8e26ad"
@@ -422,7 +427,7 @@
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
-        "hash": "7e0a34e78ce4877def53523401778467dba57bac511e33b2618e7da6d422ea57"
+        "hash": "7c38993be1c26399b301217111b3d505d1de97fd330c44d3517c20df3adbaedd"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
@@ -433,6 +438,16 @@
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
         "hash": "7e0a34e78ce4877def53523401778467dba57bac511e33b2618e7da6d422ea57"
+    },
+    {
+        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
+        "name": "getattr",
+        "hash": "7e0a34e78ce4877def53523401778467dba57bac511e33b2618e7da6d422ea57"
+    },
+    {
+        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
+        "name": "getattr",
+        "hash": "8295b2169dbe0fab5fca6706ffd27f0b1591d595893e14529f91c829724a81a1"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
@@ -498,6 +513,11 @@
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
         "hash": "efd176e5ba2070d938707205cd15bfbf86d8379450bf993cdd0e0a6070af12a3"
+    },
+    {
+        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
+        "name": "getattr",
+        "hash": "f50c19bae854b0c27ae61a29d522a790e4a7e600c6b58719e73129e410f0f8e2"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
