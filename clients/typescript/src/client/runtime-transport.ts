@@ -3,6 +3,11 @@ import type { HttpResponse, RequestOptions } from './http-client';
 import { ServerConnection } from './server-connection';
 import type { ServerConnectionOptions } from './server-connection';
 
+export type RuntimeUrlParams = Record<
+  string,
+  string | number | boolean | Array<string | number | boolean> | null | undefined
+>;
+
 export interface RuntimeServiceOptions extends ServerConnectionOptions {
   conversationId?: string;
   connection?: ServerConnection;
@@ -41,11 +46,13 @@ export class RuntimeTransport extends HttpClient {
     return { ...options, params: { ...options.params, cid: this.conversationId } };
   }
 
-  override async request<T = unknown>(options: RequestOptions): Promise<HttpResponse<T>> {
+  override async request<T = HttpResponse['data']>(
+    options: RequestOptions
+  ): Promise<HttpResponse<T>> {
     return this.connection.request<T>(await this.scope(options));
   }
 
-  async url(path: string, params?: Record<string, unknown>): Promise<string> {
+  async url(path: string, params?: RuntimeUrlParams): Promise<string> {
     const scoped = await this.scope({ method: 'GET', url: path, params });
     return this.buildUrl(scoped.url, scoped.params).toString();
   }

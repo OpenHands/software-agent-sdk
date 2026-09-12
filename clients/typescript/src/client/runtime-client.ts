@@ -6,6 +6,7 @@ import { MCPClient } from './mcp-client';
 import { VSCodeClient } from './vscode-client';
 import { ServerConnection } from './server-connection';
 import type { ServerConnectionOptions } from './server-connection';
+import type { RuntimeUrlParams } from './runtime-transport';
 import { RuntimeTransport } from './runtime-transport';
 
 export interface RuntimeClientOptions extends ServerConnectionOptions {
@@ -46,7 +47,7 @@ export class RuntimeClient {
   }
 
   /** URL construction never includes the session API key. */
-  url(path: string, params?: Record<string, unknown>): Promise<string> {
+  url(path: string, params?: RuntimeUrlParams): Promise<string> {
     return this.transport.url(path, params);
   }
 
