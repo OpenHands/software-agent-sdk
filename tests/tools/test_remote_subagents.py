@@ -1,8 +1,7 @@
 """Task and Delegate behavior with independently owned remote workspaces."""
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
-from pathlib import Path
+from threading import Barrier, Event
 
 import httpx
 import pytest
@@ -20,7 +19,13 @@ from openhands.tools.task.manager import TaskManager, TaskStatus
 
 def test_remote_tasks_return_results_and_resume(remote_subagents):
     env = remote_subagents
-    manager = TaskManager(workspace_factory=env.factory)
+    barrier = Barrier(2, timeout=10)
+
+    def factory(child_id, agent_type):
+        barrier.wait()
+        return env.factory(child_id, agent_type)
+
+    manager = TaskManager(workspace_factory=factory)
     manager.attach_parent(env.parent)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -32,7 +37,9 @@ def test_remote_tasks_return_results_and_resume(remote_subagents):
             )
         assert isinstance(env.parent, LocalConversation)
         assert len(env.workspaces) == 2
-        for task, workspace in zip(tasks, env.workspaces):
+        for task in tasks:
+            workspace = task.remote_workspace
+            assert workspace is not None
             assert task.status == TaskStatus.COMPLETED
             assert task.result == f"Result {task.id}"
             assert isinstance(task.conversation, RemoteConversation)
@@ -47,7 +54,7 @@ def test_remote_tasks_return_results_and_resume(remote_subagents):
         resumed = manager.start_task("Follow up", resume=original.id)
         assert resumed.status == TaskStatus.COMPLETED
         assert resumed.conversation_id == original.conversation_id
-        assert resumed.conversation is not original.conversation
+        assert resumed.conversation is original.conversation
         assert len(env.workspaces) == 2
         assert len(env.servers[env.workspaces[0].host]["creates"]) == 1
     finally:
@@ -62,83 +69,57 @@ def test_remote_tasks_return_results_and_resume(remote_subagents):
         assert workspace._client is None
 
 
-def test_remote_task_manifest_reconnects_after_restart(remote_subagents):
+@pytest.mark.parametrize("close_during_setup", [False, True])
+def test_pending_workspace_ownership(remote_subagents, monkeypatch, close_during_setup):
     env = remote_subagents
-    first = TaskManager(workspace_factory=env.persistent_factory)
-    task = first.start_task("Initial task", "remote-worker", conversation=env.parent)
-    assert isinstance(task.conversation, RemoteConversation)
-    workspace = env.workspaces[0]
-    # Disconnect only the proxy, as happens when a client process goes away.
-    task.conversation.delete_on_close = False
-    task.conversation.close()
-    workspace.reset_client()
-    persistence_dir = Path(env.parent.state.persistence_dir).parent
-    env.parent.close()
-    parent = LocalConversation(
-        agent=env.parent.agent,
-        workspace=env.parent.state.workspace,
-        persistence_dir=persistence_dir,
-        conversation_id=env.parent.id,
-        visualizer=None,
-    )
-    restored = TaskManager(workspace_resolver=env.resolver)
-    restored.attach_parent(parent)
+    workspace = env.factory("worker", "remote-worker")
+    entered, release = Event(), Event()
+    original_enter = type(workspace).__enter__
+
+    def enter(workspace):
+        original_enter(workspace)
+        entered.set()
+        assert release.wait(10)
+        return workspace
+
+    monkeypatch.setattr(type(workspace), "__enter__", enter)
+    manager = TaskManager(workspace_factory=lambda child, kind: workspace)
+    manager.attach_parent(env.parent)
     try:
-        resumed = restored.start_task("Continue", resume=task.id)
-        assert resumed.status == TaskStatus.COMPLETED
-        assert resumed.conversation_id == task.conversation_id
-        assert resumed.remote_workspace is not workspace
-        assert resumed.workspace_reference == task.workspace_reference
-        assert env.resolutions == [task.workspace_reference]
-        assert resumed.remote_workspace is not None
-        assert resumed.remote_workspace.api_key == "fresh-credential-from-provider"
-        assert len(env.servers[workspace.host]["creates"]) == 1
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(manager.start_task, "Work", "remote-worker")
+            try:
+                assert entered.wait(10)
+                if close_during_setup:
+                    manager.close()
+                else:
+                    with pytest.raises(ValueError, match="distinct workspace"):
+                        manager.start_task("Duplicate", "remote-worker")
+                    assert env.lifecycle == [(workspace.host, "enter")]
+            finally:
+                release.set()
+            if close_during_setup:
+                with pytest.raises(RuntimeError, match="closed during task creation"):
+                    pending.result()
+            else:
+                assert pending.result().status == TaskStatus.COMPLETED
     finally:
-        restored.close()
-        parent.close()
+        manager.close()
+    assert [step for _, step in env.lifecycle] == ["enter", "delete", "exit"]
+    assert workspace._client is None
 
 
-@pytest.mark.parametrize("missing", ["identity", "sandbox"])
-def test_restart_never_uses_creation_factory_as_resolver(remote_subagents, missing):
+def test_missing_remote_task_never_creates_a_replacement(remote_subagents):
     env = remote_subagents
-    factory = env.factory if missing == "identity" else env.persistent_factory
-    first = TaskManager(workspace_factory=factory)
-    task = first.start_task("Work", "remote-worker", conversation=env.parent)
-    if task.workspace_reference is not None:
-        del env.resources[task.workspace_reference.workspace_id]
-    # A provisioning factory remains configured, but must never be used for resume.
-    restored = TaskManager(
-        workspace_factory=env.factory, workspace_resolver=env.resolver
-    )
-    try:
-        result = TaskExecutor(restored)(
-            TaskAction(prompt="Resume", resume=task.id), env.parent
-        )
-        assert result.is_error
-        assert (
-            "no persisted workspace identity" if missing == "identity" else "is gone"
-        ) in result.text
-        assert len(env.workspaces) == 1
-    finally:
-        restored.close()
-        first.close()
-
-
-@pytest.mark.parametrize("restart", [False, True])
-def test_missing_remote_task_never_creates_a_replacement(remote_subagents, restart):
-    env = remote_subagents
-    manager = TaskManager(workspace_factory=env.persistent_factory)
+    manager = TaskManager(workspace_factory=env.factory)
     task = manager.start_task("Initial", "remote-worker", conversation=env.parent)
     workspace = env.workspaces[0]
     server = env.servers[workspace.host]
     server["conversations"].clear()
-    if restart:
-        manager = TaskManager(workspace_resolver=env.resolver)
-        manager.attach_parent(env.parent)
     try:
         result = TaskExecutor(manager)(TaskAction(prompt="Resume", resume=task.id))
         assert result.is_error
-        assert "no longer exists" in result.text
+        assert "404" in result.text
         assert len(server["creates"]) == 1
     finally:
         manager.close()
@@ -264,34 +245,6 @@ def test_parent_tool_cleanup_releases_remote_children(remote_subagents):
         parent.close()
     assert env.lifecycle[-1][1] == "exit"
     assert not env.servers[env.workspaces[0].host]["conversations"]
-
-
-def test_reopened_parent_fails_cleanly_without_workspace_resolver(remote_subagents):
-    env = remote_subagents
-    manager = TaskManager(workspace_factory=env.persistent_factory)
-    task = manager.start_task("Work", "remote-worker", conversation=env.parent)
-    manager.close()
-    parent_id = env.parent.id
-    persistence_dir = Path(env.parent.state.persistence_dir).parent
-    env.parent.close()
-    with closing(
-        LocalConversation(
-            agent=env.parent.agent,
-            workspace=env.parent.state.workspace,
-            conversation_id=parent_id,
-            persistence_dir=persistence_dir,
-            visualizer=None,
-        )
-    ) as parent:
-        restored = TaskManager()
-        try:
-            result = TaskExecutor(restored)(
-                TaskAction(prompt="Resume", resume=task.id), parent
-            )
-            assert result.is_error
-            assert "requires a workspace_resolver" in result.text
-        finally:
-            restored.close()
 
 
 def test_reusing_a_workspace_is_rejected_without_closing_its_owner(remote_subagents):

@@ -183,7 +183,7 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
 
 
 @pytest.mark.parametrize("child_budget", [None, 0.5])
-def test_remote_subagent_budget_enforced_after_server_reload(
+def test_remote_subagent_budget_enforced_on_resume(
     server_env, monkeypatch, tmp_path, child_budget
 ):
     calls = []
@@ -241,10 +241,6 @@ def test_remote_subagent_budget_enforced_after_server_reload(
             for event in task.conversation.state.events
         )
 
-        task.conversation.delete_on_close = False
-        task.conversation.close()
-        response = workspace.client.post("/api/conversations/prepare-for-sandbox-pause")
-        response.raise_for_status()
         resumed = manager.start_task("Continue", resume=task.id)
         assert resumed.status == TaskStatus.ERROR
         assert isinstance(resumed.conversation, RemoteConversation)
@@ -260,6 +256,48 @@ def test_remote_subagent_budget_enforced_after_server_reload(
             )
             == 2
         )
+    finally:
+        manager.close()
+        parent.close()
+        _reset_registry_for_tests()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_subagent_workspace_factory_returns_result(
+    server_env, patched_llm, tmp_path, remote
+):
+    name = "live-remote-worker"
+    register_agent(
+        name,
+        lambda llm: Agent(llm=llm, tools=[]),
+        AgentDefinition(name=name, description="Worker"),
+    )
+    parent = LocalConversation(
+        agent=Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[]),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+    manager = TaskManager(
+        workspace_factory=lambda child, kind: RemoteWorkspace(
+            host=server_env["host"], working_dir=str(server_env["workspace_path"])
+        )
+        if remote
+        else None
+    )
+    try:
+        task = manager.start_task("Say hello", name, conversation=parent)
+        assert task.status == TaskStatus.COMPLETED
+        assert task.result == "Hello from patched LLM"
+        assert isinstance(
+            task.conversation, RemoteConversation if remote else LocalConversation
+        )
+        if remote:
+            assert task.conversation.workspace is not parent.workspace
+        resumed = manager.start_task("Say hello again", name, resume=task.id)
+        assert resumed.result == "Hello from patched LLM"
+        if remote:
+            assert resumed.conversation is task.conversation
+        assert len(patched_llm) == 2
     finally:
         manager.close()
         parent.close()

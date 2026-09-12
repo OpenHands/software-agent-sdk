@@ -728,7 +728,6 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
-        require_existing: bool = False,
         max_budget_per_run: float | None = None,
         **_: object,
     ) -> None:
@@ -740,8 +739,6 @@ class RemoteConversation(BaseConversation):
             plugins: Optional list of plugins to load on the server. Each plugin
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
-            require_existing: Fail if conversation_id is missing or the conversation
-                      no longer exists, instead of creating a new conversation.
             max_budget_per_run: Maximum LLM cost in USD per run. On attach, a supplied
                       budget must match the server's persisted budget.
             callbacks: Optional callbacks to receive events (not yet streamed)
@@ -772,8 +769,6 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
-        if require_existing and conversation_id is None:
-            raise ValueError("require_existing needs a conversation_id")
         if max_budget_per_run is not None and (
             not math.isfinite(max_budget_per_run) or max_budget_per_run <= 0
         ):
@@ -797,11 +792,6 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
-                if require_existing:
-                    raise ValueError(
-                        f"Remote conversation '{conversation_id}' no longer exists; "
-                        "cannot resume the subagent in its original workspace."
-                    )
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
