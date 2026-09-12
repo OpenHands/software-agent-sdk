@@ -42,13 +42,15 @@ class AgentServerClient:
         self.host = host.rstrip("/")
         self._api_key = api_key
         self._owns_client = http_client is None
-        self._http = http_client or httpx.Client(timeout=90)
+        self._http = http_client
 
     def close(self) -> None:
-        if self._owns_client:
+        if self._owns_client and self._http is not None:
             self._http.close()
 
     def _send(self, operation: routes.Operation) -> JSON:
+        if self._http is None:
+            self._http = httpx.Client(timeout=90)
         response = self._http.request(
             operation.method,
             self.host + operation.path,
@@ -152,13 +154,15 @@ class AsyncAgentServerClient:
         self.host = host.rstrip("/")
         self._api_key = api_key
         self._owns_client = http_client is None
-        self._http = http_client or httpx.AsyncClient(timeout=90)
+        self._http = http_client
 
     async def aclose(self) -> None:
-        if self._owns_client:
+        if self._owns_client and self._http is not None:
             await self._http.aclose()
 
     async def _send(self, operation: routes.Operation) -> JSON:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=90)
         response = await self._http.request(
             operation.method,
             self.host + operation.path,
