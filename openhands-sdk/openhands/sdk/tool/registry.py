@@ -30,6 +30,7 @@ Returns: A sequence of ToolDefinition instances. Most of the time this will be a
 
 _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
+_FACTORY_REG: dict[str, ToolDefinition | type[ToolDefinition]] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 
@@ -141,9 +142,17 @@ def register_tool(
         if name in _REG:
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
+        _FACTORY_REG[name] = factory
         _USABILITY_REG[name] = usability_checker
         if module_qualname:
             _MODULE_QUALNAMES[name] = module_qualname
+
+
+def get_registered_tool_factory(
+    name: str,
+) -> ToolDefinition | type[ToolDefinition] | None:
+    with _LOCK:
+        return _FACTORY_REG.get(name)
 
 
 def resolve_tool(

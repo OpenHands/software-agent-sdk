@@ -173,6 +173,7 @@ RUN set -eux; \
 # Suitable for running in headless/evaluation mode.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
+USER root
 ARG USERNAME UID GID PORT
 
 

@@ -837,8 +837,12 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
+        executor = conv_state.workspace.create_tool_executor("browser_navigate")
         try:
-            executor = cls._get_or_create_shared_executor(conv_state, **executor_config)
+            if executor is None:
+                executor = cls._get_or_create_shared_executor(
+                    conv_state, **executor_config
+                )
         except Exception:
             # A browser that cannot start must not fail the whole conversation;
             # the agent keeps working with its remaining tools.
@@ -867,7 +871,15 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserStartRecordingTool,
             BrowserStopRecordingTool,
         ]:
-            tools.extend(tool_class.create(executor))
+            for tool in tool_class.create(executor):
+                workspace_executor = conv_state.workspace.create_tool_executor(
+                    tool.name
+                )
+                tools.append(
+                    tool.set_executor(workspace_executor)
+                    if workspace_executor is not None
+                    else tool
+                )
         return tools
 
 

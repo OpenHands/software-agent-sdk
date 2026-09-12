@@ -412,7 +412,9 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
                          If provided, save_dir will be taken from
                          conv_state.persistence_dir
         """
-        executor = TaskTrackerExecutor(save_dir=conv_state.persistence_dir)
+        executor = conv_state.workspace.create_tool_executor(cls.name)
+        if executor is None:
+            executor = TaskTrackerExecutor(save_dir=conv_state.persistence_dir)
 
         # Initialize the parent Tool with the executor
         return [

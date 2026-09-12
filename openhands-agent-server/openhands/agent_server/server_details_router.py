@@ -4,7 +4,7 @@ import sys
 import time
 from importlib.metadata import version
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
 from openhands.sdk.tool.registry import list_usable_tools
@@ -53,6 +53,7 @@ class ServerInfo(BaseModel):
     build_git_ref: str = Field(
         default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
     )
+    execution_runtime: str = "local"
     python_version: str = Field(default_factory=lambda: sys.version)
     usable_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
     runtime_idle_timeout_seconds: float | None = Field(
@@ -115,9 +116,10 @@ async def ready(response: Response) -> dict[str, str]:
 
 
 @server_details_router.get("/server_info")
-async def get_server_info() -> ServerInfo:
+async def get_server_info(request: Request) -> ServerInfo:
     now = time.time()
     return ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
+        execution_runtime=request.app.state.config.execution_runtime,
     )

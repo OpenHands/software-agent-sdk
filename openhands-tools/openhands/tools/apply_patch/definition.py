@@ -137,7 +137,11 @@ class ApplyPatchTool(ToolDefinition[ApplyPatchAction, ApplyPatchObservation]):
     @classmethod
     def create(cls, conv_state: ConversationState) -> Sequence[ApplyPatchTool]:
         """Initialize the tool for the active conversation state."""
-        executor = ApplyPatchExecutor(workspace_root=conv_state.workspace.working_dir)
+        executor = conv_state.workspace.create_tool_executor(cls.name)
+        if not isinstance(executor, ToolExecutor):
+            executor = ApplyPatchExecutor(
+                workspace_root=conv_state.workspace.working_dir
+            )
         return [
             cls(
                 description=_DESCRIPTION,
