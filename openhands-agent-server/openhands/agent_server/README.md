@@ -12,6 +12,17 @@ The OpenHands Agent Server is a minimal REST API and WebSocket server that provi
 - **Webhooks**: Configurable webhook notifications for events
 - **Auto-reload**: Development mode with automatic code reloading
 
+
+## Conversation lifecycle
+
+Conversation metadata separates retained history from runtime availability:
+
+- `runtime_status` reports whether execution infrastructure is available; it does not imply archive state.
+- `POST /api/conversations/{id}/archive` sets `archived_at`, hides the conversation from the default search, and stops only runtime infrastructure owned by this server. It preserves history and workspace files.
+- `POST /api/conversations/{id}/unarchive` clears `archived_at` without provisioning infrastructure or starting agent execution.
+- `GET /api/conversations/search?archived=true` returns archived conversations; the default `archived=false` returns active conversations.
+- `DELETE /api/conversations/{id}` permanently removes the conversation rather than retaining it as archived.
+
 ## Quick Start
 
 ### Prerequisites

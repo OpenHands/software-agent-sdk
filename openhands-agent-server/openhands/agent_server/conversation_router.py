@@ -121,12 +121,15 @@ async def search_conversations(
         ConversationSortOrder,
         Query(title="Sort order for conversations"),
     ] = ConversationSortOrder.CREATED_AT_DESC,
+    archived: Annotated[
+        bool, Query(title="Return archived rather than active conversations")
+    ] = False,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationPage:
     """Search / List conversations"""
     page = await conversation_service.search_conversations(
-        page_id, limit, status, sort_order
+        page_id, limit, status, sort_order, archived
     )
     if not include_skills:
         # ``model_copy`` rather than in-place mutation so we never
@@ -205,6 +208,36 @@ async def reprovision_local_conversation_runtime(
     return await get_local_conversation_runtime(
         conversation_id, request, conversation_service
     )
+
+
+@conversation_router.post("/{conversation_id}/archive")
+async def archive_conversation(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Archive retained history and stop only its currently owned runtime."""
+    conversation = await conversation_service.set_conversation_archived(
+        conversation_id, archived=True
+    )
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return _with_runtime_info(request, conversation)
+
+
+@conversation_router.post("/{conversation_id}/unarchive")
+async def unarchive_conversation(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Restore catalog visibility without provisioning or starting execution."""
+    conversation = await conversation_service.set_conversation_archived(
+        conversation_id, archived=False
+    )
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return _with_runtime_info(request, conversation)
 
 
 @conversation_router.get(

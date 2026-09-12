@@ -28,6 +28,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import (
+    ConversationInfo,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     UpdateSecretsRequest,
@@ -47,11 +48,22 @@ def get_registry(request: Request) -> DockerConversationRegistry:
     return registry
 
 
+def _is_archived(registry: DockerConversationRegistry, conversation_id: UUID) -> bool:
+    metadata_path = registry.conversation_dir(conversation_id) / "meta.json"
+    if not metadata_path.is_file():
+        return False
+    return json.loads(metadata_path.read_text()).get("archived_at") is not None
+
+
 async def _container(
     registry: DockerConversationRegistry, conversation_id: UUID
 ) -> ConversationContainer:
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise HTTPException(404, "Conversation not found")
+    if _is_archived(registry, conversation_id):
+        raise HTTPException(
+            409, "Conversation is archived; unarchive it before using its runtime"
+        )
     try:
         return await registry.get_or_create(conversation_id)
     except Exception as exc:
@@ -195,6 +207,40 @@ async def reprovision_runtime(
     return ConversationRuntimeInfo(
         runtime_status=ConversationRuntimeStatus.AVAILABLE, can_resume=True
     )
+
+
+async def _set_archive_state(
+    conversation_id: UUID, request: Request, *, archived: bool
+) -> ConversationInfo:
+    registry = get_registry(request)
+    conversation = await get_conversation_service(request).set_conversation_archived(
+        conversation_id, archived=archived
+    )
+    if conversation is None:
+        raise HTTPException(404, "Conversation not found")
+    if archived:
+        await registry.stop(conversation_id)
+    return conversation.model_copy(
+        update={"runtime_info": registry.runtime_info(conversation_id)}
+    )
+
+
+@docker_conversation_router.post(
+    "/{conversation_id}/archive", response_model=ConversationInfo
+)
+async def archive_conversation(
+    conversation_id: UUID, request: Request
+) -> ConversationInfo:
+    return await _set_archive_state(conversation_id, request, archived=True)
+
+
+@docker_conversation_router.post(
+    "/{conversation_id}/unarchive", response_model=ConversationInfo
+)
+async def unarchive_conversation(
+    conversation_id: UUID, request: Request
+) -> ConversationInfo:
+    return await _set_archive_state(conversation_id, request, archived=False)
 
 
 @docker_conversation_router.delete("/{conversation_id}")
