@@ -23,6 +23,7 @@ import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 export interface RemoteWorkspaceOptions extends BaseWorkspaceOptions {
   /** The remote host URL for the workspace (e.g., 'http://localhost:8000') */
   host: string;
+  conversationId?: string;
   /** API key for authenticating with the remote host (optional) */
   apiKey?: string;
 }
@@ -48,12 +49,14 @@ export class RemoteWorkspace implements IWorkspace {
 
     this.client = new HttpClient({
       baseUrl: this.host,
+      conversationId: options.conversationId,
       apiKey: this.apiKey,
       timeout: 60000,
     });
 
     this.bash = new BashClient({
       host: this.host,
+      conversationId: options.conversationId,
       ...(this.apiKey ? { apiKey: this.apiKey } : {}),
     });
   }

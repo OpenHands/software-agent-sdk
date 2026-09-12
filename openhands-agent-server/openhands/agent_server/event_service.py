@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLease,
@@ -130,6 +131,7 @@ class EventService:
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
         default_factory=dict
     )
+    bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
@@ -1771,6 +1773,8 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 
     async def close(self):
+        if self.bash_event_service is not None:
+            await self.bash_event_service.close()
         self._closing = True
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False

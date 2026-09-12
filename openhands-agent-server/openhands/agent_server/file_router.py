@@ -63,6 +63,7 @@ class HomeResponse(BaseModel):
 
 logger = get_logger(__name__)
 file_router = APIRouter(prefix="/file", tags=["Files"])
+file_discovery_router = APIRouter(prefix="/file", tags=["Files"])
 
 
 async def _upload_file(path: str, file: UploadFile) -> Success:
@@ -757,7 +758,7 @@ def _list_root_locations() -> list[FileBrowserEntry]:
     return [FileBrowserEntry(label="/", path="/")]
 
 
-@file_router.get("/home")
+@file_discovery_router.get("/home")
 async def get_home_directory(
     include_hidden: Annotated[
         bool,
@@ -780,7 +781,7 @@ async def get_home_directory(
     )
 
 
-@file_router.get("/search_subdirs")
+@file_discovery_router.get("/search_subdirs")
 async def search_subdirs(
     path: Annotated[
         str,

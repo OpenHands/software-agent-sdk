@@ -74,6 +74,9 @@ export interface ServerInfo {
   build_git_sha?: string;
   build_git_date?: string;
   build_semver?: string;
+  capabilities?: string[];
+  conversation_runtime?: 'local' | 'docker';
+  workspace_mode?: 'host' | 'isolated';
   [key: string]: unknown;
 }
 

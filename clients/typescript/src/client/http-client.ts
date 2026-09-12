@@ -4,6 +4,7 @@
 
 export interface HttpClientOptions {
   baseUrl: string;
+  conversationId?: string;
   apiKey?: string;
   timeout?: number;
 }
@@ -48,14 +49,23 @@ export class HttpError extends Error {
 }
 
 export class HttpClient {
+  private conversationId?: string;
   private baseUrl: string;
   private apiKey?: string;
   private timeout: number;
+  private runtimeRoutes?: Promise<boolean>;
 
   constructor(options: HttpClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.apiKey = options.apiKey;
+    this.conversationId = options.conversationId;
     this.timeout = options.timeout || 60000;
+  }
+
+  private isRuntimePath(path: string): boolean {
+    if (path === '/api/mcp/test') return true;
+    if (path === '/api/file/home' || path === '/api/file/search_subdirs') return false;
+    return /^\/api\/(bash|file|git|desktop|vscode)(\/|$)/.test(path);
   }
 
   private buildUrl(path: string, params?: Record<string, unknown>): URL {
@@ -74,10 +84,29 @@ export class HttpClient {
       });
     }
 
+    if (this.conversationId && this.isRuntimePath(path) && !url.searchParams.has('cid')) {
+      url.searchParams.set('cid', this.conversationId);
+    }
     return url;
   }
 
   async request<T = unknown>(options: RequestOptions): Promise<HttpResponse<T>> {
+    if (this.conversationId && this.isRuntimePath(options.url)) {
+      this.runtimeRoutes ??= this.get<{ capabilities?: string[] }>('/server_info')
+        .then(({ data }) => data.capabilities?.includes('conversation_runtime_routes_v1') ?? false)
+        .catch((error: unknown) => {
+          if (error instanceof HttpError && error.status === 404) return false;
+          this.runtimeRoutes = undefined;
+          throw error;
+        });
+      if (await this.runtimeRoutes) {
+        options = {
+          ...options,
+          url: `/api/conversations/${encodeURIComponent(String(options.params?.cid ?? this.conversationId))}${options.url.slice(4)}`,
+          params: { ...options.params, cid: undefined },
+        };
+      }
+    }
     // `fetch` (and browsers) reject a body on a GET request, but a few
     // agent-server batch endpoints (e.g. `GET /api/bash/bash_events/` and
     // `GET /api/conversations/{id}/events`) are declared as GET-with-required-body.

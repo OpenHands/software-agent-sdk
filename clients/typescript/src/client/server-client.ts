@@ -9,6 +9,7 @@ export interface ServerClientOptions {
 }
 
 export class ServerClient {
+  public static readonly supportsConversationRuntimeRoutes = true;
   public readonly host: string;
   public readonly apiKey?: string;
   private readonly client: HttpClient;

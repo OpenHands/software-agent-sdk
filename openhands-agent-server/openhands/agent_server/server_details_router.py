@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from importlib.metadata import version
+from typing import Literal
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
@@ -58,8 +59,11 @@ class ServerInfo(BaseModel):
     runtime_idle_timeout_seconds: float | None = Field(
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
+    conversation_runtime: Literal["local", "docker"] = "local"
+    workspace_mode: Literal["host", "isolated"] = "host"
     capabilities: list[str] = Field(
         default_factory=lambda: [
+            "conversation_runtime_routes_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
