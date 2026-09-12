@@ -103,6 +103,12 @@ def test_invalid_scope_is_rejected_before_network(value):
     try:
         with pytest.raises(ValueError):
             client.get_conversation(value)
+        with pytest.raises(ValueError):
+            client.runtime(value)
+        with pytest.raises(ValueError):
+            AsyncAgentServerClient("https://server", "key").runtime_for_api_prefix(
+                "/api/conversations/" + value
+            )
     finally:
         client.close()
 

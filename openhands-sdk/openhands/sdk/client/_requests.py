@@ -75,7 +75,9 @@ class RuntimeRequests:
     def __init__(self, conversation_id: str | None):
         # None is the explicit legacy host runtime, not an automatic fallback.
         self.api_prefix = (
-            conversation_path(conversation_id) if conversation_id else "/api"
+            conversation_path(conversation_id)
+            if conversation_id is not None
+            else "/api"
         )
 
     @classmethod
