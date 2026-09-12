@@ -24,6 +24,7 @@ from openhands.agent_server.persistence import (
     get_secrets_store,
     get_settings_store,
 )
+from openhands.agent_server.profile_secrets import select_profile_secrets
 from openhands.sdk import LLM
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
@@ -130,14 +131,22 @@ async def materialize_start(
     settings = await asyncio.to_thread(get_settings_store(config).load)
     if request.agent_profile_id is not None:
         mcp_config = settings.agent_settings.mcp_config if settings is not None else {}
-        agent, launched = await asyncio.to_thread(
+        agent, launched, allowed_secrets = await asyncio.to_thread(
             _resolve_agent_from_profile,
             request.agent_profile_id,
             config.cipher,
             mcp_config,
             acp_skill_sourcing="openhands_managed",
         )
-        request = request.model_copy(update={"agent": agent, "agent_profile_id": None})
+        selected = await asyncio.to_thread(
+            select_profile_secrets,
+            request.secrets,
+            allowed_secrets,
+            get_secrets_store(config),
+        )
+        request = request.model_copy(
+            update={"agent": agent, "agent_profile_id": None, "secrets": selected}
+        )
     if (
         settings is not None
         and settings.agent_settings.agent_context is not None
