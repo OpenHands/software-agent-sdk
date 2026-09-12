@@ -594,13 +594,14 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
     from openhands.sdk.workspace import LocalWorkspace
 
     assert "confirmation_mode" not in StoredConversation.model_fields
-    assert "confirmation_policy" in StoredConversation.model_fields
+    # confirmation_policy is now an init-only field on EventService /
+    # StartConversationRequest, not stored in StoredConversation / meta.json.
+    assert "confirmation_policy" not in StoredConversation.model_fields
 
     agent = Agent(llm=LLM(model="anthropic/claude-sonnet-5", usage_id="t"), tools=[])
     stored = StoredConversation(
         id=_uuid.uuid4(),
         workspace=LocalWorkspace(working_dir="/Users/alice/secret-project"),
-        confirmation_policy=AlwaysConfirm(),
         user_id="canvas-user-42",
     )
     ctx = _build_telemetry_context(
@@ -610,6 +611,7 @@ def test_confirmation_policy_is_read_from_the_field_that_exists():
             salt="s",
         ),
         agent=agent,
+        confirmation_policy=AlwaysConfirm(),
     )
 
     from dataclasses import asdict

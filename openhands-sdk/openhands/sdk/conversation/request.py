@@ -91,15 +91,19 @@ class AgentLaunchAdditions(BaseModel):
 
 
 class ConversationConfig(BaseModel):
-    """Shared conversation configuration — everything except the agent.
+    """Shared conversation configuration.
+
+    Covers everything except the agent and init-only fields.
 
     This is the common base for :class:`StartConversationRequest` (which adds the
-    ``agent``/``agent_settings``/``agent_profile_id`` family) and the
-    agent-server's ``StoredConversation`` (which does NOT persist the agent —
-    the agent's single source of truth is ``ConversationState`` /
-    ``base_state.json``). Keeping the agent off this base is what makes the
-    duplication structurally impossible rather than something a reviewer has to
-    remember to exclude.
+    ``agent``/``agent_settings``/``agent_profile_id`` family and init-only fields
+    such as ``confirmation_policy``, ``security_analyzer``, and ``secrets``) and
+    the agent-server's ``StoredConversation`` (which persists only what is needed
+    for listing and resuming conversations — NOT the agent, confirmation policy,
+    security analyzer, or secrets, all of which are owned exclusively by
+    ``ConversationState`` / ``base_state.json`` after the conversation is created).
+    Keeping these off this base makes the duplication structurally impossible rather
+    than something a reviewer has to remember to exclude.
     """
 
     workspace: LocalWorkspace = Field(
@@ -128,15 +132,6 @@ class ConversationConfig(BaseModel):
             "parent must already exist and share this conversation's workspace."
         ),
     )
-    confirmation_policy: ConfirmationPolicyBase = Field(
-        default=NeverConfirm(),
-        description="Controls when the conversation will prompt the user before "
-        "continuing. Defaults to never.",
-    )
-    security_analyzer: SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-    )
     initial_message: SendMessageRequest | None = Field(
         default=None, description="Initial message to pass to the LLM"
     )
@@ -150,23 +145,6 @@ class ConversationConfig(BaseModel):
         default=True,
         description="If true, the conversation will use stuck detection to "
         "prevent infinite loops.",
-    )
-    secrets: dict[str, SecretSource] = Field(
-        default_factory=dict,
-        description="Secrets available in the conversation",
-    )
-    secrets_encrypted: bool = Field(
-        default=False,
-        description=(
-            "If true, indicates that secret values in the agent configuration "
-            "are cipher-encrypted and should be decrypted by the server before "
-            "use. This enables secure round-tripping of settings through "
-            "untrusted clients (e.g., frontend) that received encrypted values "
-            "via the X-Expose-Secrets header. "
-            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
-            "to receive cipher-encrypted secrets, then passes them in the agent "
-            "config with secrets_encrypted=True so the server can decrypt them."
-        ),
     )
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,
@@ -282,18 +260,48 @@ class ConversationConfig(BaseModel):
 class StartConversationRequest(ConversationConfig):
     """Payload to create a new conversation.
 
-    Extends :class:`ConversationConfig` with the agent specification. Supports
-    any concrete :class:`AgentBase` implementation, including regular OpenHands
-    agents and ACP agents. Clients may provide either a concrete ``agent``
-    payload or an ``agent_settings`` payload; when ``agent_settings`` is provided
-    without ``agent``, the settings are validated with the ``agent_kind``
-    discriminator and converted to the appropriate agent type.
+    Extends :class:`ConversationConfig` with the agent specification and
+    init-only fields whose post-creation source of truth is ``ConversationState``
+    / ``base_state.json``.  These fields live here (not on ``ConversationConfig``)
+    so the persisted record (``StoredConversation``) cannot carry them by
+    construction — avoiding the two-source-of-truth problem that existed before.
 
-    Note: the agent lives here on the *request*, deliberately not on
-    ``ConversationConfig``. The persisted record (``StoredConversation``) does
-    not carry the agent — its single source of truth is ``ConversationState`` /
-    ``base_state.json``.
+    Supports any concrete :class:`AgentBase` implementation, including regular
+    OpenHands agents and ACP agents.  Clients may supply a concrete ``agent``
+    payload, an ``agent_settings`` payload (validated with the ``agent_kind``
+    discriminator and converted to the appropriate agent type), or an
+    ``agent_profile_id`` (resolved server-side from the profile store).
     """
+
+    # Init-only fields: seeded into ConversationState on first start and never
+    # written to meta.json.  Mutations after creation go to ConversationState
+    # directly (autosaved to base_state.json) so they survive eviction/restart.
+    confirmation_policy: ConfirmationPolicyBase = Field(
+        default=NeverConfirm(),
+        description="Controls when the conversation will prompt the user before "
+        "continuing. Defaults to never.",
+    )
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None,
+        description="Optional security analyzer to evaluate action risks.",
+    )
+    secrets: dict[str, SecretSource] = Field(
+        default_factory=dict,
+        description="Secrets available in the conversation",
+    )
+    secrets_encrypted: bool = Field(
+        default=False,
+        description=(
+            "If true, indicates that secret values in the agent configuration "
+            "are cipher-encrypted and should be decrypted by the server before "
+            "use. This enables secure round-tripping of settings through "
+            "untrusted clients (e.g., frontend) that received encrypted values "
+            "via the X-Expose-Secrets header. "
+            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
+            "to receive cipher-encrypted secrets, then passes them in the agent "
+            "config with secrets_encrypted=True so the server can decrypt them."
+        ),
+    )
 
     agent_settings: dict[str, Any] | None = Field(
         default=None,

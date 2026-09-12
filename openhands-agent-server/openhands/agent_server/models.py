@@ -78,11 +78,12 @@ class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 
     Extends :class:`ConversationConfig` (the agent-less shared config) with
-    server-assigned fields. It deliberately does NOT carry the ``agent``: the
-    single source of truth for the agent / runtime state is
-    ``ConversationState`` persisted to ``base_state.json``. Because
-    ``StoredConversation`` is not a ``StartConversationRequest``, the agent
-    cannot silently re-appear in ``meta.json``.
+    server-assigned fields. It deliberately does NOT carry the ``agent``,
+    ``confirmation_policy``, ``security_analyzer``, or ``secrets``: these are
+    init-only fields on :class:`StartConversationRequest` whose post-creation
+    source of truth is ``ConversationState`` / ``base_state.json``. Because
+    ``StoredConversation`` does not extend ``StartConversationRequest``, none of
+    these can silently appear in ``meta.json`` by construction.
     """
 
     required_runtime_credential_bindings: set[str] = Field(default_factory=set)
