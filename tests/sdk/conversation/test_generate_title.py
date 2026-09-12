@@ -1,5 +1,9 @@
 """Tests for the generate_title method in Conversation class."""
 
+import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +17,8 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.title_utils import generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
+from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
+from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 
 
 def create_test_agent() -> Agent:
@@ -287,3 +293,138 @@ def test_generate_title_disables_streaming_when_llm_streams(mock_transport):
     assert mock_transport.call_args.kwargs["enable_streaming"] is False
     assert mock_transport.call_args.kwargs["on_token"] is None
     assert streaming_llm.stream is True
+
+
+@pytest.fixture
+def title_http_server():
+    requests = []
+    title = "Fix title transport"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            if self.path == "/v1/responses":
+                response = {
+                    "id": "resp_title",
+                    "object": "response",
+                    "created_at": 1,
+                    "status": "completed",
+                    "model": "gpt-5.6-luna",
+                    "output": [
+                        {
+                            "id": "msg_title",
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": title,
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 4,
+                        "total_tokens": 14,
+                    },
+                }
+                if body.get("stream"):
+                    payload = (
+                        "event: response.completed\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "response.completed",
+                                "sequence_number": 1,
+                                "response": response,
+                            }
+                        )
+                        + "\n\n"
+                    ).encode()
+                    content_type = "text/event-stream"
+                else:
+                    payload = json.dumps(response).encode()
+                    content_type = "application/json"
+            else:
+                payload = json.dumps(
+                    {
+                        "id": "chat_title",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": title},
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 4,
+                            "total_tokens": 14,
+                        },
+                    }
+                ).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("mode", ["chat", "responses", "subscription"])
+def test_title_uses_real_http_transport(title_http_server, tmp_path, mode):
+    base_url, requests = title_http_server
+    if mode == "subscription":
+        auth = OpenAISubscriptionAuth(
+            credential_store=CredentialStore(tmp_path / "auth")
+        )
+        llm = auth.create_llm(
+            model="gpt-5.6-luna",
+            credentials=OAuthCredentials(
+                vendor="openai",
+                access_token="local-test-token",
+                refresh_token="unused-test-token",
+                expires_at=int(time.time() * 1000) + 3600000,
+            ),
+        )
+        llm = llm.model_copy(update={"base_url": base_url, "num_retries": 0})
+    else:
+        llm = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("local-test-key"),
+            base_url=base_url,
+            api_mode=mode,
+            stream=True,
+            num_retries=0,
+        )
+    errors = []
+    assert (
+        generate_title_with_llm("Fix the title", llm, on_error=errors.append)
+        == "Fix title transport"
+    )
+    assert not errors
+    assert len(requests) == 1
+    path, body = requests[0]
+    assert path == ("/v1/chat/completions" if mode == "chat" else "/v1/responses")
+    assert bool(body.get("stream")) == (mode == "subscription")
+    if mode != "chat":
+        assert body["store"] is False
