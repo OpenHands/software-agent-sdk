@@ -14,6 +14,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RunningConversationContainer,
 )
+from openhands.agent_server.models import ConversationRuntimeStatus
 
 
 def _container(conversation_id: UUID) -> RunningConversationContainer:
@@ -23,6 +24,66 @@ def _container(conversation_id: UUID) -> RunningConversationContainer:
         container_id=f"container-{conversation_id}",
         image="test-image",
     )
+
+
+def _persisted_conversation(registry: DockerConversationRegistry, cid: UUID) -> None:
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+
+def test_runtime_info_does_not_provision_missing_runtime(tmp_path):
+    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    cid = uuid4()
+    _persisted_conversation(registry, cid)
+
+    info = registry.runtime_info(cid)
+
+    assert info.runtime_status == ConversationRuntimeStatus.MISSING
+    assert info.can_resume is True
+    assert registry.get(cid) is None
+
+
+def test_runtime_info_distinguishes_available_and_ownership_lost(tmp_path):
+    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    available = uuid4()
+    _persisted_conversation(registry, available)
+    registry._containers[available] = _container(available)
+    assert (
+        registry.runtime_info(available).runtime_status
+        == ConversationRuntimeStatus.AVAILABLE
+    )
+
+    ownership_lost = uuid4()
+    directory = registry.conversation_dir(ownership_lost)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+    info = registry.runtime_info(ownership_lost)
+    assert info.runtime_status == ConversationRuntimeStatus.OWNERSHIP_LOST
+    assert info.can_resume is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_info_retains_start_failure(tmp_path):
+    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    cid = uuid4()
+    _persisted_conversation(registry, cid)
+
+    def fail(conversation_id: UUID) -> RunningConversationContainer:
+        raise RuntimeError(f"container failed: {conversation_id}")
+
+    registry._build_container = fail
+    with pytest.raises(RuntimeError, match="container failed"):
+        await registry.get_or_create(cid)
+
+    info = registry.runtime_info(cid)
+    assert info.runtime_status == ConversationRuntimeStatus.ERROR
+    assert info.can_resume is True
+    assert info.runtime_error is not None
+    assert info.runtime_error.code == "runtime_start_failed"
 
 
 @pytest.mark.asyncio

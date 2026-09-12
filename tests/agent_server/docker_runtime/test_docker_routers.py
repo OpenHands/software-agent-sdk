@@ -30,6 +30,10 @@ from starlette.responses import JSONResponse
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.models import (
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +217,22 @@ class _StubRegistry:
     def get(self, cid: UUID) -> _FakeWorkspace | None:
         return self._workspaces.get(cid)
 
+    def runtime_info(self, cid: UUID) -> ConversationRuntimeInfo:
+        directory = self.conversation_dir(cid)
+        can_resume = (
+            (directory / "meta.json").is_file()
+            and (directory / "base_state.json").is_file()
+            and self.provisioning.manifest_path(cid).is_file()
+        )
+        return ConversationRuntimeInfo(
+            runtime_status=(
+                ConversationRuntimeStatus.AVAILABLE
+                if cid in self._workspaces
+                else ConversationRuntimeStatus.MISSING
+            ),
+            can_resume=can_resume,
+        )
+
     def conversation_dir(self, cid: UUID) -> Path:
         return self.conversations_dir / cid.hex
 
@@ -380,6 +400,59 @@ def test_global_router_404_for_unknown_cid(docker_app):
 # covered by ``test_conversation_service.py``), only that the routes are
 # wired and behave at the wire level.
 # ---------------------------------------------------------------------------
+
+
+def test_runtime_inspection_does_not_start_container(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+    response = client.get(f"/api/conversations/{cid}/runtime")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "runtime_status": "missing",
+        "can_resume": True,
+        "runtime_error": None,
+    }
+    assert registry.get(cid) is None
+
+
+def test_runtime_reprovision_starts_infrastructure_without_run(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+    response = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+
+    assert response.status_code == 200
+    assert response.json()["runtime_status"] == "available"
+    assert registry.get(cid) is not None
+
+
+def test_runtime_reprovision_rejects_ownership_loss(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+    response = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+
+    assert response.status_code == 409
+    assert registry.get(cid) is None
 
 
 def test_metadata_routes_are_mounted_locally_in_docker_mode(tmp_path):
