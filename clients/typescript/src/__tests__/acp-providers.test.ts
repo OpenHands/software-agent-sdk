@@ -81,7 +81,7 @@ describe('ACP provider credential descriptors', () => {
       'npx',
       '-y',
       '--prefer-offline',
-      '@agentclientprotocol/codex-acp@1.1.7',
+      '@agentclientprotocol/codex-acp@1.10.0',
     ]);
     expect(codex.default_session_mode).toBe('agent-full-access');
     expect(codex.available_models.map((model) => model.id)).toEqual(

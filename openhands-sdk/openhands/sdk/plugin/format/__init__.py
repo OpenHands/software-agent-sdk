@@ -12,7 +12,8 @@ Module layout:
 - ``base`` — the abstract :class:`PluginFormat` contract plus the shared
   discovery logic (skills discovery, final assembly).
 - ``claude_code`` — the concrete :class:`ClaudeCodePluginFormat` strategy.
-- ``agent_plugins`` — the :class:`AgentPluginsFormat` strategy, not registered.
+- ``agent_plugins`` — the :class:`AgentPluginsFormat` strategy, not registered;
+  it also owns our ``dev.openhands`` client-extension namespace.
 - this package ``__init__`` — the format registry (``_FORMATS``) and the
   :func:`detect_format` dispatcher.
 
@@ -22,8 +23,8 @@ format today and its ``detect`` accepts any directory, so it is the universal
 fallback.
 
 :class:`AgentPluginsFormat` is held out of ``_FORMATS`` until its ``mcp.json``
-and client-extension loaders land (#4405): registering it earlier would claim
-any directory with a root ``plugin.json`` and load it with zero MCP servers.
+loader lands (#4405): registering it earlier would claim any directory with a
+root ``plugin.json`` and load it with zero MCP servers.
 
 How to add a new plugin format
 ------------------------------
@@ -61,7 +62,7 @@ logger = get_logger(__name__)
 
 # Registered formats, in detection-precedence order. Higher-precedence formats
 # come first; the Claude Code format is last because it accepts any directory.
-# AgentPluginsFormat is intentionally absent until its component loaders land
+# AgentPluginsFormat is intentionally absent until its mcp.json loader lands
 # (see the module docstring); it belongs ahead of ClaudeCodePluginFormat.
 _FORMATS: list[type[PluginFormat]] = [ClaudeCodePluginFormat]
 
