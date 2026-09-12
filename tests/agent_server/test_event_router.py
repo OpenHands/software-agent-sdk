@@ -10,8 +10,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.dependencies import (
+    get_event_history_service,
+    get_event_service,
+)
 from openhands.agent_server.event_router import (
+    event_history_router,
     event_router,
     normalize_datetime_to_server_timezone,
 )
@@ -65,6 +69,7 @@ def test_normalize_datetime_fixed_offset_timezone():
 def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
+    app.include_router(event_history_router, prefix="/api")
     app.include_router(event_router, prefix="/api")
     return TestClient(app)
 
@@ -363,7 +368,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with naive datetime (no timezone)."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -400,7 +407,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with timezone-aware datetime."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -437,7 +446,9 @@ class TestSearchEventsEndpoint:
         """Test search events with both timestamp filters using
         timezone-aware datetimes."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -474,7 +485,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test count events with timezone-aware datetime."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the count_events method to return a sample result
@@ -507,7 +520,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test count events with source filter."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the count_events method to return a sample result
@@ -541,7 +556,9 @@ class TestSearchEventsEndpoint:
         """Test that different timezone representations of the same moment
         normalize consistently."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -596,7 +613,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with source filter."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -631,7 +650,9 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with multiple filters including source."""
         # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: mock_event_service
+        )
 
         try:
             # Mock the search_events method to return a sample result
@@ -717,7 +738,9 @@ class TestSearchEventsEndpoint:
         conversation._state = state
         event_service._conversation = conversation
 
-        client.app.dependency_overrides[get_event_service] = lambda: event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: event_service
+        )
 
         try:
             # Test filtering by source="user" - should return 2 events
@@ -790,7 +813,9 @@ class TestSearchEventsEndpoint:
         conversation._state = state
         event_service._conversation = conversation
 
-        client.app.dependency_overrides[get_event_service] = lambda: event_service
+        client.app.dependency_overrides[get_event_history_service] = (
+            lambda: event_service
+        )
 
         try:
             # Test filtering by body="hello" (case-insensitive) - should return 2 events

@@ -370,6 +370,22 @@ workspace/
     └── (agent files and outputs)
 ```
 
+### Retained conversation history
+
+Conversation metadata and events under `conversations/{conversation_id}` are durable
+control-plane data. The outer server serves the event search, count, single-event,
+and batch-event GET endpoints directly from this storage. These reads never create,
+resume, or contact a conversation runtime, so history remains available when a
+runtime is missing or its ownership metadata has been lost.
+
+Events are returned in persisted append order (or its reverse for descending
+searches), and `next_page_id` continues to identify the first event on the next
+page. Archiving retains metadata and events; unarchiving changes visibility but
+does not start a runtime. Permanent conversation deletion removes retained metadata
+and events, after which history endpoints return `404`. Workspace export is not
+part of the retained-history contract.
+
+
 ## Development
 
 For development, the server runs with auto-reload enabled by default. Any changes to the source code will automatically restart the server.

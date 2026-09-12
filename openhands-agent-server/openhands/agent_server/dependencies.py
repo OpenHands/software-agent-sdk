@@ -6,6 +6,7 @@ from fastapi.security import APIKeyCookie, APIKeyHeader
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_history_service import EventHistoryService
 from openhands.agent_server.event_service import EventService
 
 
@@ -99,3 +100,21 @@ async def get_event_service(
             detail=f"Conversation not found: {conversation_id}",
         )
     return event_service
+
+
+async def get_event_history_service(
+    conversation_id: UUID,
+    request: Request,
+) -> EventHistoryService | EventService:
+    conversation_dir = request.app.state.config.conversations_path / conversation_id.hex
+    if conversation_dir.is_dir():
+        return EventHistoryService.from_conversation_dir(conversation_dir)
+    conversation_service = getattr(request.app.state, "conversation_service", None)
+    if conversation_service is not None:
+        event_service = await conversation_service.get_event_service(conversation_id)
+        if event_service is not None:
+            return event_service
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Conversation not found: {conversation_id}",
+    )

@@ -167,6 +167,10 @@ export class ConversationClient {
     return response.data;
   }
 
+  /**
+   * Search retained event history without provisioning or contacting a runtime.
+   * Ordering and `next_page_id` pagination match the persisted event log.
+   */
   async searchEvents(
     conversationId: string,
     options: ConversationEventSearchOptions = {}
@@ -178,6 +182,7 @@ export class ConversationClient {
     return response.data;
   }
 
+  /** Read one retained event without provisioning or contacting a runtime. */
   async getEvent(conversationId: string, eventId: string): Promise<ConversationEvent> {
     const response = await this.client.get<ConversationEvent>(
       `/api/conversations/${conversationId}/events/${eventId}`
@@ -288,6 +293,7 @@ export class ConversationClient {
     return response.data;
   }
 
+  /** Count retained events without provisioning or contacting a runtime. */
   async getEventCount(
     conversationId: string,
     options: ConversationEventCountOptions = {}

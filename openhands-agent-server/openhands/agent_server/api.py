@@ -50,7 +50,7 @@ from openhands.agent_server.docker_runtime.routers import (
     docker_workspace_proxy_router,
 )
 from openhands.agent_server.docker_runtime.runtime_route import ConversationRuntimeRoute
-from openhands.agent_server.event_router import event_router
+from openhands.agent_server.event_router import event_history_router, event_router
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -442,6 +442,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(file_discovery_router)
     api_router.include_router(tool_router)
     api_router.include_router(create_runtime_router(ConversationRuntimeRoute))
+    api_router.include_router(event_history_router)
     if config.conversation_runtime == "docker":
         api_router.include_router(docker_global_proxy_router)
         api_router.include_router(docker_conversation_proxy_router)
