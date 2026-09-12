@@ -3,8 +3,9 @@ import asyncio
 import pytest
 
 from openhands.sdk import Agent, Conversation
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.message import MessageToolCall
 from openhands.sdk.secret import LookupSecret
 from openhands.sdk.testing import TestLLM
 
@@ -59,3 +60,44 @@ async def test_async_response_masks_loopback_lookup_secret_without_blocking(tmp_
         await asyncio.to_thread(conversation.close)
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_async_tool_thought_matches_sync_behavior(tmp_path):
+    thoughts = []
+    for use_async in [False, True]:
+        message = Message(
+            role="assistant",
+            content=[TextContent(text="existing tool thought")],
+            tool_calls=[
+                MessageToolCall(
+                    id="finish-call",
+                    origin="completion",
+                    name="finish",
+                    arguments='{"message":"done"}',
+                )
+            ],
+        )
+        conversation = Conversation(
+            agent=Agent(llm=TestLLM.from_messages([message]), tools=[]),
+            workspace=str(tmp_path),
+            visualizer=None,
+            secrets={"TOKEN": "existing tool thought"},
+        )
+        try:
+            conversation.send_message("finish")
+            if use_async:
+                await conversation.arun()
+            else:
+                await asyncio.to_thread(conversation.run)
+            thoughts.append(
+                [
+                    event.thought
+                    for event in conversation.state.events
+                    if isinstance(event, ActionEvent)
+                ]
+            )
+        finally:
+            await asyncio.to_thread(conversation.close)
+    assert thoughts[0]
+    assert thoughts[0] == thoughts[1]

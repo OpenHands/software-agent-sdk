@@ -1022,10 +1022,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             raise e
 
         message: Message = llm_response.message
-        # Uncached LookupSecrets may call back into this same server.
-        async with conversation._released_state_lock_during_io():
-            message = await asyncio.to_thread(self._mask_secrets, message, conversation)
         response_type = classify_response(message)
+        if response_type is not LLMResponseType.TOOL_CALLS:
+            # Uncached LookupSecrets may call back into this same server.
+            async with conversation._released_state_lock_during_io():
+                message = await asyncio.to_thread(
+                    self._mask_secrets, message, conversation
+                )
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
