@@ -41,7 +41,6 @@ _field_default_repr = _prod._field_default_repr
 _is_field_default_only_change = _prod._is_field_default_only_change
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
 _was_deprecated = _prod._was_deprecated
-_is_accepted_removed_member = _prod._is_accepted_removed_member
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
 
 # Reusable test config matching the _write_pkg_init helper
@@ -551,101 +550,6 @@ def test_workspace_removed_export_is_breaking(tmp_path):
     )
     assert total_breaks == 1
     assert undeprecated == 1
-
-
-def test_accepted_docker_mount_dir_member_removal_detection_is_exact():
-    assert _is_accepted_removed_member(
-        "openhands.workspace", "DockerWorkspace.mount_dir"
-    )
-    assert _is_accepted_removed_member(
-        "openhands.workspace", "DockerDevWorkspace.mount_dir"
-    )
-    assert not _is_accepted_removed_member(
-        "openhands.workspace", "ApptainerWorkspace.mount_dir"
-    )
-    assert not _is_accepted_removed_member("openhands.sdk", "DockerWorkspace.mount_dir")
-
-
-def test_accepted_docker_mount_dir_removal_is_not_breaking(tmp_path, capsys):
-    ws_cfg = PackageConfig(
-        package="openhands.workspace",
-        distribution="openhands-workspace",
-        source_dir="openhands-workspace",
-    )
-    old_pkg = _write_pkg_init(
-        tmp_path,
-        "old",
-        ["DockerWorkspace", "DockerDevWorkspace"],
-        module_parts=("openhands", "workspace"),
-    )
-    new_pkg = _write_pkg_init(
-        tmp_path,
-        "new",
-        ["DockerWorkspace", "DockerDevWorkspace"],
-        module_parts=("openhands", "workspace"),
-    )
-
-    old_pkg.joinpath("__init__.py").write_text(
-        old_pkg.joinpath("__init__.py").read_text()
-        + "\nfrom pydantic import BaseModel, Field\n\n"
-        + "class DockerWorkspace(BaseModel):\n"
-        + "    mount_dir: str | None = Field(default=None)\n\n"
-        + "class DockerDevWorkspace(DockerWorkspace):\n"
-        + "    pass\n"
-    )
-    new_pkg.joinpath("__init__.py").write_text(
-        new_pkg.joinpath("__init__.py").read_text()
-        + "\nfrom pydantic import BaseModel\n\n"
-        + "class DockerWorkspace(BaseModel):\n"
-        + "    pass\n\n"
-        + "class DockerDevWorkspace(DockerWorkspace):\n"
-        + "    pass\n"
-    )
-
-    old_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "old")])
-    new_root = griffe.load("openhands.workspace", search_paths=[str(tmp_path / "new")])
-
-    total_breaks, removal_policy_errors = _prod._compute_breakages(
-        old_root,
-        new_root,
-        ws_cfg,
-    )
-
-    assert total_breaks == 0
-    assert removal_policy_errors == 0
-    captured = capsys.readouterr()
-    assert "Accepted removal of DockerWorkspace.mount_dir" in captured.out
-
-
-def test_accepted_llm_modify_params_removal_is_exact(tmp_path, capsys):
-    assert _is_accepted_removed_member("openhands.sdk", "LLM.modify_params")
-    assert not _is_accepted_removed_member("openhands.sdk", "LLM.drop_params")
-    assert not _is_accepted_removed_member("openhands.workspace", "LLM.modify_params")
-    old_pkg = _write_pkg_init(tmp_path, "old", ["LLM"])
-    new_pkg = _write_pkg_init(tmp_path, "new", ["LLM"])
-    old_pkg.joinpath("__init__.py").write_text(
-        "from pydantic import BaseModel, Field\n"
-        "__all__ = ['LLM']\n"
-        "class LLM(BaseModel):\n"
-        "    modify_params: bool = Field(default=True)\n"
-        "    drop_params: bool = Field(default=True)\n"
-    )
-    new_pkg.joinpath("__init__.py").write_text(
-        "from pydantic import BaseModel\n"
-        "__all__ = ['LLM']\n"
-        "class LLM(BaseModel):\n"
-        "    pass\n"
-    )
-    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
-    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
-    total_breaks, removal_policy_errors = _prod._compute_breakages(
-        old_root, new_root, _SDK_CFG, current_version="1.47.0"
-    )
-    assert total_breaks == 1
-    assert removal_policy_errors == 1
-    output = capsys.readouterr().out
-    assert "Accepted removal of LLM.modify_params" in output
-    assert "PR #4954" in output
 
 
 def test_unresolved_alias_exports_do_not_crash_breakage_detection(tmp_path):

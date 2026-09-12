@@ -57,10 +57,10 @@ def mock_llm() -> LLM:
         raw_response.id = "mock-llm-response-id"
         return LLMResponse(message=message, metrics=metrics, raw_response=raw_response)
 
-    mock_llm.completion.return_value = create_completion_result(
+    mock_llm.generate.return_value = create_completion_result(
         "Summary of forgotten events"
     )
-    mock_llm.acompletion = AsyncMock(return_value=mock_llm.completion.return_value)
+    mock_llm.agenerate = AsyncMock(return_value=mock_llm.generate.return_value)
     mock_llm.uses_responses_api = lambda: False
     mock_llm.requires_streaming = False
     mock_llm.format_messages_for_llm = lambda messages: messages
@@ -99,8 +99,8 @@ def mock_llm() -> LLM:
     # Helper method to set mock response content
     def set_mock_response_content(content: str):
         result = create_completion_result(content)
-        mock_llm.completion.return_value = result
-        mock_llm.acompletion = AsyncMock(return_value=result)
+        mock_llm.generate.return_value = result
+        mock_llm.agenerate = AsyncMock(return_value=result)
 
     mock_llm.set_mock_response_content = set_mock_response_content
 
@@ -156,7 +156,7 @@ def test_condense_returns_view_when_no_condensation_needed(mock_llm: LLM) -> Non
     assert isinstance(result, View)
     assert result == view
     # LLM should not be called
-    cast(MagicMock, mock_llm.completion).assert_not_called()
+    cast(MagicMock, mock_llm.generate).assert_not_called()
 
 
 def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
@@ -185,24 +185,7 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
     assert len(result.forgotten_event_ids) > 0
 
     # LLM should be called once
-    cast(MagicMock, mock_llm.completion).assert_called_once()
-
-
-def test_condense_uses_responses_api_when_required(mock_llm: LLM) -> None:
-    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=3)
-    cast(Any, mock_llm).set_mock_response_content("Summary from responses")
-    mock_llm.uses_responses_api = lambda: True
-    cast(Any, mock_llm.responses).return_value = cast(
-        Any, mock_llm.completion
-    ).return_value
-
-    view = View.from_events([message_event(f"Event {i}") for i in range(11)])
-    result = condenser.condense(view)
-
-    assert isinstance(result, Condensation)
-    assert result.summary == "Summary from responses"
-    cast(MagicMock, mock_llm.responses).assert_called_once()
-    cast(MagicMock, mock_llm.completion).assert_not_called()
+    cast(MagicMock, mock_llm.generate).assert_called_once()
 
 
 def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
@@ -243,7 +226,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     assert result.summary == "Updated summary"
 
     # Verify that the LLM was called with the previous summary
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     completion_mock.assert_called_once()
     call_args = completion_mock.call_args
     messages = call_args[1]["messages"]  # Get keyword arguments
@@ -273,7 +256,7 @@ def test_invalid_config(mock_llm: LLM) -> None:
 
 
 def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
-    """Condenser should not pass extra_body to llm.completion.
+    """Condenser should not pass extra_body to llm.generate.
 
     This prevents providers like 1p Anthropic from rejecting the request with
     "extra_body: Extra inputs are not permitted".
@@ -288,7 +271,7 @@ def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Ensure completion was called without an explicit extra_body kwarg
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
 
@@ -310,11 +293,11 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Verify the condenser still uses its own LLM for summarization
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
     # Agent LLM should not be called for completion (condenser uses its own LLM)
-    assert not agent_llm.completion.called
+    assert not agent_llm.generate.called
     _, kwargs = completion_mock.call_args
     assert "extra_body" not in kwargs
 
@@ -362,7 +345,7 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Verify the condenser used its own LLM for summarization
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
     # Verify forgotten events were calculated based on token reduction
@@ -614,7 +597,7 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     assert len(result.forgotten_event_ids) > 0
 
     # Verify the condenser used its own LLM for summarization
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
 
@@ -673,7 +656,7 @@ def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
         )
 
     # Verify the LLM was never called
-    cast(MagicMock, mock_llm.completion).assert_not_called()
+    cast(MagicMock, mock_llm.generate).assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -825,7 +808,7 @@ def test_condense_with_soft_requirement_and_no_condensation_available(
         assert isinstance(result, View)
         assert result == view
         # LLM should not be called
-        cast(MagicMock, mock_llm.completion).assert_not_called()
+        cast(MagicMock, mock_llm.generate).assert_not_called()
 
 
 def test_minimum_progress_default_value(mock_llm: LLM) -> None:
@@ -917,7 +900,7 @@ def test_generate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
     """LLM failures in _generate_condensation raise NoCondensationAvailableException."""  # noqa: E501
     condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
 
-    cast(MagicMock, mock_llm.completion).side_effect = RuntimeError("boom")
+    cast(MagicMock, mock_llm.generate).side_effect = RuntimeError("boom")
 
     events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
     view = View.from_events(events)
@@ -931,7 +914,7 @@ async def test_agenerate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
     """Async variant: LLM failures surface as NoCondensationAvailableException."""
     condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
 
-    cast(MagicMock, mock_llm.acompletion).side_effect = RuntimeError("boom")
+    cast(MagicMock, mock_llm.agenerate).side_effect = RuntimeError("boom")
 
     events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
     view = View.from_events(events)
@@ -951,8 +934,8 @@ def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
 
     # First call (get_condensation path) fails; second call
     # (hard_context_reset path) succeeds.
-    success_response = cast(Any, mock_llm).completion.return_value
-    cast(MagicMock, mock_llm.completion).side_effect = [
+    success_response = cast(Any, mock_llm).generate.return_value
+    cast(MagicMock, mock_llm.generate).side_effect = [
         RuntimeError("context window exceeded"),
         success_response,
     ]
@@ -961,7 +944,7 @@ def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
-    assert cast(MagicMock, mock_llm.completion).call_count == 2
+    assert cast(MagicMock, mock_llm.generate).call_count == 2
 
 
 def _streaming_llm() -> LLM:
