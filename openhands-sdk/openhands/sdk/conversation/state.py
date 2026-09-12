@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
@@ -38,7 +38,6 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
@@ -79,8 +78,9 @@ class ConversationExecutionStatus(str, Enum):
         )
 
 
-class ConversationState(OpenHandsModel):
-    # ===== Public, validated fields =====
+class ConversationPublicState(BaseModel):
+    """Conversation state fields safe to expose outside the runtime."""
+
     id: ConversationID = Field(description="Unique conversation ID")
 
     agent: AgentBase = Field(
@@ -131,15 +131,6 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
-    activated_path_rules: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Names of path-scoped rules already injected on file-touch. "
-            "Mirrors activated_knowledge_skills to dedup rule injection "
-            "once per conversation."
-        ),
-    )
-
     invoked_skills: list[str] = Field(
         default_factory=list,
         description=(
@@ -182,12 +173,6 @@ class ConversationState(OpenHandsModel):
         ),
     )
 
-    # Distinguishes a deliberate empty HEAD (navigate_to(None)) from an unset
-    # ``leaf_event_id``, which triggers legacy back-compat. Without it, emptying a
-    # single-root tree is indistinguishable from a pre-tree conversation. Persisted
-    # so the empty HEAD survives a save/reload. See _resolve_active_leaf.
-    head_is_empty: bool = Field(default=False)
-
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -228,6 +213,23 @@ class ConversationState(OpenHandsModel):
             "points during conversation execution."
         ),
     )
+
+
+class ConversationState(ConversationPublicState):
+    activated_path_rules: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of path-scoped rules already injected on file-touch. "
+            "Mirrors activated_knowledge_skills to dedup rule injection "
+            "once per conversation."
+        ),
+    )
+
+    # Distinguishes a deliberate empty HEAD (navigate_to(None)) from an unset
+    # ``leaf_event_id``, which triggers legacy back-compat. Without it, emptying a
+    # single-root tree is indistinguishable from a pre-tree conversation. Persisted
+    # so the empty HEAD survives a save/reload. See _resolve_active_leaf.
+    head_is_empty: bool = Field(default=False)
 
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence

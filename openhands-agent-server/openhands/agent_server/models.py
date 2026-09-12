@@ -3,25 +3,24 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, ClassVar, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.agent.acp_models import ACPModelInfo
-from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
     ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
     StartConversationRequest as StartConversationRequest,
 )
-from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationPublicState,
+    ConversationState,
+)
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.event.base import Event
-from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
     ImageContent as ImageContent,
     TextContent as TextContent,
@@ -34,7 +33,6 @@ from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
-    NeverConfirm,
 )
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
@@ -42,7 +40,6 @@ from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     OpenHandsModel,
 )
-from openhands.sdk.workspace.base import BaseWorkspace
 
 
 class ServerErrorEvent(Event):
@@ -120,99 +117,8 @@ class StoredConversation(ConversationConfig):
     )
 
 
-class _ConversationInfoBase(BaseModel):
+class _ConversationInfoBase(ConversationPublicState):
     """Common conversation info fields shared by conversation contracts."""
-
-    id: UUID = Field(description="Unique conversation ID")
-    workspace: BaseWorkspace = Field(
-        ...,
-        description=(
-            "Workspace used by the agent to execute commands and read/write files. "
-            "Not the process working directory."
-        ),
-    )
-    persistence_dir: str | None = Field(
-        default="workspace/conversations",
-        description="Directory for persisting conversation state and events. "
-        "If None, conversation will not be persisted.",
-    )
-    max_iterations: int = Field(
-        default=500,
-        gt=0,
-        description=(
-            "Maximum number of iterations the agent can perform in a single run."
-        ),
-    )
-    stuck_detection: bool = Field(
-        default=True,
-        description="Whether to enable stuck detection for the agent.",
-    )
-    execution_status: ConversationExecutionStatus = Field(
-        default=ConversationExecutionStatus.IDLE
-    )
-    confirmation_policy: ConfirmationPolicyBase = Field(default=NeverConfirm())
-    security_analyzer: SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-    )
-    activated_knowledge_skills: list[str] = Field(
-        default_factory=list,
-        description="List of activated knowledge skills name",
-    )
-    invoked_skills: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Names of progressive-disclosure skills explicitly invoked via the "
-            "`invoke_skill` tool."
-        ),
-    )
-    blocked_actions: dict[str, str] = Field(
-        default_factory=dict,
-        description="Actions blocked by PreToolUse hooks, keyed by action ID",
-    )
-    blocked_messages: dict[str, str] = Field(
-        default_factory=dict,
-        description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
-    )
-    last_user_message_id: str | None = Field(
-        default=None,
-        description=(
-            "Most recent user MessageEvent id for hook block checks. "
-            "Updated when user messages are emitted so Agent.step can pop "
-            "blocked_messages without scanning the event log. If None, "
-            "hook-blocked checks are skipped (legacy conversations)."
-        ),
-    )
-    leaf_event_id: str | None = Field(
-        default=None,
-        description=(
-            "HEAD of the conversation tree: the parent of the next appended "
-            "event. ``None`` means an empty tree (or, for pre-feature "
-            "conversations, the linear tail). Moving it via ``navigate`` "
-            "re-roots the active branch the agent runs on."
-        ),
-    )
-    stats: ConversationStats = Field(
-        default_factory=ConversationStats,
-        description="Conversation statistics for tracking LLM metrics",
-    )
-    secret_registry: SecretRegistry = Field(
-        default_factory=SecretRegistry,
-        description="Registry for handling secrets and sensitive data",
-    )
-    agent_state: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Dictionary for agent-specific runtime state that persists across "
-        "iterations.",
-    )
-    hook_config: HookConfig | None = Field(
-        default=None,
-        description=(
-            "Hook configuration for this conversation. Includes definitions for "
-            "PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd, "
-            "and Stop hooks."
-        ),
-    )
 
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
@@ -252,13 +158,6 @@ class _ConversationInfoBase(BaseModel):
         ),
     )
 
-    tags: ConversationTags = Field(
-        default_factory=dict,
-        description=(
-            "Key-value tags for the conversation. Keys must be lowercase "
-            "alphanumeric. Values are arbitrary strings up to 256 characters."
-        ),
-    )
     current_model_id: str | None = Field(
         default=None,
         description=(
@@ -322,10 +221,20 @@ class _ConversationInfoBase(BaseModel):
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
 
-    agent: AgentBase = Field(
-        ...,
-        description="The agent running in the conversation.",
+    STORED_METADATA_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "title",
+            "metrics",
+            "created_at",
+            "updated_at",
+            "forked_from_conversation_id",
+            "forked_from_event_id",
+            "parent_conversation_id",
+            "client_tools",
+            "launched_agent_profile",
+        }
     )
+
     client_tools: list[ClientToolSpec] = Field(
         default_factory=list,
         description=(
@@ -335,6 +244,35 @@ class ConversationInfo(_ConversationInfoBase):
             "persisted events, avoiding 'Unknown kind' deserialization errors."
         ),
     )
+
+    @classmethod
+    def from_sources(
+        cls,
+        state: ConversationState,
+        stored: StoredConversation,
+        *,
+        current_model_id: str | None,
+        available_models: list[ACPModelInfo],
+        supports_runtime_model_switch: bool,
+        sub_conversation_ids: list[UUID],
+    ) -> Self:
+        """Build public conversation info from its explicit source models."""
+        public_state = state.model_dump(
+            mode="json",
+            include=set(ConversationPublicState.model_fields),
+        )
+        stored_metadata = stored.model_dump(
+            mode="json",
+            include=set(cls.STORED_METADATA_FIELDS),
+        )
+        return cls(
+            **public_state,
+            **stored_metadata,
+            current_model_id=current_model_id,
+            available_models=available_models,
+            supports_runtime_model_switch=supports_runtime_model_switch,
+            sub_conversation_ids=sub_conversation_ids,
+        )
 
 
 class ConversationPage(BaseModel):

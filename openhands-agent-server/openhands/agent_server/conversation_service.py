@@ -458,10 +458,6 @@ def _compose_conversation_info(
     state: ConversationState,
     sub_conversation_ids: list[UUID] | None = None,
 ) -> ConversationInfo:
-    # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
-    # agent.agent_context.secrets) serialize to strings. Without it, validation
-    # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
-    #
     # ACP model state is lifted onto top-level ConversationInfo fields because
     # the agent holds it in PrivateAttrs (ACPAgent is frozen) which don't survive
     # ``model_dump``. ``getattr`` keeps non-ACP agents a no-op. We read the live
@@ -514,21 +510,13 @@ def _compose_conversation_info(
     supports_runtime_model_switch = bool(
         agent_state.get("acp_supports_runtime_model_switch", False)
     )
-    return ConversationInfo(
-        **state.model_dump(mode="json"),
-        title=stored.title,
-        metrics=stored.metrics,
-        created_at=stored.created_at,
-        updated_at=stored.updated_at,
-        forked_from_conversation_id=stored.forked_from_conversation_id,
-        forked_from_event_id=stored.forked_from_event_id,
-        parent_conversation_id=stored.parent_conversation_id,
-        sub_conversation_ids=sub_conversation_ids or [],
+    return ConversationInfo.from_sources(
+        state,
+        stored,
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
-        client_tools=stored.client_tools,
-        launched_agent_profile=stored.launched_agent_profile,
+        sub_conversation_ids=sub_conversation_ids or [],
     )
 
 
@@ -613,23 +601,12 @@ def _stored_metadata_signature(stored: StoredConversation) -> int:
 
     ``cached_info`` is keyed by ``base_state.json``, but also embeds
     ``StoredConversation`` metadata that can change independently via
-    ``meta.json`` (notably auto-title). Fingerprint exactly the fields
-    ``_compose_conversation_info`` lifts from ``stored`` so a metadata-only
-    update invalidates the cache. Keep the set in sync with that function.
+    ``meta.json`` (notably auto-title). Fingerprint exactly the public metadata
+    fields so a metadata-only update invalidates the cache.
     """
     metadata = stored.model_dump(
         mode="json",
-        include={
-            "title",
-            "metrics",
-            "created_at",
-            "updated_at",
-            "forked_from_conversation_id",
-            "forked_from_event_id",
-            "parent_conversation_id",
-            "client_tools",
-            "launched_agent_profile",
-        },
+        include=set(ConversationInfo.STORED_METADATA_FIELDS),
     )
     return hash(json.dumps(metadata, sort_keys=True, default=str))
 
