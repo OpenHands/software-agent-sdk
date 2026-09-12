@@ -277,6 +277,17 @@ class ConversationConfig(BaseModel):
             "the agent's LLM."
         ),
     )
+    prompt: str | None = Field(
+        default=None,
+        max_length=2000,
+        description=(
+            "Optional prompt that replaces the default title-generation user "
+            "message. Use {conversation_content} to place the first user "
+            "message and {max_length} to place the title length limit. If the "
+            "conversation placeholder is omitted, the message is appended "
+            "automatically. Empty or unset values use the default prompt."
+        ),
+    )
 
 
 class StartConversationRequest(ConversationConfig):
