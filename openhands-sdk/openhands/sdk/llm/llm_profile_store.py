@@ -16,6 +16,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
     from openhands.sdk.utils.cipher import Cipher
 
-_DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "profiles"
+_DEFAULT_PROFILE_DIR: Final[Path] = get_user_persistence_dir() / "profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 # Profile names: 1-64 chars, must start with alphanumeric, then alphanumerics
@@ -86,7 +87,6 @@ class LLMProfileStore:
         base_dir: Path | str | None = None,
         *,
         provider_store: ProviderConnectionStore | None = None,
-        cipher: Cipher | None = None,
     ) -> None:
         """Initialize the profile store.
 
@@ -103,11 +103,8 @@ class LLMProfileStore:
                 connections from the same location it reads profiles from. Pass
                 an explicit store to use an unrelated directory (e.g. the
                 agent-server's config-scoped directory) or a test double.
-            cipher: Default cipher for profile loads. An explicit cipher passed
-                to :meth:`load` takes precedence.
         """
         self.base_dir = Path(base_dir) if base_dir is not None else _DEFAULT_PROFILE_DIR
-        self._cipher = cipher
         # ensure directory existence
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._file_lock = FileLock(self.base_dir / ".profiles.lock")
@@ -284,7 +281,6 @@ class LLMProfileStore:
             TimeoutError: If the lock cannot be acquired.
         """
         profile_path = self._get_profile_path(name)
-        effective_cipher = cipher if cipher is not None else self._cipher
 
         with self._acquire_lock():
             if not profile_path.exists():
@@ -297,9 +293,7 @@ class LLMProfileStore:
             try:
                 from openhands.sdk.llm.llm import LLM
 
-                context: dict[str, Any] | None = (
-                    {"cipher": effective_cipher} if effective_cipher else None
-                )
+                context: dict[str, Any] | None = {"cipher": cipher} if cipher else None
 
                 llm_instance = LLM.load_from_json(str(profile_path), context=context)
             except Exception as e:
@@ -310,7 +304,7 @@ class LLMProfileStore:
 
         if resolve_provider:
             llm_instance = self._resolve_provider_connection(
-                name, llm_instance, cipher=effective_cipher
+                name, llm_instance, cipher=cipher
             )
         return llm_instance
 

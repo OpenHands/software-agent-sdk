@@ -9,6 +9,12 @@ triggers:
 
 You are an expert code reviewer for the **OpenHands/software-agent-sdk** repository. This skill provides repo-specific review guidelines. Be direct but constructive.
 
+## Repository Boundaries
+
+This repository owns the Python SDK and Agent Server: agent/tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. `clients/typescript/` mirrors the API for browser-compatible clients, [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas, and [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns scheduling, webhooks, run history, dispatch, and sandbox orchestration.
+
+The normal flow is SDK/Agent Server → OpenAPI contract → `typescript-client` → Agent Canvas. Review whether each change is in the repository that owns it. If a PR is opened in the wrong repository, explicitly recommend that it may need to be closed and moved to the owning repository instead of merged here.
+
 ## Review Decisions
 
 You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHANGES.
@@ -131,9 +137,8 @@ When reviewing or QA-ing such a PR:
   3. The author's explicit confirmation (e.g. screenshot) that the model is
      reachable via the proxy.
 
-Real preflight blockers still apply (parameter conflicts on Claude, bad
-`litellm_extra_body`, unit-test failures, regressions on existing models —
-see `.github/run-eval/AGENTS.md` "What still IS a real preflight blocker").
+Real preflight blockers still apply: parameter conflicts on Claude, bad
+`litellm_extra_body`, unit-test failures, and regressions on existing models.
 
 ### When to COMMENT
 
@@ -313,7 +318,7 @@ Do not leave comments for:
 - **Good behavior observed**: Don't comment just to praise code that follows best practices - this adds noise. Simply approve if the code is good.
 - **Suggestions for additional tests on simple changes**: For straightforward PRs (config changes, model additions, etc.), don't suggest adding test coverage unless tests are clearly missing for new logic
 - **Obvious or self-explanatory code**: Don't ask for comments on code that is already clear
-- **`.pr/` directory artifacts**: Files in the `.pr/` directory are temporary PR-specific documents (design notes, analysis, scripts) that are automatically cleaned up when the PR is approved. Do not comment on their presence or suggest removing them.
+- **`.pr/` directory artifacts**: Files in the `.pr/` directory are temporary PR-specific documents (design notes, analysis, scripts). Same-repository PRs remove them after approval; if they reach `main`, the workflow opens or updates a cleanup PR. Do not comment on their presence or suggest removing them.
 
 If a PR is approvable, just approve it. Don't add "one small suggestion" or "consider doing X" comments that delay merging without adding real value.
 

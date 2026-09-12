@@ -15,3 +15,10 @@ updates:
           interval: weekly
       commit-message:
           prefix: chore(deps)
+
+    - package-ecosystem: npm
+      directory: /clients/typescript
+      schedule:
+          interval: weekly
+      commit-message:
+          prefix: chore(deps)

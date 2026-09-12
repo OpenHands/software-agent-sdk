@@ -37,7 +37,6 @@ from openhands.sdk.llm.utils.runtime_metadata import (
     store_result,
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -90,11 +89,13 @@ from litellm.utils import (
     create_pretrained_tokenizer,
     token_counter,
 )
+from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
+    is_quota_exhaustion_error,
     map_provider_exception,
 )
 
@@ -469,19 +470,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
     drop_params: bool = Field(default=True, json_schema_extra=field_meta())
-    modify_params: bool = Field(
-        default=True,
-        description=(
-            "Compatibility field. LiteLLM parameter modification is enabled "
-            "process-wide so concurrent LLM calls do not mutate shared global state."
-        ),
-        deprecated=(
-            "Deprecated since v1.42.0 and scheduled for removal in v1.47.0. "
-            "LiteLLM parameter modification is enabled process-wide; remove this "
-            "argument."
-        ),
-        json_schema_extra=field_meta(),
-    )
     disable_vision: bool | None = Field(
         default=None,
         description="If model is vision capable, this option allows to disable image "
@@ -701,18 +689,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return data
         d = dict(data)
 
-        if "modify_params" in d:
-            warn_deprecated(
-                "LLM.modify_params",
-                deprecated_in="1.42.0",
-                removed_in="1.47.0",
-                details=(
-                    "LiteLLM parameter modification is enabled process-wide; "
-                    "remove this argument."
-                ),
-                stacklevel=3,
-            )
-
         model_val = d.get("model")
         if not model_val:
             raise ValueError("model must be specified in LLM")
@@ -924,6 +900,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def is_subscription(self, value: bool) -> None:
         self._is_subscription = value
 
+    @property
+    def requires_streaming(self) -> bool:
+        """Whether the provider requires stream=True for all requests.
+
+        Set when the underlying endpoint rejects non-streaming requests;
+        callers must leave streaming enabled and must not require an
+        on_token callback because the response is drained internally.
+        """
+        return self._is_subscription
+
     @model_validator(mode="wrap")
     @classmethod
     def _restore_is_subscription(cls, data, handler):
@@ -1032,10 +1018,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _make_retry_decorator(
         self,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Return a configured retry decorator using this LLM's retry settings."""
+        """Return a configured retry decorator using this LLM's retry settings.
+
+        Hard quota/usage-limit errors are excluded from retries so that, when a
+        :class:`~openhands.sdk.llm.FallbackStrategy` is configured, fallback to an
+        alternate model happens immediately instead of after the full retry
+        backoff — such errors will not recover until the limit resets or is raised.
+        """
+        retry_condition = retry_if_exception_type(LLM_RETRY_EXCEPTIONS) & (
+            retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
+        )
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=LLM_RETRY_EXCEPTIONS,
+            retry_exceptions=retry_condition,
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
@@ -1765,10 +1760,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming and on_token is None and not self.is_subscription:
+        if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
-            # streaming is requested without a callback wired (subscription mode
-            # is exempt — it streams internally without an on_token). See #4014.
+            # streaming is requested without a callback wired. Providers that
+            # require streaming are exempt — they drain the stream internally
+            # without an on_token callback. See requires_streaming and #4014.
             logger.debug(
                 "Streaming requested without an on_token callback; "
                 "falling back to a non-streaming responses call."
@@ -1915,10 +1911,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
-        if user_enable_streaming and on_token is None and not self.is_subscription:
+        if user_enable_streaming and on_token is None and not self.requires_streaming:
             # Gracefully degrade to non-streaming rather than crashing a run when
-            # streaming is requested without a callback wired (subscription mode
-            # is exempt — it streams internally without an on_token). See #4014.
+            # streaming is requested without a callback wired. Providers that
+            # require streaming are exempt — they drain the stream internally
+            # without an on_token callback. See requires_streaming and #4014.
             logger.debug(
                 "Streaming requested without an on_token callback; "
                 "falling back to a non-streaming responses call."

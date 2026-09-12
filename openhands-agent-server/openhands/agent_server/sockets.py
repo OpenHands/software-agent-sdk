@@ -539,6 +539,9 @@ def _is_websocket_connected(websocket: WebSocket) -> bool:
 class _WebSocketSubscriber(Subscriber):
     """WebSocket subscriber for conversation events."""
 
+    # The live socket is what token streaming is for.
+    receives_streaming_deltas = True
+
     websocket: WebSocket
 
     async def __call__(self, event: Event):

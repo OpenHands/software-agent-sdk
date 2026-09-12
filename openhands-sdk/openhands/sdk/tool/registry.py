@@ -153,7 +153,12 @@ def resolve_tool(
         resolver = _REG.get(tool_spec.name)
 
     if resolver is None:
-        raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
+        from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
+
+        tool_class = BUILT_IN_TOOL_CLASSES.get(tool_spec.name)
+        if tool_class is None:
+            raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
+        resolver = _resolver_from_subclass(tool_spec.name, tool_class)
 
     params = dict(tool_spec.params)
     response_schema = params.pop("response_schema", None)

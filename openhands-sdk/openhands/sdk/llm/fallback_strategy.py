@@ -129,7 +129,7 @@ class FallbackStrategy(BaseModel):
 
     @cached_property
     def _profile_store(self) -> LLMProfileStore:
-        return LLMProfileStore(self.profile_store_dir, cipher=self._cipher)
+        return LLMProfileStore(self.profile_store_dir)
 
     def _iter_fallbacks(self) -> Generator[Any]:
         """Yield fallback LLM instances, resolving lazily from profiles.
@@ -149,7 +149,7 @@ class FallbackStrategy(BaseModel):
         remaining_names = self.fallback_llms[len(self._resolved) :]
         for name in remaining_names:
             try:
-                fb = self._profile_store.load(name)
+                fb = self._profile_store.load(name, cipher=self._cipher)
                 self._resolved.append(fb)
                 yield fb
             except (FileNotFoundError, ValueError) as exc:

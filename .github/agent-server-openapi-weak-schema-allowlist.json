@@ -78,6 +78,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/AskOracleTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands"
+  },
+  {
     "pointer": "/components/schemas/BrowserClickTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
@@ -536,6 +542,12 @@
   {
     "pointer": "/paths/~1api~1agent-profiles~1{name}/post/requestBody/content/application~1json/schema/additionalProperties",
     "kind": "unrestricted-additional-properties",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1canvas-extensions~1installed~1{extension_name}~1bundle/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
     "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
   },
