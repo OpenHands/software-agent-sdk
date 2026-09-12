@@ -23,6 +23,9 @@ import inspect
 import json
 import os
 import re
+import shlex
+import shutil
+import sys
 import threading
 import time
 import uuid
@@ -102,6 +105,11 @@ from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextC
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    ACPGitCheckoutInstallSpec,
+    is_git_checkout_spec,
+)
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
     ACPEnvConflictSpec,
@@ -161,6 +169,42 @@ _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
 _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
     os.environ.get("ACP_NPX_CACHE_WARM_TIMEOUT", "300")
 )
+# Per-step budget for a git-checkout provider's install. Far larger than the
+# npx warm above because the work is not comparable: a cold install clones a
+# repository and resolves a whole Python dependency graph, and unlike a warm
+# that merely times out into a slower launch, exceeding this leaves no CLI to
+# launch at all.
+_ACP_CHECKOUT_INSTALL_TIMEOUT: float = float(
+    os.environ.get("ACP_CHECKOUT_INSTALL_TIMEOUT", "900")
+)
+# Attempts allowed for the clone inside that budget. GitHub meters a
+# repository whose ref advertisement runs to ~10^5 refs, and answers a burst
+# with an HTTP 429 that git reports as a failed RPC rather than retrying
+# itself; upstream's own installer works around the same throttle.
+_ACP_CHECKOUT_CLONE_ATTEMPTS: Final[int] = max(
+    1, int(os.environ.get("ACP_CHECKOUT_CLONE_ATTEMPTS", "3"))
+)
+# Delay before the second attempt, doubling for each one after it.
+_ACP_CHECKOUT_CLONE_BACKOFF: float = float(
+    os.environ.get("ACP_CHECKOUT_CLONE_BACKOFF", "15")
+)
+# Budget for reading a checkout's HEAD back. Local to a tree that is already
+# on disk, so it shares nothing with the transfer budget above.
+_ACP_CHECKOUT_VERIFY_TIMEOUT: Final[float] = 60.0
+# Where a venv keeps its console scripts. `uv sync` follows the interpreter's
+# own layout, which is `Scripts` on Windows and `bin` everywhere else, and the
+# launch command is resolved off PATH rather than by an absolute path — so
+# prepending the wrong one leaves the CLI unfindable after a clean install.
+_VENV_BIN_DIR: Final[str] = "Scripts" if os.name == "nt" else "bin"
+# How long to wait for another conversation's install to release the lock, and
+# how often to retry, on platforms whose lock cannot simply block (Windows).
+# Sized off the install budget: the holder is doing exactly that work.
+_ACP_CHECKOUT_LOCK_TIMEOUT: float = _ACP_CHECKOUT_INSTALL_TIMEOUT * 2
+_ACP_CHECKOUT_LOCK_POLL: Final[float] = 0.5
+# Written into a git-checkout provider's directory once its install finishes.
+# The directory itself cannot carry that signal: the clone exists well before
+# the venv does.
+_ACP_CHECKOUT_READY_FILE: Final[str] = ".openhands-acp-install-complete"
 _ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
@@ -419,17 +463,18 @@ def _warn_auth_selection_failure(
     )
 
 
+def _pinned_provider_version(provider_key: str) -> str | None:
+    """The version the pinned build of ``provider_key`` is expected to report."""
+    spec = ACP_INSTALL_CATALOG.get(provider_key)
+    return spec.pinned_version if spec is not None else None
+
+
 def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
     try:
         provider = detect_acp_provider_by_agent_name(agent_name)
         if provider is None:
             return
-        pinned_version = None
-        for command_part in provider.default_command:
-            package, separator, version = command_part.rpartition("@")
-            if separator and package:
-                pinned_version = version
-                break
+        pinned_version = _pinned_provider_version(provider.key)
         reported_version = next(
             (
                 match.group(1)
@@ -459,8 +504,9 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
         elif pinned_version is not None and reported_version != pinned_version:
             logger.warning(
                 "ACP provider version mismatch: provider=%s, pinned_version=%r, "
-                "reported_version=%r; provider was probably installed at runtime "
-                "via the npx fallback rather than preinstalled in the image",
+                "reported_version=%r; the running CLI is not the pinned build "
+                "(a runtime fallback resolved a different version, or the pin "
+                "moved)",
                 provider.key,
                 pinned_version,
                 reported_version,
@@ -494,6 +540,98 @@ def _npx_packages(command: list[str]) -> list[str]:
         if not arg.startswith("-"):
             return [arg]
     return []
+
+
+def _lock_exclusive(fd: int) -> bool:
+    """Take an exclusive inter-process lock on ``fd``, blocking until held.
+
+    POSIX and Windows expose different syscalls for this and neither is a
+    superset, so both are wired up rather than one being treated as the
+    platform. ``False`` means this interpreter offers neither, which is the
+    only case the caller may proceed unserialised on.
+
+    Windows needs the loop: ``LK_LOCK`` gives up after about ten seconds,
+    while the work being guarded is a clone plus a dependency resolve and runs
+    for minutes, so the non-blocking variant is polled instead.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        deadline = time.monotonic() + _ACP_CHECKOUT_LOCK_TIMEOUT
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Timed out after {_ACP_CHECKOUT_LOCK_TIMEOUT:.0f}s "
+                        "waiting for another conversation's ACP provider "
+                        "install to finish"
+                    ) from None
+                time.sleep(_ACP_CHECKOUT_LOCK_POLL)
+
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return True
+
+
+@contextlib.contextmanager
+def _installation_lock(path: Path) -> Generator[None]:
+    """Hold an exclusive inter-process lock on ``path`` for the block's duration.
+
+    Released by the OS if the holder dies — which is why the caller still has
+    to re-check its completion marker inside the block rather than treating
+    the lock as proof the work is unfinished.
+
+    Serialisation is not optional on any platform that can run the install:
+    two conversations reaching ``uv sync`` on one venv leave a half-written
+    environment that both then flag complete. Only an interpreter with neither
+    locking primitive proceeds without it, and it says so loudly.
+    """
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if not _lock_exclusive(fd):
+            logger.warning(
+                "No fcntl or msvcrt on this platform; ACP provider install is "
+                "not serialised across conversations sharing this sandbox"
+            )
+        yield
+    finally:
+        os.close(fd)
+
+
+def _ready_marker_payload(
+    marker: Path, spec: ACPGitCheckoutInstallSpec
+) -> dict[str, str] | None:
+    """A usable completion marker for ``spec``, or ``None``.
+
+    ``None`` covers absent, unreadable, malformed, written for another pin, or
+    missing the tracked-file baseline — all of which mean "install again"
+    rather than "launch it anyway", since the baseline is what a later launch
+    checks the tree against.
+    """
+    try:
+        payload = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("pin") != spec.source.pinned:
+        return None
+    if not isinstance(payload.get("tracked"), str):
+        return None
+    return payload
+
+
+def _git_checkout_spec(provider_key: str) -> ACPGitCheckoutInstallSpec | None:
+    """``provider_key``'s checkout spec, or ``None`` if it installs another way."""
+    spec = ACP_INSTALL_CATALOG.get(provider_key)
+    return spec if spec is not None and is_git_checkout_spec(spec) else None
 
 
 def _with_codex_base_url(
@@ -2480,12 +2618,18 @@ class ACPAgent(AgentBase):
             root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
         return Path(os.path.abspath(root))
 
-    def _acp_npm_cache_dir(self, state: ConversationState) -> Path:
+    def _acp_package_cache_dir(self, state: ConversationState, name: str) -> Path:
+        """A durable per-installation cache root named ``name``.
+
+        Shared across the sandbox's conversations and outliving container
+        replacement, so a provider fetched on demand is downloaded once rather
+        than once per container.
+        """
         if state.persistence_dir:
             root = Path(state.persistence_dir).parent
         else:
             root = Path(state.workspace.working_dir) / ".openhands"
-        cache_dir = root / "npm-cache"
+        cache_dir = root / name
         cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         return Path(os.path.abspath(cache_dir))
 
@@ -2532,6 +2676,293 @@ class ACPAgent(AgentBase):
                 f"ACP provider cache warm failed for {provider_key} "
                 f"(exit code {process.returncode})"
             )
+
+    async def _run_checkout_step(
+        self,
+        command: Sequence[str],
+        provider_key: str,
+        env: dict[str, str],
+        cwd: str,
+        timeout: float = _ACP_CHECKOUT_INSTALL_TIMEOUT,
+    ) -> str:
+        """Run one install step, failing loudly with its own stderr.
+
+        Unlike the npx cache warm — whose failure only costs a slower launch —
+        a failed step here means the CLI will not exist at all, so the output
+        that explains why is worth keeping rather than discarding to DEVNULL.
+
+        Returns the step's stdout, which is the answer for the query steps
+        (``git rev-parse``) and empty in practice for the install ones.
+        """
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=cwd,
+            env=env,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout
+            )
+        except TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(
+                f"ACP provider install timed out after {timeout:.0f}s "
+                f"for {provider_key}: {shlex.join(command)}"
+            ) from exc
+        if process.returncode:
+            detail = maybe_truncate(
+                (stderr or b"").decode("utf-8", "replace").strip(),
+                _ACP_SUBPROCESS_LOG_LINE_CHARS,
+            )
+            raise RuntimeError(
+                f"ACP provider install failed for {provider_key} "
+                f"(exit code {process.returncode}): {shlex.join(command)}\n{detail}"
+            )
+        return (stdout or b"").decode("utf-8", "replace")
+
+    async def _clone_pinned_ref(
+        self,
+        spec: ACPGitCheckoutInstallSpec,
+        staging: Path,
+        env: dict[str, str],
+    ) -> None:
+        """Clone ``spec``'s ref into ``staging``, retrying a throttled fetch.
+
+        Serving a ~10^5-ref advertisement costs GitHub real work, and it meters
+        the repository accordingly: a burst comes back as ``HTTP 429``, which
+        git reports as a failed RPC rather than something it retries itself.
+        Upstream's own installer works around the same throttle. A cold install
+        is the only time this runs, so one metered minute is worth far more
+        than the provider being unusable until the next launch.
+
+        Every failure is retried, not just the ones that look transient:
+        matching on stderr would have to keep pace with git's and GitHub's
+        wording, and the cost of being wrong is asymmetric — a stale pin loses
+        the backoff before failing, a missed throttle loses the install.
+
+        The attempts share one deadline, so the caller's budget still bounds
+        the phase however many of them run.
+        """
+        deadline = time.monotonic() + _ACP_CHECKOUT_INSTALL_TIMEOUT
+        for attempt in range(1, _ACP_CHECKOUT_CLONE_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"ACP provider clone ran out of time for {spec.key} after "
+                    f"{attempt - 1} attempt(s): {spec.source.pinned}"
+                )
+            try:
+                await self._run_checkout_step(
+                    spec.clone_command(str(staging)),
+                    spec.key,
+                    env,
+                    str(staging.parent),
+                    timeout=remaining,
+                )
+                return
+            except RuntimeError as error:
+                if attempt == _ACP_CHECKOUT_CLONE_ATTEMPTS:
+                    raise
+                backoff = min(
+                    _ACP_CHECKOUT_CLONE_BACKOFF * 2 ** (attempt - 1),
+                    max(deadline - time.monotonic(), 0.0),
+                )
+                logger.warning(
+                    "ACP provider clone attempt %d/%d failed for %s; "
+                    "retrying in %.0fs: %s",
+                    attempt,
+                    _ACP_CHECKOUT_CLONE_ATTEMPTS,
+                    spec.key,
+                    backoff,
+                    error,
+                )
+                # A failed transfer can still have written part of the tree,
+                # and `git clone` refuses a destination that exists.
+                shutil.rmtree(staging, ignore_errors=True)
+                await asyncio.sleep(backoff)
+
+    async def _prepare_git_checkout(
+        self,
+        spec: ACPGitCheckoutInstallSpec,
+        checkout_dir: Path,
+        env: dict[str, str],
+    ) -> None:
+        """Clone ``spec``'s pinned ref and install it, once per pin.
+
+        The clone lands via a temporary sibling and an atomic rename, so an
+        interrupted transfer never leaves a half-populated tree behind. The
+        install then has to run *in place*: ``uv sync`` writes the venv's own
+        absolute path into every console script's shebang, so a venv built
+        under the staging name and renamed afterwards points its ``exec`` at a
+        directory that no longer exists.
+
+        Completion is therefore recorded by :data:`_ACP_CHECKOUT_READY_FILE`
+        rather than by the directory existing, and re-running the install over
+        an already-synced checkout is both cheap and how a partial one heals.
+
+        Nothing in the tree runs before its ``HEAD`` is confirmed to be the
+        pinned commit — ``uv sync`` executes the project's own build backend,
+        and the ref the clone asked for is no evidence of what arrived. A tree
+        that fails the check keeps no marker, so it never launches and the next
+        attempt re-checks it instead of re-cloning.
+        """
+        logger.info(
+            "Installing ACP provider from git: provider=%s, source=%s, dest=%s; "
+            "first use clones and installs the provider before session startup",
+            spec.key,
+            spec.source.pinned,
+            checkout_dir,
+        )
+        if not checkout_dir.is_dir():
+            staging = checkout_dir.with_name(
+                f"{checkout_dir.name}.partial-{os.getpid()}"
+            )
+            shutil.rmtree(staging, ignore_errors=True)
+            staging.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                await self._clone_pinned_ref(spec, staging, env)
+                try:
+                    staging.rename(checkout_dir)
+                except OSError:
+                    # Lost the race to a concurrent conversation cloning the
+                    # same pin. Its tree is equivalent, so keep it.
+                    if not checkout_dir.is_dir():
+                        raise
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+
+        tracked = await self._verify_checkout_identity(spec, checkout_dir, env)
+
+        await self._run_checkout_step(
+            spec.sync_command(), spec.key, env, str(checkout_dir)
+        )
+        (checkout_dir / _ACP_CHECKOUT_READY_FILE).write_text(
+            json.dumps({"pin": spec.source.pinned, "tracked": tracked})
+        )
+
+    async def _verify_checkout_identity(
+        self,
+        spec: ACPGitCheckoutInstallSpec,
+        checkout_dir: Path,
+        env: dict[str, str],
+        expected_tracked: str | None = None,
+    ) -> str:
+        """Confirm ``checkout_dir`` still holds the reviewed source, or raise.
+
+        Run before the install and again before every launch. The cache is
+        shared across the conversations of one sandbox and writable by the
+        same user their terminals run as, so "it was the pinned commit when
+        installed" is not a property that survives on its own — the tree has
+        to answer for itself each time it is about to run with a
+        conversation's credentials.
+
+        A commit hash commits to its whole tree, so ``HEAD`` matching the pin
+        is what makes the source cryptographically the reviewed content. The
+        tracked-file check then catches a worktree edited after checkout,
+        compared against ``expected_tracked`` — the baseline the install
+        recorded — because a pristine checkout is not necessarily a quiet one
+        (see :meth:`ACPGitCheckoutInstallSpec.tracked_status_command`). Pass
+        ``None`` to capture that baseline instead of enforcing it.
+
+        Returns the tracked-file state, for the caller to record.
+        """
+        resolved = (
+            await self._run_checkout_step(
+                spec.resolved_commit_command(),
+                spec.key,
+                env,
+                str(checkout_dir),
+                timeout=_ACP_CHECKOUT_VERIFY_TIMEOUT,
+            )
+        ).strip()
+        if resolved != spec.source.commit:
+            raise RuntimeError(
+                f"ACP provider source identity mismatch for {spec.key}: "
+                f"{spec.source.url} ref {spec.source.ref} is at {resolved!r}, "
+                f"but the catalog pins {spec.source.commit!r}. Either the ref "
+                "moved and the recorded commit needs re-verifying against the "
+                f"upstream release, or {checkout_dir} was modified after it "
+                "was installed."
+            )
+        # rstrip only the trailing newline: porcelain's leading XY status
+        # columns are part of what is being compared.
+        tracked = (
+            await self._run_checkout_step(
+                spec.tracked_status_command(),
+                spec.key,
+                env,
+                str(checkout_dir),
+                timeout=_ACP_CHECKOUT_VERIFY_TIMEOUT,
+            )
+        ).rstrip("\n")
+        if expected_tracked is not None and tracked != expected_tracked:
+            raise RuntimeError(
+                f"ACP provider checkout for {spec.key} was modified after it "
+                f"was installed: tracked files under {checkout_dir} no longer "
+                f"match the state recorded at install time.\n"
+                f"  recorded: {expected_tracked or '(clean)'}\n"
+                f"  now:      {tracked or '(clean)'}\n"
+                "Refusing to launch it with this conversation's credentials. "
+                "Delete the directory to force a clean reinstall."
+            )
+        return tracked
+
+    def _acp_git_checkout_bin(
+        self,
+        state: ConversationState,
+        spec: ACPGitCheckoutInstallSpec,
+        env: dict[str, str],
+    ) -> Path:
+        """Path to the venv ``bin`` holding ``spec``'s console script.
+
+        Keyed by pin, so bumping the ref installs alongside the old checkout
+        rather than reusing a stale tree, and shared across the sandbox's
+        conversations like the package caches next to it.
+        """
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", spec.source.pinned).strip("-")
+        checkout_dir = self._acp_package_cache_dir(state, "acp-checkouts") / slug
+        marker = checkout_dir / _ACP_CHECKOUT_READY_FILE
+        bin_dir = checkout_dir / ".venv" / _VENV_BIN_DIR
+        recorded = _ready_marker_payload(marker, spec)
+        if recorded is None:
+            # Serialise the whole install across conversations sharing this
+            # sandbox. Staging the clone makes it crash-safe but not
+            # concurrent: two conversations starting together would both reach
+            # `uv sync` on one venv, and both would then write the marker — so
+            # a pair of syncs that trod on each other would leave a broken venv
+            # flagged complete.
+            lock_path = checkout_dir.parent / f"{checkout_dir.name}.lock"
+            with _installation_lock(lock_path):
+                recorded = _ready_marker_payload(marker, spec)
+                if recorded is None:
+                    self._executor.run_async(
+                        self._prepare_git_checkout(spec, checkout_dir, env),
+                        timeout=(
+                            _ACP_CHECKOUT_INSTALL_TIMEOUT * 2
+                            + _ACP_CHECKOUT_VERIFY_TIMEOUT
+                            + 5
+                        ),
+                    )
+                    # Installed and verified in this call; nothing has had the
+                    # chance to touch it since.
+                    return bin_dir
+        # An install this call did not perform: either a previous launch's, or
+        # one a concurrent conversation just finished. The marker records that
+        # an install completed, not that what it produced is still the reviewed
+        # source — the tree is shared across the sandbox's conversations and
+        # writable by the same user their terminals run as. So it answers for
+        # itself before it gets this conversation's credentials.
+        self._executor.run_async(
+            self._verify_checkout_identity(
+                spec, checkout_dir, env, recorded["tracked"]
+            ),
+            timeout=_ACP_CHECKOUT_VERIFY_TIMEOUT * 2 + 5,
+        )
+        return bin_dir
 
     def _isolate_acp_data_dir(
         self, state: ConversationState, env: dict[str, str]
@@ -2902,9 +3333,10 @@ class ACPAgent(AgentBase):
         # name-scan per command (unlike the regular agent's bash tool), so
         # credentials must be delivered upfront. Registry values override
         # ambient os.environ. Skip file secrets (materialised to disk below).
-        env.update(
-            state.secret_registry.get_all_secrets_as_env_vars(exclude=file_secret_names)
+        conversation_secrets = state.secret_registry.get_all_secrets_as_env_vars(
+            exclude=file_secret_names
         )
+        env.update(conversation_secrets)
         if self.acp_isolate_data_dir:
             self._isolate_acp_data_dir(state, env)
 
@@ -2928,7 +3360,9 @@ class ACPAgent(AgentBase):
         provider = detect_acp_provider_by_command(self.acp_command)
         packages = _npx_packages(self.acp_command)
         if provider is not None and packages:
-            env["npm_config_cache"] = str(self._acp_npm_cache_dir(state))
+            env["npm_config_cache"] = str(
+                self._acp_package_cache_dir(state, "npm-cache")
+            )
             try:
                 self._executor.run_async(
                     self._warm_npx_cache(packages, provider.key, env, working_dir),
@@ -2941,6 +3375,41 @@ class ACPAgent(AgentBase):
                     provider.key,
                     error,
                 )
+
+        # A git-checkout provider ships no binary in the image and cannot be
+        # fetched by the launch command itself, so the checkout is installed
+        # here and its venv prepended to PATH. Unlike the npx warm above this
+        # is not best-effort: without it `command` resolves to nothing.
+        #
+        # Whether the binary already resolves on the *ambient* PATH is
+        # deliberately not consulted: something answering to the same name is
+        # not the pinned, commit-verified build, and prepending the venv is
+        # what makes the child exec ours. Only an explicitly-pathed command is
+        # exempt, because then PATH plays no part in what runs and installing
+        # could not change it.
+        checkout_spec = (
+            _git_checkout_spec(provider.key) if provider is not None else None
+        )
+        if checkout_spec is not None and not os.path.dirname(command):
+            env["UV_CACHE_DIR"] = str(self._acp_package_cache_dir(state, "uv-cache"))
+            # An interpreter uv provisions to satisfy the project's
+            # ``requires-python`` otherwise lands under the user's home, where
+            # container replacement takes it — and with it the venv that
+            # symlinks into it, leaving a checkout whose marker says ready.
+            env["UV_PYTHON_INSTALL_DIR"] = str(
+                self._acp_package_cache_dir(state, "uv-python")
+            )
+            # Install with the conversation's credentials stripped. The ACP
+            # server needs them; `git clone` and `uv sync` do not, and the
+            # editable install runs the pinned project's own build backend —
+            # third-party code that has no business seeing the user's keys.
+            install_env = {
+                key: value
+                for key, value in env.items()
+                if key not in conversation_secrets
+            }
+            bin_dir = self._acp_git_checkout_bin(state, checkout_spec, install_env)
+            env["PATH"] = os.pathsep.join((str(bin_dir), env.get("PATH", os.defpath)))
 
         # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).

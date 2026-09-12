@@ -4,6 +4,7 @@ from pathlib import Path
 from openhands.sdk.settings.acp_install_catalog import (
     ACP_INSTALL_CATALOG,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
+    is_npm_spec,
 )
 
 
@@ -126,6 +127,8 @@ def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
         "acp-providers stage should no longer branch on a hardcoded provider-key list"
     )
     for spec in ACP_INSTALL_CATALOG.values():
+        if not is_npm_spec(spec):
+            continue
         for pkg in spec.packages:
             assert pkg.pinned not in acp_stage, (
                 f"{AGENT_SERVER_DOCKERFILE}: found hardcoded package pin "
@@ -148,7 +151,7 @@ def test_agent_server_node_pin_clears_every_declared_engine_floor() -> None:
     pinned = tuple(int(part) for part in match.group(1).split("."))
 
     for spec in ACP_INSTALL_CATALOG.values():
-        if spec.min_node_version is None:
+        if not is_npm_spec(spec) or spec.min_node_version is None:
             continue
         required = tuple(int(part) for part in spec.min_node_version.split("."))
         assert pinned >= required, (

@@ -6,6 +6,10 @@ agent-server image build. Credential-free; needs ``npm`` and network access to
 the registry (skipped when unavailable). See OpenHands/software-agent-sdk#4830
 P0-3.
 
+Covers the npm-installed providers only. A ``uvx`` provider's pin is a git ref
+with no registry to interrogate; ``test_acp_conformance`` resolves it for real
+instead, which is the stronger check.
+
 Deselected from the default run via the ``acp_live`` marker (see
 ``tests/sdk/agent/test_acp_conformance.py`` for why): the SDK's default test
 job is a required merge check, and a live registry dependency must not be
@@ -22,7 +26,11 @@ import subprocess
 
 import pytest
 
-from openhands.sdk.settings.acp_install_catalog import ACP_INSTALL_CATALOG
+from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
+    ACPInstallSpec,
+    is_npm_spec,
+)
 
 
 def _npm_registry_reachable(timeout: float = 3.0) -> bool:
@@ -40,9 +48,11 @@ requires_npm = pytest.mark.skipif(
 
 pytestmark = pytest.mark.acp_live
 
+_NPM_SPECS = [spec for spec in ACP_INSTALL_CATALOG.values() if is_npm_spec(spec)]
+
 _ALL_PINS = [
     pytest.param(spec.key, pkg.name, pkg.version, id=f"{spec.key}:{pkg.pinned}")
-    for spec in ACP_INSTALL_CATALOG.values()
+    for spec in _NPM_SPECS
     for pkg in spec.packages
 ]
 
@@ -120,10 +130,10 @@ def _npm_view_bins(pinned: str) -> set[str]:
 
 
 @requires_npm
-@pytest.mark.parametrize(
-    "spec", ACP_INSTALL_CATALOG.values(), ids=list(ACP_INSTALL_CATALOG)
-)
-def test_binary_name_is_declared_by_one_of_the_pinned_packages(spec) -> None:
+@pytest.mark.parametrize("spec", _NPM_SPECS, ids=[s.key for s in _NPM_SPECS])
+def test_binary_name_is_declared_by_one_of_the_pinned_packages(
+    spec: ACPInstallSpec,
+) -> None:
     """``binary_name`` must be a bin some pinned package actually declares.
 
     The image build's own guard only covers providers a given build installs,
