@@ -17,6 +17,7 @@ from openhands.sdk.context.prompts.registry import PromptRegistry
 from openhands.sdk.context.prompts.section import PromptSection
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
+    CustomGpgSigningSection,
     CustomSecretsSection,
     CustomSuffixSection,
     DateTimeSection,
@@ -85,6 +86,7 @@ _DYNAMIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
     AvailableSkillsSection(),  # guard: available_skills_prompt
     CustomSuffixSection(),  # guard: system_message_suffix
     CustomSecretsSection(),  # guard: secret_infos present
+    CustomGpgSigningSection(),  # guard: a GPG_* secret is registered
     # DateTimeSection is intentionally last: it is the only per-conversation
     # volatile value, so the stable dynamic content stays a cache-friendly prefix.
     DateTimeSection(),

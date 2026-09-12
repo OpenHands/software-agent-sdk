@@ -17,12 +17,33 @@ from openhands.sdk.context.prompts.section import CacheTier, PromptContext
 
 __all__ = [
     "AvailableSkillsSection",
+    "CustomGpgSigningSection",
     "CustomSecretsSection",
     "CustomSuffixSection",
     "DateTimeSection",
     "MemoryContextSection",
     "RepoContextSection",
 ]
+
+
+# Secret names that signal a user-configured GPG signing key (case-insensitive).
+# Users register one of these as a custom secret (Secrets panel) holding their
+# armored GPG private key. The value reaches the sandbox as an env var via the
+# standard secret-injection mechanism, so the agent imports + signs with it.
+_GPG_SECRET_NAMES = frozenset({"GPG_KEY", "GPG_PRIVATE_KEY"})
+
+
+def _find_gpg_secret_name(
+    secret_infos: tuple[tuple[str, str | None], ...],
+) -> str | None:
+    """Return the configured GPG secret name, or ``None`` if none is registered.
+
+    Matching is case-insensitive against :data:`_GPG_SECRET_NAMES`.
+    """
+    for name, _description in secret_infos:
+        if name and name.upper() in _GPG_SECRET_NAMES:
+            return name
+    return None
 
 
 class DateTimeSection:
@@ -157,4 +178,35 @@ class CustomSecretsSection:
             "You have access to the following environment variables\n"
             f"{lines}\n"
             "</CUSTOM_SECRETS>"
+        )
+
+
+class CustomGpgSigningSection:
+    """``<GPG_SIGNING>`` -- signed-commit instructions, gated on a GPG secret.
+
+    Renders only when a secret named ``GPG_KEY`` or ``GPG_PRIVATE_KEY`` is
+    registered (case-insensitive). The agent imports the armored private key,
+    enables ``commit.gpgsign``, pins ``user.signingkey``, and -- critically for
+    GitHub to mark commits "Verified" -- sets ``user.name``/``user.email`` to
+    match the key's UID, overriding any pre-set git identity.
+    """
+
+    name = "gpg_signing"
+    cache_tier = CacheTier.DYNAMIC
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return _find_gpg_secret_name(ctx.secret_infos) is not None
+
+    def render(self, ctx: PromptContext) -> str | None:
+        secret_name = _find_gpg_secret_name(ctx.secret_infos)
+        assert secret_name is not None  # guard() guarantees this
+        return (
+            "<GPG_SIGNING>\n"
+            f"A GPG signing key is available as the secret **${secret_name}**. Sign every commit so GitHub (and other hosts requiring signed commits) accepts them.\n"
+            f"1. Import the key once per sandbox: `printf '%s' \"${secret_name}\" | gpg --import` (the secret is injected as an env var when you reference it; its value is the armored private key, masked in output).\n"
+            "2. Enable signing and pin the key: `git config commit.gpgsign true` and `git config user.signingkey <KEY_ID>`. Discover the KEY_ID with `gpg --list-secret-keys --keyid-format=long` (the `sec` line's hash after the slash, e.g. `3AA5C34371567BD2`).\n"
+            '3. Match the commit author to the key: set `git config user.email` and `git config user.name` to the identity in the imported key\'s UID. GitHub only shows "Verified" when the commit author email matches the key\'s UID, so you MUST override any pre-set git identity here -- the usual "do not modify git config" guidance does not apply while a signing key is configured.\n'
+            '4. Commit normally (`git commit`); `commit.gpgsign=true` signs automatically. If signing fails with "no secret key", re-import the key -- its value may have been refreshed.\n'
+            "Do not print or log the key value; reference `${secret_name}` only inside import/config commands.\n"
+            "</GPG_SIGNING>"
         )
