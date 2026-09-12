@@ -719,9 +719,16 @@ class ConversationService:
         default_factory=dict, init=False
     )
 
-    def _load_catalog_sync(self) -> dict[UUID, _ConversationRecord]:
+    def _load_catalog_sync(
+        self, conversation_id: UUID | None = None
+    ) -> dict[UUID, _ConversationRecord]:
         records: dict[UUID, _ConversationRecord] = {}
-        for conversation_dir in self.conversations_dir.iterdir():
+        directories = (
+            [self.conversations_dir / conversation_id.hex]
+            if conversation_id is not None
+            else self.conversations_dir.iterdir()
+        )
+        for conversation_dir in directories:
             meta_file = conversation_dir / "meta.json"
             if not meta_file.exists():
                 continue
@@ -1076,13 +1083,17 @@ class ConversationService:
             record.cached_info = None
             record.state_signature = signature
 
-    async def _reconcile_active_records(self) -> None:
+    async def _reconcile_active_records(
+        self, conversation_id: UUID | None = None
+    ) -> None:
         """Discover externally persisted records and injected live services."""
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
         if self.sync_external_catalog:
-            disk_records = await asyncio.to_thread(self._load_catalog_sync)
+            disk_records = await asyncio.to_thread(
+                self._load_catalog_sync, conversation_id
+            )
             for conversation_id, record in disk_records.items():
                 event_service = event_services.get(conversation_id)
                 if event_service is not None and event_service.is_open():
@@ -1228,7 +1239,7 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         if self.sync_external_catalog:
-            await self._reconcile_active_records()
+            await self._reconcile_active_records(conversation_id)
         record = self._conversation_records.get(conversation_id)
         if record is None:
             event_service = self._event_services.get(conversation_id)

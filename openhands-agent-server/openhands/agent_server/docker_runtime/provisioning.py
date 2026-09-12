@@ -72,6 +72,8 @@ class RuntimeProvisioningStore:
             raise ValueError("Runtime storage roots must not be symlinks")
         self.control_root.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.control_root.chmod(0o700)
+        self.data_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        self.data_root.chmod(0o700)
 
     def manifest_path(self, conversation_id: UUID) -> Path:
         return self.control_root / f"{conversation_id.hex}.json"

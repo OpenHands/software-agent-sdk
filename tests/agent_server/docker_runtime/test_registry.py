@@ -174,6 +174,10 @@ async def test_build_container_mounts_dedicated_writable_workspace(
     await registry.prepare(conversation_id)
     registry._build_container(conversation_id)
 
+    assert (
+        registry.provisioning.runtime_dir(conversation_id).stat().st_mode & 0o777
+        == 0o700
+    )
     host_workspace = workspace_path.resolve() / conversation_id.hex
     assert host_workspace.is_dir()
     assert f"{host_workspace}:/workspace" in captured_volumes

@@ -4239,3 +4239,28 @@ async def test_external_catalog_preserves_live_metadata(persisted_conversation):
         assert info.title == "Live title"
         assert (await service.search_conversations()).items[0].title == "Live title"
         assert await service.get_event_service(conversation_id) is runtime
+
+
+@pytest.mark.asyncio
+async def test_external_lookup_only_decrypts_requested_record(persisted_conversation):
+    conversations_dir, conversation_id = persisted_conversation
+    reads = []
+
+    def cipher_for(cid):
+        reads.append(cid)
+        return Cipher("catalog-test-key")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        sync_external_catalog=True,
+        runtime_cipher_resolver=cipher_for,
+    ) as service:
+        unrelated = uuid4()
+        directory = conversations_dir / unrelated.hex
+        directory.mkdir()
+        (directory / "meta.json").write_bytes(
+            (conversations_dir / conversation_id.hex / "meta.json").read_bytes()
+        )
+        reads.clear()
+        assert await service.get_conversation(conversation_id) is not None
+        assert unrelated not in reads

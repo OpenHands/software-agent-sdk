@@ -19,6 +19,7 @@ def test_runtime_control_identity_is_private_and_survives_restart(
         session_api_keys=["outer-api-key"],
     )
     store = RuntimeProvisioningStore(config)
+    assert store.data_root.stat().st_mode & 0o777 == 0o700
     first_id, second_id = uuid4(), uuid4()
     first = store.create(first_id)
     second = store.create(second_id)

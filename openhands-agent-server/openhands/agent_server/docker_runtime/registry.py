@@ -276,6 +276,8 @@ class DockerConversationRegistry:
         cfg = self._config
         identity = self.provisioning.load(conversation_id)
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
+        runtime_dir.mkdir(mode=0o700, exist_ok=True)
+        runtime_dir.chmod(0o700)
         host_persist_dir = RuntimeProvisioningStore._direct_child(
             runtime_dir, "persistence"
         )
