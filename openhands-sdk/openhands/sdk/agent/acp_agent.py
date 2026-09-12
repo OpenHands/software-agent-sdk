@@ -1962,7 +1962,7 @@ class ACPAgent(AgentBase):
             self._file_credential_bindings[secret_name] = binding
 
     def restart_for_updated_credentials(self, secret_names: Collection[str]) -> None:
-        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        configured = {spec.secret_name for spec in self._active_file_secrets()}
         with self._file_credential_lock:
             self._replace_file_credentials_on_next_materialisation.update(
                 configured.intersection(secret_names)
@@ -2457,7 +2457,7 @@ class ACPAgent(AgentBase):
         (their values are file blobs, not env vars the subprocess can reference
         by name).
         """
-        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        configured = {spec.secret_name for spec in self._active_file_secrets()}
         if not configured:
             return set()
         return set(state.secret_registry.secret_sources) & configured
@@ -2592,6 +2592,42 @@ class ACPAgent(AgentBase):
             self.acp_server or ""
         ) or detect_acp_provider_by_command(self.acp_command)
 
+    def _active_file_secrets(self) -> list[ACPFileSecretSpec]:
+        """The file-secret specs that apply to the provider this agent runs.
+
+        Drops the specs that are *another registered provider's* reserved
+        credential and keeps everything else, so a harness added upstream cannot
+        change how this provider's conversation treats a secret carrying the new
+        reserved name (see #4923). A name several providers share stays: it is
+        this provider's too.
+
+        Deliberately no provenance test. :attr:`acp_file_secrets` defaults to the
+        union across the registry, but a persisted conversation carries whatever
+        that union was when it was written, so comparing against today's default
+        would read an older list as a caller override and silently stop scoping
+        after an upgrade. Filtering by ownership needs no such distinction, and a
+        spec for a CLI outside the registry is owned by nobody and always applies.
+
+        An unrecognised server keeps every spec, matching
+        :meth:`_strip_conflicting_env`: without an identity we cannot tell whose
+        credential a reserved name belongs to.
+        """
+        provider = self._resolved_provider()
+        if provider is None:
+            return list(self.acp_file_secrets)
+        own = {spec.secret_name for spec in provider.file_secrets}
+        owned_elsewhere = {
+            spec.secret_name
+            for key, info in ACP_PROVIDERS.items()
+            if key != provider.key
+            for spec in info.file_secrets
+        } - own
+        return [
+            spec
+            for spec in self.acp_file_secrets
+            if spec.secret_name not in owned_elsewhere
+        ]
+
     def _strip_conflicting_env(self, env: dict[str, str]) -> None:
         """Remove env vars that would defeat this provider's own credential.
 
@@ -2620,7 +2656,7 @@ class ACPAgent(AgentBase):
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
-        for spec in self.acp_file_secrets:
+        for spec in self._active_file_secrets():
             name = spec.secret_name
             with self._file_credential_lock:
                 replace_existing = (
@@ -3096,7 +3132,7 @@ class ACPAgent(AgentBase):
                         or detect_acp_provider_by_agent_name(agent_name)
                     )
                     configured = _preconfigured_credentials(
-                        auth_provider, self.acp_file_secrets, env
+                        auth_provider, self._active_file_secrets(), env
                     )
                     if configured:
                         logger.info(
