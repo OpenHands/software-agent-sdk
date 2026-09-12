@@ -1,4 +1,5 @@
 import json
+import re
 from abc import abstractmethod
 from collections.abc import Sequence
 from typing import Any, ClassVar, Literal
@@ -19,6 +20,17 @@ from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
 
 
 logger = get_logger(__name__)
+
+# OpenAI Responses API requires function_call ids/call_ids to match
+# ^[A-Za-z0-9_-]+$. Parallel MCP tool calls can produce ids containing ':'
+# (e.g. "github_get_file_contents:1"), so we normalize any disallowed
+# character to '_' at the canonical-id boundary.
+_RESPONSES_ID_DISALLOWED_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def normalize_tool_call_id(tool_call_id: str) -> str:
+    """Replace characters disallowed by the Responses API id regex with '_'."""
+    return _RESPONSES_ID_DISALLOWED_RE.sub("_", tool_call_id)
 
 
 class MessageToolCall(BaseModel):
@@ -55,7 +67,7 @@ class MessageToolCall(BaseModel):
             raise ValueError(f"tool_call.function.name is None for {tool_call=}")
 
         return cls(
-            id=tool_call.id,
+            id=normalize_tool_call_id(tool_call.id),
             name=tool_call.function.name,
             arguments=tool_call.function.arguments,
             origin="completion",
@@ -63,15 +75,26 @@ class MessageToolCall(BaseModel):
 
     @classmethod
     def from_responses_function_call(
-        cls, item: ResponseFunctionToolCall | OutputFunctionToolCall
+        cls, item: ResponseFunctionToolCall | OutputFunctionToolCall | Any
     ) -> "MessageToolCall":
-        """Create a MessageToolCall from a typed OpenAI Responses function_call item.
+        """Create a MessageToolCall from an OpenAI Responses function_call item.
+
+        Accepts typed items (``ResponseFunctionToolCall`` /
+        ``OutputFunctionToolCall``) as well as generic objects
+        (``BaseLiteLLMOpenAIResponseObject`` from streaming) or plain dicts.
 
         Note: OpenAI Responses function_call.arguments is already a JSON string.
         """
-        call_id = item.call_id or item.id or ""
-        name = item.name or ""
-        arguments_str = item.arguments or ""
+
+        def _get(obj: Any, key: str, default: Any = None) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        raw_item_id = _get(item, "id")
+        call_id = _get(item, "call_id") or raw_item_id or ""
+        name = _get(item, "name") or ""
+        arguments_str = _get(item, "arguments") or ""
 
         if not call_id:
             raise ValueError(f"Responses function_call missing call_id/id: {item!r}")
@@ -79,8 +102,8 @@ class MessageToolCall(BaseModel):
             raise ValueError(f"Responses function_call missing name: {item!r}")
 
         return cls(
-            id=str(call_id),
-            responses_item_id=str(item.id) if item.id else None,
+            id=normalize_tool_call_id(str(call_id)),
+            responses_item_id=str(raw_item_id) if raw_item_id else None,
             name=str(name),
             arguments=arguments_str,
             origin="responses",
@@ -572,23 +595,10 @@ class Message(BaseModel):
                     part_text = _get(part, "text")
                     if part_type == "output_text" and part_text:
                         assistant_text_parts.append(part_text)
-            elif (
-                isinstance(item, (OutputFunctionToolCall, ResponseFunctionToolCall))
-                and item_type == "function_call"
-            ):
-                tc = MessageToolCall.from_responses_function_call(item)
-                tool_calls.append(tc)
             elif item_type == "function_call":
-                # Handle generic objects (e.g., BaseLiteLLMOpenAIResponseObject
-                # from streaming) or dicts with function_call type
-                raw_item_id = _get(item, "id")
-                tc = MessageToolCall(
-                    id=_get(item, "call_id") or raw_item_id or "",
-                    responses_item_id=str(raw_item_id) if raw_item_id else None,
-                    name=_get(item, "name", ""),
-                    arguments=_get(item, "arguments", ""),
-                    origin="responses",
-                )
+                # Typed items, generic objects (e.g. BaseLiteLLMOpenAIResponseObject
+                # from streaming), or dicts with function_call type
+                tc = MessageToolCall.from_responses_function_call(item)
                 tool_calls.append(tc)
             elif item_type == "reasoning":
                 if isinstance(item, ResponseReasoningItem):
