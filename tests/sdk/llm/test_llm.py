@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from litellm.exceptions import (
@@ -42,6 +42,77 @@ def test_llm_init_with_default_config(default_llm):
     )
     assert isinstance(default_llm.metrics, Metrics)
     assert default_llm.metrics.model_name == "gpt-4o"
+
+
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+def test_generate_dispatches_to_configured_api(default_llm, api_mode):
+    llm = default_llm.model_copy(update={"api_mode": api_mode})
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    response = Mock(spec=LLMResponse)
+
+    with (
+        patch.object(LLM, "completion", return_value=response) as completion,
+        patch.object(LLM, "responses", return_value=response) as responses,
+    ):
+        assert llm.generate(messages, store=False) is response
+
+    if api_mode == "responses":
+        responses.assert_called_once_with(
+            messages=messages,
+            tools=None,
+            include=None,
+            store=False,
+            add_security_risk_prediction=False,
+            on_token=None,
+            call_context=None,
+        )
+        completion.assert_not_called()
+    else:
+        completion.assert_called_once_with(
+            messages=messages,
+            tools=None,
+            add_security_risk_prediction=False,
+            on_token=None,
+            call_context=None,
+        )
+        responses.assert_not_called()
+
+
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+@pytest.mark.asyncio
+async def test_agenerate_dispatches_to_configured_api(default_llm, api_mode):
+    llm = default_llm.model_copy(update={"api_mode": api_mode})
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    response = Mock(spec=LLMResponse)
+
+    with (
+        patch.object(
+            LLM, "acompletion", AsyncMock(return_value=response)
+        ) as completion,
+        patch.object(LLM, "aresponses", AsyncMock(return_value=response)) as responses,
+    ):
+        assert await llm.agenerate(messages, store=False) is response
+
+    if api_mode == "responses":
+        responses.assert_awaited_once_with(
+            messages=messages,
+            tools=None,
+            include=None,
+            store=False,
+            add_security_risk_prediction=False,
+            on_token=None,
+            call_context=None,
+        )
+        completion.assert_not_awaited()
+    else:
+        completion.assert_awaited_once_with(
+            messages=messages,
+            tools=None,
+            add_security_risk_prediction=False,
+            on_token=None,
+            call_context=None,
+        )
+        responses.assert_not_awaited()
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
