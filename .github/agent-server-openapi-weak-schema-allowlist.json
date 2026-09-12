@@ -360,6 +360,18 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/MCPToolObservation/properties/result_meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "MCP protocol result metadata is intentionally protocol-opaque.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/MCPToolObservation/properties/structured_content/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "MCP protocol structured result data is intentionally protocol-opaque.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/components/schemas/PlanningFileEditorTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",

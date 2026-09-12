@@ -189,10 +189,56 @@ class MCPToolExecutor(ToolExecutor):
                 else block
                 for block in observation.content
             ]
-            return observation.model_copy(update={"content": masked_content})
         except Exception as e:
+            # Text content fails open; the client-visible structured fields
+            # must never pass through unmasked.
             logger.warning(f"Failed to mask secrets in MCP observation: {e}")
-            return observation
+            return observation.model_copy(
+                update={"structured_content": None, "result_meta": None}
+            )
+
+        def mask_json(value: Any) -> Any:
+            if isinstance(value, str):
+                return secret_registry.mask_secrets_in_output(value)
+            if isinstance(value, list):
+                return [mask_json(item) for item in value]
+            if isinstance(value, dict):
+                masked: dict[Any, Any] = {}
+                for key, item in value.items():
+                    masked_key = secret_registry.mask_secrets_in_output(key)
+                    if masked_key in masked:
+                        raise ValueError(
+                            "masked MCP result keys collide; refusing to merge entries"
+                        )
+                    masked[masked_key] = mask_json(item)
+                return masked
+            # A registered secret echoed back as a JSON scalar (number, bool)
+            # is still a secret, even though masking it costs the scalar's type.
+            if value is not None:
+                masked_scalar = secret_registry.mask_secrets_in_output(str(value))
+                if masked_scalar != str(value):
+                    return masked_scalar
+            return value
+
+        try:
+            structured_content = mask_json(observation.structured_content)
+        except Exception as e:
+            logger.warning(f"Failed to mask structured MCP result content: {e}")
+            structured_content = None
+
+        try:
+            result_meta = mask_json(observation.result_meta)
+        except Exception as e:
+            logger.warning(f"Failed to mask MCP result metadata: {e}")
+            result_meta = None
+
+        return observation.model_copy(
+            update={
+                "content": masked_content,
+                "structured_content": structured_content,
+                "result_meta": result_meta,
+            }
+        )
 
     def close(self) -> None:
         self.client.sync_close()

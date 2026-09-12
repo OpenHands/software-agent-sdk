@@ -5,12 +5,26 @@ from unittest.mock import MagicMock, Mock
 
 import mcp.types
 
+from openhands.sdk.event import Event, ObservationEvent
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolObservation
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import ToolAnnotations
 from openhands.sdk.utils.async_executor import AsyncExecutor
+
+
+# Serialized by SDK 1.44.1, the last release without the structured result
+# fields. Hardcoded so future model changes cannot silently rewrite the
+# legacy shape the loader must keep accepting.
+V1_44_1_EVENT_JSON = (
+    '{"id":"f33b8b11-aa29-47e5-b658-bcab8ab9dd21",'
+    '"timestamp":"2026-08-30T16:04:53.196016","source":"environment",'
+    '"tool_name":"legacy_tool","tool_call_id":"call-1",'
+    '"observation":{"content":[],"is_error":false,"tool_name":"legacy_tool",'
+    '"kind":"MCPToolObservation"},"action_id":"action-1","extended_content":[],'
+    '"kind":"ObservationEvent"}'
+)
 
 
 class MockMCPClient(MCPClient):
@@ -34,6 +48,8 @@ class TestMCPToolObservation:
             mcp.types.TextContent(type="text", text="Operation completed successfully")
         ]
         result.isError = False
+        result.structuredContent = None
+        result.meta = None
 
         observation = MCPToolObservation.from_call_tool_result(
             tool_name="test_tool", result=result
@@ -54,6 +70,8 @@ class TestMCPToolObservation:
         result = MagicMock(spec=mcp.types.CallToolResult)
         result.content = [mcp.types.TextContent(type="text", text="Operation failed")]
         result.isError = True
+        result.structuredContent = None
+        result.meta = None
 
         observation = MCPToolObservation.from_call_tool_result(
             tool_name="test_tool", result=result
@@ -78,6 +96,8 @@ class TestMCPToolObservation:
             ),
         ]
         result.isError = False
+        result.structuredContent = None
+        result.meta = None
 
         observation = MCPToolObservation.from_call_tool_result(
             tool_name="test_tool", result=result
@@ -96,6 +116,39 @@ class TestMCPToolObservation:
         assert isinstance(observation.content[2], ImageContent)
         assert hasattr(observation.content[2], "image_urls")
         assert observation.is_error is False
+
+    def test_structured_result_fields_are_additive_and_not_llm_content(self):
+        result = mcp.types.CallToolResult(
+            _meta={"ui": {"resourceUri": "ui://app/index.html"}},
+            structuredContent={"rows": [{"value": "visible-to-client"}]},
+            content=[mcp.types.TextContent(type="text", text="model-visible")],
+        )
+
+        observation = MCPToolObservation.from_call_tool_result("test_tool", result)
+        event = ObservationEvent(
+            observation=observation,
+            action_id="action-1",
+            tool_name="test_tool",
+            tool_call_id="call-1",
+        )
+        restored_event = Event.model_validate_json(event.model_dump_json())
+        assert isinstance(restored_event, ObservationEvent)
+        restored = restored_event.observation
+        assert isinstance(restored, MCPToolObservation)
+
+        assert restored.structured_content == result.structuredContent
+        assert restored.result_meta == result.meta
+        assert "visible-to-client" not in str(restored.to_llm_content)
+        assert "model-visible" in str(restored.to_llm_content)
+
+    def test_v1_44_1_mcp_observation_without_structured_result_fields(self):
+        restored_event = Event.model_validate_json(V1_44_1_EVENT_JSON)
+
+        assert isinstance(restored_event, ObservationEvent)
+        observation = restored_event.observation
+        assert isinstance(observation, MCPToolObservation)
+        assert observation.structured_content is None
+        assert observation.result_meta is None
 
     def test_to_llm_content_success(self):
         """Test agent observation formatting for success."""
@@ -151,6 +204,8 @@ class TestMCPToolExecutor:
             mcp.types.TextContent(type="text", text="Success result")
         ]
         mock_result.isError = False
+        mock_result.structuredContent = None
+        mock_result.meta = None
 
         # Mock action
         mock_action = MagicMock()
@@ -178,6 +233,8 @@ class TestMCPToolExecutor:
             mcp.types.TextContent(type="text", text="Error occurred")
         ]
         mock_result.isError = True
+        mock_result.structuredContent = None
+        mock_result.meta = None
 
         # Mock action
         mock_action = MagicMock()
@@ -256,6 +313,8 @@ class TestMCPToolExecutor:
             mcp.types.TextContent(type="text", text="Success after reconnect")
         ]
         mock_result.isError = False
+        mock_result.structuredContent = None
+        mock_result.meta = None
 
         mock_action = MagicMock()
         mock_action.model_dump.return_value = {"param": "value"}
