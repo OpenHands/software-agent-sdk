@@ -221,13 +221,14 @@ def test_fork_with_tags():
         assert fork.state.tags.get("env") == "test"
 
 
-def test_fork_with_title_sets_tag():
-    """Title is stored as a 'title' tag."""
+def test_fork_with_title_is_deprecated():
+    """Passing title is accepted for compat but warns and does not pollute tags."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        fork = src.fork(title="My Fork")
+        with pytest.warns(DeprecationWarning, match="title parameter is deprecated"):
+            fork = src.fork(title="My Fork")
 
-        assert fork.state.tags.get("title") == "My Fork"
+        assert "title" not in fork.state.tags
 
 
 def test_fork_shares_workspace():

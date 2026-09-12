@@ -429,7 +429,10 @@ class BaseConversation(ABC):
                 if ``None``).
             agent: Agent for the fork. Defaults to a deep-copy of the
                 source agent.
-            title: Optional title for the forked conversation.
+            title: Deprecated on ``LocalConversation`` since 1.44.1 — has no
+                effect there and emits a ``DeprecationWarning``. Still
+                honoured by ``RemoteConversation`` (passed to the agent
+                server which stores it on ``StoredConversation``).
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
