@@ -1842,10 +1842,16 @@ def test_hook_config_sent_to_server(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        # First agent call triggers PostToolUse and Stop hooks.
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2060,9 +2066,15 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2197,8 +2209,15 @@ def test_remote_state_exposes_invoked_skills(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
-        if call_count["count"] == 1:
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
+
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
