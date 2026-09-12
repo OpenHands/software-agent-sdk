@@ -12,7 +12,6 @@ import textwrap
 import types
 from collections.abc import Collection
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -25,16 +24,9 @@ from pydantic import BaseModel
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
-from openhands.sdk.llm import LLM, LLMResponse, Message
-from openhands.sdk.tool import ToolDefinition
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
-    from openhands.sdk.llm.streaming import AnyTokenCallbackType
+from openhands.sdk.llm import LLM, Message
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -641,47 +633,6 @@ def prepare_llm_messages(
     return messages
 
 
-def make_llm_completion(
-    llm: LLM,
-    messages: list[Message],
-    tools: list[ToolDefinition] | None = None,
-    on_token: ConversationTokenCallbackType | None = None,
-    call_context: LLMCallContext | None = None,
-) -> LLMResponse:
-    """Make an LLM completion call with the provided messages and tools.
-
-    Args:
-        llm: The LLM instance to use for completion
-        messages: The messages to send to the LLM
-        tools: Optional list of tools to provide to the LLM
-        on_token: Optional callback for streaming token updates
-        call_context: Per-conversation context for cache/session affinity.
-
-    Returns:
-        LLMResponse from the LLM completion call
-
-    Note:
-        Always exposes a 'security_risk' parameter in tool schemas via
-        add_security_risk_prediction=True. This ensures the schema remains
-        consistent, even if the security analyzer is disabled. Validation of
-        this field happens dynamically at runtime depending on the analyzer
-        configured. This allows weaker models to omit risk field and bypass
-        validation requirements when analyzer is disabled. For detailed logic,
-        see `_extract_security_risk` method in agent.py.
-
-        Summary field is always added to tool schemas for transparency and
-        explainability of agent actions.
-    """
-    return llm.generate(
-        messages=messages,
-        tools=tools or [],
-        store=False,
-        add_security_risk_prediction=True,
-        on_token=on_token,
-        call_context=call_context,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Async variants
 # ---------------------------------------------------------------------------
@@ -715,21 +666,3 @@ async def aprepare_llm_messages(
         messages.extend(additional_messages)
 
     return messages
-
-
-async def amake_llm_completion(
-    llm: LLM,
-    messages: list[Message],
-    tools: list[ToolDefinition] | None = None,
-    on_token: AnyTokenCallbackType | None = None,
-    call_context: LLMCallContext | None = None,
-) -> LLMResponse:
-    """Async variant of :func:`make_llm_completion`."""
-    return await llm.agenerate(
-        messages=messages,
-        tools=tools or [],
-        store=False,
-        add_security_risk_prediction=True,
-        on_token=on_token,
-        call_context=call_context,
-    )

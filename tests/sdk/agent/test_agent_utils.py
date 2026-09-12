@@ -1,37 +1,19 @@
-"""Tests for agent utility functions.
-
-This module tests the prepare_llm_messages and make_llm_completion utility
-functions that are used by the agent for message preparation and LLM calls.
-"""
+"""Tests for agent message preparation utilities."""
 
 from unittest.mock import Mock, patch
 
 import pytest
-from pydantic import Field
 
-from openhands.sdk.agent.utils import (
-    amake_llm_completion,
-    make_llm_completion,
-    prepare_llm_messages,
-)
+from openhands.sdk.agent.utils import prepare_llm_messages
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event import Condensation, MessageEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
-from openhands.sdk.tool import Action, Observation, ToolDefinition
+from openhands.sdk.llm import Message, TextContent
 
 
 # ---------------------------------------------------------------------------
 # Test fixtures and helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def mock_llm():
-    """Create a mock LLM for testing."""
-    llm = Mock(spec=LLM)
-    llm.uses_responses_api.return_value = False
-    return llm
 
 
 @pytest.fixture
@@ -85,44 +67,6 @@ def sample_messages():
 def mock_condenser():
     """Create a mock condenser for testing."""
     return Mock(spec=CondenserBase)
-
-
-class MockAgentUtilsAction(Action):
-    """Mock action for agent utils testing."""
-
-    param1: str = Field(description="First parameter")
-
-
-class MockAgentUtilsObservation(Observation):
-    """Mock observation for agent utils testing."""
-
-    result: str = Field(description="Result of the action")
-
-    @property
-    def to_llm_content(self):
-        return [TextContent(text=self.result)]
-
-
-class MockAgentUtilsTool(
-    ToolDefinition[MockAgentUtilsAction, MockAgentUtilsObservation]
-):
-    """Mock tool definition for agent utils testing."""
-
-    @classmethod
-    def create(cls, conv_state=None, **params):
-        return [cls(**params)]
-
-
-@pytest.fixture
-def sample_tools():
-    """Create sample tool definitions for testing."""
-    return [
-        MockAgentUtilsTool(
-            description="A test tool for agent utils",
-            action_type=MockAgentUtilsAction,
-            observation_type=MockAgentUtilsObservation,
-        )
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -253,85 +197,4 @@ def test_prepare_llm_messages_does_not_rebuild_view(monkeypatch, sample_events) 
     )
     assert enforce_calls == 0, (
         "prepare_llm_messages must not call enforce_properties on the hot path"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Tests for make_llm_completion
-# ---------------------------------------------------------------------------
-
-
-def test_make_llm_completion_applies_agent_policy(
-    mock_llm, sample_messages, sample_tools
-):
-    mock_response = Mock(spec=LLMResponse)
-    mock_llm.generate.return_value = mock_response
-
-    result = make_llm_completion(mock_llm, sample_messages, tools=sample_tools)
-
-    assert result == mock_response
-    mock_llm.generate.assert_called_once_with(
-        messages=sample_messages,
-        tools=sample_tools,
-        store=False,
-        add_security_risk_prediction=True,
-        on_token=None,
-        call_context=None,
-    )
-
-
-def test_make_llm_completion_normalizes_missing_tools(mock_llm, sample_messages):
-    make_llm_completion(mock_llm, sample_messages)
-
-    assert mock_llm.generate.call_args.kwargs["tools"] == []
-
-
-@pytest.mark.asyncio
-async def test_amake_llm_completion_applies_agent_policy(
-    mock_llm, sample_messages, sample_tools
-):
-    mock_response = Mock(spec=LLMResponse)
-    mock_llm.agenerate.return_value = mock_response
-
-    result = await amake_llm_completion(mock_llm, sample_messages, tools=sample_tools)
-
-    assert result == mock_response
-    mock_llm.agenerate.assert_awaited_once_with(
-        messages=sample_messages,
-        tools=sample_tools,
-        store=False,
-        add_security_risk_prediction=True,
-        on_token=None,
-        call_context=None,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Integration tests
-# ---------------------------------------------------------------------------
-
-
-@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
-def test_prepare_llm_messages_and_make_llm_completion_integration(
-    mock_events_to_messages, sample_events, sample_messages, mock_llm
-):
-    """Test integration between prepare_llm_messages and make_llm_completion."""
-    mock_events_to_messages.return_value = sample_messages
-    view = View(events=sample_events)
-
-    mock_response = Mock(spec=LLMResponse)
-    mock_llm.generate.return_value = mock_response
-
-    messages = prepare_llm_messages(view)
-    result = make_llm_completion(mock_llm, messages)
-
-    assert messages == sample_messages
-    assert result == mock_response
-    mock_llm.generate.assert_called_once_with(
-        messages=sample_messages,
-        tools=[],
-        store=False,
-        add_security_risk_prediction=True,
-        on_token=None,
-        call_context=None,
     )

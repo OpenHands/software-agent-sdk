@@ -202,7 +202,7 @@ class LLMCallContext:
     """Per-conversation state threaded through the completion call chain.
 
     The primary path threads this explicitly:
-    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
+    ``Agent.step()`` → ``llm.generate(call_context=...)``
     → ``select_chat_options(call_context=...)``.
 
     A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`

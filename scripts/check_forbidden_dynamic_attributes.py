@@ -1,8 +1,9 @@
 """Reject new dynamic attribute access in SDK source files.
 
-Existing ``getattr``/``setattr`` calls are recorded in a committed baseline so
-the hook can be introduced before the cleanup work (tracked in #4903, #4904,
-#4905) is finished.  Only calls *not* present in the baseline are reported.
+Existing ``getattr``/``setattr`` and ``obj.__dict__.get`` calls are recorded
+in a committed baseline so the hook can be introduced before the cleanup work
+(tracked in #4903, #4904, #4905) is finished. Only calls *not* present in the
+baseline are reported.
 
 A violation is identified by its file path (relative to the repo root), the
 call name, and a hash of the full call source segment (not just the first
@@ -25,13 +26,28 @@ import argparse
 import ast
 import hashlib
 import json
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
 
 FORBIDDEN = {"getattr", "setattr"}
+DICT_GET = "__dict__.get"
 BASELINE_FILE = Path(__file__).with_name("forbidden_dynamic_attributes_baseline.json")
+
+
+def _forbidden_call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN:
+        return node.func.id
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "__dict__"
+    ):
+        return DICT_GET
+    return None
 
 
 def _segment_hash(source: str, node: ast.Call) -> str:
@@ -53,20 +69,43 @@ def violations(path: Path) -> list[tuple[int, str, str]]:
     tree = ast.parse(source, filename=str(path))
     result: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in FORBIDDEN
-        ):
-            result.append((node.lineno, node.func.id, _segment_hash(source, node)))
+        if not isinstance(node, ast.Call):
+            continue
+        name = _forbidden_call_name(node)
+        if name is not None:
+            result.append((node.lineno, name, _segment_hash(source, node)))
     return result
 
 
-def _load_baseline() -> Counter[tuple[str, str, str]]:
+Baseline = Counter[tuple[str, str, str]]
+
+
+def _parse_baseline(content: str) -> Baseline:
+    data = json.loads(content)
+    return Counter((entry["file"], entry["name"], entry["hash"]) for entry in data)
+
+
+def _load_baseline() -> Baseline:
     if not BASELINE_FILE.exists():
         return Counter()
-    data = json.loads(BASELINE_FILE.read_text())
-    return Counter((entry["file"], entry["name"], entry["hash"]) for entry in data)
+    return _parse_baseline(BASELINE_FILE.read_text())
+
+
+def _load_baseline_from_git(ref: str) -> Baseline:
+    root = Path(__file__).resolve().parent.parent
+    relative_path = BASELINE_FILE.resolve().relative_to(root)
+    result = subprocess.run(
+        ["git", "show", f"{ref}:{relative_path.as_posix()}"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return _parse_baseline(result.stdout)
+
+
+def _baseline_additions(reference: Baseline, current: Baseline) -> Baseline:
+    return current - reference
 
 
 def _write_baseline(entries: list[tuple[str, str, str]]) -> None:
@@ -105,7 +144,25 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Rewrite the baseline from the current violations and exit 0.",
     )
+    parser.add_argument(
+        "--baseline-ref",
+        help="Reject baseline entries not present at this Git reference.",
+    )
     args = parser.parse_args(argv)
+
+    if args.update_baseline and args.baseline_ref:
+        parser.error("--update-baseline cannot be combined with --baseline-ref")
+
+    if args.baseline_ref:
+        baseline = _load_baseline()
+        additions = _baseline_additions(
+            _load_baseline_from_git(args.baseline_ref), baseline
+        )
+        if additions:
+            for (file, name, _digest), count in sorted(additions.items()):
+                print(f"{file}: baseline adds {count} forbidden {name} allowance(s)")
+            print("error: the forbidden dynamic attributes baseline may only shrink")
+            return 1
 
     # When no paths are given (e.g. via pre-commit with pass_filenames: false),
     # auto-discover all SDK Python files so deletions are caught.
