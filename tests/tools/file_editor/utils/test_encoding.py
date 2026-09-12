@@ -61,6 +61,18 @@ def test_detect_encoding_utf8_with_icon(encoding_manager, temp_file):
     assert encoding.lower() == "utf-8"
 
 
+def test_detect_encoding_prefers_valid_utf8(encoding_manager, temp_file):
+    temp_file.write_text('{"title": "用户研究"}', encoding="utf-8")
+
+    with patch(
+        "charset_normalizer.detect",
+        return_value={"encoding": "windows-1251", "confidence": 1.0},
+    ):
+        encoding = encoding_manager.detect_encoding(temp_file)
+
+    assert encoding.lower() == "utf-8"
+
+
 def test_detect_encoding_cp1251(encoding_manager, temp_file):
     """Test detecting CP1251 encoding."""
     # Create a CP1251 encoded file with Cyrillic characters
