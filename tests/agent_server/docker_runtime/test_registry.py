@@ -35,7 +35,9 @@ def _persisted_conversation(registry: DockerConversationRegistry, cid: UUID) -> 
 
 
 def test_runtime_info_does_not_provision_missing_runtime(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     cid = uuid4()
     _persisted_conversation(registry, cid)
 
@@ -47,7 +49,9 @@ def test_runtime_info_does_not_provision_missing_runtime(tmp_path):
 
 
 def test_runtime_info_distinguishes_available_and_ownership_lost(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     available = uuid4()
     _persisted_conversation(registry, available)
     registry._containers[available] = _container(available)
@@ -68,7 +72,9 @@ def test_runtime_info_distinguishes_available_and_ownership_lost(tmp_path):
 
 @pytest.mark.asyncio
 async def test_runtime_info_retains_start_failure(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     cid = uuid4()
     _persisted_conversation(registry, cid)
 
@@ -88,7 +94,9 @@ async def test_runtime_info_retains_start_failure(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_or_create_deduplicates_same_conversation_start(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     conversation_id = uuid4()
     calls = 0
 
@@ -112,7 +120,9 @@ async def test_get_or_create_deduplicates_same_conversation_start(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_or_create_starts_different_conversations_concurrently(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     entered: set[UUID] = set()
     entered_lock = threading.Lock()
     release = threading.Event()
@@ -185,7 +195,9 @@ async def test_startup_health_failure_cleans_started_container(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_failed_start_can_be_retried(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     conversation_id = uuid4()
     calls = 0
 
@@ -249,7 +261,9 @@ async def test_build_container_mounts_dedicated_writable_workspace(
 
 
 def test_run_container_uses_host_identity_for_bind_mounts(tmp_path, monkeypatch):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     commands: list[list[str]] = []
 
     def execute(command, **kwargs):
@@ -340,7 +354,9 @@ def test_run_container_applies_ownership_and_security_policy(tmp_path, monkeypat
 
 
 def test_cleanup_stale_containers_is_scoped_to_registry_owner(tmp_path, monkeypatch):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     commands: list[list[str]] = []
 
     def execute(command, **kwargs):
@@ -400,7 +416,9 @@ def test_docker_launch_preserves_explicit_credentials(tmp_path, monkeypatch):
     docker.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("OH_SESSION_API_KEYS_1", "not-forwarded")
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     container = registry._run_container(
         conversation_id=uuid4(),
         image="test-image",
@@ -415,7 +433,9 @@ def test_docker_launch_preserves_explicit_credentials(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancelled_start_waiter_does_not_cancel_other_waiters(tmp_path):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     cid = uuid4()
     entered = threading.Event()
     release = threading.Event()
@@ -452,7 +472,9 @@ async def test_cancelled_start_waiter_does_not_cancel_other_waiters(tmp_path):
 async def test_lone_cancelled_waiter_can_recover_or_shutdown(
     tmp_path, recover, monkeypatch
 ):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     cid = uuid4()
     entered = threading.Event()
     release = threading.Event()
@@ -488,7 +510,9 @@ async def test_lone_cancelled_waiter_can_recover_or_shutdown(
 
 @pytest.mark.parametrize("binding", ["", "0.0.0.0:32123", "127.0.0.1:0"])
 def test_invalid_assigned_port_cleans_up_container(tmp_path, monkeypatch, binding):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
     commands = []
 
     def execute(command, **kwargs):
@@ -518,7 +542,9 @@ def test_invalid_assigned_port_cleans_up_container(tmp_path, monkeypatch, bindin
 
 
 def test_failed_docker_run_surfaces_stderr(tmp_path, monkeypatch):
-    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    registry = DockerConversationRegistry(
+        Config(conversations_path=tmp_path, secret_key=SecretStr("test-key"))
+    )
 
     def execute(command, **kwargs):
         return subprocess.CompletedProcess(
