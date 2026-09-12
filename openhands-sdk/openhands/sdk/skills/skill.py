@@ -47,7 +47,7 @@ from openhands.sdk.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 logger = get_logger(__name__)
@@ -913,8 +913,8 @@ def load_skills_from_dir(
 # Default user skills directories (in order of priority)
 USER_SKILLS_DIRS = [
     Path.home() / ".agents" / "skills",
-    Path.home() / ".openhands" / "skills",
-    Path.home() / ".openhands" / "microagents",  # Legacy support
+    get_user_persistence_dir() / "skills",
+    get_user_persistence_dir() / "microagents",  # Legacy support
 ]
 
 

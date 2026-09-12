@@ -38,6 +38,13 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
+          - id: check-forbidden-dynamic-attributes
+            name: Forbid getattr and setattr in SDK
+            entry: uv run python scripts/check_forbidden_dynamic_attributes.py
+            language: system
+            files: ^openhands-sdk/.*\.py$
+            pass_filenames: false
+            always_run: true
           - id: check-import-rules
             name: Check import dependency rules
             entry: uv

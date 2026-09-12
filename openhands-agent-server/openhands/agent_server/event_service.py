@@ -23,12 +23,15 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
 from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
 )
+from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -133,6 +136,11 @@ class EventService:
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
+    # Its own fan-out, not the event bus: frames are not events, and only the
+    # session socket consumes them.
+    _stream_pub_sub: PubSub[StreamProgress] = field(
+        default_factory=lambda: PubSub[StreamProgress](max_subscribers=50), init=False
+    )
     _run_task: asyncio.Task | None = field(default=None, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
@@ -158,6 +166,8 @@ class EventService:
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
     # Monotonic clock of the last activity, used for idle eviction.
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
+    # Monotonic clock of the last throttled streaming heartbeat.
+    _last_stream_activity_signal: float = field(default=float("-inf"), init=False)
     # Subscribers attached at startup; later ones (e.g. websockets) are external.
     _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
@@ -844,6 +854,19 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    async def subscribe_to_stream_progress(
+        self, subscriber: Subscriber[StreamProgress]
+    ) -> UUID:
+        """Register for stream-progress frames.
+
+        No initial push, unlike :meth:`subscribe_to_events`: a client that
+        connects mid-stream gets the real text with the durable event.
+        """
+        return self._stream_pub_sub.subscribe(subscriber)
+
+    async def unsubscribe_from_stream_progress(self, subscriber_id: UUID) -> bool:
+        return self._stream_pub_sub.unsubscribe(subscriber_id)
+
     def _emit_event_from_thread(self, event: Event) -> None:
         """Helper to safely emit events from non-async contexts (e.g., callbacks).
 
@@ -907,11 +930,21 @@ class EventService:
         from openhands.sdk.agent import ACPAgent
 
         if isinstance(agent, ACPAgent):
-            from openhands.agent_server.server_details_router import (
-                update_last_execution_time,
-            )
-
             agent._on_activity = update_last_execution_time
+
+    def _signal_stream_activity(self) -> None:
+        """Refresh the runtime idle timer while a completion streams.
+
+        Deltas are never persisted, so the durable-event path that calls
+        update_last_execution_time() is silent for the length of a stream.
+        Signalled from the producer so it survives deltas leaving the shared
+        bus; throttled like the ACP bridge's _maybe_signal_activity.
+        """
+        now = time.monotonic()
+        if now - self._last_stream_activity_signal < ACTIVITY_SIGNAL_INTERVAL:
+            return
+        self._last_stream_activity_signal = now
+        update_last_execution_time()
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -1057,8 +1090,19 @@ class EventService:
                 content=content,
                 reasoning_content=reasoning_content,
             )
+            self._signal_stream_activity()
             with suppress(RuntimeError):  # main loop already closed during teardown
                 asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+
+        def _publish_stream_progress(frame: StreamProgress) -> None:
+            # Same cross-thread hop as _publish_stream_delta: called from the
+            # run thread, or the ACP portal thread.
+            if not self._main_loop or not self._main_loop.is_running():
+                return
+            with suppress(RuntimeError):  # main loop already closed during teardown
+                asyncio.run_coroutine_threadsafe(
+                    self._stream_pub_sub(frame), self._main_loop
+                )
 
         def _token_streaming_callback(chunk: LLMStreamChunk | str) -> None:
             if isinstance(chunk, str):
@@ -1084,6 +1128,7 @@ class EventService:
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
+            stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
@@ -1341,6 +1386,17 @@ class EventService:
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
+
+    async def wait_for_run_completion(
+        self, timeout: float | None = None
+    ) -> ConversationExecutionStatus:
+        """Wait for the active run task without cancelling it on timeout."""
+        run_task = self._run_task
+        if run_task is not None:
+            done, _ = await asyncio.wait({run_task}, timeout=timeout)
+            if not done:
+                raise TimeoutError("Conversation run timed out")
+        return await self._get_execution_status()
 
     async def start_goal_loop(
         self,
@@ -1759,6 +1815,7 @@ class EventService:
             self._run_task = None
 
         await self._pub_sub.close()
+        await self._stream_pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)
