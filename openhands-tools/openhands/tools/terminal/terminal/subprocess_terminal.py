@@ -82,6 +82,7 @@ class SubprocessTerminal(TerminalInterface):
     output_lock: threading.Lock
     reader_thread: threading.Thread | None
     _current_command_running: bool
+    _stop_reader: bool
 
     def __init__(
         self,
@@ -100,6 +101,7 @@ class SubprocessTerminal(TerminalInterface):
         self.output_lock = threading.Lock()
         self.reader_thread = None
         self._current_command_running = False
+        self._stop_reader = False
         self.shell_path = shell_path
         self._env = normalize_terminal_env(env)
 
@@ -207,6 +209,9 @@ class SubprocessTerminal(TerminalInterface):
         if self._closed:
             return
 
+        # Signal reader thread to stop before closing fd to prevent race condition
+        self._stop_reader = True
+
         try:
             if self.process:
                 # Try a graceful exit
@@ -261,34 +266,39 @@ class SubprocessTerminal(TerminalInterface):
         if fd is None:
             return
 
-        try:
-            while True:
-                # Exit early if process died
-                if self.process and self.process.poll() is not None:
-                    break
+        while not self._stop_reader:
+            # Exit early if process died
+            if self.process and self.process.poll() is not None:
+                break
 
-                # Use select to avoid busy spin
+            # Use select to avoid busy spin; wrap in try-except to handle
+            # the case where fd is closed during shutdown
+            try:
                 r, _, _ = select.select([fd], [], [], 0.1)
-                if not r:
-                    continue
+            except (OSError, ValueError):
+                # fd closed or invalid during shutdown - exit gracefully
+                break
 
-                try:
-                    chunk = os.read(fd, 4096)
-                    if not chunk:
-                        break  # EOF
-                    # Normalize newlines; PTY typically uses \n already
-                    text = chunk.decode("utf-8", errors="replace")
-                    with self.output_lock:
-                        # Store one line per buffer item to make deque truncation work
-                        self._add_text_to_buffer(text)
-                except OSError:
-                    # Would-block or FD closed
-                    continue
-                except Exception as e:
-                    logger.debug(f"Error reading PTY output: {e}")
+            if not r:
+                continue
+
+            try:
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break  # EOF
+                # Normalize newlines; PTY typically uses \n already
+                text = chunk.decode("utf-8", errors="replace")
+                with self.output_lock:
+                    # Store one line per buffer item to make deque truncation work
+                    self._add_text_to_buffer(text)
+            except OSError:
+                # Would-block or FD closed - exit gracefully during shutdown
+                if self._stop_reader:
                     break
-        except Exception as e:
-            logger.error(f"PTY reader thread error: {e}", exc_info=True)
+                continue
+            except Exception as e:
+                logger.debug(f"Error reading PTY output: {e}")
+                break
 
     def _add_text_to_buffer(self, text: str) -> None:
         """Add text to buffer, ensuring one line per buffer item."""
