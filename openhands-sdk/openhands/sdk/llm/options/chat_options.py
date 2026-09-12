@@ -47,6 +47,8 @@ def select_chat_options(
     if supports_reasoning_effort:
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
+    else:
+        out.pop("reasoning_effort", None)
 
     model_name = llm._model_name_for_capabilities()
     if model_features.supports_sampling_params is False or (

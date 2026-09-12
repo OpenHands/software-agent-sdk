@@ -112,6 +112,11 @@ REASONING_EFFORT_MODEL_OVERRIDES = {
     "kimi-k3": "moonshot/kimi-k3",
 }
 
+REASONING_EFFORT_UNSUPPORTED_MODELS: tuple[str, ...] = (
+    "minimax-m3",
+    "minimax/MiniMax-M3",
+)
+
 
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic Claude models with useful agent performance gains.
@@ -351,6 +356,49 @@ def _supports_responses_api(
     return model_matches(model, RESPONSES_API_MODELS)
 
 
+def _supported_openai_params_from_metadata(
+    model_info: Mapping[str, Any] | None,
+) -> frozenset[str] | None:
+    raw = (model_info or {}).get("supported_openai_params")
+    if not isinstance(raw, (list, tuple, set)):
+        return None
+    return frozenset(str(param) for param in raw)
+
+
+def _supports_reasoning_effort(
+    model: str | None,
+    model_info: Mapping[str, Any] | None,
+    overrides: Mapping[str, Any] | None,
+    supported_params: frozenset[str],
+) -> bool:
+    key = (model_info or {}).get("key")
+    if model_matches(model, REASONING_EFFORT_UNSUPPORTED_MODELS) or model_matches(
+        key if isinstance(key, str) else None,
+        REASONING_EFFORT_UNSUPPORTED_MODELS,
+    ):
+        return False
+
+    override = _optional_bool(overrides, "supports_reasoning_effort")
+    if override is not None:
+        return override
+
+    metadata_override = _optional_bool(model_info, "supports_reasoning_effort")
+    if metadata_override is not None:
+        return metadata_override
+
+    metadata_params = _supported_openai_params_from_metadata(model_info)
+    if metadata_params is not None:
+        return "reasoning_effort" in metadata_params
+
+    if _optional_bool(model_info, "supports_reasoning") is False:
+        return False
+
+    return (
+        model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
+        or "reasoning_effort" in supported_params
+    )
+
+
 def get_features(
     model: str | None,
     model_info: Mapping[str, Any] | None = None,
@@ -358,15 +406,11 @@ def get_features(
 ) -> ModelFeatures:
     """Resolve model features from overrides, metadata, and fallbacks."""
     supported_params = _normalized_supported_openai_params(model)
-    supports_reasoning_effort = _resolved_bool(
-        "supports_reasoning_effort",
-        overrides=overrides,
-        metadata=model_info,
-        metadata_key="supports_reasoning",
-        fallback=(
-            model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
-            or "reasoning_effort" in supported_params
-        ),
+    supports_reasoning_effort = _supports_reasoning_effort(
+        model,
+        model_info,
+        overrides,
+        supported_params,
     )
     thinking_mode = _thinking_mode(model, model_info, overrides)
     supports_sampling_params = _optional_bool(overrides, "supports_sampling_params")

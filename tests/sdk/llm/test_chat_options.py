@@ -105,6 +105,63 @@ def test_kimi_k2_thinking_does_not_send_reasoning_effort():
     assert out.get("temperature") == 1.0
 
 
+def test_minimax_m3_does_not_send_reasoning_effort_from_generic_reasoning_metadata():
+    llm = DummyLLM(
+        model="minimax/MiniMax-M3",
+        model_info={
+            "litellm_provider": "minimax",
+            "supports_reasoning": True,
+            "supported_openai_params": ["thinking", "reasoning_split"],
+        },
+        reasoning_effort="high",
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+
+
+def test_minimax_m3_does_not_send_reasoning_effort_from_proxy_metadata():
+    llm = DummyLLM(
+        model="litellm_proxy/minimax-m3",
+        model_info={
+            "key": "minimax/MiniMax-M3",
+            "litellm_provider": "minimax",
+            "supports_reasoning": True,
+            "supported_openai_params": ["reasoning_effort", "thinking"],
+        },
+        reasoning_effort="high",
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+
+
+def test_minimax_m3_does_not_send_reasoning_effort_from_capability_override():
+    llm = DummyLLM(
+        model="openhands/minimax-m3",
+        capability_overrides={"supports_reasoning_effort": True},
+        reasoning_effort="high",
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+
+
+def test_minimax_m3_drops_caller_supplied_reasoning_effort():
+    llm = DummyLLM(model="openhands/minimax-m3", reasoning_effort=None)
+
+    out = select_chat_options(
+        llm,
+        user_kwargs={"reasoning_effort": "high"},
+        has_tools=True,
+    )
+
+    assert "reasoning_effort" not in out
+
+
 def test_kimi_k3_uses_reasoning_effort_and_strips_temp_top_p():
     llm = DummyLLM(
         model="litellm_proxy/moonshot/kimi-k3",
