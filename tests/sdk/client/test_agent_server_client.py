@@ -2,7 +2,6 @@
 
 import inspect
 import json
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -10,8 +9,8 @@ import pytest
 from openhands.sdk.client import AgentServerClient, AsyncAgentServerClient
 
 
-CID = str(uuid4())
-PROFILE = str(uuid4())
+CID = "e793aaea-50c7-4fd7-a686-2c76a6c2a80e"
+PROFILE = "42d0d2ef-f506-4774-b008-e330b4b83d09"
 
 
 @pytest.mark.asyncio
