@@ -58,7 +58,7 @@ export class HttpClient {
     this.timeout = options.timeout || 60000;
   }
 
-  protected buildUrl(path: string, params?: Record<string, unknown>): URL {
+  protected buildUrl(path: string, params?: RequestOptions['params']): URL {
     const relativePath = path.startsWith('/') ? path.slice(1) : path;
     const url = new URL(relativePath, this.baseUrl + '/');
 
