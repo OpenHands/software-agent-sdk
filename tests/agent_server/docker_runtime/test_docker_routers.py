@@ -938,6 +938,6 @@ def test_runtime_credentials_are_scoped_and_not_cacheable(docker_app):
 
 
 def test_runtime_credentials_require_outer_auth(docker_app_with_auth):
-    client, _ = docker_app_with_auth
+    client, _, _ = docker_app_with_auth
     result = client.post(f"/api/conversations/{uuid4()}/runtime/credentials")
     assert result.status_code in (401, 403)
