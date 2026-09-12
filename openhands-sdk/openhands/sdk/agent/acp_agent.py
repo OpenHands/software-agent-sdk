@@ -566,6 +566,35 @@ def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
+_CLAUDE_EFFORT_CONFIG_OPTION_ID: Final[str] = "effort"
+# Best-effort allowlist for deciding whether a combined Canvas id's suffix
+# *looks like* a Claude effort level, so it gets split off the model id
+# before being sent as `acp_model`. Not authoritative: the live session's
+# `configOptions` reports the real `supportedEffortLevels` for the current
+# model (dynamic per model/account) — see claude-agent-acp's
+# `buildConfigOptions()`. A value outside this set is sent as part of the
+# model id unsplit, which the ACP server will simply not recognise as a
+# model (same graceful-degradation posture as an unknown `available_models`
+# entry).
+_CLAUDE_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
+    {"low", "medium", "high", "max"}
+)
+
+
+def _claude_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
+    """Map a combined Canvas Claude model id (``<model>/<effort>``) to
+    claude-agent-acp config options. Mirrors _codex_model_config_options,
+    using claude-agent-acp's own config id (``effort``, not
+    ``reasoning_effort``)."""
+    base_model, sep, effort = model.rpartition("/")
+    if sep and base_model and effort in _CLAUDE_REASONING_EFFORTS:
+        return (
+            (_MODEL_CONFIG_OPTION_ID, base_model),
+            (_CLAUDE_EFFORT_CONFIG_OPTION_ID, effort),
+        )
+    return ((_MODEL_CONFIG_OPTION_ID, model),)
+
+
 def _model_config_options(
     agent_name: str | None,
     model: str,
@@ -573,6 +602,8 @@ def _model_config_options(
     provider = detect_acp_provider_by_agent_name(agent_name or "")
     if provider is not None and provider.key == "codex":
         return _codex_model_config_options(model)
+    if provider is not None and provider.key == "claude-code":
+        return _claude_model_config_options(model)
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
