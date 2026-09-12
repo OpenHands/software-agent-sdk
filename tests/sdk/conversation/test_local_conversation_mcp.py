@@ -1,15 +1,18 @@
 """Tests for how LocalConversation wires MCP servers into a running agent."""
 
+import socket
 from pathlib import Path
 from typing import Any, cast
 
 import mcp.types as mcp_types
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
+from openhands.sdk.mcp.exceptions import MCPConnectionError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import MCPToolProvider
 
@@ -173,3 +176,70 @@ def test_provider_supports_on_tools_reconciled() -> None:
     assert not provider_supports_on_tools_reconciled(
         cast(MCPToolProvider, LegacyMCPToolProvider())
     )
+
+
+def test_unreachable_mcp_server_allows_agent_to_become_ready(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unreachable MCP server does not abort agent readiness."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    agent = Agent(
+        llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+        tools=[],
+        mcp_config=coerce_mcp_config(
+            {"offline": {"url": f"http://127.0.0.1:{unused_port}/mcp"}}
+        ),
+    )
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+
+    with caplog.at_level("WARNING"):
+        conversation._ensure_agent_ready()
+
+    mcp_tools = [
+        t
+        for t in conversation.agent.tools_map.values()
+        if isinstance(t, MCPToolDefinition)
+    ]
+    assert mcp_tools == []
+    assert "offline" in caplog.text
+    assert str(unused_port) in caplog.text
+    conversation.close()
+
+
+def test_unreachable_mcp_server_strict_mode_raises(tmp_path: Path) -> None:
+    """When strict=True on MCPServer, unreachable server raises."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    agent = Agent(
+        llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+        tools=[],
+        mcp_config=coerce_mcp_config(
+            {
+                "offline": {
+                    "url": f"http://127.0.0.1:{unused_port}/mcp",
+                    "strict": True,
+                }
+            }
+        ),
+    )
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+
+    with pytest.raises(MCPConnectionError) as exc_info:
+        conversation._ensure_agent_ready()
+
+    assert exc_info.value.server_name == "offline"
+    assert str(unused_port) in str(exc_info.value.url)
+    conversation.close()

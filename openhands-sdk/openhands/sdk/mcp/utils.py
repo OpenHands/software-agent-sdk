@@ -1,17 +1,24 @@
 """Utility functions for MCP integration."""
 
 import asyncio
+import contextlib
 import inspect
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
+import sys
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from typing import Any, Protocol, Unpack
 
 import mcp.types
+from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
+from fastmcp.client.transports import FastMCPTransport
+from fastmcp.client.transports.base import SessionKwargs
+from fastmcp.client.transports.config import MCPConfigTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
+from mcp import ClientSession
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -22,7 +29,7 @@ from openhands.sdk.mcp.config import (
     enabled_mcp_servers,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPConnectionError, MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
@@ -46,6 +53,7 @@ class MCPToolProvider(Protocol):
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient: ...
@@ -59,12 +67,14 @@ class DefaultMCPToolProvider:
         mcp_config: dict[str, MCPServer],
         timeout: float = 30.0,
         *,
+        strict: bool = False,
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
         return create_mcp_tools(
             mcp_config,
             timeout,
+            strict=strict,
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,
         )
@@ -312,10 +322,200 @@ class _ToolListChangedHandler(MessageHandler):
             )
 
 
+def _format_server_target(
+    spec: MCPServer | None, server_config: Any = None
+) -> str:
+    if spec is not None:
+        if spec.url:
+            return str(spec.url)
+        if spec.command:
+            args = f" {' '.join(spec.args)}" if spec.args else ""
+            return f"{spec.command}{args}"
+    if server_config is not None:
+        url = getattr(server_config, "url", None)
+        if url:
+            return str(url)
+        cmd = getattr(server_config, "command", None)
+        if cmd:
+            args = getattr(server_config, "args", None)
+            args_str = f" {' '.join(args)}" if args else ""
+            return f"{cmd}{args_str}"
+    return "unknown target"
+
+
+def _format_connection_troubleshooting_guidance() -> str:
+    return (
+        "Possible solutions:\n"
+        "  1. Check if the MCP server is running and accepting connections\n"
+        "  2. Verify network connectivity, firewall rules, and port configuration\n"
+        "  3. Verify the server URL or command and authentication credentials"
+    )
+
+
+def _format_connection_failure_message(
+    name: str, target: str, error: Exception | str
+) -> str:
+    guidance = _format_connection_troubleshooting_guidance()
+    return (
+        f"Failed to connect to MCP server '{name}' at '{target}': {error}\n\n"
+        f"{guidance}\n"
+    )
+
+
+def _format_multi_connection_failure_message(
+    failures: Sequence[tuple[str, str, Exception | str]],
+) -> str:
+    servers_desc = "\n".join(
+        f"  - {name} ({target}): {error}" for name, target, error in failures
+    )
+    guidance = _format_connection_troubleshooting_guidance()
+    return (
+        f"Failed to connect to MCP server(s):\n"
+        f"{servers_desc}\n\n"
+        f"{guidance}\n"
+    )
+
+
+class DegradableMCPConfigTransport(MCPConfigTransport):
+    """MCPConfig transport supporting per-server connection degradation."""
+
+    def __init__(
+        self,
+        config: FastMCPConfig,
+        server_specs: Mapping[str, MCPServer],
+        *,
+        strict: bool = False,
+        name_as_prefix: bool = True,
+    ):
+        super().__init__(config, name_as_prefix=name_as_prefix)
+        self.server_specs = server_specs
+        self.strict = strict
+
+    @property
+    def mcpServers(self) -> dict[str, Any]:
+        return self.config.mcpServers
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.config, name)
+
+    @contextlib.asynccontextmanager
+    async def connect_session(
+        self, **session_kwargs: Unpack[SessionKwargs]
+    ) -> AsyncIterator[ClientSession]:
+        # Single server: delegate directly to pre-created transport so that
+        # bidirectional notifications (notifications/tools/list_changed) and direct
+        # session semantics are preserved.
+        if len(self.config.mcpServers) == 1:
+            name, server_config = next(iter(self.config.mcpServers.items()))
+            spec = self.server_specs.get(name)
+            target = _format_server_target(spec, server_config)
+            is_strict = self.strict or (
+                spec.strict if spec and hasattr(spec, "strict") else False
+            )
+            cm = self.transport.connect_session(**session_kwargs)
+            try:
+                session = await cm.__aenter__()
+            except Exception as exc:
+                msg = _format_connection_failure_message(name, target, exc)
+                if is_strict:
+                    raise MCPConnectionError(
+                        msg,
+                        server_name=name,
+                        url=target,
+                        config=self.config.model_dump(),
+                    ) from exc
+                logger.warning(
+                    "Failed to connect to MCP server '%s' (%s). "
+                    "Skipping this server and continuing without its tools.\n"
+                    "Error: %s\n"
+                    "%s",
+                    name,
+                    target,
+                    exc,
+                    _format_connection_troubleshooting_guidance(),
+                )
+                empty_router = FastMCP[Any](name="EmptyRouter")
+                async with FastMCPTransport(mcp=empty_router).connect_session(
+                    **session_kwargs
+                ) as empty_session:
+                    yield empty_session
+                return
+
+            try:
+                yield session
+            except BaseException:
+                if not await cm.__aexit__(*sys.exc_info()):
+                    raise
+            else:
+                await cm.__aexit__(None, None, None)
+            return
+
+        # Multiple servers: create composite with mounted proxies for reachable servers
+        timeout = session_kwargs.get("read_timeout_seconds")
+        composite = FastMCP[Any](name="MCPRouter")
+        failed_servers: list[tuple[str, str, Exception]] = []
+
+        async with contextlib.AsyncExitStack() as stack:
+            for t in self._transports:
+                await t.close()
+            self._transports = []
+
+            for name, server_config in self.config.mcpServers.items():
+                spec = self.server_specs.get(name)
+                target = _format_server_target(spec, server_config)
+                is_strict = self.strict or (
+                    spec.strict if spec and hasattr(spec, "strict") else False
+                )
+                try:
+                    transport, _client, proxy = await self._create_proxy(
+                        name, server_config, timeout, stack
+                    )
+                except Exception as exc:
+                    failed_servers.append((name, target, exc))
+                    msg = _format_connection_failure_message(name, target, exc)
+                    if is_strict:
+                        raise MCPConnectionError(
+                            msg,
+                            server_name=name,
+                            url=target,
+                            config=self.config.model_dump(),
+                        ) from exc
+                    logger.warning(
+                        "Failed to connect to MCP server '%s' (%s). "
+                        "Skipping this server and continuing without its tools.\n"
+                        "Error: %s\n"
+                        "%s",
+                        name,
+                        target,
+                        exc,
+                        _format_connection_troubleshooting_guidance(),
+                    )
+                    continue
+
+                self._transports.append(transport)
+                composite.mount(proxy, namespace=name if self.name_as_prefix else None)
+
+            if not self._transports:
+                if self.strict or any(
+                    getattr(self.server_specs.get(n), "strict", False)
+                    for n, _, _ in failed_servers
+                ):
+                    multi_msg = _format_multi_connection_failure_message(failed_servers)
+                    raise MCPConnectionError(
+                        multi_msg, config=self.config.model_dump()
+                    )
+
+            async with FastMCPTransport(mcp=composite).connect_session(
+                **session_kwargs
+            ) as session:
+                yield session
+
+
 def create_mcp_tools(
     mcp_config: dict[str, MCPServer],
     timeout: float = 30.0,
     *,
+    strict: bool = False,
     on_tools_changed: ToolsChangedCallback | None = None,
     on_tools_reconciled: ToolsReconciledCallback | None = None,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
@@ -352,11 +552,16 @@ def create_mcp_tools(
         mcp_oauth_token_storage=mcp_oauth_token_storage,
         mcp_oauth_factory=mcp_oauth_factory,
     )
+    transport = DegradableMCPConfigTransport(
+        config,
+        mcp_config,
+        strict=strict,
+    )
     handler = _ToolListChangedHandler(
         client=None,  # type: ignore[arg-type]
         on_tools_changed=on_tools_changed,
     )
-    client = MCPClient(config, log_handler=log_handler, message_handler=handler)
+    client = MCPClient(transport, log_handler=log_handler, message_handler=handler)
     handler._client = client
     client._tools_reconciled_callback = on_tools_reconciled
 
@@ -381,6 +586,18 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
+    except MCPConnectionError as exc:
+        is_strict = strict or any(
+            getattr(spec, "strict", False) for spec in mcp_config.values()
+        )
+        if is_strict:
+            client.sync_close()
+            raise
+        logger.warning(
+            "%s\nContinuing without tools from this server.",
+            exc,
+        )
+        client._tools = []
     except BaseException:
         try:
             client.sync_close()

@@ -30,7 +30,11 @@ from openhands.sdk.mcp.config import (
     coerce_mcp_config,
     to_fastmcp_mcp_config,
 )
-from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.exceptions import (
+    MCPConnectionError,
+    MCPError,
+    MCPTimeoutError,
+)
 from openhands.sdk.mcp.utils import _prepare_mcp_config
 
 
@@ -742,3 +746,133 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_create_mcp_tools_unreachable_server_graceful_degradation(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Unreachable MCP server logs warning and returns 0 tools instead of raising."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    config = {
+        "mcpServers": {
+            "offline_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{unused_port}/mcp",
+            }
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        with create_mcp_tools(native_mcp_config(config), timeout=2.0) as client:
+            assert len(client.tools) == 0
+
+    assert "offline_server" in caplog.text
+    assert str(unused_port) in caplog.text
+    assert "Possible solutions" in caplog.text
+
+
+def test_create_mcp_tools_unreachable_server_strict_mode():
+    """When strict=True, an unreachable server raises MCPConnectionError."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    config = {
+        "mcpServers": {
+            "offline_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{unused_port}/mcp",
+            }
+        }
+    }
+
+    with pytest.raises(MCPConnectionError) as exc_info:
+        create_mcp_tools(native_mcp_config(config), timeout=2.0, strict=True)
+
+    err = exc_info.value
+    assert err.server_name == "offline_server"
+    assert str(unused_port) in str(err.url)
+    assert "offline_server" in str(err)
+    assert "Possible solutions" in str(err)
+    assert err.config is not None
+
+
+def test_create_mcp_tools_unreachable_server_spec_strict():
+    """When MCPServer has strict=True, unreachable server raises MCPConnectionError."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    config = {
+        "mcpServers": {
+            "strict_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{unused_port}/mcp",
+                "strict": True,
+            }
+        }
+    }
+
+    with pytest.raises(MCPConnectionError) as exc_info:
+        create_mcp_tools(native_mcp_config(config), timeout=2.0, strict=False)
+
+    err = exc_info.value
+    assert err.server_name == "strict_server"
+    assert str(unused_port) in str(err.url)
+    assert "Possible solutions" in str(err)
+
+
+def test_create_mcp_tools_mixed_servers_partial_failure(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Reachable tools are registered when an unreachable server fails."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    stdio_cfg = stdio_fetch_mcp_config()
+    combined_config = {
+        "mcpServers": {
+            "offline_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{unused_port}/mcp",
+            },
+            "fetch": stdio_cfg["mcpServers"]["fetch"],
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        with create_mcp_tools(
+            native_mcp_config(combined_config), timeout=5.0
+        ) as client:
+            tool_names = [t.name for t in client.tools]
+            assert any("fetch" in name for name in tool_names)
+
+    assert "offline_server" in caplog.text
+    assert str(unused_port) in caplog.text
+
+
+def test_default_tool_provider_supports_strict():
+    """DefaultMCPToolProvider passes strict flag through."""
+    from openhands.sdk.mcp.utils import DefaultMCPToolProvider
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        unused_port = s.getsockname()[1]
+
+    config = {
+        "mcpServers": {
+            "offline_server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{unused_port}/mcp",
+            }
+        }
+    }
+
+    provider = DefaultMCPToolProvider()
+    with pytest.raises(MCPConnectionError):
+        provider.create_tools(native_mcp_config(config), timeout=2.0, strict=True)
+
