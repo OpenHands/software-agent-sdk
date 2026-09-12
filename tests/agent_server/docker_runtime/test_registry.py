@@ -190,6 +190,8 @@ def test_run_container_uses_host_identity_for_bind_mounts(tmp_path, monkeypatch)
     def execute(command, **kwargs):
         commands.append(command)
         stdout = "test-container\n" if command[:3] == ["docker", "run", "-d"] else ""
+        if command[:2] == ["docker", "port"]:
+            stdout = "127.0.0.1:32123\n"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(
@@ -197,10 +199,6 @@ def test_run_container_uses_host_identity_for_bind_mounts(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(
         "openhands.agent_server.docker_runtime.registry.subprocess.run", execute
-    )
-    monkeypatch.setattr(
-        "openhands.agent_server.docker_runtime.registry.find_available_tcp_port",
-        lambda: 32123,
     )
 
     container = registry._run_container(
@@ -217,6 +215,8 @@ def test_run_container_uses_host_identity_for_bind_mounts(tmp_path, monkeypatch)
     user_flag = run_command.index("--user")
     assert run_command[user_flag + 1] == f"{os.getuid()}:{os.getgid()}"
     assert container.container_id == "test-container"
+    assert run_command[run_command.index("-p") + 1] == "127.0.0.1::8000"
+    assert container.host == "http://127.0.0.1:32123"
 
 
 def test_run_container_applies_ownership_and_security_policy(tmp_path, monkeypatch):
@@ -233,6 +233,8 @@ def test_run_container_applies_ownership_and_security_policy(tmp_path, monkeypat
     def execute(command, **kwargs):
         commands.append(command)
         stdout = "test-container\n" if command[:3] == ["docker", "run", "-d"] else ""
+        if command[:2] == ["docker", "port"]:
+            stdout = "127.0.0.1:32123\n"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(
@@ -240,10 +242,6 @@ def test_run_container_applies_ownership_and_security_policy(tmp_path, monkeypat
     )
     monkeypatch.setattr(
         "openhands.agent_server.docker_runtime.registry.subprocess.run", execute
-    )
-    monkeypatch.setattr(
-        "openhands.agent_server.docker_runtime.registry.find_available_tcp_port",
-        lambda: 32123,
     )
 
     conversation_id = uuid4()
@@ -330,7 +328,10 @@ def test_docker_launch_preserves_explicit_credentials(tmp_path, monkeypatch):
         "    assert os.environ.get('OH_SECRET_KEY') == 'test-cipher'\n"
         "    assert os.environ.get('OH_SESSION_API_KEYS_0') == 'test-session'\n"
         "    assert 'OH_SESSION_API_KEYS_1' not in os.environ\n"
+        "    assert sys.argv[sys.argv.index('-p') + 1] == '127.0.0.1::8000'\n"
         "    print('test-container')\n"
+        "elif sys.argv[1] == 'port':\n"
+        "    print('127.0.0.1:32123')\n"
     )
     docker.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
@@ -419,3 +420,34 @@ async def test_lone_cancelled_waiter_can_recover_or_shutdown(
     finally:
         release.set()
         await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.parametrize("binding", ["", "0.0.0.0:32123", "127.0.0.1:0"])
+def test_invalid_assigned_port_cleans_up_container(tmp_path, monkeypatch, binding):
+    registry = DockerConversationRegistry(Config(conversations_path=tmp_path))
+    commands = []
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        stdout = "test-container\n" if command[:2] == ["docker", "run"] else ""
+        if command[:2] == ["docker", "port"]:
+            stdout = binding
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.execute_command", execute
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.subprocess.run", execute
+    )
+    with pytest.raises(ValueError):
+        registry._run_container(
+            conversation_id=uuid4(),
+            image="test-image",
+            platform="linux/amd64",
+            volumes=[],
+            env={},
+            network=None,
+            api_key=None,
+        )
+    assert ["docker", "stop", "test-container"] in commands

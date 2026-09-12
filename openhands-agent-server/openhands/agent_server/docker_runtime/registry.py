@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import random
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -369,10 +367,6 @@ class DockerConversationRegistry:
         network: str | None,
         api_key: str | None,
     ) -> RunningConversationContainer:
-        port = find_available_tcp_port()
-        if port < 0:
-            raise RuntimeError("No available TCP port found for conversation container")
-
         docker_ver = execute_command(["docker", "version"]).returncode
         if docker_ver != 0:
             raise RuntimeError(
@@ -399,7 +393,6 @@ class DockerConversationRegistry:
                 str(self._config.conversation_container_pids_limit),
             ]
 
-        host = f"http://127.0.0.1:{port}"
         run_cmd = [
             "docker",
             "run",
@@ -422,7 +415,7 @@ class DockerConversationRegistry:
             "--name",
             f"agent-server-conversation-{uuid4()}",
             "-p",
-            f"127.0.0.1:{port}:8000",
+            "127.0.0.1::8000",
             *flags,
             image,
             "--host",
@@ -440,12 +433,21 @@ class DockerConversationRegistry:
 
         container_id = proc.stdout.strip()
         logger.info("Started conversation container: %s", container_id)
-        return RunningConversationContainer(
-            host=host,
-            api_key=api_key,
-            container_id=container_id,
-            image=image,
+        container = RunningConversationContainer(
+            host="", api_key=api_key, container_id=container_id, image=image
         )
+        try:
+            binding = execute_command(["docker", "port", container_id, "8000/tcp"])
+            address, port = binding.stdout.strip().rsplit(":", 1)
+            if binding.returncode != 0 or address != "127.0.0.1":
+                raise ValueError("Expected one loopback port binding")
+            if not 1 <= int(port) <= 65535:
+                raise ValueError("Invalid assigned port")
+            container.host = f"http://127.0.0.1:{int(port)}"
+            return container
+        except Exception:
+            container.cleanup()
+            raise
 
     def _wait_for_health(
         self, container: RunningConversationContainer, *, timeout: float
@@ -476,37 +478,3 @@ class DockerConversationRegistry:
                     raise RuntimeError(msg)
             time.sleep(1)
         raise RuntimeError("Conversation container failed to become healthy in time")
-
-
-_INTERFACE_HOST = "0.0.0.0"
-_MIN_PORT = 30000
-_MAX_PORT = 39999
-_MAX_PORT_ATTEMPTS = 50
-
-
-def check_port_available(port: int) -> bool:
-    """Check if a port is available for binding."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind((_INTERFACE_HOST, port))
-        return True
-    except OSError:
-        time.sleep(0.1)
-        return False
-    finally:
-        sock.close()
-
-
-def find_available_tcp_port(
-    min_port: int = _MIN_PORT,
-    max_port: int = _MAX_PORT,
-    max_attempts: int = _MAX_PORT_ATTEMPTS,
-) -> int:
-    """Find an available TCP port in the docker workspace range."""
-    ports = list(range(min_port, max_port + 1))
-    random.SystemRandom().shuffle(ports)
-
-    for port in ports[:max_attempts]:
-        if check_port_available(port):
-            return port
-    return -1
