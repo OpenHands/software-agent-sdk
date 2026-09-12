@@ -15,7 +15,6 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishTool
 from openhands.sdk.workspace import RemoteWorkspace
-from openhands.tools.task.workspace import SubagentWorkspace, SubagentWorkspaceReference
 
 
 @pytest.fixture
@@ -24,9 +23,6 @@ def remote_subagents(monkeypatch, mock_llm, tmp_path):
     servers = {}
     workspaces = []
     lifecycle = []
-    resources = {}
-    workspace_ids = {}
-    resolutions = []
     options = SimpleNamespace(
         confirm=False,
         fail_create=False,
@@ -36,7 +32,7 @@ def remote_subagents(monkeypatch, mock_llm, tmp_path):
     )
 
     def factory(child_id, agent_type):
-        host = f"https://child-{len(workspaces)}.example"
+        host = f"https://child-{uuid.uuid4().hex}.example"
         server = {
             "conversations": {},
             "creates": [],
@@ -128,37 +124,6 @@ def remote_subagents(monkeypatch, mock_llm, tmp_path):
         workspace._client = httpx.Client(
             base_url=host, transport=httpx.MockTransport(request)
         )
-        identity = str(uuid.uuid4())
-        workspace_ids[host] = identity
-        resources[identity] = (host, request)
-        workspaces.append(workspace)
-        return workspace
-
-    def persistent_factory(child_id, agent_type):
-        workspace = factory(child_id, agent_type)
-        return SubagentWorkspace(
-            workspace=workspace,
-            reference=SubagentWorkspaceReference(
-                provider="test-provider",
-                workspace_id=workspace_ids[workspace.host],
-                working_dir=workspace.working_dir,
-            ),
-        )
-
-    def resolver(reference):
-        resolutions.append(reference)
-        resource = resources.get(reference.workspace_id)
-        if resource is None:
-            return None
-        host, request = resource
-        workspace = RemoteWorkspace(
-            host=host,
-            working_dir=reference.working_dir,
-            api_key="fresh-credential-from-provider",
-        )
-        workspace._client = httpx.Client(
-            base_url=workspace.host, transport=httpx.MockTransport(request)
-        )
         workspaces.append(workspace)
         return workspace
 
@@ -191,10 +156,6 @@ def remote_subagents(monkeypatch, mock_llm, tmp_path):
     )
     yield SimpleNamespace(
         factory=factory,
-        persistent_factory=persistent_factory,
-        resolver=resolver,
-        resolutions=resolutions,
-        resources=resources,
         servers=servers,
         workspaces=workspaces,
         lifecycle=lifecycle,

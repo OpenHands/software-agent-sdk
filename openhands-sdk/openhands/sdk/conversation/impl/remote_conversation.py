@@ -729,7 +729,6 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
-        require_existing: bool = False,
         max_budget_per_run: float | None = None,
         **_: object,
     ) -> None:
@@ -741,8 +740,6 @@ class RemoteConversation(BaseConversation):
             plugins: Optional list of plugins to load on the server. Each plugin
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
-            require_existing: Fail if conversation_id is missing or the conversation
-                      no longer exists, instead of creating a new conversation.
             max_budget_per_run: Maximum LLM cost in USD per run. On attach, a supplied
                       budget must match the server's persisted budget.
             callbacks: Optional callbacks to receive events (not yet streamed)
@@ -773,8 +770,6 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
-        if require_existing and conversation_id is None:
-            raise ValueError("require_existing needs a conversation_id")
         if max_budget_per_run is not None and (
             not math.isfinite(max_budget_per_run) or max_budget_per_run <= 0
         ):
@@ -810,11 +805,6 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
-                if require_existing:
-                    raise ValueError(
-                        f"Remote conversation '{conversation_id}' no longer exists; "
-                        "cannot resume the subagent in its original workspace."
-                    )
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
@@ -952,153 +942,151 @@ class RemoteConversation(BaseConversation):
                 events_base_path=self._conversation_action_base_path,
             )
 
-            # Add default callback to maintain local event state
-            default_callback = self._state.events.create_default_callback()
-            self._callbacks.append(default_callback)
-
-            # Add callback to update state from websocket events
-            state_update_callback = self._state.create_state_update_callback()
-            self._callbacks.append(state_update_callback)
-
-            # Add callback to handle LLM completion logs
-            # Register callback if any LLM has log_completions enabled
-            if any(llm.log_completions for llm in agent.get_all_llms()):
-                llm_log_callback = self._create_llm_completion_log_callback()
-                self._callbacks.append(llm_log_callback)
-
-            # Handle visualization configuration
-            if isinstance(visualizer, ConversationVisualizerBase):
-                # Use custom visualizer instance
-                self._visualizer = visualizer
-                # Initialize the visualizer with conversation state
-                self._visualizer.initialize(self._state)
-                self._callbacks.append(self._visualizer.on_event)
-            elif isinstance(visualizer, type) and issubclass(
-                visualizer, ConversationVisualizerBase
-            ):
-                # Instantiate the visualizer class with appropriate parameters
-                self._visualizer = visualizer()
-                # Initialize with state
-                self._visualizer.initialize(self._state)
-                self._callbacks.append(self._visualizer.on_event)
-            else:
-                # No visualization (visualizer is None)
-                self._visualizer = None
-
-            # Add a callback that signals when run completes via WebSocket.
-            # The server's post-run full-state snapshot is the only authoritative
-            # WebSocket success signal. Per-field FINISHED is a hint because stop
-            # hooks can still revert it; per-field ERROR/STUCK remain immediate.
-            def run_complete_callback(event: Event) -> None:
-                if not isinstance(event, ConversationStateUpdateEvent):
-                    return
-
-                if event.key == "execution_status":
-                    try:
-                        status = ConversationExecutionStatus(event.value)
-                    except ValueError:
-                        return
-                    if status in (
-                        ConversationExecutionStatus.ERROR,
-                        ConversationExecutionStatus.STUCK,
-                    ):
-                        self._terminal_status_queue.put(status.value)
-                    return
-
-                if event.key != FULL_STATE_KEY:
-                    return
-
-                # Only accept full-state snapshots as run-completion signals when a
-                # run is actually in progress. The WS subscription delivers an
-                # initial full-state snapshot during connect(); if that snapshot
-                # carries a non-RUNNING status (e.g. "idle"), it could be picked up
-                # by _wait_for_run_completion() as the completion signal for the
-                # *next* run() invocation, causing blocking=True to return before the
-                # server has actually finished.
-                if not self._run_armed.is_set():
-                    return
-
-                raw_status = event.value.get("execution_status")
-                try:
-                    status = ConversationExecutionStatus(raw_status)
-                except ValueError:
-                    return
-
-                if status != ConversationExecutionStatus.RUNNING:
-                    self._terminal_status_queue.put(status.value)
-
-            # Compose all callbacks into a single callback
-            all_callbacks = self._callbacks + [run_complete_callback]
-            composed_callback = BaseConversation.compose_callbacks(all_callbacks)
-
-            # Initialize WebSocket client for callbacks
-            self._ws_client = WebSocketCallbackClient(
-                host=self.workspace.host,
-                conversation_id=str(self._id),
-                callback=composed_callback,
-                api_key=self.workspace.api_key,
-                on_reconnect=self._state.events.reconcile,
-            )
-            self._ws_client.start()
-
-            # Wait for WebSocket subscription to complete before allowing operations.
-            # This ensures events emitted during send_message() are not missed.
-            # The server sends a ConversationStateUpdateEvent after subscription.
-            ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
-            if not self._ws_client.wait_until_ready(timeout=ws_timeout):
-                if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
-                    "0",
-                    "false",
-                    "no",
-                ):
-                    logger.warning(
-                        "WebSocket subscription did not become ready within %.1f "
-                        "seconds for conversation %s; continuing after REST "
-                        "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
-                        "is false.",
-                        ws_timeout,
-                        self._id,
-                    )
-                else:
-                    try:
-                        self._ws_client.stop()
-                    except Exception:
-                        pass
-                    finally:
-                        self._ws_client = None
-                    raise WebSocketConnectionError(
-                        conversation_id=self._id,
-                        timeout=ws_timeout,
-                    )
-
-            # Reconcile events after WebSocket is ready to catch any events that
-            # were emitted between the initial REST sync and WebSocket subscription.
-            # This is the "reconciliation" part of the subscription handshake.
-            self._state.events.reconcile()
-
-            # Initialize secrets if provided
-            if secrets:
-                # Convert dict[str, str] to dict[str, SecretValue]
-                secret_values: dict[str, SecretValue] = {
-                    k: v for k, v in secrets.items()
-                }
-                self.update_secrets(secret_values)
-
-            self._start_observability_span(
-                str(self._id),
-                span_name=observability_span_name,
-                user_id=user_id,
-                metadata=observability_metadata,
-                tags=observability_tags,
-                conversation_tags=tags,
-            )
-            # All hooks (including SessionStart/SessionEnd) are executed server-side.
-            # hook_config is sent in the creation payload.
-            self.delete_on_close = delete_on_close
-
         except BaseException:
             self.close()
             raise
+
+        # Add default callback to maintain local event state
+        default_callback = self._state.events.create_default_callback()
+        self._callbacks.append(default_callback)
+
+        # Add callback to update state from websocket events
+        state_update_callback = self._state.create_state_update_callback()
+        self._callbacks.append(state_update_callback)
+
+        # Add callback to handle LLM completion logs
+        # Register callback if any LLM has log_completions enabled
+        if any(llm.log_completions for llm in agent.get_all_llms()):
+            llm_log_callback = self._create_llm_completion_log_callback()
+            self._callbacks.append(llm_log_callback)
+
+        # Handle visualization configuration
+        if isinstance(visualizer, ConversationVisualizerBase):
+            # Use custom visualizer instance
+            self._visualizer = visualizer
+            # Initialize the visualizer with conversation state
+            self._visualizer.initialize(self._state)
+            self._callbacks.append(self._visualizer.on_event)
+        elif isinstance(visualizer, type) and issubclass(
+            visualizer, ConversationVisualizerBase
+        ):
+            # Instantiate the visualizer class with appropriate parameters
+            self._visualizer = visualizer()
+            # Initialize with state
+            self._visualizer.initialize(self._state)
+            self._callbacks.append(self._visualizer.on_event)
+        else:
+            # No visualization (visualizer is None)
+            self._visualizer = None
+
+        # Add a callback that signals when run completes via WebSocket.
+        # The server's post-run full-state snapshot is the only authoritative
+        # WebSocket success signal. Per-field FINISHED is a hint because stop
+        # hooks can still revert it; per-field ERROR/STUCK remain immediate.
+        def run_complete_callback(event: Event) -> None:
+            if not isinstance(event, ConversationStateUpdateEvent):
+                return
+
+            if event.key == "execution_status":
+                try:
+                    status = ConversationExecutionStatus(event.value)
+                except ValueError:
+                    return
+                if status in (
+                    ConversationExecutionStatus.ERROR,
+                    ConversationExecutionStatus.STUCK,
+                ):
+                    self._terminal_status_queue.put(status.value)
+                return
+
+            if event.key != FULL_STATE_KEY:
+                return
+
+            # Only accept full-state snapshots as run-completion signals when a
+            # run is actually in progress. The WS subscription delivers an
+            # initial full-state snapshot during connect(); if that snapshot
+            # carries a non-RUNNING status (e.g. "idle"), it could be picked up
+            # by _wait_for_run_completion() as the completion signal for the
+            # *next* run() invocation, causing blocking=True to return before the
+            # server has actually finished.
+            if not self._run_armed.is_set():
+                return
+
+            raw_status = event.value.get("execution_status")
+            try:
+                status = ConversationExecutionStatus(raw_status)
+            except ValueError:
+                return
+
+            if status != ConversationExecutionStatus.RUNNING:
+                self._terminal_status_queue.put(status.value)
+
+        # Compose all callbacks into a single callback
+        all_callbacks = self._callbacks + [run_complete_callback]
+        composed_callback = BaseConversation.compose_callbacks(all_callbacks)
+
+        # Initialize WebSocket client for callbacks
+        self._ws_client = WebSocketCallbackClient(
+            host=self.workspace.host,
+            conversation_id=str(self._id),
+            callback=composed_callback,
+            api_key=self.workspace.api_key,
+            on_reconnect=self._state.events.reconcile,
+        )
+        self._ws_client.start()
+
+        # Wait for WebSocket subscription to complete before allowing operations.
+        # This ensures events emitted during send_message() are not missed.
+        # The server sends a ConversationStateUpdateEvent after subscription.
+        ws_timeout = float(os.getenv("OPENHANDS_REMOTE_WS_READY_TIMEOUT", "30"))
+        if not self._ws_client.wait_until_ready(timeout=ws_timeout):
+            if os.getenv("OPENHANDS_REMOTE_WS_READY_REQUIRED", "true").lower() in (
+                "0",
+                "false",
+                "no",
+            ):
+                logger.warning(
+                    "WebSocket subscription did not become ready within %.1f "
+                    "seconds for conversation %s; continuing after REST "
+                    "reconciliation because OPENHANDS_REMOTE_WS_READY_REQUIRED "
+                    "is false.",
+                    ws_timeout,
+                    self._id,
+                )
+            else:
+                try:
+                    self._ws_client.stop()
+                except Exception:
+                    pass
+                finally:
+                    self._ws_client = None
+                raise WebSocketConnectionError(
+                    conversation_id=self._id,
+                    timeout=ws_timeout,
+                )
+
+        # Reconcile events after WebSocket is ready to catch any events that
+        # were emitted between the initial REST sync and WebSocket subscription.
+        # This is the "reconciliation" part of the subscription handshake.
+        self._state.events.reconcile()
+
+        # Initialize secrets if provided
+        if secrets:
+            # Convert dict[str, str] to dict[str, SecretValue]
+            secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
+            self.update_secrets(secret_values)
+
+        self._start_observability_span(
+            str(self._id),
+            span_name=observability_span_name,
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+            conversation_tags=tags,
+        )
+        # All hooks (including SessionStart/SessionEnd) are executed server-side.
+        # hook_config is sent in the creation payload.
+        self.delete_on_close = delete_on_close
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
