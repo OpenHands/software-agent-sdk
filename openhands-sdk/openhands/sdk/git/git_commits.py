@@ -23,11 +23,13 @@ from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
     _rev_parse,
     run_git_command,
+    unquote_git_path,
     validate_git_repository,
 )
 
 
 logger = logging.getLogger(__name__)
+
 
 DEFAULT_COMMIT_LIMIT = 50
 
@@ -200,7 +202,8 @@ def get_commit_file_diff(file_path: str | Path, commit: str) -> GitDiff:
         GitRepositoryError: If the path is not inside a git repository.
         GitCommandError: If ``commit`` does not resolve.
     """
-    path = Path(os.getcwd(), file_path).resolve()
+    clean_file_path = unquote_git_path(str(file_path))
+    path = Path(os.getcwd(), clean_file_path).resolve()
 
     closest_git_repo = get_closest_git_repo(path)
     if not closest_git_repo:
