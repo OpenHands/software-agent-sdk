@@ -516,6 +516,7 @@ def _compose_conversation_info(
     )
     return ConversationInfo(
         **state.model_dump(mode="json"),
+        max_budget_per_run=stored.max_budget_per_run,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,

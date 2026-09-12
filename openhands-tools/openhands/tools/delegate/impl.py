@@ -5,16 +5,25 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from openhands.sdk.conversation import BaseConversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
+from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.delegate.definition import DelegateObservation
+from openhands.tools.task.workspace import (
+    SubagentWorkspaceFactory,
+    close_workspace,
+    enter_workspace,
+)
 
 
 if TYPE_CHECKING:
@@ -42,10 +51,13 @@ class DelegateExecutor(ToolExecutor):
         self,
         max_children: int = 5,
         confirmation_handler: ConfirmationHandler | None = None,
+        workspace_factory: SubagentWorkspaceFactory | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         # Map from user-friendly identifier to conversation
-        self._sub_agents: dict[str, LocalConversation] = {}
+        self._sub_agents: dict[str, BaseConversation] = {}
+        self._workspace_factory = workspace_factory
+        self._workspaces: dict[str, RemoteWorkspace] = {}
         self._max_children: int = max_children
         self._confirmation_handler = confirmation_handler
 
@@ -97,7 +109,7 @@ class DelegateExecutor(ToolExecutor):
             return "default"
         return action.agent_types[index].strip() or "default"
 
-    def _close_sub_agent(self, agent_id: str, conversation: LocalConversation) -> None:
+    def _close_sub_agent(self, agent_id: str, conversation: BaseConversation) -> None:
         try:
             conversation.close()
         except Exception as e:
@@ -107,9 +119,12 @@ class DelegateExecutor(ToolExecutor):
         for agent_id, conversation in list(self._sub_agents.items()):
             self._close_sub_agent(agent_id, conversation)
         self._sub_agents.clear()
+        for workspace in self._workspaces.values():
+            close_workspace(workspace)
+        self._workspaces.clear()
 
     def _run_until_finished(
-        self, agent_id: str, conversation: LocalConversation
+        self, agent_id: str, conversation: BaseConversation
     ) -> None:
         """Run a sub-agent conversation to completion, handling confirmations."""
         conversation.run()
@@ -162,7 +177,15 @@ class DelegateExecutor(ToolExecutor):
                 is_error=True,
             )
 
-        created_sub_agents: list[tuple[str, str, LocalConversation]] = []
+        if len(set(action.ids)) != len(action.ids):
+            return DelegateObservation.from_text(
+                text="Spawn IDs must be unique",
+                command=action.command,
+                is_error=True,
+            )
+
+        created_sub_agents: list[tuple[str, str, BaseConversation]] = []
+        created_workspaces: dict[str, RemoteWorkspace] = {}
         try:
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
@@ -227,7 +250,38 @@ class DelegateExecutor(ToolExecutor):
                         factory.definition.max_iteration_per_run
                     )
 
-                sub_conversation = LocalConversation(**conv_kwargs)
+                workspace = (
+                    self._workspace_factory(agent_id, agent_type)
+                    if self._workspace_factory is not None
+                    else None
+                )
+                if workspace is not None:
+                    if workspace is parent_conversation.state.workspace or any(
+                        owned is workspace
+                        for owned in [
+                            *self._workspaces.values(),
+                            *created_workspaces.values(),
+                        ]
+                    ):
+                        raise ValueError("Each subagent must own a distinct workspace")
+                    enter_workspace(workspace)
+                    created_workspaces[agent_id] = workspace
+                    conv_kwargs["workspace"] = workspace
+                    conv_kwargs["delete_on_close"] = True
+
+                with detached_delegate_context() as link:
+                    conv_kwargs["observability_metadata"] = {
+                        "is_delegate": True,
+                        "task_id": agent_id,
+                        "subagent_type": agent_type,
+                        "parent_session_id": str(parent_conversation.state.id),
+                        **link,
+                    }
+                    conv_kwargs["observability_tags"] = ["delegate"]
+                    conversation_class = (
+                        LocalConversation if workspace is None else RemoteConversation
+                    )
+                    sub_conversation = conversation_class(**conv_kwargs)
                 created_sub_agents.append((agent_id, agent_type, sub_conversation))
 
                 # Apply permission_mode: explicit mode from definition,
@@ -244,6 +298,11 @@ class DelegateExecutor(ToolExecutor):
                 previous_conversation = self._sub_agents.get(agent_id)
                 if previous_conversation is not None:
                     self._close_sub_agent(agent_id, previous_conversation)
+                previous_workspace = self._workspaces.pop(agent_id, None)
+                if previous_workspace is not None:
+                    close_workspace(previous_workspace)
+                if agent_id in created_workspaces:
+                    self._workspaces[agent_id] = created_workspaces[agent_id]
                 self._sub_agents[agent_id] = sub_conversation
 
                 # Log what type of agent was created
@@ -269,6 +328,8 @@ class DelegateExecutor(ToolExecutor):
         except Exception as e:
             for agent_id, _, sub_conversation in created_sub_agents:
                 self._close_sub_agent(agent_id, sub_conversation)
+            for workspace in created_workspaces.values():
+                close_workspace(workspace)
             logger.error(f"Error: failed to spawn agents: {e}", exc_info=True)
             return DelegateObservation.from_text(
                 text=f"failed to spawn agents: {str(e)}",
@@ -322,7 +383,7 @@ class DelegateExecutor(ToolExecutor):
 
             def run_task(
                 agent_id: str,
-                conversation: LocalConversation,
+                conversation: BaseConversation,
                 task: str,
                 parent_name: str | None,
             ):
@@ -369,9 +430,12 @@ class DelegateExecutor(ToolExecutor):
             for agent_id in action.tasks:
                 if agent_id in self._sub_agents:
                     sub_conv = self._sub_agents[agent_id]
-                    parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
-                        sub_conv.conversation_stats.get_combined_metrics()
-                    )
+                    try:
+                        parent_stats.usage_to_metrics[f"delegate:{agent_id}"] = (
+                            sub_conv.conversation_stats.get_combined_metrics()
+                        )
+                    except Exception:
+                        logger.warning("Failed to read subagent metrics", exc_info=True)
 
             # Collect results in the same order as the input tasks
             all_results = []

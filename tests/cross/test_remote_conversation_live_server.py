@@ -26,7 +26,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
-from openhands.sdk.conversation import RemoteConversation
+from openhands.sdk.conversation import LocalConversation, RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -40,7 +40,10 @@ from openhands.sdk.event import (
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.llm import MessageToolCall
+from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
@@ -51,6 +54,7 @@ from openhands.sdk.subagent.registry import (
     register_agent_if_absent,
 )
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.task.manager import TaskManager, TaskStatus
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
@@ -176,6 +180,128 @@ def _assert_secret(value: "str | SecretStr", expected: str) -> None:
         assert value.get_secret_value() == expected
     else:
         assert value == expected
+
+
+@pytest.mark.parametrize("child_budget", [None, 0.5])
+def test_remote_subagent_budget_enforced_on_resume(
+    server_env, monkeypatch, tmp_path, child_budget
+):
+    calls = []
+
+    async def completion(self, messages, tools=None, **kwargs):
+        calls.append(messages)
+        self.metrics.add_cost(2.0)
+        message = Message(
+            role="assistant",
+            content=[],
+            tool_calls=[
+                MessageToolCall(
+                    origin="completion",
+                    id=f"think-{len(calls)}",
+                    name="think",
+                    arguments='{"thought": "Continue working"}',
+                )
+            ],
+        )
+        return LLMResponse(
+            message=message,
+            metrics=self.metrics.get_snapshot(),
+            raw_response=ModelResponse(id=f"cost-{len(calls)}", choices=[]),
+        )
+
+    monkeypatch.setattr(LLM, "acompletion", completion)
+    name = "budgeted-remote-worker"
+    register_agent(
+        name,
+        lambda llm: Agent(llm=llm, tools=[]),
+        AgentDefinition(
+            name=name, description="Worker", max_budget_per_run=child_budget
+        ),
+    )
+    parent = LocalConversation(
+        agent=Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[]),
+        workspace=tmp_path,
+        max_budget_per_run=1.0,
+        visualizer=None,
+    )
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    manager = TaskManager(workspace_factory=lambda child, kind: workspace)
+    expected_budget = child_budget or 1.0
+    try:
+        task = manager.start_task("Keep working", name, conversation=parent)
+        assert task.status == TaskStatus.ERROR
+        assert len(calls) == 1
+        assert isinstance(task.conversation, RemoteConversation)
+        assert task.conversation.max_budget_per_run == expected_budget
+        assert any(
+            isinstance(event, ConversationErrorEvent)
+            and event.code == "MaxBudgetReached"
+            for event in task.conversation.state.events
+        )
+
+        resumed = manager.start_task("Continue", resume=task.id)
+        assert resumed.status == TaskStatus.ERROR
+        assert isinstance(resumed.conversation, RemoteConversation)
+        assert resumed.conversation.max_budget_per_run == expected_budget
+        assert (
+            len(
+                [
+                    event
+                    for event in resumed.conversation.state.events
+                    if isinstance(event, ConversationErrorEvent)
+                    and event.code == "MaxBudgetReached"
+                ]
+            )
+            == 2
+        )
+    finally:
+        manager.close()
+        parent.close()
+        _reset_registry_for_tests()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_subagent_workspace_factory_returns_result(
+    server_env, patched_llm, tmp_path, remote
+):
+    name = "live-remote-worker"
+    register_agent(
+        name,
+        lambda llm: Agent(llm=llm, tools=[]),
+        AgentDefinition(name=name, description="Worker"),
+    )
+    parent = LocalConversation(
+        agent=Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[]),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+    manager = TaskManager(
+        workspace_factory=lambda child, kind: RemoteWorkspace(
+            host=server_env["host"], working_dir=str(server_env["workspace_path"])
+        )
+        if remote
+        else None
+    )
+    try:
+        task = manager.start_task("Say hello", name, conversation=parent)
+        assert task.status == TaskStatus.COMPLETED
+        assert task.result == "Hello from patched LLM"
+        assert isinstance(
+            task.conversation, RemoteConversation if remote else LocalConversation
+        )
+        if remote:
+            assert task.conversation.workspace is not parent.workspace
+        resumed = manager.start_task("Say hello again", name, resume=task.id)
+        assert resumed.result == "Hello from patched LLM"
+        if remote:
+            assert resumed.conversation is task.conversation
+        assert len(patched_llm) == 2
+    finally:
+        manager.close()
+        parent.close()
+        _reset_registry_for_tests()
 
 
 def test_health_endpoints_return_ok_json(server_env):
