@@ -78,6 +78,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/JsonValue",
+    "kind": "empty-object-schema",
+    "reason": "Cloud proxy request bodies intentionally accept arbitrary JSON values for upstream runtime APIs.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/components/schemas/AskOracleTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
