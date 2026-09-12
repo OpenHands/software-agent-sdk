@@ -1,4 +1,10 @@
+import asyncio
 import json
+import threading
+from typing import cast
+from unittest.mock import MagicMock
+
+from pydantic import PrivateAttr
 
 from openhands.sdk import Agent, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -8,7 +14,31 @@ from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TASK_TOOL_EXAMPLES, TaskObservation
-from openhands.tools.task.manager import TaskStatus
+from openhands.tools.task.impl import TaskExecutor
+from openhands.tools.task.manager import TaskManager, TaskStatus
+
+
+class InterruptibleSubagentLLM(TestLLM):
+    """Sub-agent LLM that records cancellation of its asynchronous call."""
+
+    _started: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _interrupted: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _release_sync: threading.Event = PrivateAttr(default_factory=threading.Event)
+
+    def completion(self, messages, tools=None, **kwargs):  # type: ignore[override]
+        self._started.set()
+        self._release_sync.wait(timeout=5)
+        return super().completion(messages, tools=tools, **kwargs)
+
+    async def acompletion(  # type: ignore[override]
+        self, messages, tools=None, **kwargs
+    ):
+        self._started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            self._interrupted.set()
+            raise
 
 
 def _task_tool_call(
@@ -116,6 +146,48 @@ class TestTaskToolSetIntegration:
         assert obs.task_id.startswith("task_")
         assert obs.subagent == "test_agent"
         assert "Paris" in obs.text
+
+    async def test_parent_interrupt_stops_active_subagent(self, tmp_path):
+        parent_llm = TestLLM.from_messages(
+            [_task_tool_call("call_1", prompt="Run until interrupted")]
+        )
+        sub_llm = cast(
+            InterruptibleSubagentLLM,
+            InterruptibleSubagentLLM.from_messages(
+                [_text_message("unexpected completion")]
+            ),
+        )
+        _register_simple_agent("test_agent", sub_llm)
+        agent = Agent(llm=parent_llm, tools=[Tool(name=TaskToolSet.name)])
+        conversation = Conversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+        )
+        conversation.send_message("Delegate a long-running task")
+        run_task = asyncio.create_task(conversation.arun())
+
+        try:
+            assert await asyncio.to_thread(sub_llm._started.wait, 1)
+
+            conversation.interrupt()
+            await asyncio.wait_for(run_task, timeout=2)
+
+            assert await asyncio.to_thread(sub_llm._interrupted.wait, 1)
+            assert (
+                conversation.state.execution_status
+                == ConversationExecutionStatus.PAUSED
+            )
+        finally:
+            sub_llm._release_sync.set()
+            conversation.close()
+
+    def test_task_executor_delegates_interrupt_to_manager(self):
+        manager = MagicMock(spec=TaskManager)
+
+        TaskExecutor(manager).interrupt()
+
+        manager.interrupt.assert_called_once_with()
 
     # ── Multiple sequential tasks ───────────────────────────────────
 
