@@ -927,7 +927,9 @@ class RemoteConversation(BaseConversation):
             workspace.client,
             "POST",
             LEGACY_CONVERSATIONS_PATH,
-            json=request.model_dump(mode="json", context={"expose_secrets": True}),
+            json=request.model_dump(
+                mode="json", exclude_none=True, context={"expose_secrets": True}
+            ),
         )
         info = response.json()
         workspace.register_conversation(info["id"])

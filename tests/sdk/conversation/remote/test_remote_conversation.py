@@ -229,11 +229,13 @@ class TestRemoteConversation:
             if method == "POST" and url == "/api/conversations":
                 payload = kwargs["json"]
                 assert payload["agent_profile_id"] == str(profile_id)
-                assert payload["agent"] is None and payload["secrets"] == {}
+                assert "agent" not in payload and payload["secrets"] == {}
+                parsed = StartConversationRequest.model_validate(payload)
+                assert parsed.agent_profile_id == profile_id
                 assert payload["max_iterations"] == 17
                 assert payload["tags"] == {"automationrun": "run-one"}
                 assert payload["stuck_detection"] is False
-                assert payload["hook_config"] == hooks.model_dump()
+                assert parsed.hook_config == hooks
                 assert payload["observability_metadata"] == {"run": "one"}
                 assert payload["observability_tags"] == ["automation"]
                 assert payload["observability_span_name"] == "scheduled-task"
