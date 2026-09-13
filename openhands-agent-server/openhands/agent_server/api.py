@@ -49,6 +49,7 @@ from openhands.agent_server.init_router import (
     require_initialized,
 )
 from openhands.agent_server.llm_router import llm_router
+from openhands.agent_server.local_secret_resolver import local_secret_resolution
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
@@ -153,12 +154,18 @@ def _cleanup_stale_tmux_sessions() -> None:
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
+    secret_resolution: local_secret_resolution | None = None
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
 
         config: Config = api.state.config
         deferred = config.deferred_init
+
+        # Answer our own LookupSecret URLs in-process; a loopback fetch made
+        # from the event loop cannot be served by the loop blocked on it.
+        secret_resolution = local_secret_resolution(config)
+        secret_resolution.__enter__()
 
         # Deferred pods boot with telemetry disabled and are rebuilt by
         # InitService, so they emit `server_started` there instead.
@@ -281,6 +288,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     finally:
         # Outer finally so a startup failure cannot leak the drain task, and
         # after `async with service` so terminal events are still accepted.
+        if secret_resolution is not None:
+            secret_resolution.__exit__(None, None, None)
         emit_server_stopped()
         await shutdown_telemetry_sink()
 
