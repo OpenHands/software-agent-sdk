@@ -25,6 +25,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import RemoteWorkspace
@@ -211,6 +212,7 @@ class TestRemoteConversation:
     )
     def test_create_from_profile_uses_resolved_agent(self, mock_ws_client):
         cid, profile_id = uuid.uuid4(), uuid.uuid4()
+        hooks = HookConfig.model_validate({"stop": [{"hooks": [{"command": "true"}]}]})
         client = self.setup_mock_client(str(cid))
         original = client.request.side_effect
         created = False
@@ -228,6 +230,12 @@ class TestRemoteConversation:
                 assert "agent" not in payload and "secrets" not in payload
                 assert payload["max_iterations"] == 17
                 assert payload["tags"] == {"automationrun": "run-one"}
+                assert payload["stuck_detection"] is False
+                assert payload["hook_config"] == hooks.model_dump()
+                assert payload["observability_metadata"] == {"run": "one"}
+                assert payload["observability_tags"] == ["automation"]
+                assert payload["observability_span_name"] == "scheduled-task"
+                assert payload["user_id"] == "operator"
                 response.json.return_value["agent"] = self.agent.model_dump(mode="json")
                 created = True
             return response
@@ -240,6 +248,12 @@ class TestRemoteConversation:
             agent_profile_id=profile_id,
             max_iteration_per_run=17,
             tags={"automationrun": "run-one"},
+            stuck_detection=False,
+            hook_config=hooks,
+            observability_metadata={"run": "one"},
+            observability_tags=["automation"],
+            observability_span_name="scheduled-task",
+            user_id="operator",
             visualizer=None,
         )
         assert conversation.id == cid

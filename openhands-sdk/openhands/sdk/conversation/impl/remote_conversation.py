@@ -819,36 +819,8 @@ class RemoteConversation(BaseConversation):
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
-        if should_create and agent_profile_id is not None:
-            # The canonical request imports Agent, so defer past package initialization.
-            from openhands.sdk.conversation.request import StartConversationRequest
-
-            request = StartConversationRequest(
-                agent_profile_id=agent_profile_id,
-                conversation_id=conversation_id,
-                workspace=LocalWorkspace(working_dir=workspace.working_dir),
-                max_iterations=max_iteration_per_run,
-                tags=tags or {},
-                plugins=plugins or [],
-            )
-            response = _send_request(
-                self._client,
-                "POST",
-                self._conversation_info_base_path,
-                json=request.model_dump(
-                    mode="json", exclude_none=True, exclude_unset=True
-                ),
-                timeout=180,
-            )
-            info = response.json()
-            self._id = uuid.UUID(info["id"])
-            agent = _validate_remote_agent(info["agent"])
-            workspace.register_conversation(str(self._id))
-            should_create = False
-
-        if agent is None:
+        if agent is None and agent_profile_id is None:
             raise ValueError("Supply an agent, a profile, or an existing conversation")
-        self.agent = agent
 
         if should_create:
             # Import here to avoid circular imports
@@ -863,9 +835,6 @@ class RemoteConversation(BaseConversation):
             logger.debug(f"Sending {len(serialized_defs)} agent_definitions to server")
 
             payload = {
-                "agent": agent.model_dump(
-                    mode="json", context={"expose_secrets": True}
-                ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
                 "stuck_detection": stuck_detection,
@@ -898,6 +867,12 @@ class RemoteConversation(BaseConversation):
                 "observability_span_name": observability_span_name,
                 "user_id": user_id,
             }
+            if agent is None:
+                payload["agent_profile_id"] = str(agent_profile_id)
+            else:
+                payload["agent"] = agent.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                )
             if user_id:
                 payload["user_id"] = user_id
             if stuck_detection_thresholds is not None:
@@ -927,7 +902,12 @@ class RemoteConversation(BaseConversation):
                 )
             self._id = uuid.UUID(cid)
 
+            if agent is None:
+                agent = _validate_remote_agent(data["agent"])
             workspace.register_conversation(str(self._id))
+
+        assert agent is not None
+        self.agent = agent
 
         # Register client tool action types locally so WebSocket/persisted
         # events with ClientAction_* action_type can be deserialized by the
