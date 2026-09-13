@@ -9,7 +9,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.telemetry import Telemetry, normalize_usage
 
 
 PROXY_COST = 0.084930
@@ -88,13 +88,16 @@ def test_span_cost_agrees_with_metrics(exporter):
     assert attrs["gen_ai.usage.cost"] == pytest.approx(t.metrics.accumulated_cost)
 
 
-def test_cache_buckets_survive_absent_prompt_tokens_details():
+def test_cache_write_survives_absent_prompt_tokens_details():
     usage = Usage(
         prompt_tokens=100,
         completion_tokens=5,
         cache_creation_input_tokens=42,
     )
-    assert Telemetry._cache_buckets(usage)[1] == 42
+    snapshot = normalize_usage(usage)
+
+    assert snapshot is not None
+    assert snapshot.cache_write_tokens == 42
 
 
 def test_span_closed_on_error(exporter):
