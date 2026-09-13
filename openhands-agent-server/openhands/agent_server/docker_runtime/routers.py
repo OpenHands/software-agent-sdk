@@ -200,7 +200,7 @@ async def _start_prepared_conversation(
     ).exists()
     identity = identity.model_copy(
         update={
-            "grants": grants_for_agent(resolved.agent),
+            "grants": grants_for_agent(resolved.agent, launched),
             "launched_agent_profile": launched,
             "auxiliary_subscription": has_auxiliary_subscription(resolved),
         }

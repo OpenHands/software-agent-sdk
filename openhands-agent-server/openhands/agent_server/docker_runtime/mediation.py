@@ -82,7 +82,9 @@ def _materialize(value: Any, config: Config) -> Any:
     return value
 
 
-def grants_for_agent(agent: BaseModel) -> RuntimeGrants:
+def grants_for_agent(
+    agent: BaseModel, launched_profile: LaunchedAgentProfile | None = None
+) -> RuntimeGrants:
     subscription = None
     mcp_names: set[str] = set()
 
@@ -109,7 +111,14 @@ def grants_for_agent(agent: BaseModel) -> RuntimeGrants:
     visit(agent)
     credential_names = (
         frozenset({CODEX_AUTH_SECRET_NAME})
-        if isinstance(agent, ACPAgent) and agent.acp_server == "codex"
+        if (
+            isinstance(agent, ACPAgent)
+            and agent.acp_server == "codex"
+            and (
+                launched_profile is None
+                or launched_profile.allows_secret(CODEX_AUTH_SECRET_NAME)
+            )
+        )
         else frozenset()
     )
     return RuntimeGrants(

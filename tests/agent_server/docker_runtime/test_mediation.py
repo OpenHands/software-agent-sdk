@@ -186,7 +186,7 @@ async def test_profile_secret_scope_precedes_docker_lookup(
     secrets.set_secret("UNRELATED", "unrelated-canary")
     get_llm_profile_store().save(
         "selected-model",
-        LLM(model="test-model"),
+        LLM(model="test-model", api_key=SecretStr("model-channel-key")),
         include_secrets=True,
         cipher=config.cipher,
     )
@@ -226,6 +226,10 @@ async def test_profile_secret_scope_precedes_docker_lookup(
     assert set(looked_up) == expected
     assert launched is not None
     assert launched.agent_profile_id == profile.id
+    assert launched.secret_refs == allowed
+    assert isinstance(resolved.agent, Agent)
+    assert isinstance(resolved.agent.llm.api_key, SecretStr)
+    assert resolved.agent.llm.api_key.get_secret_value() == "model-channel-key"
     assert resolved.agent_profile_id is None
     identity = RuntimeProvisioningStore(config).create(uuid4())
     wire = serialize_for_runtime(resolved, identity)
@@ -255,3 +259,48 @@ async def test_profile_secret_scope_precedes_docker_lookup(
     assert "unrelated-canary" not in prompt
     assert ("$ALLOWED" in prompt) == ("ALLOWED" in expected)
     assert ("$UNRELATED" in prompt) == ("UNRELATED" in expected)
+
+
+@pytest.mark.parametrize("allowed", [None, [], ["CODEX_AUTH_JSON"]])
+def test_runtime_grants_respect_user_secret_scope_without_filtering_model_auth(allowed):
+    from openhands.agent_server.docker_runtime.mediation import grants_for_agent
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
+
+    launched = LaunchedAgentProfile(
+        agent_profile_id=uuid4(), revision=1, secret_refs=allowed
+    )
+    codex = ACPAgent(acp_server="codex", acp_command=["codex-acp"])
+    grants = grants_for_agent(codex, launched)
+    expected = {"CODEX_AUTH_JSON"} if allowed != [] else set()
+    assert grants.credential_names == expected
+    native = Agent(llm=LLM(model="test", auth_type="subscription"))
+    assert grants_for_agent(native, launched).subscription == "openai"
+    assert grants_for_agent(codex).credential_names == {"CODEX_AUTH_JSON"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [None, [], ["CODEX_AUTH_JSON"]])
+async def test_inner_runtime_only_attaches_profile_allowed_broker_binding(
+    tmp_path, monkeypatch, allowed
+):
+    from openhands.agent_server.conversation_service import ConversationService
+    from openhands.agent_server.models import StoredConversation
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
+
+    monkeypatch.setenv("OH_RUNTIME_CREDENTIAL_SOCKET", str(tmp_path / "broker.sock"))
+    monkeypatch.setenv("OH_RUNTIME_CREDENTIAL_TOKEN", "synthetic-token")
+    stored = StoredConversation(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+        launched_agent_profile=LaunchedAgentProfile(
+            agent_profile_id=uuid4(), revision=1, secret_refs=allowed
+        ),
+    )
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    bindings = await service._resolve_credential_bindings(
+        stored, ACPAgent(acp_server="codex", acp_command=["codex-acp"])
+    )
+    expected = {"CODEX_AUTH_JSON"} if allowed != [] else set()
+    assert set(bindings) == expected
