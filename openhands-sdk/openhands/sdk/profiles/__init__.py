@@ -29,7 +29,6 @@ from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
     DanglingMcpServerRef,
     ProfileNotFound,
-    filter_profile_secrets,
     resolve_agent_profile,
     resolve_agent_profile_dry_run,
 )
@@ -59,7 +58,6 @@ __all__ = [
     "build_seed_profile",
     "cascade_rename",
     "delete_llm_profile",
-    "filter_profile_secrets",
     "find_referrers",
     "rename_llm_profile",
     "resolve_agent_profile",
