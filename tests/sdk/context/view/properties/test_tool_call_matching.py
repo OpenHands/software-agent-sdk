@@ -6,6 +6,8 @@ The property ensures unmatched actions and observations are filtered out.
 
 from unittest.mock import create_autospec
 
+import pytest
+
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.tool_call_matching import (
     ToolCallMatchingProperty,
@@ -429,3 +431,34 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
 
         result = self.property.manipulation_indices(events)
         assert result == ManipulationIndices.complete(events)
+
+    def test_orphan_observation_is_ignored(self) -> None:
+        """Test that an observation without a matching action is tolerated."""
+        orphan = AgentErrorEvent(
+            error="The tool was interrupted during restart recovery.",
+            tool_name="test_tool",
+            tool_call_id="orphan_call",
+        )
+        events: list[LLMConvertibleEvent] = [orphan]
+
+        assert self.property.manipulation_indices(
+            events
+        ) == ManipulationIndices.complete(events)
+
+    def test_duplicate_observation_still_raises(self) -> None:
+        """Test that duplicate observations remain a strict pairing violation."""
+        action = create_autospec(ActionEvent, instance=True)
+        action.tool_call_id = "call_1"
+        action.id = "action_1"
+        action.llm_response_id = "response_1"
+
+        observation = create_autospec(ObservationEvent, instance=True)
+        observation.tool_call_id = "call_1"
+        observation.id = "obs_1"
+
+        duplicate = create_autospec(ObservationEvent, instance=True)
+        duplicate.tool_call_id = "call_1"
+        duplicate.id = "obs_2"
+
+        with pytest.raises(KeyError):
+            self.property.manipulation_indices([action, observation, duplicate])
