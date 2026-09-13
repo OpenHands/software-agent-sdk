@@ -877,9 +877,22 @@ def load_skills_from_dir(
     # Note: Third-party files (AGENTS.md, etc.) are loaded separately by
     # load_project_skills() to ensure they're loaded even when this directory
     # doesn't exist.
-    skill_md_files = find_skill_md_directories(skill_dir)
+    # Installed packages are loaded separately with registry enable/disable state.
+    # Import lazily because installed.py imports Skill from this module.
+    from openhands.sdk.skills.installed import get_installed_skills_dir
+
+    installed_dir = get_installed_skills_dir().resolve()
+    skill_md_files = [
+        path
+        for path in find_skill_md_directories(skill_dir)
+        if not path.resolve().is_relative_to(installed_dir)
+    ]
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-    regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
+    regular_md_files = [
+        path
+        for path in find_regular_md_files(skill_dir, skill_md_dirs)
+        if not path.resolve().is_relative_to(installed_dir)
+    ]
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     # Wrap each load in try/except to ensure one bad skill doesn't break all loading
