@@ -107,3 +107,8 @@ async def test_profile_scope_filters_resume_supplied_codex_secret(
         state = await event_service.get_state()
         expected = {"CODEX_AUTH_JSON"} if secret_refs != [] else set()
         assert set(state.secret_registry.secret_sources) == expected
+        await event_service.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("updated-dummy"))}
+        )
+        state = await event_service.get_state()
+        assert set(state.secret_registry.secret_sources) == expected
