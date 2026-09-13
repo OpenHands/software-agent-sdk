@@ -1240,12 +1240,22 @@ class TestProfileSecretScope:
         assert self._resolve(profile) == set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("secret_refs", "expected"),
+        [
+            (None, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            ([], set()),
+            (["GITHUB_TOKEN"], {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN", "MISSING"], {"GITHUB_TOKEN"}),
+            (["MISSING"], set()),
+        ],
+    )
     async def test_start_conversation_drops_secrets_the_profile_disallows(
-        self, tmp_path
+        self, tmp_path, secret_refs, expected
     ):
         """The filter runs on the request, so a client cannot widen the scope."""
         profile = _make_openhands_profile().model_copy(
-            update={"secret_refs": ["GITHUB_TOKEN"]}
+            update={"secret_refs": secret_refs}
         )
         captured: dict[str, Any] = {}
 
@@ -1309,4 +1319,4 @@ class TestProfileSecretScope:
 
                 await service.start_conversation(request)
 
-        assert set(captured["secrets"]) == {"GITHUB_TOKEN"}
+        assert set(captured["secrets"]) == expected
