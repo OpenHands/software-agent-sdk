@@ -191,6 +191,7 @@ def test_grep_executor_include_filter_still_skips_hidden_directories():
     [
         (r"^(foo|bar)+[0-9]{2}$", "FooBAR12\n", "foo12 extra\n"),
         (r"^foo\(bar\)\+$", "foo(bar)+\n", "foobar\n"),
+        ("", "any content\n", ""),
     ],
 )
 def test_grep_executor_system_grep_regex(
