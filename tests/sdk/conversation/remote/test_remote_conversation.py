@@ -16,6 +16,7 @@ from openhands.sdk.conversation.exceptions import (
     WebSocketConnectionError,
 )
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
@@ -28,7 +29,7 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
-from openhands.sdk.workspace import RemoteWorkspace
+from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
 class TestRemoteConversation:
@@ -188,11 +189,12 @@ class TestRemoteConversation:
             response = original(method, url, **kwargs)
             if method == "GET" and url == f"/api/conversations/{cid}":
                 response.json.return_value["agent"] = expected.model_dump(mode="json")
+                response.json.return_value["max_iterations"] = 500
             return response
 
         client.request.side_effect = respond
-        conversation = RemoteConversation(
-            agent=None, workspace=self.workspace, conversation_id=cid, visualizer=None
+        conversation = RemoteConversation.attach(
+            workspace=self.workspace, conversation_id=cid, visualizer=None
         )
         assert type(conversation.agent) is type(expected)
         if kind == "Agent":
@@ -227,7 +229,7 @@ class TestRemoteConversation:
             if method == "POST" and url == "/api/conversations":
                 payload = kwargs["json"]
                 assert payload["agent_profile_id"] == str(profile_id)
-                assert "agent" not in payload and "secrets" not in payload
+                assert payload["agent"] is None and payload["secrets"] == {}
                 assert payload["max_iterations"] == 17
                 assert payload["tags"] == {"automationrun": "run-one"}
                 assert payload["stuck_detection"] is False
@@ -237,25 +239,30 @@ class TestRemoteConversation:
                 assert payload["observability_span_name"] == "scheduled-task"
                 assert payload["user_id"] == "operator"
                 response.json.return_value["agent"] = self.agent.model_dump(mode="json")
+                response.json.return_value["max_iterations"] = 17
                 created = True
             return response
 
         client.request.side_effect = respond
-        conversation = RemoteConversation(
-            agent=None,
+        conversation = RemoteConversation.create(
             workspace=self.workspace,
-            conversation_id=cid,
-            agent_profile_id=profile_id,
-            max_iteration_per_run=17,
-            tags={"automationrun": "run-one"},
-            stuck_detection=False,
-            hook_config=hooks,
-            observability_metadata={"run": "one"},
-            observability_tags=["automation"],
-            observability_span_name="scheduled-task",
-            user_id="operator",
+            request=StartConversationRequest(
+                workspace=LocalWorkspace(working_dir=self.workspace.working_dir),
+                conversation_id=cid,
+                agent_profile_id=profile_id,
+                max_iterations=17,
+                tags={"automationrun": "run-one"},
+                stuck_detection=False,
+                hook_config=hooks,
+                observability_metadata={"run": "one"},
+                observability_tags=["automation"],
+                observability_span_name="scheduled-task",
+                user_id="operator",
+            ),
             visualizer=None,
         )
+        assert client.request.call_args_list[0].args == ("POST", "/api/conversations")
+        assert conversation.max_iteration_per_run == 17
         assert conversation.id == cid
         assert conversation.agent.llm.model == self.agent.llm.model
         conversation.set_title("Scheduled run")
@@ -266,16 +273,11 @@ class TestRemoteConversation:
         )
         conversation.close()
 
-    def test_profile_and_agent_are_mutually_exclusive(self):
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            RemoteConversation(
-                agent=self.agent,
-                workspace=self.workspace,
-                agent_profile_id=uuid.uuid4(),
-            )
-
     @pytest.mark.parametrize("status", [403, 404])
-    def test_attach_never_creates_a_missing_or_inaccessible_conversation(self, status):
+    @pytest.mark.parametrize("operation", ["attach", "create"])
+    def test_failed_explicit_operation_does_not_try_the_other_operation(
+        self, status, operation
+    ):
         cid = uuid.uuid4()
         client = self.setup_mock_client(str(cid))
         client.request.side_effect = None
@@ -283,13 +285,22 @@ class TestRemoteConversation:
             status, request=httpx.Request("GET", f"{self.host}/api/conversations/{cid}")
         )
         with pytest.raises(httpx.HTTPStatusError):
-            RemoteConversation(
-                agent=None,
-                workspace=self.workspace,
-                conversation_id=cid,
-                visualizer=None,
-            )
-        assert [call.args[0] for call in client.request.call_args_list] == ["GET"]
+            if operation == "attach":
+                RemoteConversation.attach(self.workspace, cid, visualizer=None)
+            else:
+                RemoteConversation.create(
+                    self.workspace,
+                    StartConversationRequest(
+                        agent=self.agent,
+                        workspace=LocalWorkspace(working_dir="/tmp"),
+                        conversation_id=cid,
+                    ),
+                    visualizer=None,
+                )
+        expected_method = "GET" if operation == "attach" else "POST"
+        assert [call.args[0] for call in client.request.call_args_list] == [
+            expected_method
+        ]
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
