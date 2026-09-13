@@ -77,6 +77,7 @@ def get_bash_event_service(request: Request) -> BashEventService:
             event_service.bash_event_service = BashEventService(
                 bash_events_dir=event_service.conversation_dir / "bash_events",
                 default_cwd=event_service.get_conversation().workspace.working_dir,
+                secret_registry=event_service.get_conversation().state.secret_registry,
             )
         return event_service.bash_event_service
     service = getattr(request.app.state, "bash_event_service", None)

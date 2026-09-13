@@ -1240,8 +1240,9 @@ class TestProfileSecretScope:
         assert self._resolve(profile) == set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("supply_selected", [False, True])
     async def test_start_conversation_drops_secrets_the_profile_disallows(
-        self, tmp_path
+        self, tmp_path, supply_selected
     ):
         """The filter runs on the request, so a client cannot widen the scope."""
         profile = _make_openhands_profile().model_copy(
@@ -1258,12 +1259,18 @@ class TestProfileSecretScope:
             },
         )
 
+        if not supply_selected:
+            request.secrets.pop("GITHUB_TOKEN")
+
         async with ConversationService(
             conversations_dir=tmp_path / "conversations"
         ) as service:
             with (
                 patch(_STORE_PATH) as MockStore,
                 patch(_LLM_STORE_PATH),
+                patch(
+                    "openhands.agent_server.persistence.get_secrets_store"
+                ) as MockSecretsStore,
                 patch(_RESOLVE_PATH) as MockResolve,
                 patch(_DISCOVER_PATH, return_value=[]),
                 patch(
@@ -1274,6 +1281,7 @@ class TestProfileSecretScope:
                     service, "_start_event_service", new_callable=AsyncMock
                 ) as mock_ses,
             ):
+                MockSecretsStore.return_value.get_secret.return_value = "saved-gh"
                 store_inst = MockStore.return_value
                 store_inst.name_for_id.return_value = profile.name
                 store_inst.load.return_value = profile
@@ -1310,3 +1318,6 @@ class TestProfileSecretScope:
                 await service.start_conversation(request)
 
         assert set(captured["secrets"]) == {"GITHUB_TOKEN"}
+
+        assert captured["secrets"]["GITHUB_TOKEN"].get_value() == "saved-gh"
+        MockSecretsStore.return_value.get_secret.assert_called_once_with("GITHUB_TOKEN")

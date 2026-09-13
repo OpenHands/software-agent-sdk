@@ -1575,6 +1575,7 @@ class ConversationService:
 
         from openhands.agent_server.persistence import (
             PersistedSettings,
+            get_secrets_store,
             get_settings_store,
         )
 
@@ -1611,16 +1612,17 @@ class ConversationService:
                 mcp_config,
                 acp_skill_sourcing=self.acp_skill_sourcing,
             )
-            updates: dict[str, Any] = {"agent": resolved_agent}
-            # Enforced here, not client-side: a caller that sends more secrets
-            # than the profile allows must not widen the agent's scope.
-            if allowed_secrets is not None:
-                updates["secrets"] = {
-                    name: value
-                    for name, value in request.secrets.items()
-                    if name in allowed_secrets
-                }
-            request = request.model_copy(update=updates)
+            from openhands.agent_server.profile_secrets import select_profile_secrets
+
+            selected = await asyncio.to_thread(
+                select_profile_secrets,
+                request.secrets,
+                allowed_secrets,
+                get_secrets_store(),
+            )
+            request = request.model_copy(
+                update={"agent": resolved_agent, "secrets": selected}
+            )
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to
