@@ -25,6 +25,7 @@ def create_conversation(
     title: str,
     max_iterations: int = 160,
     tags: dict[str, str] | None = None,
+    plugins: list[dict[str, Any]] | None = None,
 ) -> Operation:
     return Operation(
         "POST",
@@ -37,6 +38,7 @@ def create_conversation(
                 "title": title,
                 "max_iterations": max_iterations,
                 "tags": tags or {},
+                **({"plugins": plugins} if plugins is not None else {}),
             },
             "timeout": 180,
         },

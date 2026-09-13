@@ -15,7 +15,11 @@ PROFILE = "42d0d2ef-f506-4774-b008-e330b4b83d09"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous):
+@pytest.mark.parametrize(
+    "plugins",
+    [None, [{"source": "openhands/extensions", "repo_path": "plugins/qa-changes"}]],
+)
+async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous, plugins):
     requests = []
 
     def respond(request):
@@ -46,6 +50,7 @@ async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous):
             working_dir="/runs/job",
             title="Portable workflow",
             tags={"automationrun": CID},
+            plugins=plugins,
         )
     )
     await call(client.get_conversation(CID))
@@ -74,7 +79,12 @@ async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous):
         root + "/runtime/credentials",
         root + "/runtime",
     ]
-    assert json.loads(requests[1].content)["workspace"] == {
+    creation = json.loads(requests[1].content)
+    if plugins is None:
+        assert "plugins" not in creation
+    else:
+        assert creation["plugins"] == plugins
+    assert creation["workspace"] == {
         "kind": "LocalWorkspace",
         "working_dir": "/runs/job",
     }

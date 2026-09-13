@@ -71,6 +71,7 @@ class AgentServerClient:
         title: str,
         max_iterations: int = 160,
         tags: dict[str, str] | None = None,
+        plugins: list[dict[str, Any]] | None = None,
     ) -> JSON:
         return self._send(
             routes.create_conversation(
@@ -80,6 +81,7 @@ class AgentServerClient:
                 title=title,
                 max_iterations=max_iterations,
                 tags=tags,
+                plugins=plugins,
             )
         )
 
@@ -186,6 +188,7 @@ class AsyncAgentServerClient:
         title: str,
         max_iterations: int = 160,
         tags: dict[str, str] | None = None,
+        plugins: list[dict[str, Any]] | None = None,
     ) -> JSON:
         return await self._send(
             routes.create_conversation(
@@ -195,6 +198,7 @@ class AsyncAgentServerClient:
                 title=title,
                 max_iterations=max_iterations,
                 tags=tags,
+                plugins=plugins,
             )
         )
 
