@@ -792,7 +792,7 @@ async def search_subdirs(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     include_hidden: Annotated[
         bool,
@@ -810,8 +810,6 @@ async def search_subdirs(
     the ``next_page_id`` returned by the previous page (the lowercase name of
     the first item to include on the next page).
     """
-    assert limit > 0
-    assert limit <= 100
 
     target = Path(path)
     if not target.is_absolute():

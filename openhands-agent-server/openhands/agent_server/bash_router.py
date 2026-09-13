@@ -52,13 +52,11 @@ async def search_bash_events(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     bash_event_service: BashEventService = Depends(get_bash_event_service),
 ) -> BashEventPage:
     """Search / List bash event events"""
-    assert limit > 0
-    assert limit <= 100
 
     return await bash_event_service.search_bash_events(
         kind__eq=kind__eq,
