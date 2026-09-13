@@ -1,9 +1,0 @@
-Base: 9c3571a694547734002518bd94b3cb41a187f9b6
-Regression-test excerpt recorded before the production guard was added:
-Command (from clients/typescript): npm test -- --runInBand src/__tests__/remote-workspace-download.test.ts
-Result: 1 failed, 3 passed
-Expected substring: "downloadAndSave() is only available in browser environments. Use downloadAsBlob() or downloadAsText() in Node.js."
-Received message:   "document is not defined"
-at RemoteWorkspace.downloadAndSave (src/workspace/remote-workspace.ts:303:15)
-
-This is the recorded Jest regression result, not a standalone baseline run.
