@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from openai.types.responses.response_reasoning_item import (
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.exceptions import LLMTimeoutError
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -596,3 +598,33 @@ async def test_aresponses_streaming_accepts_async_generator(mock_aresponses):
     assert [chunk.choices[0].delta.content for chunk in received] == [
         "Hello wrapped stream"
     ]
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_hung_stream_idle_timeout_retries(mock_aresponses):
+    async def _events():
+        await asyncio.Event().wait()
+        yield
+
+    mock_aresponses.side_effect = lambda **_: _events()
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        timeout=1,
+        stream_idle_timeout=0.01,
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+
+    with pytest.raises(LLMTimeoutError, match="stream idle timeout"):
+        await llm.aresponses(
+            [Message(role="user", content=[TextContent(text="Hello")])],
+            stream=True,
+            on_token=lambda _: None,
+        )
+
+    assert mock_aresponses.call_count == 2
