@@ -245,6 +245,22 @@ def test_generate_title_empty_llm_response_fallback(mock_completion):
     assert title == "Help with testing"
 
 
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_user_prompt_is_properly_separated(mock_completion):
+    """The user message must be separated from the emoji instruction and the
+    emoji list must start on its own line, with the prompt ending in a
+    newline."""
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="fmt")
+    mock_completion.return_value = create_mock_llm_response("🐛 Fix bug")
+
+    generate_title_with_llm("test", custom_llm)
+
+    prompt = mock_completion.call_args.args[0][1].content[0].text
+    assert "test\n\nAlso make sure" in prompt
+    assert "list:\n- 💄 frontend:" in prompt
+    assert prompt.endswith("\n")
+
+
 def create_mock_model_response(content: str) -> ModelResponse:
     """A raw litellm ModelResponse, as returned by ``LLM._transport_call``."""
     return ModelResponse(
