@@ -202,7 +202,7 @@ class LLMCallContext:
     """Per-conversation state threaded through the completion call chain.
 
     The primary path threads this explicitly:
-    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
+    ``Agent.step()`` → ``llm.generate(call_context=...)``
     → ``select_chat_options(call_context=...)``.
 
     A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
@@ -1493,6 +1493,70 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 "Response choices is less than 1. Response: " + str(resp)
             )
         return resp
+
+    def generate(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Generate a response using the configured API mode."""
+        if self.uses_responses_api():
+            return self.responses(
+                messages=messages,
+                tools=tools,
+                include=include,
+                store=store,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+        return self.completion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    async def agenerate(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of :meth:`generate`."""
+        if self.uses_responses_api():
+            return await self.aresponses(
+                messages=messages,
+                tools=tools,
+                include=include,
+                store=store,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+        return await self.acompletion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
 
     # =========================================================================
     # Chat Completion API

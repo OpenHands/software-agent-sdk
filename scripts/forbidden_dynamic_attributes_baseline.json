@@ -387,17 +387,7 @@
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
-        "hash": "47404691ad754f6d634e7663cdf0779890f4564efb5d7f832347c4761b5e5a11"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
-        "name": "getattr",
         "hash": "5dc7e91a286b33029955a6749cd7bf00ce5065ef485585fe184f9c2a2e3d4717"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
-        "name": "getattr",
-        "hash": "69e5e28543d27d551b8fa6322d51917f54fed9aa61f6f2ee608476736ad6c027"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
@@ -437,27 +427,12 @@
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
-        "hash": "87bd2727ce5eef3fdf2a169d38b23a4615bed1edfacccf917f4e60d92e7dc6f0"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
-        "name": "getattr",
         "hash": "a2f271f61f01e70e183a017e7b67de2171beff8bfefb09e604baaf48bb1f480f"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
         "name": "getattr",
-        "hash": "b6ac688d986e964a9a8cee6d47617e207a02740d7ae0648fb966eab33a048dc8"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
-        "name": "getattr",
         "hash": "cb8eb6e82d059fb861a0bcc3820067d85b5dabb9ab199cf81186ec57d4d14f19"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
-        "name": "getattr",
-        "hash": "cce9dbfcf2e3c10a5b17bbe043532e50bf7cbb4e0f6372fe808869daed684e77"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/utils/telemetry.py",
