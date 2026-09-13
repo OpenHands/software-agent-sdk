@@ -1,0 +1,65 @@
+{
+  "scenario": "Conversation-scoped runtime access",
+  "commits": {
+    "sdk": "ac6d12b0b9d76f1cc38a6eb1ea51cd92e34a0bf2",
+    "automation": "8abaa0b5fdea18132c68ef71dfd645c5aafcc13a",
+    "canvas": "4cd1513bbe74abd2c1f9e58a77cf64375aafe001"
+  },
+  "bundle": {
+    "file": "fixture.tar.gz",
+    "entrypoint": "python3 main.py",
+    "sha256": "ffaa73c82742204e7e84e29e92add8b911ec074e9359a0881ace29f80587e234",
+    "source_sha256": "914be2501e7ec5e40eda49d5e0434521ad1bbc0c992c3f274644e476f961831c",
+    "purpose": "Disposable live Canvas evidence; no GitHub access"
+  },
+  "runtime_requests": {
+    "local-selected": [
+      {
+        "method": "POST",
+        "path": "/api/conversations/a6fac6cc-00fa-437a-a77b-6be74d7d013b/bash/execute_bash_command",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/conversations/a6fac6cc-00fa-437a-a77b-6be74d7d013b/bash/execute_bash_command",
+        "status": 200
+      }
+    ],
+    "local-empty": [
+      {
+        "method": "POST",
+        "path": "/api/conversations/9246ad1d-0869-43e6-8d21-3472247e4e46/bash/execute_bash_command",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/conversations/9246ad1d-0869-43e6-8d21-3472247e4e46/bash/execute_bash_command",
+        "status": 200
+      }
+    ],
+    "docker-selected": [
+      {
+        "method": "POST",
+        "path": "/api/conversations/91027f77-87b3-4404-9cfa-e559488de548/bash/execute_bash_command",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/conversations/91027f77-87b3-4404-9cfa-e559488de548/bash/execute_bash_command",
+        "status": 200
+      }
+    ],
+    "docker-empty": [
+      {
+        "method": "POST",
+        "path": "/api/conversations/75a3893e-a094-4f7e-b70e-561e9b86dfa9/bash/execute_bash_command",
+        "status": 200
+      },
+      {
+        "method": "POST",
+        "path": "/api/conversations/75a3893e-a094-4f7e-b70e-561e9b86dfa9/bash/execute_bash_command",
+        "status": 200
+      }
+    ]
+  }
+}
