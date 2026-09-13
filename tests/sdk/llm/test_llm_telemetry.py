@@ -6,11 +6,29 @@ import warnings
 from unittest.mock import MagicMock, patch
 
 import pytest
+from litellm.types.llms.openai import (
+    InputTokensDetails,
+    OutputTokensDetails,
+    ResponseAPIUsage,
+    ResponsesAPIResponse,
+)
 from litellm.types.utils import ModelResponse, Usage
 from pydantic import BaseModel, Field, ValidationError
 
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.telemetry import Telemetry, _safe_json
+from openhands.sdk.llm.utils.telemetry import (
+    Telemetry,
+    UsageSnapshot,
+    _safe_json,
+    normalize_usage,
+)
+
+
+def _snapshot(usage: Usage) -> UsageSnapshot:
+    """Normalize provider usage the way Telemetry does before recording it."""
+    snapshot = normalize_usage(usage)
+    assert snapshot is not None
+    return snapshot
 
 
 @pytest.fixture
@@ -153,7 +171,7 @@ class TestTelemetryTokenUsage:
         """Test basic token usage recording."""
         usage = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
 
-        basic_telemetry._record_usage(usage, "test-id", 4096)
+        basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
 
         assert len(basic_telemetry.metrics.token_usages) == 1
         token_usage = basic_telemetry.metrics.token_usages[0]
@@ -174,7 +192,7 @@ class TestTelemetryTokenUsage:
         mock_details.cached_tokens = 25
         usage.prompt_tokens_details = mock_details
 
-        basic_telemetry._record_usage(usage, "test-id", 4096)
+        basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
 
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.cache_read_tokens == 25
@@ -190,7 +208,7 @@ class TestTelemetryTokenUsage:
             cache_creation_input_tokens=30,
         )
 
-        basic_telemetry._record_usage(usage, "test-id", 4096)
+        basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
 
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.cache_write_tokens == 30
@@ -199,7 +217,7 @@ class TestTelemetryTokenUsage:
         """Test token usage recording with missing token counts."""
         usage = Usage()  # Empty usage
 
-        basic_telemetry._record_usage(usage, "test-id", 4096)
+        basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
 
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.prompt_tokens == 0
@@ -218,7 +236,102 @@ class TestTelemetryTokenUsage:
         # This should raise a validation error at the telemetry level
         # The fix is applied at the LLM level before calling _record_usage
         with pytest.raises(ValidationError, match="Input should be a valid integer"):
-            basic_telemetry._record_usage(usage, "test-id", None)  # type: ignore[arg-type]
+            basic_telemetry._record_usage(  # type: ignore[arg-type]
+                _snapshot(usage), "test-id", None
+            )
+
+
+class TestUsageNormalization:
+    """The typed boundary that both provider usage shapes funnel through."""
+
+    def test_chat_completions_shape_is_normalized(self):
+        snapshot = normalize_usage(
+            Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        )
+
+        assert snapshot == UsageSnapshot(prompt_tokens=100, completion_tokens=50)
+
+    def test_responses_api_shape_is_normalized(self):
+        snapshot = normalize_usage(
+            ResponseAPIUsage(
+                input_tokens=100,
+                output_tokens=50,
+                total_tokens=150,
+                input_tokens_details=InputTokensDetails(cached_tokens=25),
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=7),
+            )
+        )
+
+        assert snapshot == UsageSnapshot(
+            prompt_tokens=100,
+            completion_tokens=50,
+            reasoning_tokens=7,
+            cache_read_tokens=25,
+            cache_write_tokens=0,
+        )
+
+    def test_absent_usage_normalizes_to_none(self):
+        assert normalize_usage(None) is None
+
+    def test_on_response_records_responses_api_usage(self, basic_telemetry):
+        """A Responses API response reaches metrics through the same boundary."""
+        response = ResponsesAPIResponse(
+            id="responses-id",
+            status="completed",
+            created_at=1234567890,
+            output=[],
+            usage=ResponseAPIUsage(
+                input_tokens=30,
+                output_tokens=9,
+                total_tokens=39,
+                input_tokens_details=InputTokensDetails(cached_tokens=4),
+                output_tokens_details=OutputTokensDetails(reasoning_tokens=3),
+            ),
+        )
+        basic_telemetry.on_request({"context_window": 8192})
+
+        basic_telemetry.on_response(response)
+
+        assert len(basic_telemetry.metrics.token_usages) == 1
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.prompt_tokens == 30
+        assert token_usage.completion_tokens == 9
+        assert token_usage.reasoning_tokens == 3
+        assert token_usage.cache_read_tokens == 4
+        assert token_usage.cache_write_tokens == 0
+
+    def test_log_usage_summary_comes_from_the_same_snapshot(self, mock_metrics):
+        """The logged usage summary and metrics cannot disagree."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telemetry = Telemetry(
+                model_name="gpt-4o",
+                log_enabled=True,
+                log_dir=temp_dir,
+                metrics=mock_metrics,
+            )
+            response = ModelResponse(
+                id="log-id",
+                usage=Usage(
+                    prompt_tokens=11,
+                    completion_tokens=5,
+                    total_tokens=16,
+                    completion_tokens_details={"reasoning_tokens": 2},
+                ),
+            )
+            telemetry.on_request({"context_window": 4096})
+
+            telemetry.on_response(response)
+
+            [filename] = os.listdir(temp_dir)
+            with open(os.path.join(temp_dir, filename)) as f:
+                data = json.loads(f.read())
+
+        assert data["usage_summary"] == {
+            "prompt_tokens": 11,
+            "completion_tokens": 5,
+            "reasoning_tokens": 2,
+            "cache_read_tokens": 0,
+        }
 
 
 class TestTelemetryCostCalculation:
