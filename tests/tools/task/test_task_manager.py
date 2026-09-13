@@ -302,6 +302,51 @@ class TestTaskManager:
         assert len(factory_called_with) == 1
         assert factory_called_with[0].stream is False
 
+    def test_sub_agent_preserves_parent_required_streaming(self, tmp_path):
+        """Provider-required streaming must reach the sub-agent factory."""
+        manager, parent = _manager_with_parent(tmp_path)
+        parent.agent.llm.is_subscription = True
+        factory_called_with: list[LLM] = []
+
+        def factory(llm: LLM) -> Agent:
+            factory_called_with.append(llm)
+            return Agent(llm=llm, tools=[])
+
+        register_agent(
+            name="streaming_expert",
+            factory_func=factory,
+            description="streaming expert",
+        )
+
+        agent = manager._get_sub_agent("streaming_expert")
+
+        assert factory_called_with[0].requires_streaming is True
+        assert factory_called_with[0].stream is True
+        assert agent.llm.stream is True
+
+    def test_sub_agent_preserves_child_required_streaming(self, tmp_path):
+        """A factory-selected provider's streaming requirement must be retained."""
+        manager, _ = _manager_with_parent(tmp_path)
+        child_llm = _make_llm()
+        child_llm.is_subscription = True
+        factory_called_with: list[LLM] = []
+
+        def factory(llm: LLM) -> Agent:
+            factory_called_with.append(llm)
+            return Agent(llm=child_llm, tools=[])
+
+        register_agent(
+            name="factory_streaming_expert",
+            factory_func=factory,
+            description="factory streaming expert",
+        )
+
+        agent = manager._get_sub_agent("factory_streaming_expert")
+
+        assert factory_called_with[0].stream is False
+        assert agent.llm.requires_streaming is True
+        assert agent.llm.stream is True
+
     def test_unknown_agent_type_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         with pytest.raises(ValueError, match="Unknown agent"):

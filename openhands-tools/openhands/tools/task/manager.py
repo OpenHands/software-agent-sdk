@@ -363,7 +363,7 @@ class TaskManager:
         parent = self.parent_conversation
         parent_llm = parent.agent.llm
 
-        llm_updates: dict = {"stream": False}
+        llm_updates: dict = {"stream": parent_llm.requires_streaming}
         sub_agent_llm = parent_llm.model_copy(update=llm_updates)
         # Reset metrics such that the sub-agent has its own
         # Metrics object
@@ -371,9 +371,13 @@ class TaskManager:
 
         sub_agent = factory.factory_func(sub_agent_llm)
 
-        # ensuring that the sub-agent LLM has stream deactivated
+        # Keep streaming enabled when the selected child provider requires it.
         sub_agent = sub_agent.model_copy(
-            update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
+            update={
+                "llm": sub_agent.llm.model_copy(
+                    update={"stream": sub_agent.llm.requires_streaming}
+                )
+            }
         )
         return sub_agent
 
