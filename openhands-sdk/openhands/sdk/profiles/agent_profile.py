@@ -306,6 +306,16 @@ class LaunchedAgentProfile(BaseModel):
         ge=0,
         description="Revision of the agent profile at launch time.",
     )
+    secret_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Secret allow-list captured at launch, also enforced on resume. "
+            "null preserves unrestricted behavior for older conversations."
+        ),
+    )
+
+    def allows_secret(self, name: str) -> bool:
+        return self.secret_refs is None or name in self.secret_refs
 
 
 def _agent_profile_discriminator(value: Any) -> str:
