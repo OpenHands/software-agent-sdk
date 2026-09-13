@@ -279,14 +279,11 @@ class BashEventService:
             env = sanitized_env()
             registry = self.secret_registry
             if registry is not None:
+                # Runtime commands can launch opaque scripts. The conversation
+                # registry already contains only its authorized secrets.
                 env.update(
-                    await asyncio.to_thread(
-                        registry.get_secrets_as_env_vars, command.command
-                    )
+                    await asyncio.to_thread(registry.get_all_secrets_as_env_vars)
                 )
-                # Resolve registered values before streaming so durable output
-                # never exposes a value split across reads or event chunks.
-                await asyncio.to_thread(registry.mask_secrets_in_output, " ")
             stdout_mask = (
                 registry.compile_stream_mask()
                 if registry

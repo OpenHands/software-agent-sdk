@@ -330,11 +330,13 @@ async def test_scoped_bash_injects_registry_and_masks_split_output(tmp_path):
         "sys.stdout.write(value[8:]); sys.stdout.flush(); "
         "sys.stderr.write(value)"
     )
+    script_path = tmp_path / "opaque_worker.py"
+    script_path.write_text(script)
     async with BashEventService(
-        bash_events_dir=tmp_path, secret_registry=registry
+        bash_events_dir=tmp_path / "events", secret_registry=registry
     ) as service:
         command, task = await service.start_bash_command(
-            ExecuteBashRequest(command=shlex.join([sys.executable, "-c", script]))
+            ExecuteBashRequest(command=shlex.join([sys.executable, str(script_path)]))
         )
         await task
         page = await service.search_bash_events(command_id__eq=command.id)
@@ -342,5 +344,5 @@ async def test_scoped_bash_injects_registry_and_masks_split_output(tmp_path):
         assert outputs[-1].exit_code == 0
         assert "".join(event.stdout or "" for event in outputs) == "<secret-hidden>"
         assert "".join(event.stderr or "" for event in outputs) == "<secret-hidden>"
-        for path in tmp_path.iterdir():
+        for path in (tmp_path / "events").iterdir():
             assert "selected-secret-value" not in path.read_text()
