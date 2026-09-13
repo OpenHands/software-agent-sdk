@@ -119,6 +119,10 @@ class StoredConversation(ConversationConfig):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    archived_at: datetime | None = Field(
+        default=None,
+        description="When this conversation was archived by the control plane.",
+    )
     forked_from_conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
@@ -257,6 +261,10 @@ class _ConversationInfoBase(BaseModel):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    archived_at: datetime | None = Field(
+        default=None,
+        description="UTC datetime the conversation was archived, if applicable.",
+    )
     # Plain ``UUID`` (not ``OpenHandsUUID``) so it JSON-serializes dashed, exactly
     # like the ``id`` field above — clients must be able to correlate the two.
     forked_from_conversation_id: UUID | None = Field(

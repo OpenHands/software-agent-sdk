@@ -117,6 +117,48 @@ def sample_start_conversation_request():
     )
 
 
+@pytest.mark.parametrize(
+    ("action", "archived"), (("archive", True), ("unarchive", False))
+)
+def test_set_conversation_archive_state(
+    client, mock_conversation_service, sample_conversation_info, action, archived
+):
+    mock_conversation_service.set_conversation_archived.return_value = (
+        sample_conversation_info.model_copy(
+            update={"archived_at": utc_now() if archived else None}
+        )
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_info.id}/{action}"
+        )
+        assert response.status_code == 200
+        assert (response.json()["archived_at"] is not None) == archived
+        mock_conversation_service.set_conversation_archived.assert_awaited_once_with(
+            sample_conversation_info.id, archived=archived
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_archive_conversation_not_found(client, mock_conversation_service):
+    conversation_id = uuid4()
+    mock_conversation_service.set_conversation_archived.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(f"/api/conversations/{conversation_id}/archive")
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_search_conversations_default_params(
     client, mock_conversation_service, sample_conversation_info
 ):
@@ -143,7 +185,7 @@ def test_search_conversations_default_params(
 
         # Verify service was called with default parameters
         mock_conversation_service.search_conversations.assert_called_once_with(
-            None, 100, None, ConversationSortOrder.CREATED_AT_DESC
+            None, 100, None, ConversationSortOrder.CREATED_AT_DESC, False
         )
     finally:
         client.app.dependency_overrides.clear()
@@ -173,6 +215,7 @@ def test_search_conversations_with_all_params(
                 "limit": 50,
                 "status": ConversationExecutionStatus.IDLE.value,
                 "sort_order": ConversationSortOrder.UPDATED_AT_DESC.value,
+                "archived": True,
             },
         )
 
@@ -187,6 +230,7 @@ def test_search_conversations_with_all_params(
             50,
             ConversationExecutionStatus.IDLE,
             ConversationSortOrder.UPDATED_AT_DESC,
+            True,
         )
     finally:
         client.app.dependency_overrides.clear()

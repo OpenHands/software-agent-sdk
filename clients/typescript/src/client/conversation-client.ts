@@ -151,6 +151,22 @@ export class ConversationClient {
     return response.data;
   }
 
+  async archiveConversation(conversationId: string): Promise<ConversationInfo> {
+    const response = await this.client.post<ConversationInfo>(
+      `/api/conversations/${conversationId}/archive`,
+      {}
+    );
+    return response.data;
+  }
+
+  async unarchiveConversation(conversationId: string): Promise<ConversationInfo> {
+    const response = await this.client.post<ConversationInfo>(
+      `/api/conversations/${conversationId}/unarchive`,
+      {}
+    );
+    return response.data;
+  }
+
   async searchEvents(
     conversationId: string,
     options: ConversationEventSearchOptions = {}
