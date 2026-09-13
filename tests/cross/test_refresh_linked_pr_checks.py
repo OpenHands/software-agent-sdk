@@ -148,3 +148,38 @@ def test_rerun_pr_description_check_lists_runs_with_get(monkeypatch):
         "-X",
         "POST",
     ]
+
+
+def test_foreign_reference_does_not_refresh_same_number_local_issue(
+    monkeypatch, tmp_path
+):
+    _write_event(monkeypatch, _event(), tmp_path)
+    monkeypatch.setattr(
+        _prod,
+        "_linked_open_prs",
+        lambda repo, num: [{"number": 7, "headRefOid": "abc"}],
+    )
+    monkeypatch.setattr(
+        _prod, "_run", lambda args: _FakeProc("## Issue Number\nother/repo#12")
+    )
+    monkeypatch.setattr(
+        _prod, "_rerun_pr_description_check", _fail_on_call("wrong issue")
+    )
+    assert _prod.main() == 0
+
+
+def test_linked_pr_query_does_not_refresh_foreign_pr_number(monkeypatch):
+    nodes = [
+        {
+            "source": {
+                "__typename": "PullRequest",
+                "number": 7,
+                "headRefOid": "abc",
+                "state": "OPEN",
+                "repository": {"nameWithOwner": repo},
+            }
+        }
+        for repo in ("other/repo", "Org/Repo")
+    ]
+    monkeypatch.setattr(_prod, "_run", lambda args: _FakeProc(json.dumps(nodes)))
+    assert _prod._linked_open_prs("org/repo", 12) == [nodes[1]["source"]]

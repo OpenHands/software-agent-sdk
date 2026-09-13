@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from check_pr_description import extract_linked_issue_numbers
+from check_pr_description import extract_linked_issues
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -26,7 +26,9 @@ query($owner: String!, $name: String!, $num: Int!) {
           ... on CrossReferencedEvent {
             source {
               __typename
-              ... on PullRequest { number headRefOid state }
+              ... on PullRequest {
+                number headRefOid state repository { nameWithOwner }
+              }
             }
           }
         }
@@ -68,6 +70,12 @@ query($owner: String!, $name: String!, $num: Int!) {
         if source.get("__typename") != "PullRequest":
             continue
         if source.get("state") != "OPEN":
+            continue
+        if (
+            source.get("repository", {}).get("nameWithOwner", "").lower()
+            != repo.lower()
+        ):
+            # The workflow token can refresh checks only in this repository.
             continue
         prs.append(source)
     return prs
@@ -150,7 +158,9 @@ def main() -> int:
         )
         if body_result.returncode != 0:
             continue
-        if issue_number not in extract_linked_issue_numbers(body_result.stdout):
+        if (repo.lower(), issue_number) not in extract_linked_issues(
+            body_result.stdout, repo
+        ):
             # Cross-referenced but not treated as a linked issue by the gate;
             # nothing to refresh.
             continue
