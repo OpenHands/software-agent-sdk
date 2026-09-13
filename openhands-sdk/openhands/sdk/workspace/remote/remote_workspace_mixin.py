@@ -356,7 +356,7 @@ class RemoteWorkspaceMixin(BaseModel):
             # Make HTTP call using query parameter for path
             response = yield {
                 "method": "GET",
-                "url": "/api/file/download",
+                "url": f"{self.api_prefix}/file/download",
                 "params": {"path": source_remote},
                 "headers": self._headers,
                 "timeout": 60.0,
@@ -404,7 +404,7 @@ class RemoteWorkspaceMixin(BaseModel):
         remote_path = _join_remote_path(self.working_dir, path)
         response = yield {
             "method": "GET",
-            "url": "/api/git/changes",
+            "url": f"{self.api_prefix}/git/changes",
             "params": {"path": remote_path},
             "headers": self._headers,
             "timeout": 60.0,
@@ -432,7 +432,7 @@ class RemoteWorkspaceMixin(BaseModel):
         remote_path = _join_remote_path(self.working_dir, path)
         response = yield {
             "method": "GET",
-            "url": "/api/git/diff",
+            "url": f"{self.api_prefix}/git/diff",
             "params": {"path": remote_path},
             "headers": self._headers,
             "timeout": 60.0,

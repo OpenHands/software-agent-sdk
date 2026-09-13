@@ -15,7 +15,7 @@ from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWor
 @pytest.mark.parametrize("async_mode", [False, True])
 @pytest.mark.parametrize("scoped", [False, True])
 @pytest.mark.asyncio
-async def test_commands_upload_and_lifecycle(async_mode, scoped):
+async def test_commands_files_git_and_lifecycle(async_mode, scoped, tmp_path):
     cid = uuid4() if scoped else None
     prefix = f"/api/conversations/{cid}" if cid else "/api"
     requests = []
@@ -51,6 +51,15 @@ async def test_commands_upload_and_lifecycle(async_mode, scoped):
             assert request.url.params["path"] == "/workspace/bundle.tgz"
             assert b"bundle-bytes" in request.content
             return httpx.Response(200, json={"success": True, "file_size": 12})
+        if path.endswith("file/download"):
+            assert request.url.params["path"] == "/workspace/bundle.tgz"
+            return httpx.Response(200, content=b"bundle-bytes")
+        if path.endswith("git/changes"):
+            assert request.url.params["path"] == "/workspace/repo"
+            return httpx.Response(200, json=[{"status": "UPDATED", "path": "file.txt"}])
+        if path.endswith("git/diff"):
+            assert request.url.params["path"] == "/workspace/repo/file.txt"
+            return httpx.Response(200, json={"original": "before", "modified": "after"})
         if path.endswith("runtime/credentials"):
             return httpx.Response(200, json={"session_api_key": "worker-key"})
         if path.endswith("/runtime"):
@@ -91,6 +100,17 @@ async def test_commands_upload_and_lifecycle(async_mode, scoped):
                 workspace.file_upload, b"bundle-bytes", "/workspace/bundle.tgz"
             )
             assert uploaded.success
+            downloaded = await invoke(
+                workspace.file_download,
+                "/workspace/bundle.tgz",
+                tmp_path / "bundle.tgz",
+            )
+            assert downloaded.success
+            assert (tmp_path / "bundle.tgz").read_bytes() == b"bundle-bytes"
+            changes = await invoke(workspace.git_changes, "repo")
+            assert [str(change.path) for change in changes] == ["file.txt"]
+            diff = await invoke(workspace.git_diff, "repo/file.txt")
+            assert (diff.original, diff.modified) == ("before", "after")
             if scoped:
                 assert await invoke(workspace.get_runtime_session_key) == "worker-key"
                 await invoke(workspace.release_runtime)
