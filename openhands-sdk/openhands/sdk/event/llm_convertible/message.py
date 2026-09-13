@@ -76,9 +76,8 @@ class MessageEvent(LLMConvertibleEvent):
         content = Text()
 
         # Message text content
-        text_parts = content_to_str(self.llm_message.content)
-        if text_parts:
-            full_content = "".join(text_parts)
+        full_content = "".join(content_to_str(self.llm_message.content))
+        if full_content:
             content.append(full_content)
         else:
             content.append("[no text content]")
