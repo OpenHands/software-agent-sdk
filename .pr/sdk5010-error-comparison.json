@@ -1,0 +1,30 @@
+[
+  {
+    "client": "before",
+    "commit": "d76aa33d2",
+    "conversation_id": "d86043b9-c22e-43d4-905a-67fd3dc3a4b9",
+    "sync_errors": [],
+    "async_errors": []
+  },
+  {
+    "client": "after",
+    "commit": "34ef2b29a",
+    "conversation_id": "d86043b9-c22e-43d4-905a-67fd3dc3a4b9",
+    "sync_errors": [
+      {
+        "id": "6f7976d0-26ae-44b2-8385-cb68d62f8f20",
+        "kind": "ConversationErrorEvent",
+        "code": "LLMBadRequestError",
+        "disclosed_fixture_error_present": true
+      }
+    ],
+    "async_errors": [
+      {
+        "id": "6f7976d0-26ae-44b2-8385-cb68d62f8f20",
+        "kind": "ConversationErrorEvent",
+        "code": "LLMBadRequestError",
+        "disclosed_fixture_error_present": true
+      }
+    ]
+  }
+]
