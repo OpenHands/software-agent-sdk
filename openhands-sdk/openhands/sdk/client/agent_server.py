@@ -123,7 +123,9 @@ class AgentServerClient:
 
     def get_errors(self, conversation_id: str, *, limit: int = 1) -> JSON:
         return self.search_events(
-            conversation_id, kind="ConversationErrorEvent", limit=limit
+            conversation_id,
+            kind="openhands.sdk.event.conversation_error.ConversationErrorEvent",
+            limit=limit,
         )
 
     def get_final_response(self, conversation_id: str) -> JSON:
@@ -262,7 +264,9 @@ class AsyncAgentServerClient:
 
     async def get_errors(self, conversation_id: str, *, limit: int = 1) -> JSON:
         return await self.search_events(
-            conversation_id, kind="ConversationErrorEvent", limit=limit
+            conversation_id,
+            kind="openhands.sdk.event.conversation_error.ConversationErrorEvent",
+            limit=limit,
         )
 
     async def get_final_response(self, conversation_id: str) -> JSON:

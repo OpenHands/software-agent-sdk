@@ -11,6 +11,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 import pytest_asyncio
 
@@ -26,6 +27,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.client import AsyncAgentServerClient
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -3539,3 +3541,23 @@ async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> No
     assert service._lease is not None
     assert service._lease._ttl_seconds == 10.0
     assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_public_client_finds_conversation_errors(event_service):
+    error = ConversationErrorEvent(
+        source="agent", code="test_failure", detail="Test failure"
+    )
+    events = EventLog(InMemoryFileStore())
+    events.append(error)
+    _attach_event_log(event_service, events)
+
+    async def respond(request):
+        page = await event_service.search_events(kind=request.url.params["kind"])
+        return httpx.Response(200, json=page.model_dump(mode="json"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        client = AsyncAgentServerClient("http://server", "key", http_client=http)
+        page = await client.get_errors(str(event_service.stored.id))
+
+    assert [item["code"] for item in page["items"]] == ["test_failure"]
