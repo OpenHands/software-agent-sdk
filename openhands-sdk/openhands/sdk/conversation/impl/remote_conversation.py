@@ -64,7 +64,7 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 logger = get_logger(__name__)
 
-LEGACY_CONVERSATIONS_PATH = "/api/conversations"
+CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
 _WEBSOCKET_AUTH_TYPE: Final = "auth"
 _WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
@@ -305,7 +305,7 @@ class RemoteEventsList(EventsListBase):
         self,
         client: httpx.Client,
         conversation_id: str,
-        events_base_path: str = LEGACY_CONVERSATIONS_PATH,
+        events_base_path: str = CONVERSATIONS_PATH,
     ):
         self._client = client
         self._conversation_id = conversation_id
@@ -513,8 +513,8 @@ class RemoteState(ConversationStateProtocol):
         self,
         client: httpx.Client,
         conversation_id: str,
-        conversation_info_base_path: str = LEGACY_CONVERSATIONS_PATH,
-        events_base_path: str = LEGACY_CONVERSATIONS_PATH,
+        conversation_info_base_path: str = CONVERSATIONS_PATH,
+        events_base_path: str = CONVERSATIONS_PATH,
     ):
         self._client = client
         self._conversation_id = conversation_id
@@ -700,8 +700,6 @@ class RemoteConversation(BaseConversation):
     _cleanup_initiated: bool
     _terminal_status_queue: Queue[str]
     _run_armed: threading.Event
-    _conversation_info_base_path: str
-    _conversation_action_base_path: str
     delete_on_close: bool = False
 
     def __init__(
@@ -778,7 +776,7 @@ class RemoteConversation(BaseConversation):
             resp = _send_request(
                 workspace.client,
                 "GET",
-                f"{LEGACY_CONVERSATIONS_PATH}/{conversation_id}",
+                f"{CONVERSATIONS_PATH}/{conversation_id}",
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
@@ -863,7 +861,7 @@ class RemoteConversation(BaseConversation):
             resp = _send_request(
                 workspace.client,
                 "POST",
-                LEGACY_CONVERSATIONS_PATH,
+                CONVERSATIONS_PATH,
                 json=payload,
             )
             data = resp.json()
@@ -926,7 +924,7 @@ class RemoteConversation(BaseConversation):
         response = _send_request(
             workspace.client,
             "POST",
-            LEGACY_CONVERSATIONS_PATH,
+            CONVERSATIONS_PATH,
             json=request.model_dump(
                 mode="json", exclude_none=True, context={"expose_secrets": True}
             ),
@@ -960,7 +958,7 @@ class RemoteConversation(BaseConversation):
         Missing or inaccessible conversations raise an HTTP error.
         """
         response = _send_request(
-            workspace.client, "GET", f"{LEGACY_CONVERSATIONS_PATH}/{conversation_id}"
+            workspace.client, "GET", f"{CONVERSATIONS_PATH}/{conversation_id}"
         )
         conversation = cls._from_info(workspace, response.json(), callbacks, visualizer)
         conversation._start_observability_span(str(conversation.id))
@@ -1010,8 +1008,6 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
-        self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
-        self._conversation_action_base_path = LEGACY_CONVERSATIONS_PATH
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
@@ -1030,12 +1026,7 @@ class RemoteConversation(BaseConversation):
             ClientTool.from_spec(spec)
 
         # Initialize the remote state
-        self._state = RemoteState(
-            self._client,
-            str(self._id),
-            conversation_info_base_path=self._conversation_info_base_path,
-            events_base_path=self._conversation_action_base_path,
-        )
+        self._state = RemoteState(self._client, str(self._id))
 
         # Add default callback to maintain local event state
         default_callback = self._state.events.create_default_callback()
@@ -1233,7 +1224,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/events",
+            f"{CONVERSATIONS_PATH}/{self._id}/events",
             json=payload,
         )
 
@@ -1271,7 +1262,7 @@ class RemoteConversation(BaseConversation):
             resp = _send_request(
                 self._client,
                 "POST",
-                f"{self._conversation_action_base_path}/{self._id}/run",
+                f"{CONVERSATIONS_PATH}/{self._id}/run",
                 acceptable_status_codes={200, 201, 204, 409},
                 timeout=30,  # Short timeout for trigger request
             )
@@ -1442,7 +1433,7 @@ class RemoteConversation(BaseConversation):
         resp = _send_request(
             self._client,
             "GET",
-            f"{self._conversation_info_base_path}/{self._id}",
+            f"{CONVERSATIONS_PATH}/{self._id}",
             timeout=30,
         )
         info = resp.json()
@@ -1515,7 +1506,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/confirmation_policy",
+            f"{CONVERSATIONS_PATH}/{self._id}/confirmation_policy",
             json=payload,
         )
 
@@ -1529,7 +1520,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/security_analyzer",
+            f"{CONVERSATIONS_PATH}/{self._id}/security_analyzer",
             json=payload,
         )
 
@@ -1538,10 +1529,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            (
-                f"{self._conversation_action_base_path}/{self._id}"
-                "/events/respond_to_confirmation"
-            ),
+            (f"{CONVERSATIONS_PATH}/{self._id}/events/respond_to_confirmation"),
             json={"accept": False, "reason": reason},
         )
 
@@ -1549,21 +1537,21 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/pause",
+            f"{CONVERSATIONS_PATH}/{self._id}/pause",
         )
 
     def interrupt(self) -> None:
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/interrupt",
+            f"{CONVERSATIONS_PATH}/{self._id}/interrupt",
         )
 
     def load_plugin(self, plugin_ref: str) -> None:
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/load_plugin",
+            f"{CONVERSATIONS_PATH}/{self._id}/load_plugin",
             json={"plugin_ref": plugin_ref},
         )
 
@@ -1588,7 +1576,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/secrets",
+            f"{CONVERSATIONS_PATH}/{self._id}/secrets",
             json=payload,
         )
 
@@ -1613,7 +1601,7 @@ class RemoteConversation(BaseConversation):
         resp = _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/ask_agent",
+            f"{CONVERSATIONS_PATH}/{self._id}/ask_agent",
             json=payload,
         )
         data = resp.json()
@@ -1624,7 +1612,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "PATCH",
-            f"{self._conversation_info_base_path}/{self._id}",
+            f"{CONVERSATIONS_PATH}/{self._id}",
             json={"title": title},
         )
 
@@ -1669,7 +1657,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/condense",
+            f"{CONVERSATIONS_PATH}/{self._id}/condense",
         )
 
     def fork(
@@ -1729,7 +1717,7 @@ class RemoteConversation(BaseConversation):
         resp = _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/fork",
+            f"{CONVERSATIONS_PATH}/{self._id}/fork",
             json=body,
         )
         fork_info = resp.json()
@@ -1771,7 +1759,7 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client,
             "POST",
-            f"{self._conversation_action_base_path}/{self._id}/navigate",
+            f"{CONVERSATIONS_PATH}/{self._id}/navigate",
             json={"event_id": event_id},
         )
         self._state.refresh_from_server()
@@ -1846,7 +1834,7 @@ class RemoteConversation(BaseConversation):
                 _send_request(
                     self._client,
                     "DELETE",
-                    f"{self._conversation_action_base_path}/{self.id}",
+                    f"{CONVERSATIONS_PATH}/{self.id}",
                 )
             except Exception:
                 pass
