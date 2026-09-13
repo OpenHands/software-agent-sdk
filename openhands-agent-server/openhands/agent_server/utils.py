@@ -26,16 +26,21 @@ def safe_rmtree(path: str | Path | None, description: str = "directory") -> bool
     if not path or not os.path.exists(path):
         return True
 
+    def make_owner_accessible(target: str | Path) -> None:
+        mode = os.stat(target, follow_symlinks=False).st_mode
+        os.chmod(target, mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
     def handle_remove_readonly(func, path, _exc):
         """Error handler for removing read-only files."""
         if os.path.exists(path):
             try:
-                os.chmod(path, stat.S_IWRITE)
+                make_owner_accessible(path)
                 func(path)
             except (OSError, PermissionError) as e:
                 logger.warning(f"Failed to remove read-only file {path}: {e}")
 
     try:
+        make_owner_accessible(path)
         shutil.rmtree(path, onerror=handle_remove_readonly)
         logger.debug(f"Successfully removed {description}: {path}")
         return True

@@ -5,7 +5,7 @@ import time
 from importlib.metadata import version
 from typing import Literal
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
 from openhands.sdk.tool.registry import list_usable_tools
@@ -118,10 +118,19 @@ async def ready(response: Response) -> dict[str, str]:
         return {"status": "initializing", "message": "Server is still initializing"}
 
 
-@server_details_router.get("/server_info")
 async def get_server_info() -> ServerInfo:
     now = time.time()
     return ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
     )
+
+
+@server_details_router.get("/server_info")
+async def get_runtime_server_info(request: Request) -> ServerInfo:
+    info = await get_server_info()
+    info.conversation_runtime = request.app.state.config.conversation_runtime
+    info.workspace_mode = (
+        "isolated" if info.conversation_runtime == "docker" else "host"
+    )
+    return info

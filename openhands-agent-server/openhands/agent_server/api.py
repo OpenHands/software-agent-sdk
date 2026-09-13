@@ -39,6 +39,17 @@ from openhands.agent_server.dependencies import (
     check_workspace_session,
 )
 from openhands.agent_server.desktop_router import desktop_router
+from openhands.agent_server.docker_runtime.credential_client import (
+    configure_runtime_credentials,
+)
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.routers import (
+    docker_conversation_proxy_router,
+    docker_global_proxy_router,
+    docker_sockets_router,
+    docker_workspace_proxy_router,
+)
+from openhands.agent_server.docker_runtime.runtime_route import ConversationRuntimeRoute
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
@@ -62,7 +73,7 @@ from openhands.agent_server.provider_connections_router import (
 )
 from openhands.agent_server.runtime_router import create_runtime_router
 from openhands.agent_server.server_details_router import (
-    get_server_info,
+    get_runtime_server_info,
     mark_initialization_complete,
     server_details_router,
 )
@@ -254,6 +265,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         bash_svc = get_default_bash_event_service()
         api.state.bash_event_service = bash_svc
 
+        docker_registry: DockerConversationRegistry | None = None
+        if config.conversation_runtime == "docker":
+            docker_registry = DockerConversationRegistry(config)
+            provisioning = docker_registry.provisioning
+            service.runtime_cipher_resolver = lambda cid: provisioning.load(cid).cipher
         async with service:
             api.state.conversation_service = service
 
@@ -270,9 +286,19 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     config.bash_events_retention_seconds,
                 )
 
+            if docker_registry is not None:
+                await asyncio.to_thread(docker_registry.cleanup_stale_containers)
+                api.state.docker_registry = docker_registry
+                logger.info(
+                    "Docker conversation runtime enabled (image=%s)",
+                    config.conversation_image,
+                )
+
             try:
                 yield
             finally:
+                if docker_registry is not None:
+                    await docker_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -388,6 +414,7 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
 
 def _add_api_routes(app: FastAPI) -> None:
     """Add all API routes to the FastAPI application."""
+    config: Config = app.state.config
     app.include_router(server_details_router)
 
     # The /api/init endpoint bypasses both the session-key auth and the
@@ -413,16 +440,22 @@ def _add_api_routes(app: FastAPI) -> None:
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(file_discovery_router)
-    api_router.include_router(create_runtime_router())
-    api_router.include_router(event_router)
-    api_router.include_router(conversation_router)
-    api_router.include_router(credential_binding_router)
     api_router.include_router(tool_router)
-    api_router.include_router(bash_router)
-    api_router.include_router(git_router)
-    api_router.include_router(file_router)
-    api_router.include_router(vscode_router)
-    api_router.include_router(desktop_router)
+    api_router.include_router(create_runtime_router(ConversationRuntimeRoute))
+    if config.conversation_runtime == "docker":
+        api_router.include_router(docker_global_proxy_router)
+        api_router.include_router(docker_conversation_proxy_router)
+        api_router.include_router(conversation_router)
+    else:
+        api_router.include_router(event_router)
+        api_router.include_router(conversation_router)
+        api_router.include_router(credential_binding_router)
+        api_router.include_router(bash_router)
+        api_router.include_router(git_router)
+        api_router.include_router(file_router)
+        api_router.include_router(vscode_router)
+        api_router.include_router(desktop_router)
+    api_router.include_router(mcp_router)
     api_router.include_router(skills_router)
     api_router.include_router(sub_agents_router)
     api_router.include_router(plugins_router)
@@ -430,7 +463,6 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(provider_connections_router)
-    api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
@@ -438,7 +470,6 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    app.include_router(api_router)
 
     app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
 
@@ -450,10 +481,18 @@ def _add_api_routes(app: FastAPI) -> None:
     workspace_api_router = APIRouter(
         prefix="/api", dependencies=[Depends(check_workspace_session)]
     )
-    workspace_api_router.include_router(workspace_router)
+    if config.conversation_runtime == "docker":
+        workspace_api_router.include_router(docker_workspace_proxy_router)
+    else:
+        workspace_api_router.include_router(workspace_router)
+    # Register the specific workspace route before the Docker conversation catch-all.
     app.include_router(workspace_api_router)
+    app.include_router(api_router)
 
-    app.include_router(sockets_router)
+    if config.conversation_runtime == "docker":
+        app.include_router(docker_sockets_router)
+    else:
+        app.include_router(sockets_router)
 
     app.include_router(session_router)
 
@@ -472,7 +511,7 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
         and config.static_files_path.is_dir()
     ):
         # Map the root path to server info if there are no static files
-        app.get("/", tags=["Server Details"])(get_server_info)
+        app.get("/", tags=["Server Details"])(get_runtime_server_info)
         return
 
     # Mount static files directory
@@ -681,8 +720,10 @@ def create_app(config: Config | None = None) -> FastAPI:
     """
     if config is None:
         config = get_default_config()
+    configure_runtime_credentials()
     app = _create_fastapi_instance(config)
     app.state.config = config
+    app.state.docker_registry = None
 
     _add_api_routes(app)
     _setup_static_files(app, config)

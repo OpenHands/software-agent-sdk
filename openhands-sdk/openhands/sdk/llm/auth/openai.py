@@ -31,6 +31,7 @@ from joserfc.errors import JoseError
 from openhands.sdk.llm.auth.credentials import (
     CredentialStore,
     OAuthCredentials,
+    get_credential_store,
     get_credentials_dir,
 )
 from openhands.sdk.logger import get_logger
@@ -469,7 +470,7 @@ class OpenAISubscriptionAuth:
             credential_store: Optional custom credential store.
             oauth_port: Port for the local OAuth callback server.
         """
-        self._credential_store = credential_store or CredentialStore()
+        self._credential_store = credential_store or get_credential_store()
         self._oauth_port = oauth_port
 
     @property
