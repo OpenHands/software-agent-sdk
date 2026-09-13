@@ -69,6 +69,7 @@ async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous, plugin
         "/server_info",
         "/api/conversations",
         root,
+        root,
         root + "/events",
         root + "/events/search",
         root + "/interrupt",
@@ -80,6 +81,9 @@ async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous, plugin
         root + "/runtime",
     ]
     creation = json.loads(requests[1].content)
+    assert "title" not in creation  # StartConversationRequest ignores this field.
+    assert requests[2].method == "PATCH"
+    assert json.loads(requests[2].content) == {"title": "Portable workflow"}
     if plugins is None:
         assert "plugins" not in creation
     else:
@@ -88,12 +92,12 @@ async def test_same_scoped_wire_contract_for_sync_and_async(asynchronous, plugin
         "kind": "LocalWorkspace",
         "working_dir": "/runs/job",
     }
-    assert json.loads(requests[3].content) == {
+    assert json.loads(requests[4].content) == {
         "content": [{"type": "text", "text": "Continue"}],
         "run": True,
     }
-    assert requests[6].url.params["path"] == "/runs/job/bundle.tar.gz"
-    assert requests[9].url.params["command_id__eq"] == "command-42"
+    assert requests[7].url.params["path"] == "/runs/job/bundle.tar.gz"
+    assert requests[10].url.params["command_id__eq"] == "command-42"
     assert requests[-1].method == "DELETE"
     await call(
         client.aclose()

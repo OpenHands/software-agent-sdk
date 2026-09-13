@@ -22,7 +22,6 @@ def create_conversation(
     conversation_id: str,
     agent_profile_id: str,
     working_dir: str,
-    title: str,
     max_iterations: int = 160,
     tags: dict[str, str] | None = None,
     plugins: list[dict[str, Any]] | None = None,
@@ -35,13 +34,18 @@ def create_conversation(
                 "conversation_id": str(UUID(conversation_id)),
                 "agent_profile_id": str(UUID(agent_profile_id)),
                 "workspace": {"kind": "LocalWorkspace", "working_dir": working_dir},
-                "title": title,
                 "max_iterations": max_iterations,
                 "tags": tags or {},
                 **({"plugins": plugins} if plugins is not None else {}),
             },
             "timeout": 180,
         },
+    )
+
+
+def set_title(conversation_id: str, title: str) -> Operation:
+    return Operation(
+        "PATCH", conversation_path(conversation_id), {"json": {"title": title}}
     )
 
 

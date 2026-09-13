@@ -73,17 +73,17 @@ class AgentServerClient:
         tags: dict[str, str] | None = None,
         plugins: list[dict[str, Any]] | None = None,
     ) -> JSON:
-        return self._send(
+        self._send(
             routes.create_conversation(
                 conversation_id=conversation_id,
                 agent_profile_id=agent_profile_id,
                 working_dir=working_dir,
-                title=title,
                 max_iterations=max_iterations,
                 tags=tags,
                 plugins=plugins,
             )
         )
+        return self._send(routes.set_title(conversation_id, title))
 
     def get_conversation(self, conversation_id: str) -> JSON:
         return self._send(
@@ -193,17 +193,17 @@ class AsyncAgentServerClient:
         tags: dict[str, str] | None = None,
         plugins: list[dict[str, Any]] | None = None,
     ) -> JSON:
-        return await self._send(
+        await self._send(
             routes.create_conversation(
                 conversation_id=conversation_id,
                 agent_profile_id=agent_profile_id,
                 working_dir=working_dir,
-                title=title,
                 max_iterations=max_iterations,
                 tags=tags,
                 plugins=plugins,
             )
         )
+        return await self._send(routes.set_title(conversation_id, title))
 
     async def get_conversation(self, conversation_id: str) -> JSON:
         return await self._send(
