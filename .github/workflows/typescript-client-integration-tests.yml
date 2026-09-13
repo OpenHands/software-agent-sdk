@@ -5,7 +5,7 @@ on:
     push:
         branches: [main]
     pull_request:
-        branches: [main, feat/conversation-scoped-runtime-api]
+        branches: [main]
     workflow_dispatch:
         inputs:
             llm_model:

@@ -3,7 +3,7 @@ name: Version bump guard
 
 on:
     pull_request:
-        branches: [main, feat/conversation-scoped-runtime-api]
+        branches: [main]
 
 jobs:
     version-bump-guard:
