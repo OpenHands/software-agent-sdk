@@ -1,0 +1,89 @@
+{
+  "target": "SDK5017 opaque entrypoint production delta5209304fb",
+  "fixture": {
+    "sha256": "97981e6d82502099366e59bd1efbaf97d9db80c27b650674d8cabdf87a60d564",
+    "file": "fixture.tar.gz",
+    "purpose": "Identical before/after opaque entrypoint fixture; only synthetic secret diagnostic"
+  },
+  "cases": [
+    {
+      "phase": "before",
+      "manifest": {
+        "runtime": "local",
+        "canvas_url": "http://127.0.0.1:9109",
+        "started_at": 1789314463.8304505,
+        "available_kib": 6326848,
+        "commits": {
+          "sdk": "ac6d12b0b9d76f1cc38a6eb1ea51cd92e34a0bf2",
+          "automation": "8abaa0b5fdea18132c68ef71dfd645c5aafcc13a",
+          "canvas": "4cd1513bbe74abd2c1f9e58a77cf64375aafe001"
+        },
+        "bundle": {
+          "sha256": "97981e6d82502099366e59bd1efbaf97d9db80c27b650674d8cabdf87a60d564",
+          "file": "fixture.tar.gz",
+          "purpose": "Identical before/after opaque entrypoint fixture; only synthetic secret diagnostic"
+        },
+        "max_concurrent": 1,
+        "synthetic_secrets_only": true,
+        "comparison_case": "before",
+        "baseline_reverse_patch": "5209304fb bash_service.py only"
+      },
+      "conversation_id": "e7e9725d-69a3-4fb6-86fc-16f65108b62a",
+      "run_status": "COMPLETED",
+      "observed": {
+        "url": "http://127.0.0.1:9109/automations/74cc457b-d8cd-4980-b586-3ca07749e62f",
+        "presence": {
+          "EVIDENCE_ALLOWED": false,
+          "EVIDENCE_EXCLUDED": false
+        },
+        "masking": "allowed value absent",
+        "lines": [
+          "SCRIPT_SECRET_PRESENCE: {\"EVIDENCE_ALLOWED\": false, \"EVIDENCE_EXCLUDED\": false}",
+          "MASKED_ALLOWED_SECRET: <absent>"
+        ],
+        "at": "2026-09-13T15:50:58.781Z"
+      },
+      "bash_service_sha256": "67f9daea622dc2ca22e42c8ec09f18f9d5a3bb847f69c6e3f276641a1c76c551"
+    },
+    {
+      "phase": "after",
+      "manifest": {
+        "runtime": "local",
+        "canvas_url": "http://127.0.0.1:9109",
+        "started_at": 1789314665.2628531,
+        "available_kib": 4629924,
+        "commits": {
+          "sdk": "ac6d12b0b9d76f1cc38a6eb1ea51cd92e34a0bf2",
+          "automation": "8abaa0b5fdea18132c68ef71dfd645c5aafcc13a",
+          "canvas": "4cd1513bbe74abd2c1f9e58a77cf64375aafe001"
+        },
+        "bundle": {
+          "sha256": "97981e6d82502099366e59bd1efbaf97d9db80c27b650674d8cabdf87a60d564",
+          "file": "fixture.tar.gz",
+          "purpose": "Identical before/after opaque entrypoint fixture; only synthetic secret diagnostic"
+        },
+        "max_concurrent": 1,
+        "synthetic_secrets_only": true,
+        "comparison_case": "after",
+        "baseline_reverse_patch": null
+      },
+      "conversation_id": "3c8b6be8-9fc4-401c-b5a5-193e2902033e",
+      "run_status": "COMPLETED",
+      "observed": {
+        "url": "http://127.0.0.1:9109/automations/d07da444-eb79-4d07-ae5d-babf9fe7e728",
+        "presence": {
+          "EVIDENCE_ALLOWED": true,
+          "EVIDENCE_EXCLUDED": false
+        },
+        "masking": "synthetic allowed value hidden",
+        "lines": [
+          "SCRIPT_SECRET_PRESENCE: {\"EVIDENCE_ALLOWED\": true, \"EVIDENCE_EXCLUDED\": false}",
+          "MASKED_ALLOWED_SECRET: <secret-hidden>"
+        ],
+        "at": "2026-09-13T15:53:33.782Z"
+      },
+      "bash_service_sha256": "9b1ac95290fd27860b9593a52a1fe3f96c1fa7d66884992864a1e82a86dadb1f"
+    }
+  ],
+  "limit": "Integrated baseline with only target bash_service.py production delta reverted; after integrated SDK unchanged. Both real model turns; local causal comparison. Docker parity is separately recorded by runtime-profiles."
+}
