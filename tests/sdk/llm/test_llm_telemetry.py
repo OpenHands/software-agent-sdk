@@ -183,14 +183,12 @@ class TestTelemetryTokenUsage:
         """Test token usage recording with cache write tokens."""
         from litellm import Usage
 
-        usage = Usage.model_construct(
+        usage = Usage(
             prompt_tokens=100,
             completion_tokens=50,
             total_tokens=150,
-            model_extra={"cache_creation_input_tokens": 30},
+            cache_creation_input_tokens=30,
         )
-        # Set the attribute that telemetry code expects
-        usage._cache_creation_input_tokens = 30
 
         basic_telemetry._record_usage(usage, "test-id", 4096)
 

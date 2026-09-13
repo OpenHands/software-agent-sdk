@@ -13,6 +13,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 from uuid import UUID
 
@@ -20,10 +21,11 @@ import httpx
 import pytest
 import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
+from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
-from openhands.sdk import LLM, Agent, AgentContext, Conversation
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -107,6 +109,7 @@ def live_server_env(
 
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
 
     if import_modules is not None:
@@ -115,7 +118,9 @@ def live_server_env(
     # Build app after env is set
     from openhands.agent_server.api import create_app
     from openhands.agent_server.config import Config
+    from openhands.agent_server.persistence import reset_stores
 
+    reset_stores()
     cfg_obj = Config.model_validate_json(cfg_file.read_text())
 
     app = create_app(cfg_obj)
@@ -162,6 +167,7 @@ def live_server_env(
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
+        reset_stores()
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
@@ -226,8 +232,10 @@ def authenticated_server_env(
 
 
 @pytest.fixture
-def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+def patched_llm(monkeypatch: pytest.MonkeyPatch) -> list[list[Message]]:
     """Patch LLM.completion to a deterministic assistant message response."""
+
+    calls: list[list[Message]] = []
 
     def fake_completion(
         self,
@@ -237,7 +245,8 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         **kwargs,
     ):  # type: ignore[no-untyped-def]
         from openhands.sdk.llm.llm_response import LLMResponse
-        from openhands.sdk.llm.message import Message
+
+        calls.append(messages)
 
         # Create a minimal ModelResponse with a single assistant message
         litellm_msg = LiteLLMMessage.model_validate(
@@ -279,6 +288,7 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         return fake_completion(self, messages, tools, **kwargs)
 
     monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+    return calls
 
 
 def test_remote_conversation_websocket_first_message_auth(
@@ -771,7 +781,7 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "content": "Hello from patched LLM",
                 }
 
-                from openai import OpenAI
+                from openai import BadRequestError, OpenAI
 
                 openai_client = OpenAI(
                     api_key="unused",
@@ -819,6 +829,146 @@ def test_openai_chat_completions_gateway_over_real_server(
                 usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
                 assert streamed_text == "Hello from patched LLM"
                 assert usage_chunks == []
+
+                raw_response = openai_client.responses.with_raw_response.create(
+                    model="openhands_smoke",
+                    instructions="Answer briefly.",
+                    input="Say hello through Responses.",
+                    store=False,
+                )
+                responses_result = raw_response.parse()
+                assert responses_result.object == "response"
+                assert responses_result.status == "completed"
+                assert responses_result.model == "openhands_smoke"
+                assert responses_result.output_text == "Hello from patched LLM"
+                assert responses_result.previous_response_id is None
+                assert responses_result.usage is not None
+                assert responses_result.usage.input_tokens == 7
+                assert responses_result.usage.output_tokens == 5
+                assert responses_result.usage.total_tokens == 12
+                assert responses_result.id.startswith("resp_")
+                UUID(hex=responses_result.id.removeprefix("resp_"))
+                response_system_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "system"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                response_user_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert "Answer briefly." in response_system_text
+                assert "Answer briefly." not in response_user_text
+                assert "Say hello through Responses." in response_user_text
+
+                responses_conversation_id = raw_response.headers[
+                    "X-OpenHands-ServerConversation-ID"
+                ]
+                UUID(responses_conversation_id)
+
+                llm_calls_before_rejected_continuation = len(patched_llm)
+                with pytest.raises(BadRequestError) as exc_info:
+                    openai_client.responses.create(
+                        model="openhands_smoke",
+                        input="This must not continue server-side.",
+                        previous_response_id=responses_result.id,
+                        store=False,
+                    )
+                assert exc_info.value.status_code == 400
+                assert exc_info.value.response.json()["detail"] == (
+                    "previous_response_id is not supported; replay input items instead"
+                )
+                assert len(patched_llm) == llm_calls_before_rejected_continuation
+
+                second_stateless_response = (
+                    openai_client.responses.with_raw_response.create(
+                        model="openhands_smoke",
+                        input=[
+                            {
+                                "role": "developer",
+                                "content": "Use replayed context.",
+                            },
+                            {
+                                "role": "user",
+                                "content": "Say hello through Responses.",
+                            },
+                            *[
+                                cast(
+                                    ResponseInputItemParam,
+                                    item.model_dump(mode="json", exclude_none=True),
+                                )
+                                for item in responses_result.output
+                            ],
+                            {
+                                "role": "user",
+                                "content": "Follow up using the prior answer.",
+                            },
+                        ],
+                        store=False,
+                    )
+                )
+                second_stateless_result = second_stateless_response.parse()
+                assert second_stateless_result.output_text == "Hello from patched LLM"
+                assert (
+                    second_stateless_response.headers[
+                        "X-OpenHands-ServerConversation-ID"
+                    ]
+                    != responses_conversation_id
+                )
+                stateless_system_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "system"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                stateless_history_text = "\n".join(
+                    part.text
+                    for message in patched_llm[-1]
+                    if message.role == "user"
+                    for part in message.content
+                    if isinstance(part, TextContent)
+                )
+                assert "Use replayed context." in stateless_system_text
+                assert "Use replayed context." not in stateless_history_text
+                assert '<message role="user">' in stateless_history_text
+                assert '<message role="assistant">' in stateless_history_text
+                assert "Say hello through Responses." in stateless_history_text
+                assert "Hello from patched LLM" in stateless_history_text
+                assert "Follow up using the prior answer." in stateless_history_text
+
+                streaming_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run as a buffered stream.",
+                        "stream": True,
+                    },
+                    timeout=2.0,
+                )
+                assert streaming_response.status_code == 400
+                assert streaming_response.json()["detail"] == (
+                    "Streaming responses are not supported yet"
+                )
+
+                store_response = client.post(
+                    f"{env['host']}/v1/responses",
+                    json={
+                        "model": "openhands_smoke",
+                        "input": "This must not run as a stored response.",
+                        "store": True,
+                    },
+                    timeout=2.0,
+                )
+                assert store_response.status_code == 400
+                assert store_response.json()["detail"] == (
+                    "Persistent response storage (store=True) is not supported yet"
+                )
 
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
@@ -1692,10 +1842,16 @@ def test_hook_config_sent_to_server(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        # First agent call triggers PostToolUse and Stop hooks.
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -1910,9 +2066,15 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2047,8 +2209,15 @@ def test_remote_state_exposes_invoked_skills(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
-        if call_count["count"] == 1:
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
+
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
