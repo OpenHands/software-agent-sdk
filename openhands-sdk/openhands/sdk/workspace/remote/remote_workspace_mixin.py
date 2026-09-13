@@ -3,6 +3,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, Field, TypeAdapter
@@ -52,6 +53,19 @@ class RemoteWorkspaceMixin(BaseModel):
         "None means no limit, useful for running many conversations in parallel.",
     )
 
+    runtime_conversation_id: UUID | None = Field(
+        default=None,
+        frozen=True,
+        description="Conversation runtime scope; None uses the host workspace.",
+    )
+
+    @property
+    def api_prefix(self) -> str:
+        """The immutable runtime scope used by file, command, and Git operations."""
+        if self.runtime_conversation_id is None:
+            return "/api"
+        return f"/api/conversations/{self.runtime_conversation_id}"
+
     def model_post_init(self, context: Any) -> None:
         # Set up remote host
         self.host = self.host.rstrip("/")
@@ -63,6 +77,85 @@ class RemoteWorkspaceMixin(BaseModel):
         if self.api_key:
             headers["X-Session-API-Key"] = self.api_key
         return headers
+
+    def _start_command_generator(
+        self,
+        command: str,
+        cwd: str | Path | None,
+        timeout: float,
+    ) -> Generator[dict[str, Any], httpx.Response, str]:
+        payload: dict[str, Any] = {"command": command, "timeout": int(timeout)}
+        if cwd is not None:
+            payload["cwd"] = _remote_path(cwd)
+        response = yield {
+            "method": "POST",
+            "url": f"{self.host}{self.api_prefix}/bash/start_bash_command",
+            "json": payload,
+            "headers": self._headers,
+            "timeout": timeout + 5,
+        }
+        response.raise_for_status()
+        command_id = response.json().get("id")
+        if not isinstance(command_id, str) or not command_id:
+            raise ValueError("Agent Server returned no background command ID")
+        return command_id
+
+    def _search_command_output_generator(
+        self,
+        command_id: str | None,
+        *,
+        after_order: int | None = None,
+        timeout: float = 60,
+    ) -> Generator[dict[str, Any], httpx.Response, dict[str, Any]]:
+        params: dict[str, str | int] = {
+            "kind__eq": "BashOutput",
+            "sort_order": "TIMESTAMP_DESC" if after_order is None else "TIMESTAMP",
+            "limit": 1 if after_order is None else 100,
+        }
+        if command_id is not None:
+            params["command_id__eq"] = command_id
+        if after_order is not None and after_order >= 0:
+            params["order__gt"] = after_order
+        response = yield {
+            "method": "GET",
+            "url": f"{self.host}{self.api_prefix}/bash/bash_events/search",
+            "params": params,
+            "headers": self._headers,
+            "timeout": timeout,
+        }
+        response.raise_for_status()
+        return response.json()
+
+    def _get_command_output_generator(
+        self,
+        command_id: str | None,
+    ) -> Generator[dict[str, Any], httpx.Response, dict[str, Any] | None]:
+        page = yield from self._search_command_output_generator(command_id)
+        return next(iter(page.get("items", [])), None)
+
+    def _runtime_lifecycle_generator(
+        self,
+        *,
+        release: bool,
+    ) -> Generator[dict[str, Any], httpx.Response, str | None]:
+        if self.runtime_conversation_id is None:
+            raise ValueError("Runtime lifecycle requires a conversation scope")
+        response = yield {
+            "method": "DELETE" if release else "POST",
+            "url": f"{self.host}{self.api_prefix}/runtime"
+            + ("" if release else "/credentials"),
+            "headers": self._headers,
+            "timeout": 60,
+        }
+        if release and response.status_code == 404:
+            return None
+        response.raise_for_status()
+        if not release:
+            key = response.json().get("session_api_key")
+            if not isinstance(key, str) or not key:
+                raise ValueError("Runtime returned an empty session credential")
+            return key
+        return None
 
     def _execute_command_generator(
         self,
@@ -85,26 +178,8 @@ class RemoteWorkspaceMixin(BaseModel):
         """
         _logger.debug("Executing remote command")
 
-        # Step 1: Start the bash command
-        payload = {
-            "command": command,
-            "timeout": int(timeout),
-        }
-        if cwd is not None:
-            payload["cwd"] = _remote_path(cwd)
-
         try:
-            # Start the command
-            response: httpx.Response = yield {
-                "method": "POST",
-                "url": f"{self.host}/api/bash/start_bash_command",
-                "json": payload,
-                "headers": self._headers,
-                "timeout": timeout + 5.0,  # Add buffer to HTTP timeout
-            }
-            response.raise_for_status()
-            bash_command = response.json()
-            command_id = bash_command["id"]
+            command_id = yield from self._start_command_generator(command, cwd, timeout)
 
             _logger.debug(f"Started command with ID: {command_id}")
 
@@ -117,25 +192,11 @@ class RemoteWorkspaceMixin(BaseModel):
             seen_event_ids: set[str] = set()  # Track seen IDs to detect duplicates
 
             while time.time() - start_time < timeout:
-                # Search for new events (order > last_order)
-                params: dict[str, str | int] = {
-                    "command_id__eq": command_id,
-                    "sort_order": "TIMESTAMP",
-                    "limit": 100,
-                    "kind__eq": "BashOutput",
-                }
-                if last_order >= 0:
-                    params["order__gt"] = last_order
-
-                response = yield {
-                    "method": "GET",
-                    "url": f"{self.host}/api/bash/bash_events/search",
-                    "params": params,
-                    "headers": self._headers,
-                    "timeout": timeout,
-                }
-                response.raise_for_status()
-                search_result = response.json()
+                search_result = yield from self._search_command_output_generator(
+                    command_id,
+                    after_order=last_order,
+                    timeout=timeout,
+                )
 
                 # Process BashOutput events
                 for event in search_result.get("items", []):
@@ -208,7 +269,7 @@ class RemoteWorkspaceMixin(BaseModel):
 
     def _file_upload_generator(
         self,
-        source_path: str | Path,
+        source_path: str | Path | bytes,
         destination_path: str | Path,
     ) -> Generator[dict[str, Any], httpx.Response, FileOperationResult]:
         """Upload a file to the remote system.
@@ -222,7 +283,7 @@ class RemoteWorkspaceMixin(BaseModel):
         Returns:
             FileOperationResult: Result with success status and metadata
         """
-        source = Path(source_path)
+        source = Path("upload") if isinstance(source_path, bytes) else Path(source_path)
         destination = Path(destination_path)
         destination_remote = _remote_path(destination_path)
 
@@ -230,8 +291,11 @@ class RemoteWorkspaceMixin(BaseModel):
 
         try:
             # Read the file content
-            with open(source, "rb") as f:
-                file_content = f.read()
+            if isinstance(source_path, bytes):
+                file_content = source_path
+            else:
+                with open(source, "rb") as f:
+                    file_content = f.read()
 
             # Prepare the upload
             files = {"file": (source.name, file_content)}
@@ -239,7 +303,7 @@ class RemoteWorkspaceMixin(BaseModel):
             # Make HTTP call using query parameter for path
             response: httpx.Response = yield {
                 "method": "POST",
-                "url": f"{self.host}/api/file/upload",
+                "url": f"{self.host}{self.api_prefix}/file/upload",
                 "params": {"path": destination_remote},
                 "files": files,
                 "headers": self._headers,

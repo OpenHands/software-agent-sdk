@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, Final, Self, SupportsIndex, overload
+from typing import TYPE_CHECKING, Final, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -703,29 +703,6 @@ class RemoteConversation(BaseConversation):
     _conversation_action_base_path: str
     delete_on_close: bool = False
 
-    @classmethod
-    def attach(
-        cls,
-        workspace: RemoteWorkspace,
-        conversation_id: ConversationID,
-        *,
-        callbacks: list[ConversationCallbackType] | None = None,
-    ) -> Self:
-        """Attach to an existing conversation using its server-resolved agent.
-
-        Does not create a conversation or supply agent settings, tools, or secrets.
-        The caller owns the workspace; closing this client preserves the server's
-        conversation. Run, event delivery, and errors use the normal SDK lifecycle.
-        """
-        return cls(
-            agent=None,
-            workspace=workspace,
-            conversation_id=conversation_id,
-            callbacks=callbacks,
-            visualizer=None,
-            delete_on_close=False,
-        )
-
     def __init__(
         self,
         agent: AgentBase | None,
@@ -750,12 +727,15 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        agent_profile_id: uuid.UUID | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
 
         Args:
-            agent: Agent configuration for creation, or None for attach-only use.
+            agent: Agent configuration, or None to attach/use a server profile.
+            agent_profile_id: Saved server profile to resolve when creating.
+                Mutually exclusive with agent; ignored on existing conversations.
             workspace: The working directory for agent operations and tool execution.
             plugins: Optional list of plugins to load on the server. Each plugin
                     is a PluginSource specifying source, ref, and repo_path.
@@ -788,6 +768,8 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
+        if agent is not None and agent_profile_id is not None:
+            raise ValueError("agent and agent_profile_id are mutually exclusive")
         super().__init__()  # Initialize base class with span tracking
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
@@ -815,7 +797,7 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
-                if agent is None:
+                if agent is None and agent_profile_id is None:
                     resp.raise_for_status()
                 # Conversation doesn't exist, we'll create it
                 should_create = True
@@ -837,8 +819,35 @@ class RemoteConversation(BaseConversation):
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
+        if should_create and agent_profile_id is not None:
+            # The canonical request imports Agent, so defer past package initialization.
+            from openhands.sdk.conversation.request import StartConversationRequest
+
+            request = StartConversationRequest(
+                agent_profile_id=agent_profile_id,
+                conversation_id=conversation_id,
+                workspace=LocalWorkspace(working_dir=workspace.working_dir),
+                max_iterations=max_iteration_per_run,
+                tags=tags or {},
+                plugins=plugins or [],
+            )
+            response = _send_request(
+                self._client,
+                "POST",
+                self._conversation_info_base_path,
+                json=request.model_dump(
+                    mode="json", exclude_none=True, exclude_unset=True
+                ),
+                timeout=180,
+            )
+            info = response.json()
+            self._id = uuid.UUID(info["id"])
+            agent = _validate_remote_agent(info["agent"])
+            workspace.register_conversation(str(self._id))
+            should_create = False
+
         if agent is None:
-            raise ValueError("An agent is required unless attaching to a conversation")
+            raise ValueError("Supply an agent, a profile, or an existing conversation")
         self.agent = agent
 
         if should_create:
@@ -1539,6 +1548,15 @@ class RemoteConversation(BaseConversation):
         )
         data = resp.json()
         return data["response"]
+
+    def set_title(self, title: str) -> None:
+        """Set the persisted display title without running the agent."""
+        _send_request(
+            self._client,
+            "PATCH",
+            f"{self._conversation_info_base_path}/{self._id}",
+            json={"title": title},
+        )
 
     @observe(
         name="conversation.generate_title",

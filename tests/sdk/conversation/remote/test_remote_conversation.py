@@ -190,7 +190,9 @@ class TestRemoteConversation:
             return response
 
         client.request.side_effect = respond
-        conversation = RemoteConversation.attach(self.workspace, cid)
+        conversation = RemoteConversation(
+            agent=None, workspace=self.workspace, conversation_id=cid, visualizer=None
+        )
         assert type(conversation.agent) is type(expected)
         if kind == "Agent":
             assert conversation.agent.llm.model == expected.llm.model
@@ -204,6 +206,60 @@ class TestRemoteConversation:
         assert all(call.args[0] == "GET" for call in client.request.call_args_list)
         client.close.assert_not_called()  # The caller still owns the workspace.
 
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_create_from_profile_uses_resolved_agent(self, mock_ws_client):
+        cid, profile_id = uuid.uuid4(), uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+        created = False
+
+        def respond(method, url, **kwargs):
+            nonlocal created
+            if method == "GET" and url == f"/api/conversations/{cid}" and not created:
+                return httpx.Response(
+                    404, request=httpx.Request(method, self.host + url)
+                )
+            response = original(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                payload = kwargs["json"]
+                assert payload["agent_profile_id"] == str(profile_id)
+                assert "agent" not in payload and "secrets" not in payload
+                assert payload["max_iterations"] == 17
+                assert payload["tags"] == {"automationrun": "run-one"}
+                response.json.return_value["agent"] = self.agent.model_dump(mode="json")
+                created = True
+            return response
+
+        client.request.side_effect = respond
+        conversation = RemoteConversation(
+            agent=None,
+            workspace=self.workspace,
+            conversation_id=cid,
+            agent_profile_id=profile_id,
+            max_iteration_per_run=17,
+            tags={"automationrun": "run-one"},
+            visualizer=None,
+        )
+        assert conversation.id == cid
+        assert conversation.agent.llm.model == self.agent.llm.model
+        conversation.set_title("Scheduled run")
+        assert any(
+            c.args == ("PATCH", f"/api/conversations/{cid}")
+            and c.kwargs["json"] == {"title": "Scheduled run"}
+            for c in client.request.call_args_list
+        )
+        conversation.close()
+
+    def test_profile_and_agent_are_mutually_exclusive(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            RemoteConversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                agent_profile_id=uuid.uuid4(),
+            )
+
     @pytest.mark.parametrize("status", [403, 404])
     def test_attach_never_creates_a_missing_or_inaccessible_conversation(self, status):
         cid = uuid.uuid4()
@@ -213,7 +269,12 @@ class TestRemoteConversation:
             status, request=httpx.Request("GET", f"{self.host}/api/conversations/{cid}")
         )
         with pytest.raises(httpx.HTTPStatusError):
-            RemoteConversation.attach(self.workspace, cid)
+            RemoteConversation(
+                agent=None,
+                workspace=self.workspace,
+                conversation_id=cid,
+                visualizer=None,
+            )
         assert [call.args[0] for call in client.request.call_args_list] == ["GET"]
 
     @patch(
