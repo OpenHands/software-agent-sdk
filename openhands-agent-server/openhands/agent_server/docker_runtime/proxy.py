@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -113,21 +114,21 @@ async def proxy_http(
             if chunk:
                 yield chunk
 
-    client = httpx.AsyncClient(
-        timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
-    )
-    req = client.build_request(
-        request.method,
-        url,
-        headers=headers,
-        params=None,  # query string is already part of upstream_path
-        content=_request_body(),
-    )
-
+    # Keep HTTPX's contexts open until StreamingResponse consumes the body.
+    stack = AsyncExitStack()
     try:
-        upstream = await client.send(req, stream=True)
-    except (httpx.ConnectError, httpx.ReadError) as exc:
-        await client.aclose()
+        client = await stack.enter_async_context(
+            httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0)
+            )
+        )
+        upstream = await stack.enter_async_context(
+            client.stream(request.method, url, headers=headers, content=_request_body())
+        )
+    except BaseException as exc:
+        await stack.aclose()
+        if not isinstance(exc, httpx.HTTPError):
+            raise
         logger.warning("Conversation upstream connection failed")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -139,8 +140,7 @@ async def proxy_http(
             async for chunk in upstream.aiter_raw(chunk_size=_CHUNK_SIZE):
                 yield chunk
         finally:
-            await upstream.aclose()
-            await client.aclose()
+            await stack.aclose()
 
     return StreamingResponse(
         _response_body(),
