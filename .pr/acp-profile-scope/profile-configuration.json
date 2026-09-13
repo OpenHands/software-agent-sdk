@@ -1,0 +1,24 @@
+{
+  "before": {
+    "id": "330bf2bb-0e6c-47de-8a6f-8d918a4d4c91",
+    "name": "scope-empty-codex",
+    "agent_kind": "acp",
+    "acp_server": "codex",
+    "secret_refs": [],
+    "acp_command": "/home/gneubig/work/factory-sdk-secure/.venv/bin/python",
+    "acp_args": [
+      "/home/gneubig/work/factory-state/evidence/acp-profile-scope/fixture-agent.py"
+    ]
+  },
+  "after": {
+    "id": "db0b8d77-5375-4f93-8f8e-ee3b6ddde51d",
+    "name": "scope-empty-codex",
+    "agent_kind": "acp",
+    "acp_server": "codex",
+    "secret_refs": [],
+    "acp_command": "/home/gneubig/work/factory-sdk-secure/.venv/bin/python",
+    "acp_args": [
+      "/home/gneubig/work/factory-state/evidence/acp-profile-scope/fixture-agent.py"
+    ]
+  }
+}
