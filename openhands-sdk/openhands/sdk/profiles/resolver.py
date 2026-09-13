@@ -29,7 +29,7 @@ Resource-specific secret channels:
 from __future__ import annotations
 
 import shlex
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, SecretStr
@@ -108,6 +108,12 @@ class AgentProfileDiagnostics(BaseModel):
     # disabled).
     disabled_skills: list[str] = Field(default_factory=list)
     resolved_skills: list[str] = Field(default_factory=list)
+
+    # Secret scope (both variants). ``None`` = every secret the conversation is
+    # started with; a list = only those names (plus, for ACP, the provider
+    # credentials in the fields below). No dangling report: this is an
+    # allow-list over what a launch supplies, so an unmatched name is a no-op.
+    secret_refs: list[str] | None = None
 
     # ACP provider credential channels the editor/materialize checks (ACP only).
     # These are NOT jointly required: authentication needs the API key *or* one
@@ -216,6 +222,30 @@ def _acp_credential_channels(
         return None, None, []
     file_names = [spec.secret_name for spec in info.file_secrets]
     return info.api_key_env_var, info.base_url_env_var, file_names
+
+
+def filter_profile_secrets[T](
+    profile: OpenHandsAgentProfile | ACPAgentProfile,
+    secrets: Mapping[str, T],
+) -> dict[str, T]:
+    """Narrow a conversation's secrets to the profile's ``secret_refs``.
+
+    Strict: the stored list is the whole allow-list, with no derived additions.
+    An ACP profile's provider credential is *not* re-added — the picker offers
+    it like any other saved secret, so a profile that omits it omits it on
+    purpose, and the resulting auth failure is loud and recoverable. Anything
+    implicit here would make the stored list mean something other than what it
+    says.
+
+    Values never pass through: they ride ``request.secrets`` as ``LookupSecret``s
+    the agent-server resolves from its own store. A name matching no supplied
+    secret is a harmless no-op, so — unlike ``mcp_server_refs`` — a ref here can
+    never dangle.
+    """
+    if profile.secret_refs is None:
+        return dict(secrets)
+    allowed = set(profile.secret_refs)
+    return {name: value for name, value in secrets.items() if name in allowed}
 
 
 def _build_openhands_settings(
@@ -374,6 +404,7 @@ def resolve_agent_profile_dry_run(
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved,
         dangling_mcp_server_refs=dangling,
+        secret_refs=profile.secret_refs,
     )
     if dangling:
         diagnostics.errors.append(

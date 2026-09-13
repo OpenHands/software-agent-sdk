@@ -39,6 +39,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
     RunningConversationContainer,
 )
+from openhands.agent_server.models import ConversationRuntimeInfo
 from openhands.agent_server.runtime_router import add_legacy_runtime_routes
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.logger import get_logger
@@ -281,6 +282,24 @@ async def _start_prepared_conversation(
     )
 
 
+@docker_conversation_proxy_router.post("/{conversation_id}/runtime/credentials")
+async def get_runtime_credentials(
+    conversation_id: UUID, request: Request
+) -> JSONResponse:
+    """Give an authenticated orchestrator access to this runtime only."""
+    registry = get_registry(request)
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+        raise HTTPException(404, "Conversation not found")
+    try:
+        identity = registry.provisioning.load(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(409, "Runtime identity is unavailable") from exc
+    return JSONResponse(
+        {"session_api_key": identity.api_key.get_secret_value()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @docker_conversation_proxy_router.delete("/{conversation_id}")
 async def docker_delete_conversation(
     conversation_id: UUID,
@@ -354,6 +373,75 @@ async def docker_proxy_conversation_root_mutation(
             request, f"/api/conversations/{conversation_id}"
         ),
     )
+
+
+@docker_conversation_proxy_router.get(
+    "/{conversation_id}/runtime",
+    response_model=ConversationRuntimeInfo,
+)
+async def get_conversation_runtime(
+    conversation_id: UUID, request: Request
+) -> ConversationRuntimeInfo:
+    """Inspect runtime availability without provisioning a container."""
+    registry = get_registry(request)
+    info = registry.runtime_info(conversation_id)
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    return info
+
+
+@docker_conversation_proxy_router.delete(
+    "/{conversation_id}/runtime",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def release_conversation_runtime(
+    conversation_id: UUID, request: Request
+) -> Response:
+    """Release execution resources while retaining conversation history."""
+    registry = get_registry(request)
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    try:
+        await registry.stop(conversation_id)
+    except Exception as exc:
+        logger.exception("Could not release conversation runtime %s", conversation_id)
+        raise HTTPException(502, "Could not release conversation runtime") from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@docker_conversation_proxy_router.post(
+    "/{conversation_id}/runtime/reprovision",
+    response_model=ConversationRuntimeInfo,
+)
+async def reprovision_conversation_runtime(
+    conversation_id: UUID, request: Request
+) -> ConversationRuntimeInfo:
+    """Start missing infrastructure without resuming agent execution."""
+    registry = get_registry(request)
+    info = registry.runtime_info(conversation_id)
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    if not info.can_resume:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Conversation runtime cannot be safely reprovisioned",
+        )
+    try:
+        await registry.prepare(conversation_id)
+        await registry.get_or_create(conversation_id)
+    except Exception as exc:
+        logger.exception("Could not reprovision conversation %s", conversation_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not reprovision conversation runtime",
+        ) from exc
+    return registry.runtime_info(conversation_id)
 
 
 @docker_conversation_proxy_router.api_route(

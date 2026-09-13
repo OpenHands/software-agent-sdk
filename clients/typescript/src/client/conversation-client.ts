@@ -9,6 +9,7 @@ import type {
   ConversationEventPage,
   ConversationEventSearchOptions,
   ConversationInfo,
+  ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
@@ -132,6 +133,21 @@ export class ConversationClient {
     conversationId: string
   ): Promise<TConversation> {
     const response = await this.client.get<TConversation>(`/api/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  async getRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.get<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime`
+    );
+    return response.data;
+  }
+
+  async reprovisionRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.post<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime/reprovision`,
+      {}
+    );
     return response.data;
   }
 

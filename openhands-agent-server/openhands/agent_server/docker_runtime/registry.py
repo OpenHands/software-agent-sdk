@@ -23,6 +23,11 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.docker_runtime.broker import RuntimeCredentialBroker
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.models import (
+    ConversationRuntimeError,
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
+)
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.sdk.llm.auth.credentials import CredentialStore
@@ -64,15 +69,11 @@ class RunningConversationContainer:
         if self.container_id is None:
             return
         container_id = self.container_id
-        self.container_id = None
         logger.info("Stopping conversation container: %s", container_id)
         result = execute_command(["docker", "stop", container_id])
         if result.returncode != 0:
-            logger.warning(
-                "Failed to stop conversation container %s: %s",
-                container_id,
-                result.stderr,
-            )
+            raise RuntimeError(f"Failed to stop conversation container {container_id}")
+        self.container_id = None
 
 
 class DockerConversationRegistry:
@@ -92,6 +93,7 @@ class DockerConversationRegistry:
         self._provisioning: RuntimeProvisioningStore | None = None
         self._brokers: dict[UUID, RuntimeCredentialBroker] = {}
         self._mutations: dict[UUID, asyncio.Lock] = {}
+        self._runtime_errors: dict[UUID, ConversationRuntimeError] = {}
 
     def mutation_lock(self, conversation_id: UUID) -> asyncio.Lock:
         return self._mutations.setdefault(conversation_id, asyncio.Lock())
@@ -153,6 +155,31 @@ class DockerConversationRegistry:
     def get(self, conversation_id: UUID) -> RunningConversationContainer | None:
         return self._containers.get(conversation_id)
 
+    def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
+        """Inspect runtime state without provisioning or contacting a container."""
+        directory = self.conversation_dir(conversation_id)
+        has_state = (directory / "base_state.json").is_file()
+        has_metadata = (directory / "meta.json").is_file()
+        manifest = self.provisioning.manifest_path(conversation_id)
+        can_resume = has_state and has_metadata and manifest.is_file()
+
+        if conversation_id in self._containers:
+            status = ConversationRuntimeStatus.AVAILABLE
+        elif conversation_id in self._starts:
+            status = ConversationRuntimeStatus.STARTING
+        elif has_state and has_metadata and not manifest.is_file():
+            status = ConversationRuntimeStatus.OWNERSHIP_LOST
+        elif conversation_id in self._runtime_errors:
+            status = ConversationRuntimeStatus.ERROR
+        else:
+            status = ConversationRuntimeStatus.MISSING
+
+        return ConversationRuntimeInfo(
+            runtime_status=status,
+            can_resume=can_resume,
+            runtime_error=self._runtime_errors.get(conversation_id),
+        )
+
     def items(self) -> list[tuple[UUID, RunningConversationContainer]]:
         return list(self._containers.items())
 
@@ -191,13 +218,18 @@ class DockerConversationRegistry:
 
         try:
             container = await asyncio.shield(task)
-        except Exception:
+        except Exception as exc:
             async with self._lock:
                 if self._starts.get(conversation_id) is task:
                     self._starts.pop(conversation_id, None)
+                    self._runtime_errors[conversation_id] = ConversationRuntimeError(
+                        code="runtime_start_failed",
+                        message=str(exc),
+                    )
             raise
 
         async with self._lock:
+            self._runtime_errors.pop(conversation_id, None)
             existing = self._containers.get(conversation_id)
             if existing is not None:
                 return existing, False
@@ -219,10 +251,16 @@ class DockerConversationRegistry:
         async with self._lock:
             container = self._containers.pop(conversation_id, None)
             start_task = self._starts.pop(conversation_id, None)
+            self._runtime_errors.pop(conversation_id, None)
 
         stopped = False
         if container is not None:
-            await asyncio.to_thread(container.cleanup)
+            try:
+                await asyncio.to_thread(container.cleanup)
+            except Exception:
+                async with self._lock:
+                    self._containers[conversation_id] = container
+                raise
             stopped = True
         if start_task is not None:
             try:
@@ -248,6 +286,7 @@ class DockerConversationRegistry:
             start_tasks = list(self._starts.values())
             self._containers.clear()
             self._starts.clear()
+            self._runtime_errors.clear()
 
         for task in start_tasks:
             try:

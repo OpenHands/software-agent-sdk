@@ -23,6 +23,24 @@ export enum ConversationSortOrder {
   UPDATED_AT_DESC = 'UPDATED_AT_DESC',
 }
 
+export type ConversationRuntimeStatus =
+  | 'available'
+  | 'starting'
+  | 'missing'
+  | 'ownership_lost'
+  | 'error';
+
+export interface ConversationRuntimeError {
+  code: string;
+  message: string;
+}
+
+export interface ConversationRuntimeInfo {
+  runtime_status: ConversationRuntimeStatus;
+  can_resume: boolean;
+  runtime_error: ConversationRuntimeError | null;
+}
+
 export interface ConversationInfo {
   id: ConversationID;
   /**
@@ -30,6 +48,12 @@ export interface ConversationInfo {
    * Note: This field was renamed from agent_status to execution_status in the API.
    */
   execution_status: ConversationExecutionStatus;
+  /** Runtime availability. Absent on agent-server versions before this contract. */
+  runtime_status?: ConversationRuntimeStatus;
+  /** Whether retained state permits explicit execution resumption. */
+  can_resume?: boolean;
+  /** Latest structured runtime failure, when known. */
+  runtime_error?: ConversationRuntimeError | null;
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */

@@ -31,6 +31,8 @@ from openhands.agent_server.models import (
     AskAgentResponse,
     ConversationInfo,
     ConversationPage,
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
@@ -61,6 +63,16 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
 
 
+def _with_runtime_lifecycle(
+    request: Request, conversation: ConversationInfo
+) -> ConversationInfo:
+    registry = getattr(request.app.state, "docker_registry", None)
+    if registry is None:
+        return conversation
+    lifecycle = registry.runtime_info(UUID(str(conversation.id)))
+    return conversation.model_copy(update=lifecycle.model_dump())
+
+
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 
 # Examples
@@ -88,6 +100,7 @@ START_CONVERSATION_EXAMPLES = [
 
 @conversation_router.get("/search")
 async def search_conversations(
+    request: Request,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
@@ -112,6 +125,11 @@ async def search_conversations(
     assert limit <= 100
     page = await conversation_service.search_conversations(
         page_id, limit, status, sort_order
+    )
+    page = page.model_copy(
+        update={
+            "items": [_with_runtime_lifecycle(request, item) for item in page.items]
+        }
     )
     if not include_skills:
         # ``model_copy`` rather than in-place mutation so we never
@@ -146,6 +164,7 @@ async def count_conversations(
 )
 async def get_conversation(
     conversation_id: UUID,
+    request: Request,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
@@ -153,9 +172,33 @@ async def get_conversation(
     conversation = await conversation_service.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    conversation = _with_runtime_lifecycle(request, conversation)
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
     return conversation
+
+
+@conversation_router.get("/{conversation_id}/runtime")
+async def get_local_conversation_runtime(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationRuntimeInfo:
+    """Inspect the always-available in-process runtime."""
+    if await conversation_service.get_conversation(conversation_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return ConversationRuntimeInfo(
+        runtime_status=ConversationRuntimeStatus.AVAILABLE,
+        can_resume=True,
+    )
+
+
+@conversation_router.post("/{conversation_id}/runtime/reprovision")
+async def reprovision_local_conversation_runtime(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationRuntimeInfo:
+    """Return local runtime state; local mode has no infrastructure to provision."""
+    return await get_local_conversation_runtime(conversation_id, conversation_service)
 
 
 @conversation_router.get(
@@ -181,6 +224,7 @@ async def get_conversation_agent_final_response(
 
 @conversation_router.get("")
 async def batch_get_conversations(
+    request: Request,
     ids: Annotated[list[UUID], Query()],
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
@@ -189,6 +233,10 @@ async def batch_get_conversations(
     any missing item"""
     assert len(ids) < 100
     conversations = await conversation_service.batch_get_conversations(ids)
+    conversations = [
+        _with_runtime_lifecycle(request, item) if item is not None else None
+        for item in conversations
+    ]
     if not include_skills:
         return [
             trim_conversation_response_skills(c) if c is not None else None

@@ -30,6 +30,10 @@ from starlette.responses import JSONResponse
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.models import (
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +217,22 @@ class _StubRegistry:
     def get(self, cid: UUID) -> _FakeWorkspace | None:
         return self._workspaces.get(cid)
 
+    def runtime_info(self, cid: UUID) -> ConversationRuntimeInfo:
+        directory = self.conversation_dir(cid)
+        can_resume = (
+            (directory / "meta.json").is_file()
+            and (directory / "base_state.json").is_file()
+            and self.provisioning.manifest_path(cid).is_file()
+        )
+        return ConversationRuntimeInfo(
+            runtime_status=(
+                ConversationRuntimeStatus.AVAILABLE
+                if cid in self._workspaces
+                else ConversationRuntimeStatus.MISSING
+            ),
+            can_resume=can_resume,
+        )
+
     def conversation_dir(self, cid: UUID) -> Path:
         return self.conversations_dir / cid.hex
 
@@ -380,6 +400,85 @@ def test_global_router_404_for_unknown_cid(docker_app):
 # covered by ``test_conversation_service.py``), only that the routes are
 # wired and behave at the wire level.
 # ---------------------------------------------------------------------------
+
+
+def test_runtime_inspection_does_not_start_container(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+    response = client.get(f"/api/conversations/{cid}/runtime")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "runtime_status": "missing",
+        "can_resume": True,
+        "runtime_error": None,
+    }
+    assert registry.get(cid) is None
+
+
+def test_runtime_release_preserves_history_and_can_reprovision(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+    registry.preregister(cid)
+
+    assert client.delete(f"/api/conversations/{cid}/runtime").status_code == 204
+    assert client.delete(f"/api/conversations/{cid}/runtime").status_code == 204
+    assert (directory / "base_state.json").is_file()
+    info = client.get(f"/api/conversations/{cid}/runtime").json()
+    assert info["runtime_status"] == "missing"
+    assert info["can_resume"] is True
+    restored = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+    assert restored.json()["runtime_status"] == "available"
+
+
+def test_runtime_release_rejects_unknown_conversation(docker_app):
+    client, _ = docker_app
+    assert client.delete(f"/api/conversations/{uuid4()}/runtime").status_code == 404
+
+
+def test_runtime_reprovision_starts_infrastructure_without_run(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    registry.provisioning.create(cid)
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+    response = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+
+    assert response.status_code == 200
+    assert response.json()["runtime_status"] == "available"
+    assert registry.get(cid) is not None
+
+
+def test_runtime_reprovision_rejects_ownership_loss(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    directory = registry.conversation_dir(cid)
+    directory.mkdir(parents=True)
+    (directory / "meta.json").write_text("{}")
+    (directory / "base_state.json").write_text("{}")
+
+    response = client.post(f"/api/conversations/{cid}/runtime/reprovision")
+
+    assert response.status_code == 409
+    assert registry.get(cid) is None
 
 
 def test_metadata_routes_are_mounted_locally_in_docker_mode(tmp_path):
@@ -916,3 +1015,28 @@ def test_proxy_strips_outer_credentials_and_runtime_cookies(docker_app_with_auth
     assert "cookie" not in forwarded["headers"]
     assert forwarded["query"] == {"keep": "value"}
     assert "set-cookie" not in response.headers
+
+
+def test_runtime_credentials_are_scoped_and_not_cacheable(docker_app):
+    client, app = docker_app
+    registry = app.state.docker_registry
+    cid = uuid4()
+    identity = registry.provisioning.create(cid)
+    folder = registry.conversation_dir(cid)
+    folder.mkdir(parents=True)
+    (folder / "meta.json").write_text("{}")
+    result = client.post(f"/api/conversations/{cid}/runtime/credentials")
+    assert result.status_code == 200
+    assert result.headers["Cache-Control"] == "no-store"
+    assert result.json() == {"session_api_key": identity.api_key.get_secret_value()}
+    assert registry.get(cid) is None
+    assert (
+        client.post(f"/api/conversations/{uuid4()}/runtime/credentials").status_code
+        == 404
+    )
+
+
+def test_runtime_credentials_require_outer_auth(docker_app_with_auth):
+    client, _, _ = docker_app_with_auth
+    result = client.post(f"/api/conversations/{uuid4()}/runtime/credentials")
+    assert result.status_code in (401, 403)

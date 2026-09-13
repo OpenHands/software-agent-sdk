@@ -353,8 +353,12 @@ def _resolve_agent_from_profile(
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
-) -> "tuple[AgentBase, LaunchedAgentProfile]":
+) -> "tuple[AgentBase, LaunchedAgentProfile, set[str] | None]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
+
+    The third element is the profile's secret allow-list (``None`` = unrestricted)
+    — strictly ``secret_refs``, with nothing added back. It is returned rather
+    than applied here because the secrets ride the start request, not the agent.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
@@ -451,7 +455,8 @@ def _resolve_agent_from_profile(
         agent_profile_id=profile.id,
         revision=profile.revision,
     )
-    return agent, launched
+    allowed_secrets = None if profile.secret_refs is None else set(profile.secret_refs)
+    return agent, launched, allowed_secrets
 
 
 def _compose_conversation_info(
@@ -1610,6 +1615,7 @@ class ConversationService:
 
         from openhands.agent_server.persistence import (
             PersistedSettings,
+            get_secrets_store,
             get_settings_store,
         )
 
@@ -1635,14 +1641,28 @@ class ConversationService:
 
         if request.agent_profile_id is not None:
             mcp_config = settings.agent_settings.mcp_config
-            resolved_agent, launched_agent_profile = await asyncio.to_thread(
+            (
+                resolved_agent,
+                launched_agent_profile,
+                allowed_secrets,
+            ) = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
                 mcp_config,
                 acp_skill_sourcing=self.acp_skill_sourcing,
             )
-            request = request.model_copy(update={"agent": resolved_agent})
+            from openhands.agent_server.profile_secrets import select_profile_secrets
+
+            selected = await asyncio.to_thread(
+                select_profile_secrets,
+                request.secrets,
+                allowed_secrets,
+                get_secrets_store(),
+            )
+            request = request.model_copy(
+                update={"agent": resolved_agent, "secrets": selected}
+            )
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to
