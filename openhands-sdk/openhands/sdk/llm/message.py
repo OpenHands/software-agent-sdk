@@ -341,7 +341,9 @@ class Message(BaseModel):
 
     def _list_serializer(self, *, vision_enabled: bool) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
-        role_tool_with_prompt_caching = False
+        role_tool_with_prompt_caching = self.role == "tool" and any(
+            item.cache_prompt for item in self.content
+        )
 
         # Add thinking blocks first (for Anthropic extended thinking)
         # Only add thinking blocks for assistant messages
@@ -356,6 +358,9 @@ class Message(BaseModel):
 
         for item in self.content:
             if isinstance(item, TextContent) and not item.text.strip():
+                if self.role != "tool" and item.cache_prompt and content:
+                    # Keep the cached prefix when dropping its trailing blank block.
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
                 continue
 
             # All content types now return list[dict[str, Any]]
@@ -371,7 +376,6 @@ class Message(BaseModel):
             # message level
             # See discussion here for details: https://github.com/BerriAI/litellm/issues/6422#issuecomment-2438765472
             if self.role == "tool" and item.cache_prompt:
-                role_tool_with_prompt_caching = True
                 for d in item_dicts:
                     d.pop("cache_control", None)
 

@@ -49,15 +49,19 @@ def test_blank_chat_content_uses_empty_string(role, text):
 
 
 @pytest.mark.parametrize("role", ["user", "system", "assistant", "tool"])
-def test_blank_chat_blocks_preserve_nonblank_text_and_cache(role):
+@pytest.mark.parametrize("cache_on_blank", [False, True])
+def test_blank_chat_blocks_preserve_nonblank_text_and_cache(role, cache_on_blank):
     message = Message(
         role=role,
         content=[
             TextContent(text=""),
-            TextContent(text="  keep this whitespace\n", cache_prompt=True),
-            TextContent(text=" \t\n"),
+            TextContent(
+                text="  keep this whitespace\n", cache_prompt=not cache_on_blank
+            ),
+            TextContent(text=" \t\n", cache_prompt=cache_on_blank),
         ],
     )
+    stored = message.model_dump_json()
 
     result = message.to_chat_dict(
         **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
@@ -72,6 +76,7 @@ def test_blank_chat_blocks_preserve_nonblank_text_and_cache(role):
     else:
         expected["cache_control"] = {"type": "ephemeral"}
     assert result["content"] == [expected]
+    assert message.model_dump_json() == stored
 
 
 @pytest.mark.parametrize("vision_enabled", [False, True])
