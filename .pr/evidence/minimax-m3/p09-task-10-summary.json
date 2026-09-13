@@ -1,0 +1,28 @@
+{
+  "task_id": "p09-task-10",
+  "prompt": "Implement an in-memory caching layer in `toyapp/cache.py` with `CachingAPIClient`. Calling `CachingAPIClient()` with no client should wrap `toyapp.api.APIClient`. The constructor should also accept an optional backend client, `clock` callable, `user_ttl`, and `account_summary_ttl`. Preserve `fetch_user(user_id)` and `fetch_account_summary(user_id)`, use separate read-through TTL caches for users and account summaries, expose `invalidate_user` and `invalidate_account_summary`, and make `invalidate_user` clear both the user cache and that user's dependent account summary cache. Coalesce concurrent requests for the same key without serializing different keys behind one long backend lock. Return stale cached data on backend failure when available, but do not mark that stale value fresh; the next call should retry the backend. Propagate the backend error to all waiters when a failed fill has no stale value, clear failed fills so a later retry can succeed, and expose `get_metrics()` with `cache_hit_total`, `cache_miss_total`, `cache_fill_seconds`, and `cache_invalidation_total`. Count `cache_miss_total` once per backend fill attempt; coalesced waiters must not inflate it.",
+  "model": "openai/MiniMax-M3",
+  "status": "completed",
+  "conversation_status": "ConversationExecutionStatus.FINISHED",
+  "wall_clock_s": 348.49,
+  "max_iterations_cap": 30,
+  "calls_recorded": 10,
+  "condenser_shares_metrics": true,
+  "metrics_snapshot": {
+    "model_name": "openai/MiniMax-M3",
+    "accumulated_cost": 0.0,
+    "max_budget_per_task": null,
+    "accumulated_token_usage": {
+      "model": "openai/MiniMax-M3",
+      "prompt_tokens": 135058,
+      "completion_tokens": 31025,
+      "cache_read_tokens": 123648,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 4915,
+      "context_window": 0,
+      "per_turn_token": 18974,
+      "response_id": ""
+    }
+  },
+  "error": null
+}
