@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable
@@ -1022,6 +1023,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         message: Message = llm_response.message
         response_type = classify_response(message)
+        if response_type is not LLMResponseType.TOOL_CALLS:
+            # Resolve outside the event loop and state lock. A lookup may call
+            # this server, and update_secrets() may register another source while
+            # we await it. Repeat until the registry is stable under the lock.
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    message = await asyncio.to_thread(
+                        self._mask_secrets, message, conversation
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
@@ -1030,7 +1043,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    stream,
+                    mask_secrets=False,
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1041,6 +1060,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_event,
                     stream,
                     response_type=response_type,
+                    mask_secrets=False,
                 )
 
     def _requires_user_confirmation(
