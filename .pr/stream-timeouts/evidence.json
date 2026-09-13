@@ -115,5 +115,18 @@
     "openai": "2.33.0",
     "pydantic": "2.12.5",
     "uvicorn": "0.37.0"
+  },
+  "browser_observation_limits": {
+    "first_sample_showing_error_ms_after_send": 12552,
+    "backend_timeout_seconds_after_provider_receipt": 2.939,
+    "timing_sources": "Provider receive timestamp and persisted ConversationErrorEvent; UI time from browser observation sample.",
+    "unrelated_404_requests": [
+      "GET /api/automation/v1?limit=50&offset=0",
+      "GET /api/automation/health",
+      "POST /api/automation/v1/telemetry/consent"
+    ],
+    "automation_service_in_comparison": false,
+    "selected_gif_frame_with_toast": "006-stream-3.png",
+    "gif_cadence_seconds_per_selected_screenshot": 2
   }
 }

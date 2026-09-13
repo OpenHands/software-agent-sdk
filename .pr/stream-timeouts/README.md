@@ -6,6 +6,10 @@
 
 With an actual **3-second timeout and one attempt**, the base continued Running **11.233 seconds after provider start**, despite receiving a chunk every 250 ms. The PR head emitted `LLM hard timeout after 3 seconds` **2.939 seconds after the provider received its request** (the SDK timer begins earlier). After making the fixture healthy, another message in that same conversation produced `EVIDENCE_RECOVERED` and a persisted `finished` state.
 
+**Backend timing versus browser display:** 2.939 seconds measures provider receipt to the persisted SDK `LLMTimeoutError`, not the screen-update latency. The first sampled Canvas frame showing Error is 12.552 seconds after Send; earlier frames still show Running while the UI catches up. The GIF is condensed to two seconds per selected screenshot and does not measure real-time latency.
+
+**Unrelated 404 toast:** this isolated comparison runs Canvas, Agent Server and the provider fixture, without an Automation service. Background `/api/automation/v1`, health and telemetry requests return 404 in both variants; one selected frame retains that toast. It is not the timeout result. The intentional failure is the conversation's explicit `LLM hard timeout after 3 seconds` message and persisted `LLMTimeoutError`, followed by the same conversation finishing after provider recovery.
+
 A second head-only conversation used timeout=30 and stream_idle_timeout=2. One chunk followed by silence produced `LLM stream idle timeout after 2 seconds` in Canvas after **2.018 seconds**. The continuous-chunk comparison distinguishes the new hard timer from the HTTP library's existing read timeout.
 
 After SDK: `ba6c21735e44c28d476563e74ea8765d22c666a1`.
