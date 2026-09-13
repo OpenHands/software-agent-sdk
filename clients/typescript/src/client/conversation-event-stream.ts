@@ -4,6 +4,8 @@ export interface ConversationEventStreamOptions {
   url: string;
   queryParams?: Record<string, string | boolean>;
   sessionApiKey?: string | null;
+  /** Optional WebSocket constructor adapter for environments without the native API. */
+  createWebSocket?: (url: string) => WebSocket;
   onOpen?: (event: Event) => void;
   onClose?: (event: CloseEvent) => void;
   onMessage?: (event: MessageEvent) => void;
@@ -117,7 +119,9 @@ export class ConversationEventStream {
       if (url.username || url.password || url.searchParams.has('session_api_key')) {
         throw new Error('Use sessionApiKey for first-frame authentication, not URL credentials');
       }
-      const socket = new WebSocket(url.toString());
+      const socket = this.options.createWebSocket
+        ? this.options.createWebSocket(url.toString())
+        : new WebSocket(url.toString());
       this.socket = socket;
       this.handshakeTimer = setTimeout(() => {
         if (this.socket === socket && socket.readyState === 0) socket.close();
