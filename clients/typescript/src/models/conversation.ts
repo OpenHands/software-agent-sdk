@@ -24,11 +24,7 @@ export enum ConversationSortOrder {
 }
 
 export type ConversationRuntimeStatus =
-  | 'available'
-  | 'starting'
-  | 'missing'
-  | 'ownership_lost'
-  | 'error';
+  'available' | 'starting' | 'missing' | 'ownership_lost' | 'error';
 
 export interface ConversationRuntimeError {
   code: string;
