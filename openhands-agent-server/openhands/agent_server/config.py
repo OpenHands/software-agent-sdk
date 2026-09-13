@@ -364,10 +364,6 @@ class Config(BaseModel):
         default=None,
         description="Optional Docker network for conversation containers.",
     )
-    conversation_container_volumes: list[str] = Field(
-        default_factory=list,
-        description="Additional volume mounts for conversation containers.",
-    )
     conversation_container_forward_env: list[Literal["DEBUG"]] = Field(
         default_factory=lambda: [
             "DEBUG",

@@ -912,7 +912,6 @@ class ConversationService:
             bindings[CODEX_AUTH_SECRET_NAME] = broker.credential_binding(
                 CODEX_AUTH_SECRET_NAME
             )
-            return bindings
         if (
             CODEX_AUTH_SECRET_NAME not in bindings
             and self._is_codex_agent(agent)

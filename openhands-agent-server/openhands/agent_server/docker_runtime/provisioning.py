@@ -64,10 +64,6 @@ class RuntimeProvisioningStore:
         persistence = _get_persistence_dir(config).resolve()
         self.control_root = persistence / "runtime-control"
         self.data_root = persistence / "runtime-data"
-        if config.conversation_container_volumes:
-            raise ValueError(
-                "Custom mounts are unsupported in least-privilege Docker runtimes"
-            )
         if self.control_root.is_symlink() or self.data_root.is_symlink():
             raise ValueError("Runtime storage roots must not be symlinks")
         self.control_root.mkdir(parents=True, mode=0o700, exist_ok=True)

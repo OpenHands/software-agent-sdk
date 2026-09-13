@@ -328,6 +328,8 @@ async def docker_delete_conversation(
     except httpx.HTTPError as exc:
         logger.warning("Inner DELETE failed for %s: %s", conversation_id, exc)
     finally:
+        # A failed stop retains ownership and files for retry while the container
+        # may still be running; deleting them would strand an active runtime.
         await registry.stop(conversation_id)
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
@@ -615,23 +617,10 @@ async def docker_events_websocket(
     # Strip the auth query param before forwarding upstream — the outer's
     # session key must never leak into the inner container's request log.
     upstream_path = f"/sockets/events/{conversation_id}"
-    forwarded_query = _strip_auth_query(websocket.url.query)
+    forwarded_query = strip_auth_query("?" + websocket.url.query).lstrip("?")
     if forwarded_query:
         upstream_path = f"{upstream_path}?{forwarded_query}"
     await bridge_websocket(websocket, workspace, upstream_path=upstream_path)
-
-
-def _strip_auth_query(query: str) -> str:
-    if not query:
-        return ""
-    from urllib.parse import parse_qsl, urlencode
-
-    keep = [
-        (k, v)
-        for k, v in parse_qsl(query, keep_blank_values=True)
-        if k != "session_api_key"
-    ]
-    return urlencode(keep)
 
 
 # ---------------------------------------------------------------------------

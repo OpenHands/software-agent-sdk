@@ -329,7 +329,7 @@ class DockerConversationRegistry:
         host_workspace_dir = self.workspace_dir(conversation_id)
         host_workspace_dir.mkdir(parents=True, exist_ok=True)
 
-        volumes = list(cfg.conversation_container_volumes) + [
+        volumes = [
             f"{host_cid_dir}:{container_cid_dir}",
             f"{host_persist_dir}:{_CONTAINER_PERSIST_DIR}",
             f"{host_workspace_dir}:{_CONTAINER_WORKSPACE_DIR}",

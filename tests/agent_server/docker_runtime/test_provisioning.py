@@ -1,4 +1,3 @@
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -56,22 +55,6 @@ def test_legacy_runtime_is_rejected_without_modifying_persisted_files(
     with pytest.raises(ValueError, match="legacy"):
         store.create(cid)
     assert state.read_text() == "legacy state"
-
-
-@pytest.mark.parametrize("source", ["/", "global", "conversations", "workspaces"])
-def test_runtime_rejects_mounts_exposing_control_or_other_conversations(
-    tmp_path, source, monkeypatch
-):
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "global"))
-    path = Path("/") if source == "/" else tmp_path / source
-    config = Config(
-        conversations_path=tmp_path / "conversations",
-        workspace_path=tmp_path / "workspaces",
-        secret_key=SecretStr("outer"),
-        conversation_container_volumes=[f"{path}:/exposed"],
-    )
-    with pytest.raises(ValueError, match="mount"):
-        RuntimeProvisioningStore(config)
 
 
 def test_default_workspace_mount_source_is_absolute(tmp_path, monkeypatch):

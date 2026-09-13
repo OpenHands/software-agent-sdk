@@ -334,7 +334,10 @@ def test_subpath_returns_404_when_no_container(docker_app):
     assert resp.status_code == 404
 
 
-def test_delete_proxies_then_stops_container_and_removes_host_state(docker_app):
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_delete_preserves_files_until_container_stops(
+    docker_app, monkeypatch, stop_fails
+):
     client, app = docker_app
     create = client.post(
         "/api/conversations",
@@ -352,6 +355,20 @@ def test_delete_proxies_then_stops_container_and_removes_host_state(docker_app):
     workspace_dir = app.state.docker_registry.workspace_dir(cid)
     workspace_dir.mkdir(parents=True)
     (workspace_dir / "marker.txt").write_text("nested")
+
+    if stop_fails:
+
+        async def fail_stop(cid):
+            raise RuntimeError("stop failed")
+
+        monkeypatch.setattr(app.state.docker_registry, "stop", fail_stop)
+        with pytest.raises(RuntimeError, match="stop failed"):
+            client.delete(f"/api/conversations/{cid}")
+        assert app.state.docker_registry.get(cid) is not None
+        assert app.state.docker_registry.provisioning.manifest_path(cid).exists()
+        assert conversation_dir.exists() and workspace_dir.exists()
+        conversation_dir.chmod(0o700)
+        return
 
     delete = client.delete(f"/api/conversations/{cid}")
     assert delete.status_code == 200
@@ -621,18 +638,30 @@ def test_websocket_rejects_missing_first_message_auth(docker_app_with_auth):
         assert exc_info.value.code == 4001
 
 
-def test_websocket_accepts_with_valid_outer_key(docker_app_with_auth):
+def test_websocket_accepts_with_valid_outer_key(docker_app_with_auth, monkeypatch):
     """The correct outer session key must bridge to the inner server."""
     client, app, outer_key = docker_app_with_auth
     cid = uuid4()
     app.state.docker_registry.preregister(cid)
 
+    from openhands.agent_server.docker_runtime import routers
+
+    paths = []
+    bridge = routers.bridge_websocket
+
+    async def capture(*args, **kwargs):
+        paths.append(kwargs["upstream_path"])
+        return await bridge(*args, **kwargs)
+
+    monkeypatch.setattr(routers, "bridge_websocket", capture)
+
     with client.websocket_connect(
-        f"/sockets/events/{cid}?session_api_key={outer_key}",
+        f"/sockets/events/{cid}?session_api_key={outer_key}&X-Session-Api-Key=hidden&authorization=hidden&keep=value",
     ) as ws:
         assert ws.receive_text() == f"hello {cid}"
         ws.send_text("ping")
         assert ws.receive_text() == "echo:ping"
+    assert paths == [f"/sockets/events/{cid}?keep=value"]
 
 
 # ---------------------------------------------------------------------------
