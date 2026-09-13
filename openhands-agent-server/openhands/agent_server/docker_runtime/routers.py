@@ -182,8 +182,24 @@ async def _start_prepared_conversation(
     conversation_id: UUID,
     include_skills: bool,
 ) -> JSONResponse:
+    existing_state = (
+        registry.conversation_dir(conversation_id) / "base_state.json"
+    ).exists()
+    launched_profile = None
+    if existing_state:
+        try:
+            launched_profile = registry.provisioning.load(
+                conversation_id
+            ).launched_agent_profile
+        except ValueError as exc:
+            raise HTTPException(
+                409,
+                "Legacy runtime cannot be resumed; create a new isolated conversation",
+            ) from exc
     try:
-        resolved, launched = await materialize_start(body, registry.config)
+        resolved, launched = await materialize_start(
+            body, registry.config, launched_profile
+        )
     except ValueError as exc:
         raise HTTPException(
             422, "Invalid runtime configuration or unsupported secret reference"
@@ -195,9 +211,6 @@ async def _start_prepared_conversation(
             409, "Legacy runtime cannot be resumed; create a new isolated conversation"
         ) from exc
     original_identity = identity
-    existing_state = (
-        registry.conversation_dir(conversation_id) / "base_state.json"
-    ).exists()
     identity = identity.model_copy(
         update={
             "grants": grants_for_agent(resolved.agent, launched),

@@ -129,7 +129,9 @@ def grants_for_agent(
 
 
 async def materialize_start(
-    body: dict[str, Any], config: Config
+    body: dict[str, Any],
+    config: Config,
+    launched_profile: LaunchedAgentProfile | None = None,
 ) -> tuple[StartConversationRequest, LaunchedAgentProfile | None]:
     context = {"cipher": config.cipher} if body.get("secrets_encrypted") else None
     if body.get("agent_settings") is not None:
@@ -147,6 +149,12 @@ async def materialize_start(
             mcp_config,
             acp_skill_sourcing="openhands_managed",
         )
+        if launched_profile is not None:
+            allowed_secrets = (
+                None
+                if launched_profile.secret_refs is None
+                else set(launched_profile.secret_refs)
+            )
         selected = await asyncio.to_thread(
             select_profile_secrets,
             request.secrets,
@@ -155,6 +163,17 @@ async def materialize_start(
         )
         request = request.model_copy(
             update={"agent": agent, "agent_profile_id": None, "secrets": selected}
+        )
+    if launched_profile is not None:
+        launched = launched_profile
+        request = request.model_copy(
+            update={
+                "secrets": {
+                    name: value
+                    for name, value in request.secrets.items()
+                    if launched_profile.allows_secret(name)
+                }
+            }
         )
     if (
         settings is not None
@@ -199,6 +218,17 @@ async def mediate_mutation(
         secrets = UpdateSecretsRequest.model_validate(
             body, context={"cipher": config.cipher}
         )
+        profile = identity.launched_agent_profile
+        if profile is not None:
+            secrets = secrets.model_copy(
+                update={
+                    "secrets": {
+                        name: value
+                        for name, value in secrets.secrets.items()
+                        if profile.allows_secret(name)
+                    }
+                }
+            )
         resolved = await asyncio.to_thread(_materialize, secrets, config)
         return (
             tail,

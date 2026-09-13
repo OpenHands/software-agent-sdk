@@ -231,6 +231,17 @@ async def test_profile_secret_scope_precedes_docker_lookup(
     assert isinstance(resolved.agent.llm.api_key, SecretStr)
     assert resolved.agent.llm.api_key.get_secret_value() == "model-channel-key"
     assert resolved.agent_profile_id is None
+    get_agent_profile_store().save(profile.model_copy(update={"secret_refs": None}))
+    looked_up.clear()
+    resumed, resumed_profile = await mediation.materialize_start(
+        request.model_dump(mode="json", exclude_none=True), config, launched
+    )
+    assert resumed_profile == launched
+    assert set(resumed.secrets) == expected
+    assert set(looked_up) == expected
+    assert isinstance(resumed.agent, Agent)
+    assert isinstance(resumed.agent.llm.api_key, SecretStr)
+    assert resumed.agent.llm.api_key.get_secret_value() == "model-channel-key"
     identity = RuntimeProvisioningStore(config).create(uuid4())
     wire = serialize_for_runtime(resolved, identity)
     assert "allowed-canary" not in str(wire)
@@ -304,3 +315,46 @@ async def test_inner_runtime_only_attaches_profile_allowed_broker_binding(
     )
     expected = {"CODEX_AUTH_JSON"} if allowed != [] else set()
     assert set(bindings) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [None, [], ["ALLOWED"]])
+async def test_secret_mutation_filters_before_lookup(tmp_path, monkeypatch, allowed):
+    from openhands.agent_server.docker_runtime.mediation import mediate_mutation
+    from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
+
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "global"))
+    config = Config(secret_key=SecretStr("outer-encryption"))
+    store = get_secrets_store(config)
+    store.set_secret("ALLOWED", "allowed-canary")
+    store.set_secret("UNRELATED", "unrelated-canary")
+    looked_up = []
+    original = store.get_secret
+
+    def get_secret(name):
+        looked_up.append(name)
+        return original(name)
+
+    monkeypatch.setattr(store, "get_secret", get_secret)
+    identity = (
+        RuntimeProvisioningStore(config)
+        .create(uuid4())
+        .model_copy(
+            update={
+                "launched_agent_profile": LaunchedAgentProfile(
+                    agent_profile_id=uuid4(), revision=1, secret_refs=allowed
+                )
+            }
+        )
+    )
+    body = {
+        "secrets": {
+            name: LookupSecret(url=f"http://127.0.0.1:8000/api/settings/secrets/{name}")
+            for name in ["ALLOWED", "UNRELATED"]
+        }
+    }
+    _, forwarded, grants = await mediate_mutation("secrets", body, config, identity)
+    expected = {"ALLOWED", "UNRELATED"} if allowed is None else set(allowed)
+    assert set(looked_up) == expected
+    assert set(forwarded["secrets"]) == expected
+    assert grants is None
