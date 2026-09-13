@@ -109,6 +109,12 @@ class AgentProfileDiagnostics(BaseModel):
     disabled_skills: list[str] = Field(default_factory=list)
     resolved_skills: list[str] = Field(default_factory=list)
 
+    # Secret scope (both variants). ``None`` = every secret the conversation is
+    # started with; a list = only those names, with nothing added back.
+    # No dangling report: this is an
+    # allow-list over what a launch supplies, so an unmatched name is a no-op.
+    secret_refs: list[str] | None = None
+
     # ACP provider credential channels the editor/materialize checks (ACP only).
     # These are NOT jointly required: authentication needs the API key *or* one
     # of the file-content credentials, and the base URL is optional proxy
@@ -374,6 +380,7 @@ def resolve_agent_profile_dry_run(
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved,
         dangling_mcp_server_refs=dangling,
+        secret_refs=profile.secret_refs,
     )
     if dangling:
         diagnostics.errors.append(

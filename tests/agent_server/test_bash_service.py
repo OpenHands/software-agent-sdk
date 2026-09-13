@@ -310,3 +310,37 @@ async def test_run_retention_cleanup_loop_purges_old_events(tmp_path: Path):
     assert len(service._get_event_files_by_pattern("*")) == 0, (
         "Old event file should have been purged by the retention loop"
     )
+
+
+@pytest.mark.asyncio
+async def test_scoped_bash_injects_registry_and_masks_split_output(tmp_path):
+    import shlex
+    import sys
+
+    from openhands.agent_server.models import ExecuteBashRequest
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
+
+    registry = SecretRegistry()
+    registry.update_secrets({"SELECTED_TOKEN": "selected-secret-value"})
+    script = (
+        "import os,sys,time; "
+        "value=os.environ['SELECTED_TOKEN']; "
+        "assert 'UNRELATED_TOKEN' not in os.environ; "
+        "sys.stdout.write(value[:8]); sys.stdout.flush(); time.sleep(0.1); "
+        "sys.stdout.write(value[8:]); sys.stdout.flush(); "
+        "sys.stderr.write(value)"
+    )
+    async with BashEventService(
+        bash_events_dir=tmp_path, secret_registry=registry
+    ) as service:
+        command, task = await service.start_bash_command(
+            ExecuteBashRequest(command=shlex.join([sys.executable, "-c", script]))
+        )
+        await task
+        page = await service.search_bash_events(command_id__eq=command.id)
+        outputs = [event for event in page.items if isinstance(event, BashOutput)]
+        assert outputs[-1].exit_code == 0
+        assert "".join(event.stdout or "" for event in outputs) == "<secret-hidden>"
+        assert "".join(event.stderr or "" for event in outputs) == "<secret-hidden>"
+        for path in tmp_path.iterdir():
+            assert "selected-secret-value" not in path.read_text()

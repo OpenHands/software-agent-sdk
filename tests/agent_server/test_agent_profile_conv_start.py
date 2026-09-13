@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -44,6 +44,7 @@ from openhands.sdk.profiles.resolver import (
     DanglingMcpServerRef,
     ProfileNotFound,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from openhands.sdk.workspace import LocalWorkspace
@@ -208,7 +209,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -250,7 +251,7 @@ class TestResolveAgentFromProfile:
             store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -377,7 +378,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -408,7 +409,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -440,7 +441,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -472,7 +473,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -553,7 +554,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = acp_agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -750,7 +751,7 @@ class TestConversationServiceStartFromProfile:
 
         with patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(agent, launched_agent_profile),
+            return_value=(agent, launched_agent_profile, None),
         ):
             service = ConversationService(conversations_dir=tmp_path)
             service._event_services = {}
@@ -1194,3 +1195,146 @@ class TestLaunchedAgentProfileRoundTrip:
         assert reloaded.launched_agent_profile is not None
         assert reloaded.launched_agent_profile.agent_profile_id == profile_id
         assert reloaded.launched_agent_profile.revision == 5
+
+
+class TestProfileSecretScope:
+    """``secret_refs`` narrows a launch's secrets, enforced server-side (#17236)."""
+
+    def _resolve(self, profile):
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]),
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=False,
+            ),
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = _make_agent()
+            MockResolve.return_value = mock_config
+            _, _, allowed = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}
+            )
+        return allowed
+
+    def test_an_unscoped_profile_reports_no_restriction(self):
+        assert self._resolve(_make_openhands_profile()) is None
+
+    def test_a_scoped_profile_reports_its_allow_list(self):
+        profile = _make_openhands_profile()
+        profile = profile.model_copy(update={"secret_refs": ["GITHUB_TOKEN"]})
+        assert self._resolve(profile) == {"GITHUB_TOKEN"}
+
+    def test_a_scoped_acp_profile_gets_no_implicit_provider_credentials(self):
+        # Strict: an ACP profile must list its own credential to receive it.
+        profile = _make_acp_profile().model_copy(update={"secret_refs": []})
+        assert self._resolve(profile) == set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("secret_refs", "supply_selected", "expected"),
+        [
+            (None, True, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            (None, False, {"DATADOG_API_KEY"}),
+            ([], True, set()),
+            (["GITHUB_TOKEN"], True, {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN"], False, {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN", "MISSING"], True, {"GITHUB_TOKEN"}),
+            (["MISSING"], True, set()),
+        ],
+    )
+    async def test_start_conversation_drops_secrets_the_profile_disallows(
+        self, tmp_path, secret_refs, supply_selected, expected
+    ):
+        """The filter runs on the request, so a client cannot widen the scope."""
+        profile = _make_openhands_profile().model_copy(
+            update={"secret_refs": secret_refs}
+        )
+        captured: dict[str, Any] = {}
+
+        request = StartConversationRequest(
+            agent_profile_id=profile.id,
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(value=SecretStr("gh")),
+                "DATADOG_API_KEY": StaticSecret(value=SecretStr("dd")),
+            },
+        )
+
+        if not supply_selected:
+            request.secrets.pop("GITHUB_TOKEN")
+
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as service:
+            with (
+                patch(_STORE_PATH) as MockStore,
+                patch(_LLM_STORE_PATH),
+                patch(
+                    "openhands.agent_server.persistence.get_secrets_store"
+                ) as MockSecretsStore,
+                patch(_RESOLVE_PATH) as MockResolve,
+                patch(_DISCOVER_PATH, return_value=[]),
+                patch(
+                    "openhands.agent_server.conversation_service.is_tool_usable",
+                    return_value=False,
+                ),
+                patch.object(
+                    service, "_start_event_service", new_callable=AsyncMock
+                ) as mock_ses,
+            ):
+                MockSecretsStore.return_value.get_secret.side_effect = {
+                    "GITHUB_TOKEN": "saved-gh"
+                }.get
+                store_inst = MockStore.return_value
+                store_inst.name_for_id.return_value = profile.name
+                store_inst.load.return_value = profile
+                agent = _make_agent()
+                mock_config = MagicMock()
+                mock_config.create_agent.return_value = agent
+                MockResolve.return_value = mock_config
+
+                mock_es = AsyncMock(spec=EventService)
+                mock_es.get_state.return_value = ConversationState(
+                    id=uuid4(),
+                    agent=agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                )
+                mock_es.stored = MagicMock(
+                    launched_agent_profile=None,
+                    client_tools=[],
+                    title=None,
+                    metrics=None,
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    forked_from_conversation_id=None,
+                    forked_from_event_id=None,
+                    parent_conversation_id=None,
+                )
+
+                async def capture(stored, **kwargs):
+                    captured["secrets"] = dict(stored.secrets)
+                    return mock_es
+
+                mock_ses.side_effect = capture
+
+                await service.start_conversation(request)
+
+        assert set(captured["secrets"]) == expected
+        if "GITHUB_TOKEN" in expected:
+            value = "gh" if secret_refs is None else "saved-gh"
+            assert captured["secrets"]["GITHUB_TOKEN"].get_value() == value
+        assert {
+            call.args[0]
+            for call in MockSecretsStore.return_value.get_secret.call_args_list
+        } == set(secret_refs or [])
