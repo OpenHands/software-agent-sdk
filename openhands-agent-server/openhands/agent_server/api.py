@@ -723,6 +723,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     configure_runtime_credentials()
     app = _create_fastapi_instance(config)
     app.state.config = config
+    app.state.docker_registry = None
 
     _add_api_routes(app)
     _setup_static_files(app, config)

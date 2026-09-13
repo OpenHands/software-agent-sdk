@@ -49,7 +49,7 @@ logger = get_logger(__name__)
 
 
 def get_registry(request: Request) -> DockerConversationRegistry:
-    registry = getattr(request.app.state, "docker_registry", None)
+    registry = request.app.state.docker_registry
     if registry is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -59,7 +59,7 @@ def get_registry(request: Request) -> DockerConversationRegistry:
 
 
 def _ws_get_registry(websocket: WebSocket) -> DockerConversationRegistry | None:
-    return getattr(websocket.app.state, "docker_registry", None)
+    return websocket.app.state.docker_registry
 
 
 async def _workspace_or_404(
