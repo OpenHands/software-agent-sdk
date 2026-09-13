@@ -7,12 +7,12 @@ import threading
 import time
 import uuid
 from typing import Any
-from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
+from openhands.sdk.utils.health import wait_for_server_health
 from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
@@ -306,24 +306,9 @@ class DockerWorkspace(RemoteWorkspace):
                 pass
 
     def _wait_for_health(self, *, timeout: float) -> None:
-        """Wait for the Docker container to become healthy."""
-        start = time.time()
-        # We can construct the health URL based on self.host if available,
-        # or fallback to localhost
-        base_url = self.host.rstrip("/")
-        health_url = f"{base_url}/health"
-
-        while time.time() - start < timeout:
-            try:
-                with urlopen(health_url, timeout=1.0) as resp:
-                    if 200 <= getattr(resp, "status", 200) < 300:
-                        return
-            except Exception:
-                pass
-
-            # Check if container is still running
+        def check_running() -> None:
             if self._container_id:
-                ps = execute_command(
+                status = execute_command(
                     [
                         "docker",
                         "inspect",
@@ -332,15 +317,14 @@ class DockerWorkspace(RemoteWorkspace):
                         self._container_id,
                     ]
                 )
-                if ps.stdout.strip() != "true":
+                if status.stdout.strip() != "true":
                     logs = execute_command(["docker", "logs", self._container_id])
-                    msg = (
+                    raise RuntimeError(
                         "Container stopped unexpectedly. Logs:\n"
                         f"{logs.stdout}\n{logs.stderr}"
                     )
-                    raise RuntimeError(msg)
-            time.sleep(1)
-        raise RuntimeError("Container failed to become healthy in time")
+
+        wait_for_server_health(self.host, timeout=timeout, check_running=check_running)
 
     def __enter__(self) -> "DockerWorkspace":
         """Context manager entry - returns the workspace itself."""

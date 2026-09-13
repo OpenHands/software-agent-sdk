@@ -1,11 +1,8 @@
 """Per-conversation Docker container registry.
 
-The outer agent-server and every sub-container share the same on-disk
-persistence directories (``conversations_path`` and the sibling
-``.openhands`` settings dir) via bind-mounts. Each sub-container only
-sees its own conversation subdirectory under the shared
-``conversations_path``, so leases never collide. The outer never claims
-a lease — it reads metadata off disk and proxies all mutations.
+Only a conversation's own data and provisioned settings are bind-mounted into
+its container. The outer server owns container lifecycle, reads metadata off
+disk, and proxies mutations without claiming the inner conversation's lease.
 """
 
 from __future__ import annotations
@@ -14,10 +11,8 @@ import asyncio
 import hashlib
 import os
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.request import urlopen
 from uuid import UUID, uuid4
 
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
@@ -33,6 +28,7 @@ from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.sdk.llm.auth.credentials import CredentialStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command, sanitized_env
+from openhands.sdk.utils.health import wait_for_server_health
 
 
 logger = get_logger(__name__)
@@ -495,19 +491,9 @@ class DockerConversationRegistry:
     def _wait_for_health(
         self, container: RunningConversationContainer, *, timeout: float
     ) -> None:
-        start = time.time()
-        health_url = f"{container.host}/health"
-
-        while time.time() - start < timeout:
-            try:
-                with urlopen(health_url, timeout=1.0) as resp:
-                    if 200 <= getattr(resp, "status", 200) < 300:
-                        return
-            except Exception:
-                pass
-
+        def check_running() -> None:
             if container.container_id is not None:
-                ps = execute_command(
+                status = execute_command(
                     [
                         "docker",
                         "inspect",
@@ -516,8 +502,9 @@ class DockerConversationRegistry:
                         container.container_id,
                     ]
                 )
-                if ps.stdout.strip() != "true":
-                    msg = "Conversation container stopped unexpectedly"
-                    raise RuntimeError(msg)
-            time.sleep(1)
-        raise RuntimeError("Conversation container failed to become healthy in time")
+                if status.stdout.strip() != "true":
+                    raise RuntimeError("Conversation container stopped unexpectedly")
+
+        wait_for_server_health(
+            container.host, timeout=timeout, check_running=check_running
+        )
