@@ -72,6 +72,15 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
     assert response.json()["usable_tools"] == ["terminal", "file_editor"]
 
 
+def test_server_info_reports_execution_runtime():
+    app = create_app(Config(static_files_path=None, execution_runtime="docker"))
+
+    response = TestClient(app).get("/server_info")
+
+    assert response.status_code == 200
+    assert response.json()["execution_runtime"] == "docker"
+
+
 def test_server_info_reports_credential_binding_probe(client):
     response = client.get("/server_info")
 

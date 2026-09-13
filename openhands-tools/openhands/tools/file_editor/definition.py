@@ -18,6 +18,7 @@ from openhands.sdk.tool import (
     Observation,
     ToolAnnotations,
     ToolDefinition,
+    ToolExecutor,
     register_tool,
 )
 from openhands.tools.file_editor.utils.diff import visualize_diff
@@ -220,8 +221,11 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         # Import here to avoid circular imports
         from openhands.tools.file_editor.impl import FileEditorExecutor
 
-        # Initialize the executor
-        executor = FileEditorExecutor(workspace_root=conv_state.workspace.working_dir)
+        executor = conv_state.workspace.create_tool_executor(cls.name)
+        if not isinstance(executor, ToolExecutor):
+            executor = FileEditorExecutor(
+                workspace_root=conv_state.workspace.working_dir
+            )
 
         # Build the tool description with conditional image viewing support
         # Split TOOL_DESCRIPTION to insert image viewing line after the second bullet

@@ -315,11 +315,15 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         from openhands.tools.terminal.impl import TerminalExecutor
 
         working_dir = conv_state.workspace.working_dir
-        if not os.path.isdir(working_dir):
-            raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
-
-        # Initialize the executor
         if executor is None:
+            workspace_executor = conv_state.workspace.create_tool_executor(cls.name)
+            if isinstance(workspace_executor, ToolExecutor):
+                executor = workspace_executor
+        if executor is None:
+            if not os.path.isdir(working_dir):
+                raise ValueError(
+                    f"working_dir '{working_dir}' is not a valid directory"
+                )
             executor = TerminalExecutor(
                 working_dir=working_dir,
                 username=username,

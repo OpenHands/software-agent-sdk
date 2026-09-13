@@ -773,28 +773,6 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         return response
 
-    def register_conversation(self, conversation_id: str) -> None:
-        """Register a conversation ID with this workspace.
-
-        Called by RemoteConversation after creation to associate the conversation
-        with the workspace. The conversation ID is included in the completion
-        callback sent to the automation service.
-
-        Args:
-            conversation_id: The conversation ID to register
-        """
-        self._conversation_id = conversation_id
-        logger.debug(f"Registered conversation: {conversation_id}")
-
-    @property
-    def conversation_id(self) -> str | None:
-        """Get the registered conversation ID.
-
-        Returns:
-            The conversation ID if one has been registered, None otherwise.
-        """
-        return self._conversation_id
-
     def __del__(self) -> None:
         self.cleanup()
 
@@ -847,6 +825,26 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 logger.info(f"Completion callback sent ({status}): {resp.status_code}")
         except Exception as e:
             logger.warning(f"Completion callback failed: {e}")
+
+    # --- Conversation Registration Methods ---
+    # These methods delegate to BaseWorkspace but are explicitly defined here
+    # to maintain API compatibility (griffe detects method removal from subclass
+    # as a breaking change even when methods are inherited).
+
+    def register_conversation(self, conversation_id: str) -> None:
+        """Register a conversation ID with this workspace.
+
+        See BaseWorkspace.register_conversation for full documentation.
+        """
+        return super().register_conversation(conversation_id)
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Get the registered conversation ID.
+
+        See BaseWorkspace.conversation_id for full documentation.
+        """
+        return super().conversation_id
 
     # --- Repository Cloning Methods ---
 

@@ -404,6 +404,40 @@ class Config(BaseModel):
             "they are deleted or the server restarts."
         ),
     )
+    execution_only: bool = Field(
+        default=False,
+        description=(
+            "Expose only the authenticated tool-execution API. This mode does not "
+            "initialize conversations, LLMs, profiles, or persistence services."
+        ),
+    )
+    execution_working_dir: Path = Field(
+        default=Path("/workspace"),
+        description="Working directory exposed to execution-only tool handlers.",
+    )
+    execution_runtime: Literal["local", "docker"] = Field(
+        default="local",
+        description=(
+            "Select the only workspace variety this server can open: LocalWorkspace "
+            "for host execution or DockerExecutionWorkspace for one ephemeral Docker "
+            "container per conversation. Other conversation varieties are rejected. "
+            "Conversation state, LLM calls, policy, and orchestration remain in this "
+            "server process."
+        ),
+    )
+    execution_image: str = Field(
+        default="ghcr.io/openhands/agent-server:latest-python",
+        description="Agent-server image used by Docker execution workspaces.",
+    )
+    execution_platform: str = Field(
+        default="linux/amd64",
+        description="Docker platform used by execution workspace containers.",
+    )
+    execution_volumes: list[str] = Field(
+        default_factory=list,
+        description="Optional volume mounts for Docker execution workspaces.",
+    )
+
     telemetry: TelemetrySpec = Field(
         default_factory=TelemetrySpec,
         description=(

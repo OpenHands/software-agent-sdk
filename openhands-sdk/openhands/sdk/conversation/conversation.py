@@ -152,7 +152,10 @@ class Conversation:
             RemoteConversation,
         )
 
-        if isinstance(workspace, RemoteWorkspace):
+        if (
+            isinstance(workspace, RemoteWorkspace)
+            and workspace.runs_conversation_remotely
+        ):
             # For RemoteConversation, persistence_dir should not be used.
             if persistence_dir is not None:
                 raise ValueError(
