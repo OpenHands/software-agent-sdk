@@ -1240,13 +1240,24 @@ class TestProfileSecretScope:
         assert self._resolve(profile) == set()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("supply_selected", [False, True])
+    @pytest.mark.parametrize(
+        ("secret_refs", "supply_selected", "expected"),
+        [
+            (None, True, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            (None, False, {"DATADOG_API_KEY"}),
+            ([], True, set()),
+            (["GITHUB_TOKEN"], True, {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN"], False, {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN", "MISSING"], True, {"GITHUB_TOKEN"}),
+            (["MISSING"], True, set()),
+        ],
+    )
     async def test_start_conversation_drops_secrets_the_profile_disallows(
-        self, tmp_path, supply_selected
+        self, tmp_path, secret_refs, supply_selected, expected
     ):
         """The filter runs on the request, so a client cannot widen the scope."""
         profile = _make_openhands_profile().model_copy(
-            update={"secret_refs": ["GITHUB_TOKEN"]}
+            update={"secret_refs": secret_refs}
         )
         captured: dict[str, Any] = {}
 
@@ -1281,7 +1292,9 @@ class TestProfileSecretScope:
                     service, "_start_event_service", new_callable=AsyncMock
                 ) as mock_ses,
             ):
-                MockSecretsStore.return_value.get_secret.return_value = "saved-gh"
+                MockSecretsStore.return_value.get_secret.side_effect = {
+                    "GITHUB_TOKEN": "saved-gh"
+                }.get
                 store_inst = MockStore.return_value
                 store_inst.name_for_id.return_value = profile.name
                 store_inst.load.return_value = profile
@@ -1317,7 +1330,11 @@ class TestProfileSecretScope:
 
                 await service.start_conversation(request)
 
-        assert set(captured["secrets"]) == {"GITHUB_TOKEN"}
-
-        assert captured["secrets"]["GITHUB_TOKEN"].get_value() == "saved-gh"
-        MockSecretsStore.return_value.get_secret.assert_called_once_with("GITHUB_TOKEN")
+        assert set(captured["secrets"]) == expected
+        if "GITHUB_TOKEN" in expected:
+            value = "gh" if secret_refs is None else "saved-gh"
+            assert captured["secrets"]["GITHUB_TOKEN"].get_value() == value
+        assert {
+            call.args[0]
+            for call in MockSecretsStore.return_value.get_secret.call_args_list
+        } == set(secret_refs or [])
