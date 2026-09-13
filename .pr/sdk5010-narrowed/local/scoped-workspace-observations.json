@@ -1,0 +1,19 @@
+{
+  "conversation_id": "a36b92b9-6890-4599-9993-7f1860a43996",
+  "runtime": "local",
+  "api_prefix": "/api/conversations/a36b92b9-6890-4599-9993-7f1860a43996",
+  "downloaded_fixture": {
+    "fixture": "canonical-workspace-api",
+    "verified": true
+  },
+  "git_changes": [
+    {
+      "status": "UPDATED",
+      "path": "probe.txt"
+    }
+  ],
+  "git_diff": {
+    "modified": "after",
+    "original": "before"
+  }
+}

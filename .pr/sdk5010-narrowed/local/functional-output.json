@@ -1,0 +1,12 @@
+{
+  "conversation_id": "a36b92b9-6890-4599-9993-7f1860a43996",
+  "command_id": "0cae404d4d6a4fdea262b946c5abc300",
+  "exit_code": 0,
+  "markers": [
+    "SDK_SOURCE: {\"remote_conversation_file\": \"/home/gneubig/work/factory-sdk-narrowed-live/openhands-sdk/openhands/sdk/conversation/impl/remote_conversation.py\", \"remote_conversation_sha256\": \"b905f1571ea81efc53315a296c77f8777f8b9740208077c397f1d069cb69ef8a\"}",
+    "SDK_WORKSPACE_API: byte upload and background command output verified",
+    "AGENT_FINISHED: Verified: sdk-input.json now contains the canonical-workspace-api fixture, and fixture.json was written and read back successfully with the confirmation record.",
+    "EVIDENCE_INSPECT: 60 seconds for the real Canvas file and workspace checks",
+    "EVIDENCE_BUNDLE_COMPLETED"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "conversation_id": "28ea6182-857f-419f-8228-89ffd4c8fcea",
+  "runtime": "docker",
+  "api_prefix": "/api/conversations/28ea6182-857f-419f-8228-89ffd4c8fcea",
+  "downloaded_fixture": {
+    "fixture": "canonical-workspace-api",
+    "verified": true
+  },
+  "git_changes": [
+    {
+      "status": "UPDATED",
+      "path": "probe.txt"
+    }
+  ],
+  "git_diff": {
+    "modified": "after",
+    "original": "before"
+  }
+}

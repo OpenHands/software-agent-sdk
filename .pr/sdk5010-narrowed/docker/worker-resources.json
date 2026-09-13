@@ -1,0 +1,10 @@
+[
+  {
+    "id": "580aaa4949e3",
+    "image": "sha256:3a91e63ce313fb087e2ddd29061e9606a55c2950706c13e3a6795cf266756b39",
+    "memory_bytes": 2097152000,
+    "nano_cpus": 1000000000,
+    "pids_limit": 256,
+    "conversation_id": "28ea6182-857f-419f-8228-89ffd4c8fcea"
+  }
+]
