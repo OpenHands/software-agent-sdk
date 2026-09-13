@@ -2285,6 +2285,8 @@ describe('Auxiliary API clients', () => {
     await client.respondToConfirmation('c1', { accept: true });
     await client.deleteConversation('c1');
     await client.updateConversation('c1', { title: 'New title' });
+    await client.getRuntime('c1');
+    await client.reprovisionRuntime('c1');
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
@@ -2313,6 +2315,16 @@ describe('Auxiliary API clients', () => {
       8,
       'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      9,
+      'http://example.com/api/conversations/c1/runtime',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      10,
+      'http://example.com/api/conversations/c1/runtime/reprovision',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
     );
   });
 

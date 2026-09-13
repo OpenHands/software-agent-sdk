@@ -45,6 +45,31 @@ from openhands.sdk.utils.models import (
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
+class ConversationRuntimeStatus(StrEnum):
+    """Availability of the runtime that executes a conversation."""
+
+    AVAILABLE = "available"
+    STARTING = "starting"
+    MISSING = "missing"
+    OWNERSHIP_LOST = "ownership_lost"
+    ERROR = "error"
+
+
+class ConversationRuntimeError(BaseModel):
+    """Structured details for the latest runtime lifecycle failure."""
+
+    code: str
+    message: str
+
+
+class ConversationRuntimeInfo(BaseModel):
+    """Runtime availability and recovery information for a conversation."""
+
+    runtime_status: ConversationRuntimeStatus
+    can_resume: bool
+    runtime_error: ConversationRuntimeError | None = None
+
+
 class ServerErrorEvent(Event):
     """Event emitted by the agent server when a server-level error occurs.
 
@@ -149,6 +174,18 @@ class _ConversationInfoBase(BaseModel):
     )
     execution_status: ConversationExecutionStatus = Field(
         default=ConversationExecutionStatus.IDLE
+    )
+    runtime_status: ConversationRuntimeStatus = Field(
+        default=ConversationRuntimeStatus.AVAILABLE,
+        description="Availability of the runtime that executes this conversation.",
+    )
+    can_resume: bool = Field(
+        default=True,
+        description="Whether retained state allows explicit execution resumption.",
+    )
+    runtime_error: ConversationRuntimeError | None = Field(
+        default=None,
+        description="Latest runtime lifecycle failure, if one is known.",
     )
     confirmation_policy: ConfirmationPolicyBase = Field(default=NeverConfirm())
     security_analyzer: SecurityAnalyzerBase | None = Field(
