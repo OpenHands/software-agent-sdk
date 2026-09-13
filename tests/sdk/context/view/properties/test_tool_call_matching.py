@@ -429,3 +429,15 @@ class TestToolCallMatchingPropertyManipulationIndices(TestToolCallMatchingBase):
 
         result = self.property.manipulation_indices(events)
         assert result == ManipulationIndices.complete(events)
+
+    def test_orphaned_observation_does_not_restrict_indices(self) -> None:
+        """An observation without an action does not create a protected interval."""
+        observation = create_autospec(ObservationEvent, instance=True)
+        observation.tool_call_id = "orphaned_call"
+        observation.id = "orphaned_observation"
+        message = message_event("Continue")
+        events: list[LLMConvertibleEvent] = [observation, message]
+
+        result = self.property.manipulation_indices(events)
+
+        assert result == ManipulationIndices.complete(events)
