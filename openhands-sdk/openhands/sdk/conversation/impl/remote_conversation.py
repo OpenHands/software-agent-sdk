@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, Final, SupportsIndex, overload
+from typing import TYPE_CHECKING, Final, Self, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -703,9 +703,32 @@ class RemoteConversation(BaseConversation):
     _conversation_action_base_path: str
     delete_on_close: bool = False
 
+    @classmethod
+    def attach(
+        cls,
+        workspace: RemoteWorkspace,
+        conversation_id: ConversationID,
+        *,
+        callbacks: list[ConversationCallbackType] | None = None,
+    ) -> Self:
+        """Attach to an existing conversation using its server-resolved agent.
+
+        Does not create a conversation or supply agent settings, tools, or secrets.
+        The caller owns the workspace; closing this client preserves the server's
+        conversation. Run, event delivery, and errors use the normal SDK lifecycle.
+        """
+        return cls(
+            agent=None,
+            workspace=workspace,
+            conversation_id=conversation_id,
+            callbacks=callbacks,
+            visualizer=None,
+            delete_on_close=False,
+        )
+
     def __init__(
         self,
-        agent: AgentBase,
+        agent: AgentBase | None,
         workspace: RemoteWorkspace,
         plugins: list | None = None,
         conversation_id: ConversationID | None = None,
@@ -732,7 +755,7 @@ class RemoteConversation(BaseConversation):
         """Remote conversation proxy that talks to an agent server.
 
         Args:
-            agent: Agent configuration (will be sent to the server)
+            agent: Agent configuration for creation, or None for attach-only use.
             workspace: The working directory for agent operations and tool execution.
             plugins: Optional list of plugins to load on the server. Each plugin
                     is a PluginSource specifying source, ref, and repo_path.
@@ -766,7 +789,6 @@ class RemoteConversation(BaseConversation):
                       backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize base class with span tracking
-        self.agent = agent
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
@@ -793,6 +815,8 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
+                if agent is None:
+                    resp.raise_for_status()
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
@@ -800,7 +824,9 @@ class RemoteConversation(BaseConversation):
                 agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
-                    if remote_agent.agent_kind != agent.agent_kind:
+                    if agent is None:
+                        agent = remote_agent
+                    elif remote_agent.agent_kind != agent.agent_kind:
                         raise ValueError(_agent_kind_mismatch_message(conversation_id))
                 # Capture persisted client tool specs so we can register their
                 # dynamic action types before RemoteState syncs events.
@@ -810,6 +836,10 @@ class RemoteConversation(BaseConversation):
                     )
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
+
+        if agent is None:
+            raise ValueError("An agent is required unless attaching to a conversation")
+        self.agent = agent
 
         if should_create:
             # Import here to avoid circular imports

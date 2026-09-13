@@ -171,6 +171,51 @@ class TestRemoteConversation:
         mock_client_instance.request.side_effect = custom_side_effect
         return ws_callback
 
+    @pytest.mark.parametrize("kind", ["Agent", "ACPAgent"])
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_attach_uses_server_agent_without_creating_or_changing_settings(
+        self, mock_ws_client, kind
+    ):
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+        expected = self.agent if kind == "Agent" else ACPAgent(acp_command=["test-acp"])
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value["agent"] = expected.model_dump(mode="json")
+            return response
+
+        client.request.side_effect = respond
+        conversation = RemoteConversation.attach(self.workspace, cid)
+        assert type(conversation.agent) is type(expected)
+        if kind == "Agent":
+            assert conversation.agent.llm.model == expected.llm.model
+            assert conversation.agent.tools == expected.tools
+        else:
+            assert isinstance(conversation.agent, ACPAgent)
+            assert isinstance(expected, ACPAgent)
+            assert conversation.agent.acp_command == expected.acp_command
+        assert conversation.id == cid
+        conversation.close()
+        assert all(call.args[0] == "GET" for call in client.request.call_args_list)
+        client.close.assert_not_called()  # The caller still owns the workspace.
+
+    @pytest.mark.parametrize("status", [403, 404])
+    def test_attach_never_creates_a_missing_or_inaccessible_conversation(self, status):
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        client.request.side_effect = None
+        client.request.return_value = httpx.Response(
+            status, request=httpx.Request("GET", f"{self.host}/api/conversations/{cid}")
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            RemoteConversation.attach(self.workspace, cid)
+        assert [call.args[0] for call in client.request.call_args_list] == ["GET"]
+
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
