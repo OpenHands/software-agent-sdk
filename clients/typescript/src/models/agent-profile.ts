@@ -43,6 +43,13 @@ interface AgentProfileBase {
    * `null` = all; `[]` = none; a non-null list = filter to the named keys.
    */
   mcp_server_refs: string[] | null;
+  /**
+   * Which of the user's saved secrets to expose. Names only — the values live
+   * in the secrets store. `null` = all; `[]` = none; a non-null list = filter
+   * to the named keys. Strict: nothing is added back, so an ACP profile must
+   * list its own provider credential to receive it.
+   */
+  secret_refs?: string[] | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -117,6 +124,9 @@ export interface AgentProfileDiagnostics {
   agent_kind: AgentKind;
   valid: boolean;
   errors: string[];
+
+  /** Secret scope; `null` = unrestricted. */
+  secret_refs?: string[] | null;
 
   // OpenHands LLM reference.
   llm_profile_ref: string | null;
