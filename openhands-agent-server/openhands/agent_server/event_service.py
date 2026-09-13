@@ -1715,6 +1715,13 @@ class EventService:
         """Update secrets in the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
+        profile = self.stored.launched_agent_profile
+        if profile is not None:
+            secrets = {
+                name: value
+                for name, value in secrets.items()
+                if profile.allows_secret(name)
+            }
         if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
             secrets = dict(secrets)
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)

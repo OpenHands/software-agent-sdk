@@ -1,0 +1,9 @@
+{
+  "case": "before",
+  "sdk_commit": "902d95d15a027c199d741d093ec3416b9038a7c1",
+  "canvas_commit": "9874c820a23e4026483ad9540ec9cb56194ce3ec",
+  "url": "http://127.0.0.1:9109",
+  "synthetic_only": true,
+  "deterministic_acp_fixture": true,
+  "available_kib": 8259412
+}
