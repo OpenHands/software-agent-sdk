@@ -77,6 +77,7 @@ def test_server_info_reports_credential_binding_probe(client):
 
     assert response.status_code == 200
     assert response.json()["capabilities"] == [
+        "profile_secret_scope_v1",
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",
         "credential_binding_activation_guard_v1",
@@ -96,3 +97,9 @@ def test_server_info_reports_runtime_timeout_cap(
     payload = response.json()
     assert payload["runtime_idle_timeout_seconds"] == 1200
     assert payload["max_foreground_terminal_timeout_seconds"] == 1080
+
+
+def test_server_info_advertises_profile_secret_enforcement(client):
+    response = client.get("/server_info")
+    assert response.status_code == 200
+    assert "profile_secret_scope_v1" in response.json()["capabilities"]
