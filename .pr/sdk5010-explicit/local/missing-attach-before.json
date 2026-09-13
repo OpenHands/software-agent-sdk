@@ -1,0 +1,12 @@
+{
+  "conversation_id": "bdcf3412-e54c-4189-83c0-5a8abbda6660",
+  "status": 404,
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/conversations/bdcf3412-e54c-4189-83c0-5a8abbda6660"
+    }
+  ],
+  "post_requests": 0,
+  "persisted_conversation_created": false
+}

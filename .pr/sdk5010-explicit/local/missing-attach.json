@@ -1,0 +1,12 @@
+{
+  "conversation_id": "e49e3697-f84b-4a42-97df-54aba4ace969",
+  "status": 404,
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/api/conversations/e49e3697-f84b-4a42-97df-54aba4ace969"
+    }
+  ],
+  "post_requests": 0,
+  "persisted_conversation_created": false
+}

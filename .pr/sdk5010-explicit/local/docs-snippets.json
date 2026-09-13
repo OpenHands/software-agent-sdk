@@ -1,0 +1,19 @@
+{
+  "docs_commit": "eb1fe94f6ed01504def7520ff46d54741e08979b",
+  "conversation_id": "0781c41d-38d1-406e-ab13-3f171b29e3cf",
+  "url": "http://127.0.0.1:9109/conversations/0781c41d-38d1-406e-ab13-3f171b29e3cf",
+  "exact_python_fences": [
+    1,
+    2
+  ],
+  "snippet_sha256": [
+    "4b52f98ccf20097dcf70bf57d9e58f696f10150e383d873fd5c2d26b2dfe8557",
+    "5a9c8f33a5337e7cc8de15d1028798bbcbdec27b644c6f3f478836626385956b"
+  ],
+  "model_called": false,
+  "output": {
+    "command_id": "89520298a1a946b88d1fb6b3f86d63f9",
+    "exit_code": 0,
+    "stdout": "Prepared by the dispatcher\n"
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "file": "001-local-identical-bundle-selected-profile.png",
+    "label": "local-identical-bundle-selected-profile",
+    "url": "http://127.0.0.1:9109/automations/new/custom-automation",
+    "at": "2026-09-13T21:31:56.396Z"
+  },
+  {
+    "file": "005-local-explicit-create-null-agent-failure.png",
+    "label": "local-explicit-create-null-agent-failure",
+    "url": "http://127.0.0.1:9109/automations/1db6a83d-92c6-40c4-987d-6cc76d9e7c8d",
+    "at": "2026-09-13T21:32:47.312Z"
+  },
+  {
+    "file": "010-local-functional-after-agent-actions.png",
+    "label": "local-functional-after-agent-actions",
+    "url": "http://127.0.0.1:9109/conversations/7c8aff4b-a6c0-4768-9ef8-a500d8cac7c5",
+    "at": "2026-09-13T21:37:17.359Z"
+  },
+  {
+    "file": "011-local-functional-after-scoped-file.png",
+    "label": "local-functional-after-scoped-file",
+    "url": "http://127.0.0.1:9109/conversations/7c8aff4b-a6c0-4768-9ef8-a500d8cac7c5",
+    "at": "2026-09-13T21:37:19.580Z"
+  },
+  {
+    "file": "012-local-explicit-successful.png",
+    "label": "local-explicit-successful",
+    "url": "http://127.0.0.1:9109/automations/1db6a83d-92c6-40c4-987d-6cc76d9e7c8d",
+    "at": "2026-09-13T21:37:39.740Z"
+  },
+  {
+    "file": "013-docs-explicit-create-title-upload.png",
+    "label": "docs-explicit-create-title-upload",
+    "url": "http://127.0.0.1:9109/conversations/0781c41d-38d1-406e-ab13-3f171b29e3cf",
+    "at": "2026-09-13T21:38:00.562Z"
+  },
+  {
+    "file": "014-docker-identical-bundle-selected-profile.png",
+    "label": "docker-identical-bundle-selected-profile",
+    "url": "http://127.0.0.1:9109/automations/new/custom-automation",
+    "at": "2026-09-13T21:38:53.691Z"
+  },
+  {
+    "file": "022-docker-functional-after-agent-actions.png",
+    "label": "docker-functional-after-agent-actions",
+    "url": "http://127.0.0.1:9109/conversations/4cc7f243-38f9-49b0-a07f-4d8f57dd3cc0",
+    "at": "2026-09-13T21:40:34.856Z"
+  },
+  {
+    "file": "023-docker-functional-after-scoped-file.png",
+    "label": "docker-functional-after-scoped-file",
+    "url": "http://127.0.0.1:9109/conversations/4cc7f243-38f9-49b0-a07f-4d8f57dd3cc0",
+    "at": "2026-09-13T21:40:37.120Z"
+  },
+  {
+    "file": "024-docker-explicit-successful.png",
+    "label": "docker-explicit-successful",
+    "url": "http://127.0.0.1:9109/automations/a33adf0a-7bc8-4454-b45f-ad6daaf9fbe3",
+    "at": "2026-09-13T21:41:40.619Z"
+  }
+]

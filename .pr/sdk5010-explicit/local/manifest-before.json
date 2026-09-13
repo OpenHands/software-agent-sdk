@@ -1,0 +1,22 @@
+{
+  "runtime": "local",
+  "canvas_url": "http://127.0.0.1:9109",
+  "started_at": 1789335084.3577483,
+  "available_kib": 7874148,
+  "commits": {
+    "sdk": "c43d1843e7f628681660a57eca086fb402e436a4",
+    "automation": "13edcb564120c32ee76735124d2184a0713e052c",
+    "canvas": "9874c820a23e4026483ad9540ec9cb56194ce3ec"
+  },
+  "bundle": {
+    "file": "fixture.tar.gz",
+    "entrypoint": "python3 main.py",
+    "sha256": "0a88b63fb2447fcc0822446e364b4b0d2ccb14f8eb0490b13e54d500c7dd6bf6",
+    "source_sha256": "68d68c9d6134d864f94e5411137f9c1442ffbcbf21fdc08961e1f0b27aa3df2d",
+    "purpose": "Disposable live Canvas evidence; no GitHub access"
+  },
+  "max_concurrent": 1,
+  "synthetic_automation_secrets_only": true,
+  "real_model_turn": true,
+  "worker_image": "openhands-factory:evidence-explicit-parity"
+}

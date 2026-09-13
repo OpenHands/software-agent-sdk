@@ -1,0 +1,9 @@
+{
+  "local_exit_code": 0,
+  "docker_exit_code": 0,
+  "worker_module_sha256_both": "d763995f317876b3307c6c670d7fe38c314dd1f073a8830772100127c646654e",
+  "identical_bundle": true,
+  "private_listeners_remaining": false,
+  "resource_guard_interruptions": 0,
+  "all_private_services_stopped": true
+}

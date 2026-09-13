@@ -1,0 +1,11 @@
+{
+  "sdk_integration": "c43d1843e7f628681660a57eca086fb402e436a4",
+  "source_pr_commit": "70c3afeb0d7ccc6101ef103973def1e39966df9f",
+  "run_id": "b756cc8f-c029-472d-aabc-2b6758f265ff",
+  "http_status": 500,
+  "error": "AttributeError: NoneType has no attribute pop in utils/models.py:_validate_subtype",
+  "ui_text": "Failed to get execution context",
+  "worker_started": false,
+  "real_model_started": false,
+  "same_failure_in_docs_fence_1": true
+}

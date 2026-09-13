@@ -1,0 +1,8 @@
+{
+  "id": "c27bba5834c960ee08d738f1b460f0890340e7e14b31600dadd0bdbb3a1ca909",
+  "image": "openhands-factory:evidence-explicit-parity",
+  "memory_bytes": 2097152000,
+  "nanocpus": 1000000000,
+  "pids_limit": 256,
+  "conversation_id": "4cc7f243-38f9-49b0-a07f-4d8f57dd3cc0"
+}

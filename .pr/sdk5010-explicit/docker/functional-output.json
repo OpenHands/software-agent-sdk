@@ -1,0 +1,12 @@
+{
+  "conversation_id": "4cc7f243-38f9-49b0-a07f-4d8f57dd3cc0",
+  "command_id": "f01cc7986bd64529a0db945ecf794fc3",
+  "exit_code": 0,
+  "markers": [
+    "SDK_SOURCE: {\"remote_conversation_file\": \"/agent-server/.venv/lib/python3.13/site-packages/openhands/sdk/conversation/impl/remote_conversation.py\", \"remote_conversation_sha256\": \"d763995f317876b3307c6c670d7fe38c314dd1f073a8830772100127c646654e\"}",
+    "SDK_WORKSPACE_API: byte upload and background command output verified",
+    "AGENT_FINISHED: The fixture string was confirmed as canonical-workspace-api and fixture.json was written and read back containing {\"fixture\":\"canonical-workspace-api\",\"verified\":true}.",
+    "EVIDENCE_INSPECT: 60 seconds for the real Canvas file and workspace checks",
+    "EVIDENCE_BUNDLE_COMPLETED"
+  ]
+}

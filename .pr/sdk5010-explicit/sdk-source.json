@@ -1,0 +1,10 @@
+{
+  "commit": "bd2c3789d8415106f962f0a0b8ca1157d70bca6b",
+  "package_tree_hashes": {
+    "sdk": "9605fd8bc084334682b23441ecf5a1a898353acf",
+    "agent_server": "372ef6244d8de24afee68882c70efd3be00d0ed2",
+    "workspace": "3c3274e6e1988f244ef82ddfc963850934e69def",
+    "tools": "c898a1a2e9f4d6aa9caace407f92252254f2e990"
+  },
+  "removed_sdk_client_absent": true
+}

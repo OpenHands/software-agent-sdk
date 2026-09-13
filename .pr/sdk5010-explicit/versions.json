@@ -1,0 +1,9 @@
+{
+  "sdk_pr": "4bbab2dd0ccfabb935ff42f48a9e1024f6e957b1",
+  "sdk_integration": "bd2c3789d8415106f962f0a0b8ca1157d70bca6b",
+  "canvas": "9874c820a23e4026483ad9540ec9cb56194ce3ec",
+  "docs": "eb1fe94f6ed01504def7520ff46d54741e08979b",
+  "automation_local": "13edcb564120c32ee76735124d2184a0713e052c",
+  "automation_docker": "a9cc2adf35fd44220b0d4ee6caab1e6d2a0e96bb",
+  "automation_production_tree_both": "9de630f76614a6a26ce8a9088e7907bab1865f54"
+}

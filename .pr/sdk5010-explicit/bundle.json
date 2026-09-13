@@ -1,0 +1,7 @@
+{
+  "file": "fixture.tar.gz",
+  "entrypoint": "python3 main.py",
+  "sha256": "0a88b63fb2447fcc0822446e364b4b0d2ccb14f8eb0490b13e54d500c7dd6bf6",
+  "source_sha256": "68d68c9d6134d864f94e5411137f9c1442ffbcbf21fdc08961e1f0b27aa3df2d",
+  "purpose": "Disposable live Canvas evidence; no GitHub access"
+}

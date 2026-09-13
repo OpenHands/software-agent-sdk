@@ -1,0 +1,6 @@
+{
+  "discarded_preflight": "An attach probe started before SDK readiness returned connection refused; no automation or model task had been dispatched. Repeated only after canonical ServerClient readiness passed.",
+  "discarded_workspace_probe": "One read-only download used a UUID without hyphens in the directory path and correctly returned422. Repeated with working_dir from persisted metadata; no fixture/source change.",
+  "early_ui_capture": "The first local file-tree capture opened before run admission and timed out. Reloading the actual completed conversation displayed the produced file; early frames are excluded.",
+  "output_reader": "Removed an unnecessary short kind filter from the read-only BashClient observation because it returned no items on this integration; exact command-id query returned the real exit0 output. Production workspace polling is unchanged."
+}
