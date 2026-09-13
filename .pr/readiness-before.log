@@ -1,3 +1,0 @@
-::error::Add a short human-written note between `HUMAN:` and `AGENT:`.
-::error::Link an issue in the `## Issue Number` section (e.g. `Fixes #123`). Newly opened issues must carry the `ready-for-dev` label.
-PR description validation failed with 2 error(s).
