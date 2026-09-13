@@ -3,7 +3,7 @@ name: Review Thread Gate
 
 on:
     pull_request:
-        branches: [main, feat/conversation-scoped-runtime-api]
+        branches: [main]
         types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
