@@ -15,6 +15,8 @@ jobs:
         steps:
             - name: Checkout code
               uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
 
             - name: Set up Python
               uses: actions/setup-python@v6
@@ -26,6 +28,11 @@ jobs:
 
             - name: Install dependencies
               run: uv sync --frozen --group dev
+
+            - name: Ensure dynamic attribute baseline only shrinks
+              run: >-
+                  uv run python scripts/check_forbidden_dynamic_attributes.py
+                  --baseline-ref ${{ github.event.pull_request.base.sha || github.event.before }}
 
             - name: Run pre-commit (all files)
               run: uv run pre-commit run --all-files --show-diff-on-failure

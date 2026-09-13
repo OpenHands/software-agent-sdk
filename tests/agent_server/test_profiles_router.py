@@ -1770,7 +1770,7 @@ def test_validate_profile_responses_api(client):
 
     Regression: the endpoint must route through ``aresponses`` for profiles
     where ``uses_responses_api()`` is true, matching the runtime dispatch used
-    by real conversations (`amake_llm_completion`) — otherwise preflight would
+    by real conversations (`LLM.agenerate`) — otherwise preflight would
     validate a different path than the server actually calls.
     """
     from unittest.mock import MagicMock
