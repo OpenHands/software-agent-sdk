@@ -107,6 +107,9 @@ class AgentServerClient:
     def get_errors(self, conversation_id: str, *, limit: int = 1) -> JSON:
         return self._send(routes.errors(conversation_id, limit))
 
+    def get_final_response(self, conversation_id: str) -> JSON:
+        return self._send(routes.final_response(conversation_id))
+
     def runtime(self, conversation_id: str | None = None) -> "RuntimeClient":
         return RuntimeClient(self, routes.RuntimeRequests(conversation_id))
 
@@ -223,6 +226,9 @@ class AsyncAgentServerClient:
 
     async def get_errors(self, conversation_id: str, *, limit: int = 1) -> JSON:
         return await self._send(routes.errors(conversation_id, limit))
+
+    async def get_final_response(self, conversation_id: str) -> JSON:
+        return await self._send(routes.final_response(conversation_id))
 
     def runtime(self, conversation_id: str | None = None) -> "AsyncRuntimeClient":
         return AsyncRuntimeClient(self, routes.RuntimeRequests(conversation_id))

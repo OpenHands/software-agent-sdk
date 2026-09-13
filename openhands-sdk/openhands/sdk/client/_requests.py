@@ -71,6 +71,12 @@ def errors(conversation_id: str, limit: int) -> Operation:
     )
 
 
+def final_response(conversation_id: str) -> Operation:
+    return Operation(
+        "GET", conversation_path(conversation_id) + "/agent_final_response"
+    )
+
+
 class RuntimeRequests:
     """A runtime scope cannot be changed by an operation's arguments."""
 

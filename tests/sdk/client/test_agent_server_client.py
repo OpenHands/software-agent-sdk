@@ -165,3 +165,27 @@ def test_missing_runtime_credential_fails_closed(result):
         )
         with pytest.raises(ValueError):
             runtime.get_session_key()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_final_response_preserves_the_agent_handoff(asynchronous):
+    def respond(request):
+        assert request.url.path == f"/api/conversations/{CID}/agent_final_response"
+        return httpx.Response(
+            200,
+            json={"response": "Implemented; review decisions explained."},
+        )
+
+    transport = httpx.MockTransport(respond)
+    if asynchronous:
+        async with httpx.AsyncClient(transport=transport) as http:
+            result = await AsyncAgentServerClient(
+                "https://server", "key", http_client=http
+            ).get_final_response(CID)
+    else:
+        with httpx.Client(transport=transport) as http:
+            result = AgentServerClient(
+                "https://server", "key", http_client=http
+            ).get_final_response(CID)
+    assert result["response"] == "Implemented; review decisions explained."
