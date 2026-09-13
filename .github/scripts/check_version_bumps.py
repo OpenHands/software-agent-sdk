@@ -186,6 +186,15 @@ def validate_version_changes(
     return []
 
 
+def write_version_change_output(
+    changes: list[VersionChange], output_path: str | None
+) -> None:
+    if not output_path:
+        return
+    with Path(output_path).open("a") as output:
+        output.write(f"versions_changed={'true' if changes else 'false'}\n")
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     base_ref = os.environ.get("VERSION_BUMP_BASE_REF") or os.environ.get(
@@ -200,6 +209,7 @@ def main() -> int:
 
     consistency_errors = validate_package_version_consistency(repo_root)
     changes = find_version_changes(repo_root, base_ref)
+    write_version_change_output(changes, os.environ.get("GITHUB_OUTPUT"))
     errors = consistency_errors + validate_version_changes(
         changes, pr_title, pr_head_ref
     )

@@ -5,11 +5,6 @@ without touching it: frames are envelopes rather than the disk record; history
 and live traffic cannot interleave; and a slow consumer cannot wedge the
 publisher, because admission is byte-bounded and only this connection's writer
 task awaits the socket.
-
-``ItemStarted`` / ``Delta`` / ``ItemAborted`` are carried but never produced
-yet — that needs ``StreamContext`` (#4682). Until then this is a durable-only
-channel and ``StreamingDeltaEvent`` is dropped rather than forwarded, since
-putting it back on the wire would restore the coupling this endpoint removes.
 """
 
 import asyncio
@@ -30,8 +25,11 @@ from openhands.agent_server.pub_sub import MaxSubscribersError, Subscriber
 from openhands.agent_server.session_protocol import (
     MAX_FRAME_BYTES,
     MAX_PENDING_BYTES,
+    DeltaFrame,
     DurableFrame,
     ErrorFrame,
+    ItemAbortedFrame,
+    ItemStartedFrame,
     SessionFrameBase,
     SyncFrame,
     TransientFrame,
@@ -44,6 +42,12 @@ from openhands.agent_server.sockets import (
     _safe_close_websocket,
 )
 from openhands.sdk import Event, Message
+from openhands.sdk.agent.stream_context import (
+    StreamAborted,
+    StreamDelta,
+    StreamProgress,
+    StreamStarted,
+)
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -181,8 +185,8 @@ class _SessionSubscriber(Subscriber[Event]):
 
     async def __call__(self, event: Event) -> None:
         if isinstance(event, StreamingDeltaEvent):
-            # Deltas never ride the durable channel; progress frames will come
-            # from StreamContext instead.
+            # Deltas never ride the durable channel; progress frames come from
+            # StreamContext, over their own fan-out.
             return
         if self._buffer is not None:
             self._buffer.append(event)
@@ -227,6 +231,47 @@ class _SessionSubscriber(Subscriber[Event]):
             if seq is not None and through_seq is not None and seq <= through_seq:
                 continue  # already sent from disk during replay
             self._emit(event)
+
+
+def _to_wire(frame: StreamProgress) -> SessionFrameBase:
+    """Map one SDK progress frame onto its envelope."""
+    match frame:
+        case StreamStarted():
+            return ItemStartedFrame(
+                item_id=frame.item_id,
+                attempt=frame.attempt,
+                anchor_seq=frame.anchor_seq,
+            )
+        case StreamDelta():
+            return DeltaFrame(
+                item_id=frame.item_id,
+                attempt=frame.attempt,
+                order=frame.order,
+                kind=frame.kind,
+                content=frame.content,
+                chunk_id=frame.chunk_id,
+                choice_index=frame.choice_index,
+            )
+        case StreamAborted():
+            return ItemAbortedFrame(
+                item_id=frame.item_id,
+                attempt=frame.attempt,
+                reason=frame.reason,
+            )
+
+
+class _ProgressSubscriber(Subscriber[StreamProgress]):
+    """Forwards stream progress straight to the writer.
+
+    No buffering and no replay boundary: a dropped frame costs a repaint, and
+    the real text arrives with the durable event.
+    """
+
+    def __init__(self, writer: _ConnectionWriter) -> None:
+        self._writer = writer
+
+    async def __call__(self, frame: StreamProgress) -> None:
+        self._writer.send(_to_wire(frame))
 
 
 def _read_page(events: EventLog, start: int, stop: int) -> list[tuple[int, Event]]:
@@ -340,7 +385,17 @@ async def session_socket(
         await _safe_close_websocket(websocket, code=1011, reason="subscribe_failed")
         return
 
+    progress_id: UUID | None = None
     try:
+        try:
+            progress_id = await event_service.subscribe_to_stream_progress(
+                _ProgressSubscriber(writer)
+            )
+        except MaxSubscribersError:
+            # Durable delivery is what the client cannot recover on its own;
+            # losing progress only costs it the live typing effect.
+            logger.warning("session_socket_progress_limit: %s", conversation_id)
+
         length = len(events)
         through_seq = length - 1 if length else None
 
@@ -361,6 +416,8 @@ async def session_socket(
 
         await _inbound_loop(conversation_id, websocket, event_service, writer)
     finally:
+        if progress_id is not None:
+            await event_service.unsubscribe_from_stream_progress(progress_id)
         await event_service.unsubscribe_from_events(subscriber_id)
         await writer.aclose()
         if writer.drop_reason in ("slow_consumer", "frame_too_large"):
