@@ -234,6 +234,7 @@ export type {
   AgentProfileSaveInput,
   AgentProfileSummary,
   AgentProfileDiagnostics,
+  LaunchedAgentProfile,
   LaunchedProfile,
 } from './models/agent-profile';
 
