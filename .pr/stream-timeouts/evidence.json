@@ -1,0 +1,119 @@
+{
+  "captured_at": "2026-09-13",
+  "before_manifest": {
+    "case": "5000-before",
+    "variant": "base",
+    "sdk_commit": "c37007429be8b4465a83487dc1fd0914df0ea734",
+    "canvas_commit": "a3c7915db5f47800f5240a25987b2af75b0d8d04",
+    "canvas_url": "http://127.0.0.1:9108",
+    "provider": "disclosed local HTTP fixture; no external requests",
+    "started_at": 1789311664.6132314,
+    "memory_available_kib": 6689780,
+    "config": "isolated empty settings; dummy credentials only; UI config to follow"
+  },
+  "after_manifest": {
+    "case": "5000-after",
+    "variant": "5000",
+    "sdk_commit": "ba6c21735e44c28d476563e74ea8765d22c666a1",
+    "canvas_commit": "a3c7915db5f47800f5240a25987b2af75b0d8d04",
+    "canvas_url": "http://127.0.0.1:9108",
+    "provider": "disclosed local HTTP fixture; no external requests",
+    "started_at": 1789311933.997618,
+    "memory_available_kib": 6615516,
+    "config": "isolated empty settings; dummy credentials only; UI config to follow"
+  },
+  "results": {
+    "before": {
+      "conversation": {
+        "conversation_id": "2a07ea54-a2c8-419c-a8df-a198c8e4bd6f",
+        "execution_status": "error",
+        "llm": {
+          "model": "openai/gpt-4o-mini",
+          "timeout": 3,
+          "stream_idle_timeout": null,
+          "num_retries": 1,
+          "retry_min_wait": 0,
+          "retry_max_wait": 0,
+          "stream": true
+        },
+        "errors": [
+          {
+            "timestamp": "2026-09-13T15:05:19.357110",
+            "code": "LLMServiceUnavailableError",
+            "detail": "litellm.MidStreamFallbackError: litellm.InternalServerError: The model is repeating the same chunk =  waiting. Original exception: InternalServerError: litellm.InternalServerError: The model is repeating the same chunk =  waiting.",
+            "classification": {
+              "kind": "transient",
+              "retryable": true,
+              "user_action": "retry"
+            }
+          }
+        ]
+      },
+      "visible_running_after_provider_seconds": 11.233,
+      "browser_running": true,
+      "exploratory_invalid_run_excluded": "2a687d2b-719b-404c-86de-c751db0e3f5e"
+    },
+    "after": {
+      "hard_timeout": {
+        "conversation_id": "1628a9f0-1a58-42d2-90c0-02840ff9d5ed",
+        "execution_status": "finished",
+        "llm": {
+          "model": "openai/gpt-4o-mini",
+          "timeout": 3,
+          "stream_idle_timeout": 300.0,
+          "num_retries": 1,
+          "retry_min_wait": 0,
+          "retry_max_wait": 0,
+          "stream": true
+        },
+        "errors": [
+          {
+            "timestamp": "2026-09-13T15:06:38.035545",
+            "code": "LLMTimeoutError",
+            "detail": "litellm.Timeout: LLM hard timeout after 3 seconds",
+            "classification": {
+              "kind": "transient",
+              "retryable": true,
+              "user_action": "retry"
+            }
+          }
+        ]
+      },
+      "hard_timeout_after_provider_seconds": 2.939,
+      "idle_timeout": {
+        "conversation_id": "4b90bf4f-545d-42e0-b0c4-b48506bffe01",
+        "execution_status": "error",
+        "llm": {
+          "model": "openai/gpt-4o-mini",
+          "timeout": 30,
+          "stream_idle_timeout": 2.0,
+          "num_retries": 1,
+          "retry_min_wait": 0,
+          "retry_max_wait": 0,
+          "stream": true
+        },
+        "errors": [
+          {
+            "timestamp": "2026-09-13T15:08:11.758359",
+            "code": "LLMTimeoutError",
+            "detail": "litellm.Timeout: LLM stream idle timeout after 2 seconds",
+            "classification": {
+              "kind": "transient",
+              "retryable": true,
+              "user_action": "retry"
+            }
+          }
+        ]
+      },
+      "idle_timeout_after_provider_seconds": 2.018,
+      "same_conversation_recovered": true
+    }
+  },
+  "dependencies": {
+    "litellm": "1.93.0",
+    "httpx": "0.28.1",
+    "openai": "2.33.0",
+    "pydantic": "2.12.5",
+    "uvicorn": "0.37.0"
+  }
+}

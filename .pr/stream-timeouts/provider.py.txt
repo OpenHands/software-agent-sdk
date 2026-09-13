@@ -1,0 +1,38 @@
+"""Disclosed local OpenAI-compatible fault fixture; no external model requests."""
+import argparse, json, time, threading
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+p=argparse.ArgumentParser();p.add_argument('--port',type=int,default=19118);p.add_argument('--root',type=Path,required=True);a=p.parse_args()
+a.root.mkdir(parents=True,exist_ok=True)
+lock=threading.Lock()
+def log(**row):
+ with lock:
+  with (a.root/'provider-events.jsonl').open('a') as f:f.write(json.dumps({'time':time.time(),**row})+'\n')
+class Handler(BaseHTTPRequestHandler):
+ def log_message(self,*args):pass
+ def do_GET(self):
+  body=json.dumps({'object':'list','data':[{'id':'gpt-4o-mini','object':'model','owned_by':'evidence-fixture'}]}).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+ def do_POST(self):
+  data=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))));mode=(a.root/'mode').read_text().strip();stream=data.get('stream',False)
+  messages=data.get('messages',[]);text=json.dumps(messages);is_title='generates concise' in text and 'descriptive titles' in text;target='SDK_STALL_EVIDENCE' in text and not is_title
+  log(event='request',path=self.path,mode=mode,stream=stream,target=target)
+  content='SDK evidence conversation' if is_title else ('EVIDENCE_RECOVERED' if mode=='healthy' else 'Evidence value: evidence-only-placeholder-4967')
+  if mode in ('continuous','idle') and target and stream:
+   self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Cache-Control','no-cache');self.end_headers()
+   try:
+    for i in range(240):
+     chunk={'id':'chatcmpl-evidence','object':'chat.completion.chunk','created':int(time.time()),'model':'gpt-4o-mini','choices':[{'index':0,'delta':{'content':' waiting'},'finish_reason':None}]}
+     self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode());self.wfile.flush();log(event='chunk',index=i)
+     if mode=='idle':time.sleep(30);break
+     time.sleep(.25)
+   except (BrokenPipeError,ConnectionResetError):log(event='client_closed')
+   return
+  if stream:
+   self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+   for delta,finish in [({'role':'assistant','content':content},None),({},'stop')]:
+    chunk={'id':'chatcmpl-evidence','object':'chat.completion.chunk','created':int(time.time()),'model':'gpt-4o-mini','choices':[{'index':0,'delta':delta,'finish_reason':finish}]};self.wfile.write(('data: '+json.dumps(chunk)+'\n\n').encode())
+   self.wfile.write(b'data: [DONE]\n\n');self.wfile.flush()
+  else:
+   body=json.dumps({'id':'chatcmpl-evidence','object':'chat.completion','created':int(time.time()),'model':'gpt-4o-mini','choices':[{'index':0,'message':{'role':'assistant','content':content},'finish_reason':'stop'}],'usage':{'prompt_tokens':1,'completion_tokens':1,'total_tokens':2}}).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+  log(event='response_finished')
+ThreadingHTTPServer(('127.0.0.1',a.port),Handler).serve_forever()
