@@ -62,7 +62,11 @@ from openhands.sdk.conversation.title_utils import (
     extract_message_text,
     generate_title_from_message,
 )
-from openhands.sdk.credential import CredentialBindingError, VersionedCredentialBinding
+from openhands.sdk.credential import (
+    CredentialAuthorizationRejected,
+    CredentialBindingError,
+    VersionedCredentialBinding,
+)
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
@@ -454,6 +458,7 @@ def _resolve_agent_from_profile(
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,
         revision=profile.revision,
+        secret_refs=profile.secret_refs,
     )
     allowed_secrets = None if profile.secret_refs is None else set(profile.secret_refs)
     return agent, launched, allowed_secrets
@@ -840,6 +845,18 @@ class ConversationService:
                 if event_services is not None
                 else None
             )
+            record = self._conversation_records.get(conversation_id)
+            stored = (
+                event_service.stored
+                if event_service is not None
+                else (record.stored if record is not None else None)
+            )
+            if stored is not None and not self._profile_allows_secret(
+                stored, secret_name
+            ):
+                raise CredentialAuthorizationRejected(
+                    "The launched agent profile excludes this credential"
+                )
             if event_service is not None and event_service.is_open():
                 await event_service.activate_credential_binding(secret_name, binding)
                 record = self._conversation_records.get(conversation_id)
@@ -882,6 +899,11 @@ class ConversationService:
             self._credential_bindings = {}
 
     @staticmethod
+    def _profile_allows_secret(stored: StoredConversation, name: str) -> bool:
+        profile = stored.launched_agent_profile
+        return profile is None or profile.allows_secret(name)
+
+    @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
         return isinstance(agent, ACPAgent) and agent.acp_server == "codex"
 
@@ -906,14 +928,23 @@ class ConversationService:
         # ``_load_persisted_state_sync`` usage elsewhere.
         if agent is None:
             agent = await asyncio.to_thread(self._agent_from_base_state, stored.id)
-        bindings = self._credential_bindings.pop(stored.id, {})
+        bindings = {
+            name: binding
+            for name, binding in self._credential_bindings.pop(stored.id, {}).items()
+            if self._profile_allows_secret(stored, name)
+        }
         broker = BrokerClient.from_env()
-        if broker is not None and self._is_codex_agent(agent):
+        if (
+            broker is not None
+            and self._is_codex_agent(agent)
+            and self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
+        ):
             bindings[CODEX_AUTH_SECRET_NAME] = broker.credential_binding(
                 CODEX_AUTH_SECRET_NAME
             )
         if (
-            CODEX_AUTH_SECRET_NAME not in bindings
+            self._profile_allows_secret(stored, CODEX_AUTH_SECRET_NAME)
+            and CODEX_AUTH_SECRET_NAME not in bindings
             and self._is_codex_agent(agent)
             and await self._has_local_codex_credential()
         ):
@@ -1466,6 +1497,23 @@ class ConversationService:
         ):
             async with self._conversation_lifecycle(conversation_id):
                 existing_event_service = self._event_services.get(conversation_id)
+                stored = (
+                    existing_event_service.stored
+                    if existing_event_service is not None
+                    else existing_record.stored
+                    if existing_record is not None
+                    else None
+                )
+                if stored is not None:
+                    request = request.model_copy(
+                        update={
+                            "secrets": {
+                                name: value
+                                for name, value in request.secrets.items()
+                                if self._profile_allows_secret(stored, name)
+                            }
+                        }
+                    )
                 if (
                     existing_event_service is not None
                     and existing_event_service.is_open()

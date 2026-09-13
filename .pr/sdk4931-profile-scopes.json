@@ -1,0 +1,144 @@
+{
+  "scenario": "Selected and empty profiles",
+  "commits": {
+    "sdk": "ac6d12b0b9d76f1cc38a6eb1ea51cd92e34a0bf2",
+    "automation": "8abaa0b5fdea18132c68ef71dfd645c5aafcc13a",
+    "canvas": "4cd1513bbe74abd2c1f9e58a77cf64375aafe001"
+  },
+  "bundle": {
+    "file": "fixture.tar.gz",
+    "entrypoint": "python3 main.py",
+    "sha256": "ffaa73c82742204e7e84e29e92add8b911ec074e9359a0881ace29f80587e234",
+    "source_sha256": "914be2501e7ec5e40eda49d5e0434521ad1bbc0c992c3f274644e476f961831c",
+    "purpose": "Disposable live Canvas evidence; no GitHub access"
+  },
+  "profiles": [
+    {
+      "id": "b3fd5ee4-0a22-4b84-a872-710e0a5c168b",
+      "name": "evidence-selected",
+      "secret_refs": [
+        "EVIDENCE_ALLOWED"
+      ],
+      "mcp_server_refs": [],
+      "enable_sub_agents": false,
+      "enable_switch_llm_tool": false,
+      "llm_profile_ref": "deepseek-v4-flash"
+    },
+    {
+      "id": "74f36bfe-0f47-49b4-94d0-2292d3ea970e",
+      "name": "evidence-all",
+      "secret_refs": null,
+      "mcp_server_refs": [],
+      "enable_sub_agents": false,
+      "enable_switch_llm_tool": false,
+      "llm_profile_ref": "deepseek-v4-flash"
+    },
+    {
+      "id": "651a220d-ee67-4609-aae6-aa0d28e1dbf9",
+      "name": "evidence-empty",
+      "secret_refs": [],
+      "mcp_server_refs": [],
+      "enable_sub_agents": false,
+      "enable_switch_llm_tool": false,
+      "llm_profile_ref": "deepseek-v4-flash"
+    }
+  ],
+  "local_runs": [
+    {
+      "id": "3cbdc7cd-c235-4f1b-9c85-df9f6eafbe99",
+      "status": "COMPLETED",
+      "profile": "b3fd5ee4-0a22-4b84-a872-710e0a5c168b",
+      "bash_command_id": "c8a64dd5598c41888ad4ceb8b9897ac3",
+      "system_prompt_events": 1,
+      "advertised_names": [
+        "EVIDENCE_ALLOWED"
+      ],
+      "dummy_values_in_prompt": false,
+      "entrypoint_results": [
+        {
+          "exit_code": 0,
+          "stdout": "SCRIPT_SECRET_PRESENCE: {\"EVIDENCE_ALLOWED\": true, \"EVIDENCE_EXCLUDED\": false}\nEVIDENCE_HOLD: 20 seconds for the admission queue observation\nAGENT_FINISHED: The two presence checks show the environment is configured to allow evidence usage (EVIDENCE_ALLOWED=true) but not to exclude evidence (EVIDENCE_EXCLUDED=false); these booleans were written to `fixture.json` in the current workspace without ever exposing variable values.\nEVIDENCE_INSPECT: 25 seconds for the real Canvas file and terminal views\nEVIDENCE_BUNDLE_COMPLETED\n"
+        }
+      ]
+    },
+    {
+      "id": "a6fac6cc-00fa-437a-a77b-6be74d7d013b",
+      "status": "COMPLETED",
+      "profile": "b3fd5ee4-0a22-4b84-a872-710e0a5c168b",
+      "bash_command_id": "a078f9413e5b49268b4a4d11d4e8dfd7",
+      "system_prompt_events": 1,
+      "advertised_names": [
+        "EVIDENCE_ALLOWED"
+      ],
+      "dummy_values_in_prompt": false,
+      "entrypoint_results": [
+        {
+          "exit_code": 0,
+          "stdout": "SCRIPT_SECRET_PRESENCE: {\"EVIDENCE_ALLOWED\": true, \"EVIDENCE_EXCLUDED\": false}\nEVIDENCE_HOLD: 20 seconds for the admission queue observation\nAGENT_FINISHED: EVIDENCE_ALLOWED is present (true) while EVIDENCE_EXCLUDED is absent (false); both booleans were written to fixture.json and printed, with no values exposed.\nEVIDENCE_INSPECT: 25 seconds for the real Canvas file and terminal views\nEVIDENCE_BUNDLE_COMPLETED\n"
+        }
+      ]
+    },
+    {
+      "id": "9246ad1d-0869-43e6-8d21-3472247e4e46",
+      "status": "CANCELLED",
+      "profile": "651a220d-ee67-4609-aae6-aa0d28e1dbf9",
+      "bash_command_id": "4f689cde31484cd6b732e06392c6fa20",
+      "system_prompt_events": 1,
+      "advertised_names": [],
+      "dummy_values_in_prompt": false,
+      "entrypoint_results": []
+    },
+    {
+      "id": "f020160e-562e-4426-8726-9005f6d1bfce",
+      "status": "COMPLETED",
+      "profile": "651a220d-ee67-4609-aae6-aa0d28e1dbf9",
+      "bash_command_id": "8692c4fd3b244365add258a57927dbec",
+      "system_prompt_events": 1,
+      "advertised_names": [],
+      "dummy_values_in_prompt": false,
+      "entrypoint_results": [
+        {
+          "exit_code": 0,
+          "stdout": "SCRIPT_SECRET_PRESENCE: {\"EVIDENCE_ALLOWED\": false, \"EVIDENCE_EXCLUDED\": false}\nEVIDENCE_HOLD: 20 seconds for the admission queue observation\nAGENT_FINISHED: fixture.json was written with both booleans set to false, indicating that neither EVIDENCE_ALLOWED nor EVIDENCE_EXCLUDED exist in the environment. No network, repository, or credential access was used.\nEVIDENCE_INSPECT: 25 seconds for the real Canvas file and terminal views\nEVIDENCE_BUNDLE_COMPLETED\n"
+        }
+      ]
+    },
+    {
+      "id": "68c4b41a-32f6-472c-94d7-d3bef14c713c",
+      "status": "COMPLETED",
+      "profile": "74f36bfe-0f47-49b4-94d0-2292d3ea970e",
+      "bash_command_id": "e2c6a0272da740879924c1c5a53ef28b",
+      "system_prompt_events": 1,
+      "advertised_names": [],
+      "dummy_values_in_prompt": false,
+      "entrypoint_results": [
+        {
+          "exit_code": 0,
+          "stdout": "SCRIPT_SECRET_PRESENCE: {\"EVIDENCE_ALLOWED\": false, \"EVIDENCE_EXCLUDED\": false}\nEVIDENCE_HOLD: 20 seconds for the admission queue observation\nAGENT_FINISHED: `fixture.json` was written to the workspace and shows `EVIDENCE_ALLOWED: false` and `EVIDENCE_EXCLUDED: false`, meaning neither environment variable is present in this environment.\nEVIDENCE_INSPECT: 25 seconds for the real Canvas file and terminal views\nEVIDENCE_BUNDLE_COMPLETED\n"
+        }
+      ]
+    }
+  ],
+  "docker_runs": [
+    {
+      "id": "91027f77-87b3-4404-9cfa-e559488de548",
+      "status": "COMPLETED",
+      "profile": "b3fd5ee4-0a22-4b84-a872-710e0a5c168b",
+      "bash_command_id": "3e05707f3664430194623a03ce53f932",
+      "system_prompt_events": 1,
+      "advertised_names": [
+        "EVIDENCE_ALLOWED"
+      ],
+      "dummy_values_in_prompt": false
+    },
+    {
+      "id": "75a3893e-a094-4f7e-b70e-561e9b86dfa9",
+      "status": "COMPLETED",
+      "profile": "651a220d-ee67-4609-aae6-aa0d28e1dbf9",
+      "bash_command_id": "91db514229a74f44bdbb7c92248217bd",
+      "system_prompt_events": 1,
+      "advertised_names": [],
+      "dummy_values_in_prompt": false
+    }
+  ]
+}
