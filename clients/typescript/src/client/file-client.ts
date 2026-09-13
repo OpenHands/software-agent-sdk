@@ -1,4 +1,6 @@
-import { HttpClient } from './http-client';
+import { runtimeServiceConnections } from './runtime-transport';
+import type { RuntimeServiceOptions } from './runtime-transport';
+import type { HttpClient } from './http-client';
 import type {
   FileHomeOptions,
   FileHomeResponse,
@@ -7,11 +9,7 @@ import type {
 } from '../models/api';
 import type { Success } from '../types/base';
 
-export interface FileClientOptions {
-  host: string;
-  apiKey?: string;
-  timeout?: number;
-}
+export type FileClientOptions = RuntimeServiceOptions;
 
 export type FileUploadContent = string | Blob | File;
 
@@ -19,22 +17,23 @@ export class FileClient {
   public readonly host: string;
   public readonly apiKey?: string;
   private readonly client: HttpClient;
+  private readonly server: HttpClient;
+  private readonly conversationId?: string;
 
   constructor(options: FileClientOptions) {
-    this.host = options.host.replace(/\/$/, '');
-    this.apiKey = options.apiKey;
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      apiKey: this.apiKey,
-      timeout: options.timeout || 60000,
-    });
+    const { server, runtime } = runtimeServiceConnections(options);
+    this.host = server.host;
+    this.apiKey = server.sessionApiKey;
+    this.client = runtime;
+    this.server = server;
+    this.conversationId = options.runtimeTransport?.conversationId ?? options.conversationId;
   }
 
   async searchSubdirectories(
     path: string,
     options: FileSearchSubdirsOptions = {}
   ): Promise<FileSubdirectoryPage> {
-    const response = await this.client.get<FileSubdirectoryPage>('/api/file/search_subdirs', {
+    const response = await this.server.get<FileSubdirectoryPage>('/api/file/search_subdirs', {
       params: {
         path,
         page_id: options.pageId,
@@ -46,7 +45,7 @@ export class FileClient {
   }
 
   async getHome(options: FileHomeOptions = {}): Promise<FileHomeResponse> {
-    const response = await this.client.get<FileHomeResponse>('/api/file/home', {
+    const response = await this.server.get<FileHomeResponse>('/api/file/home', {
       params: {
         include_hidden: options.includeHidden || undefined,
       },
@@ -97,6 +96,9 @@ export class FileClient {
   }
 
   async downloadTrajectory(conversationId: string): Promise<Blob> {
+    if (this.conversationId !== undefined && conversationId !== this.conversationId) {
+      throw new Error('Trajectory must belong to the selected runtime');
+    }
     const response = await this.client.get<Blob>(
       `/api/file/download-trajectory/${encodeURIComponent(conversationId)}`,
       { responseType: 'blob' }

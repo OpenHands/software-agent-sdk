@@ -76,11 +76,15 @@ def test_server_info_reports_credential_binding_probe(client):
     response = client.get("/server_info")
 
     assert response.status_code == 200
-    assert response.json()["capabilities"] == [
+    payload = response.json()
+    assert {
         "credential_binding_v1",
         "credential_binding_readiness_probe_v1",
         "credential_binding_activation_guard_v1",
-    ]
+        "conversation_runtime_routes_v1",
+    } <= set(payload["capabilities"])
+    assert payload["conversation_runtime"] == "local"
+    assert payload["workspace_mode"] == "host"
 
 
 def test_server_info_reports_runtime_timeout_cap(

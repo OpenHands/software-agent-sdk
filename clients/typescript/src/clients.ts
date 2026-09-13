@@ -158,3 +158,10 @@ export type {
   DeviceTokenResponse,
   PollDeviceTokenOptions,
 } from './client/device-flow-client';
+
+export { RuntimeClient } from './client/runtime-client';
+export type { RuntimeClientOptions } from './client/runtime-client';
+
+export { ServerConnection } from './client/server-connection';
+export type { ServerConnectionOptions } from './client/server-connection';
+export { GitClient } from './client/git-client';

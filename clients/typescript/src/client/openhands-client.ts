@@ -11,6 +11,8 @@ import { MetaProfilesClient } from './meta-profiles-client';
 import { PluginsClient } from './plugins-client';
 import { ProfilesClient } from './profiles-client';
 import { ServerClient } from './server-client';
+import { ServerConnection } from './server-connection';
+import { RuntimeClient } from './runtime-client';
 import { SettingsClient } from './settings-client';
 import { SharedClient } from './shared-client';
 import { SkillsClient } from './skills-client';
@@ -141,21 +143,17 @@ export class AgentServerClient extends OpenHandsClient {
   readonly llm: LLMMetadataClient;
   readonly workspaces: WorkspacesClient;
 
-  private readonly client: HttpClient;
+  private readonly client: ServerConnection;
 
   constructor(options: OpenHandsClientOptions) {
     super(options);
+    this.client = new ServerConnection(options);
     const clientOptions = {
       host: this.host,
       apiKey: this.apiKey,
       timeout: this.timeout,
+      connection: this.client,
     };
-
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      apiKey: this.apiKey,
-      timeout: this.timeout,
-    });
     this.server = new ServerClient(clientOptions);
     this.conversations = new ConversationClient(clientOptions);
     this.files = new FileClient(clientOptions);
@@ -175,6 +173,10 @@ export class AgentServerClient extends OpenHandsClient {
     this.shared = new SharedClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
+  }
+
+  runtime(conversationId: string): RuntimeClient {
+    return new RuntimeClient({ host: this.host, connection: this.client, conversationId });
   }
 
   async request<TResponse = unknown>(options: OpenHandsRequestOptions): Promise<TResponse> {

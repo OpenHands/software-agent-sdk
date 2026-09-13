@@ -2,7 +2,9 @@ import {
   AgentServerFeatureRequirements,
   assertAgentServerSupports,
 } from './agent-server-compatibility';
-import { HttpClient } from './http-client';
+import { runtimeServiceConnections } from './runtime-transport';
+import type { RuntimeServiceOptions } from './runtime-transport';
+import type { HttpClient } from './http-client';
 import type {
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,
@@ -18,25 +20,20 @@ import type {
   MCPTestResponse as LegacyMCPTestResponse,
 } from '../models/api';
 
-export interface MCPClientOptions {
-  host: string;
-  apiKey?: string;
-  timeout?: number;
-}
+export type MCPClientOptions = RuntimeServiceOptions;
 
 export class MCPClient {
   public readonly host: string;
   public readonly apiKey?: string;
   private readonly client: HttpClient;
+  private readonly server: HttpClient;
 
   constructor(options: MCPClientOptions) {
-    this.host = options.host.replace(/\/$/, '');
-    this.apiKey = options.apiKey;
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      apiKey: this.apiKey,
-      timeout: options.timeout || 60000,
-    });
+    const { server, runtime } = runtimeServiceConnections(options);
+    this.host = server.host;
+    this.apiKey = server.sessionApiKey;
+    this.client = runtime;
+    this.server = server;
   }
 
   async testServer(request: AgentServerMCPTestRequest): Promise<AgentServerMCPTestResponse>;
@@ -48,7 +45,7 @@ export class MCPClient {
   async testServer(
     request: LegacyMCPTestRequest | AgentServerMCPTestRequest
   ): Promise<LegacyMCPTestResponse | AgentServerMCPTestResponse> {
-    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpTest);
+    await assertAgentServerSupports(this.server, AgentServerFeatureRequirements.mcpTest);
     const response = await this.client.post<AgentServerMCPTestResponse>('/api/mcp/test', request, {
       timeout: (request.timeout ?? 15) * 1000 + 5000,
     });
@@ -66,8 +63,8 @@ export class MCPClient {
   async startOAuth(
     request: LegacyMCPTestRequest | AgentServerMCPStartOAuthRequest
   ): Promise<LegacyMCPOAuthStartResponse | AgentServerMCPStartOAuthResponse> {
-    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpOAuth);
-    const response = await this.client.post<AgentServerMCPStartOAuthResponse>(
+    await assertAgentServerSupports(this.server, AgentServerFeatureRequirements.mcpOAuth);
+    const response = await this.server.post<AgentServerMCPStartOAuthResponse>(
       '/api/mcp/oauth/start',
       request,
       {
@@ -78,8 +75,8 @@ export class MCPClient {
   }
 
   async getOAuthStatus(jobId: string): Promise<AgentServerMCPOAuthStatusResponse> {
-    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpOAuth);
-    const response = await this.client.get<AgentServerMCPOAuthStatusResponse>(
+    await assertAgentServerSupports(this.server, AgentServerFeatureRequirements.mcpOAuth);
+    const response = await this.server.get<AgentServerMCPOAuthStatusResponse>(
       `/api/mcp/oauth/status/${encodeURIComponent(jobId)}`
     );
     return response.data;
@@ -89,8 +86,8 @@ export class MCPClient {
     jobId: string,
     request: AgentServerMCPOAuthCallbackRequest
   ): Promise<AgentServerMCPOAuthCallbackResponse> {
-    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.mcpOAuth);
-    const response = await this.client.post<AgentServerMCPOAuthCallbackResponse>(
+    await assertAgentServerSupports(this.server, AgentServerFeatureRequirements.mcpOAuth);
+    const response = await this.server.post<AgentServerMCPOAuthCallbackResponse>(
       `/api/mcp/oauth/callback/${encodeURIComponent(jobId)}`,
       request
     );

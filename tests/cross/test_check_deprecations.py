@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from openhands.agent_server import runtime_router as routers
+
 
 def _load_prod_module():
     repo_root = Path(__file__).resolve().parents[2]
@@ -336,3 +338,29 @@ def test_runway_error_skips_cleanup_and_date_based_removals():
 
     assert _runway_error(cleanup_record) is None
     assert _runway_error(date_record) is None
+
+
+def test_programmatic_docker_routes_have_enforced_schedule():
+    path = Path(routers.__file__)
+    records = list(
+        _gather_rest_route_deprecations(
+            ast.parse(path.read_text()), path, package="openhands-agent-server"
+        )
+    )
+    assert len(records) == 2
+    for record in records:
+        assert record.deprecated_in == "1.48.0"
+        assert record.removed_in == "1.53.0"
+        assert _runway_error(record) is None
+        assert not _should_fail("1.52.0", record)
+        assert _should_fail("1.53.0", record)
+
+
+def test_programmatic_deprecated_route_requires_schedule(tmp_path):
+    tree = ast.parse('router.add_api_route("/old", handler, deprecated=True)')
+    with pytest.raises(SystemExit, match="Deprecated since"):
+        list(
+            _gather_rest_route_deprecations(
+                tree, tmp_path / "router.py", package="openhands-agent-server"
+            )
+        )

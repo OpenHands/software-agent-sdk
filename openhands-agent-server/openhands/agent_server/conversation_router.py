@@ -31,6 +31,8 @@ from openhands.agent_server.models import (
     AskAgentResponse,
     ConversationInfo,
     ConversationPage,
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
@@ -156,6 +158,29 @@ async def get_conversation(
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
     return conversation
+
+
+@conversation_router.get("/{conversation_id}/runtime")
+async def get_local_conversation_runtime(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationRuntimeInfo:
+    """Inspect the always-available in-process runtime."""
+    if await conversation_service.get_conversation(conversation_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return ConversationRuntimeInfo(
+        runtime_status=ConversationRuntimeStatus.AVAILABLE,
+        can_resume=True,
+    )
+
+
+@conversation_router.post("/{conversation_id}/runtime/reprovision")
+async def reprovision_local_conversation_runtime(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationRuntimeInfo:
+    """Return local runtime state; local mode has no infrastructure to provision."""
+    return await get_local_conversation_runtime(conversation_id, conversation_service)
 
 
 @conversation_router.get(
