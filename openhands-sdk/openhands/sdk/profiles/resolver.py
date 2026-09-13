@@ -110,8 +110,8 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_skills: list[str] = Field(default_factory=list)
 
     # Secret scope (both variants). ``None`` = every secret the conversation is
-    # started with; a list = only those names (plus, for ACP, the provider
-    # credentials in the fields below). No dangling report: this is an
+    # started with; a list = only those names, with nothing added back.
+    # No dangling report: this is an
     # allow-list over what a launch supplies, so an unmatched name is a no-op.
     secret_refs: list[str] | None = None
 
