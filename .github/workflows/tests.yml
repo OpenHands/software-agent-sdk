@@ -68,6 +68,8 @@ jobs:
 
     sdk-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -195,6 +197,8 @@ jobs:
     tools-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 15
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -206,6 +210,7 @@ jobs:
               with:
                   files: |
                       openhands-tools/**
+                      openhands-sdk/**
                       tests/tools/**
                       pyproject.toml
                       uv.lock
@@ -253,6 +258,8 @@ jobs:
     windows-tests:
         runs-on: windows-latest
         timeout-minutes: 30
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         env:
             PYTHONUTF8: '1'
         steps:
@@ -266,6 +273,7 @@ jobs:
               with:
                   files: |
                       openhands-tools/**
+                      openhands-sdk/**
                       tests/tools/**
                       pyproject.toml
                       uv.lock
@@ -327,6 +335,8 @@ jobs:
 
     agent-server-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -338,6 +348,7 @@ jobs:
               with:
                   files: |
                       openhands-agent-server/**
+                      openhands-sdk/**
                       tests/agent_server/**
                       pyproject.toml
                       uv.lock
@@ -385,6 +396,8 @@ jobs:
     agent-server-stress-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 10
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -396,6 +409,7 @@ jobs:
               with:
                   files: |
                       openhands-agent-server/**
+                      openhands-sdk/**
                       tests/agent_server/stress/**
                       pyproject.toml
                       uv.lock
@@ -426,6 +440,8 @@ jobs:
 
     workspace-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -437,6 +453,7 @@ jobs:
               with:
                   files: |
                       openhands-workspace/**
+                      openhands-sdk/**
                       tests/workspace/**
                       pyproject.toml
                       uv.lock
@@ -481,6 +498,8 @@ jobs:
 
     cross-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
+        outputs:
+            tests_selected: ${{ steps.changed.outputs.any_changed }}
         steps:
             - name: Checkout
               uses: actions/checkout@v7
@@ -492,7 +511,10 @@ jobs:
               with:
                   files: |
                       tests/**
-                      openhands/**
+                      openhands-sdk/**
+                      openhands-tools/**
+                      openhands-workspace/**
+                      openhands-agent-server/**
                       pyproject.toml
                       uv.lock
                       .github/workflows/tests.yml
@@ -535,6 +557,150 @@ jobs:
                   name: coverage-cross
                   path: coverage-cross.dat
                   if-no-files-found: warn
+
+    test-execution-gate:
+        name: Test execution gate
+        needs: [sdk-tests, tools-tests, windows-tests, agent-server-tests, agent-server-stress-tests, workspace-tests, cross-tests]
+        if: always() && github.event_name == 'pull_request'
+        runs-on: ubuntu-latest
+        env:
+            BASE_SHA: ${{ github.event.pull_request.base.sha }}
+            SDK_SELECTED: ${{ needs.sdk-tests.outputs.tests_selected }}
+            TOOLS_SELECTED: ${{ needs.tools-tests.outputs.tests_selected }}
+            WINDOWS_SELECTED: ${{ needs.windows-tests.outputs.tests_selected }}
+            AGENT_SERVER_SELECTED: ${{ needs.agent-server-tests.outputs.tests_selected }}
+            AGENT_SERVER_STRESS_SELECTED: ${{ needs.agent-server-stress-tests.outputs.tests_selected }}
+            WORKSPACE_SELECTED: ${{ needs.workspace-tests.outputs.tests_selected }}
+            CROSS_SELECTED: ${{ needs.cross-tests.outputs.tests_selected }}
+            SDK_RESULT: ${{ needs.sdk-tests.result }}
+            TOOLS_RESULT: ${{ needs.tools-tests.result }}
+            WINDOWS_RESULT: ${{ needs.windows-tests.result }}
+            AGENT_SERVER_RESULT: ${{ needs.agent-server-tests.result }}
+            AGENT_SERVER_STRESS_RESULT: ${{ needs.agent-server-stress-tests.result }}
+            WORKSPACE_RESULT: ${{ needs.workspace-tests.result }}
+            CROSS_RESULT: ${{ needs.cross-tests.result }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+              with: {fetch-depth: 0}
+
+            - name: Verify path-gated execution
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  changed_files="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+                  sdk_changed=false
+                  tools_changed=false
+                  agent_server_changed=false
+                  workspace_changed=false
+                  shared_changed=false
+                  sdk_tests_changed=false
+                  tools_tests_changed=false
+                  agent_server_tests_changed=false
+                  workspace_tests_changed=false
+                  cross_tests_changed=false
+
+                  while IFS= read -r path; do
+                    case "$path" in
+                      openhands-sdk/*) sdk_changed=true ;;
+                      openhands-tools/*) tools_changed=true ;;
+                      openhands-agent-server/*) agent_server_changed=true ;;
+                      openhands-workspace/*) workspace_changed=true ;;
+                      tests/sdk/*) sdk_tests_changed=true ;;
+                      tests/tools/*) tools_tests_changed=true ;;
+                      tests/agent_server/*) agent_server_tests_changed=true ;;
+                      tests/workspace/*) workspace_tests_changed=true ;;
+                      tests/cross/*) cross_tests_changed=true ;;
+                      pyproject.toml|uv.lock|.github/workflows/tests.yml)
+                        shared_changed=true
+                        ;;
+                    esac
+                  done <<< "$changed_files"
+
+                  expected_sdk=false
+                  expected_tools=false
+                  expected_windows=false
+                  expected_agent_server=false
+                  expected_agent_server_stress=false
+                  expected_workspace=false
+                  expected_cross=false
+
+                  if [ "$shared_changed" = true ] || [ "$sdk_changed" = true ]; then
+                    expected_sdk=true
+                    expected_tools=true
+                    expected_windows=true
+                    expected_agent_server=true
+                    expected_agent_server_stress=true
+                    expected_workspace=true
+                    expected_cross=true
+                  fi
+                  if [ "$tools_changed" = true ] || [ "$tools_tests_changed" = true ]; then
+                    expected_tools=true
+                    expected_windows=true
+                    expected_cross=true
+                  fi
+                  if [ "$agent_server_changed" = true ] || [ "$agent_server_tests_changed" = true ]; then
+                    expected_agent_server=true
+                    expected_agent_server_stress=true
+                    expected_cross=true
+                  fi
+                  if [ "$workspace_changed" = true ] || [ "$workspace_tests_changed" = true ]; then
+                    expected_workspace=true
+                    expected_cross=true
+                  fi
+                  if [ "$sdk_tests_changed" = true ]; then
+                    expected_sdk=true
+                    expected_cross=true
+                  fi
+                  if [ "$cross_tests_changed" = true ]; then
+                    expected_cross=true
+                  fi
+
+                  failed=false
+                  check_selected() {
+                    local suite="$1"
+                    local expected="$2"
+                    local selected="$3"
+                    if [ "$expected" = true ] && [ "$selected" != true ]; then
+                      echo "::error::$suite was not selected for the changed files"
+                      failed=true
+                    fi
+                  }
+
+                  check_selected sdk "$expected_sdk" "$SDK_SELECTED"
+                  check_selected tools "$expected_tools" "$TOOLS_SELECTED"
+                  check_selected windows "$expected_windows" "$WINDOWS_SELECTED"
+                  check_selected agent-server "$expected_agent_server" "$AGENT_SERVER_SELECTED"
+                  check_selected agent-server-stress "$expected_agent_server_stress" "$AGENT_SERVER_STRESS_SELECTED"
+                  check_selected workspace "$expected_workspace" "$WORKSPACE_SELECTED"
+                  check_selected cross "$expected_cross" "$CROSS_SELECTED"
+
+                  for result in "$SDK_RESULT" "$TOOLS_RESULT" "$WINDOWS_RESULT" \
+                    "$AGENT_SERVER_RESULT" "$AGENT_SERVER_STRESS_RESULT" \
+                    "$WORKSPACE_RESULT" "$CROSS_RESULT"; do
+                    if [ "$result" = failure ] || [ "$result" = cancelled ]; then
+                      failed=true
+                    fi
+                  done
+
+                  {
+                    echo "### Path-gated test execution"
+                    echo
+                    echo "| Suite | selected | result |"
+                    echo "| --- | --- | --- |"
+                    echo "| SDK | $SDK_SELECTED | $SDK_RESULT |"
+                    echo "| Tools | $TOOLS_SELECTED | $TOOLS_RESULT |"
+                    echo "| Windows | $WINDOWS_SELECTED | $WINDOWS_RESULT |"
+                    echo "| Agent Server | $AGENT_SERVER_SELECTED | $AGENT_SERVER_RESULT |"
+                    echo "| Agent Server stress | $AGENT_SERVER_STRESS_SELECTED | $AGENT_SERVER_STRESS_RESULT |"
+                    echo "| Workspace | $WORKSPACE_SELECTED | $WORKSPACE_RESULT |"
+                    echo "| Cross | $CROSS_SELECTED | $CROSS_RESULT |"
+                  } >> "$GITHUB_STEP_SUMMARY"
+
+                  if [ "$failed" = true ]; then
+                    exit 1
+                  fi
 
     coverage-report:
         runs-on: blacksmith-2vcpu-ubuntu-2404
