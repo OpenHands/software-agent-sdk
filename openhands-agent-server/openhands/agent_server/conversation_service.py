@@ -3,12 +3,13 @@ import importlib
 import json
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -62,7 +63,7 @@ from openhands.sdk.conversation.title_utils import (
     generate_title_from_message,
 )
 from openhands.sdk.credential import CredentialBindingError, VersionedCredentialBinding
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import MessageEvent, StreamingDeltaEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
@@ -2515,13 +2516,40 @@ def _build_telemetry_context(
     )
 
 
+# Minimum interval between idle-clock resets driven by streaming deltas (seconds).
+# Token-rate deltas must keep the runtime idle clocks fresh, but firing a reset per
+# token is excessive; this matches the throttle used by ``_maybe_signal_activity``
+# for the ACP heartbeat (``_ACTIVITY_SIGNAL_INTERVAL`` in ``acp_agent.py``).
+_DELTA_ACTIVITY_SIGNAL_INTERVAL: float = 30.0
+
+
 @dataclass
 class _EventSubscriber(Subscriber):
     service: EventService
 
+    # Opt in to token-rate deltas: without this the subscriber never sees them
+    # (PubSub filters StreamingDeltaEvent to opted-in subscribers), and a long
+    # streamed completion stops refreshing the idle clocks, so the runtime-api
+    # can reap the pod mid-stream. See #4695.
+    receives_streaming_deltas: ClassVar[bool] = True
+
+    # Monotonic timestamp of the last idle-clock reset triggered by a delta.
+    _last_delta_reset: float = 0.0
+
     async def __call__(self, _event: Event):
         # Any event is activity; refresh the idle-eviction clock.
         self.service.touch()
+        if isinstance(_event, StreamingDeltaEvent):
+            # Token-rate events refresh the shared runtime clocks only on the
+            # throttled cadence, so a long stream still resets the idle timers
+            # without per-token writes.
+            now = time.monotonic()
+            if now - self._last_delta_reset < _DELTA_ACTIVITY_SIGNAL_INTERVAL:
+                return
+            self._last_delta_reset = now
+            self.service.stored.updated_at = utc_now()
+            update_last_execution_time()
+            return
         # Skip updating timestamp for ConversationStateUpdateEvent, which is
         # published during startup/state changes and doesn't represent actual
         # conversation activity. This prevents updated_at from being reset
