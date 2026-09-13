@@ -257,10 +257,11 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         self, action: GrepAction, search_path: Path
     ) -> GrepObservation:
         """Execute grep content search using the system grep binary."""
+        # Binary stdin avoids MSYS argument globbing and Windows newline translation.
         result = subprocess.run(
-            ["grep", "-R", "-I", "-l", "-i", action.pattern, str(search_path)],
+            ["grep", "-E", "-R", "-I", "-l", "-i", "-f", "-", str(search_path)],
+            input=os.fsencode(action.pattern + "\n"),
             capture_output=True,
-            text=True,
             timeout=30,
             check=False,
             env=sanitized_env(),
@@ -274,7 +275,9 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
 
         matches = []
         if result.stdout:
-            matches = [Path(line) for line in result.stdout.splitlines() if line]
+            matches = [
+                Path(line) for line in os.fsdecode(result.stdout).splitlines() if line
+            ]
 
         return self._build_observation(action, search_path, matches)
 

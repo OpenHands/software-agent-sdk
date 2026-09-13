@@ -413,7 +413,7 @@ def _build_system_grep_terminal_command(
     search_path: str,
     include: str | None,
 ) -> str:
-    command_parts = ["grep", "-R", "-I", "-n", "-i", pattern, search_path]
+    command_parts = ["grep", "-E", "-R", "-I", "-n", "-i", pattern, search_path]
     if include:
         command_parts.append(f"--include={include}")
     return _join_shell_command(command_parts)
