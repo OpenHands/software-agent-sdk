@@ -193,3 +193,36 @@ async def test_final_response_preserves_the_agent_handoff(asynchronous):
                 "https://server", "key", http_client=http
             ).get_final_response(CID)
     assert result["response"] == "Implemented; review decisions explained."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_event_search_preserves_raw_tool_arguments_and_pagination(asynchronous):
+    page = {
+        "items": [{"tool_call": {"arguments": '{"status":"partial_success"}'}}],
+        "next_page_id": "next-page",
+    }
+
+    def respond(request):
+        assert request.url.path == f"/api/conversations/{CID}/events/search"
+        assert dict(request.url.params) == {
+            "kind": "ActionEvent",
+            "sort_order": "TIMESTAMP_DESC",
+            "limit": "50",
+            "page_id": "previous-page",
+        }
+        return httpx.Response(200, json=page)
+
+    if asynchronous:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+            client = AsyncAgentServerClient("https://server", "key", http_client=http)
+            result = await client.search_events(
+                CID, kind="ActionEvent", limit=50, page_id="previous-page"
+            )
+    else:
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+            client = AgentServerClient("https://server", "key", http_client=http)
+            result = client.search_events(
+                CID, kind="ActionEvent", limit=50, page_id="previous-page"
+            )
+    assert result == page

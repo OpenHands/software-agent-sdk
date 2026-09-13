@@ -83,7 +83,24 @@ class AgentServerClient:
                 plugins=plugins,
             )
         )
+        return self.set_title(conversation_id, title)
+
+    def set_title(self, conversation_id: str, title: str) -> JSON:
         return self._send(routes.set_title(conversation_id, title))
+
+    def search_events(
+        self,
+        conversation_id: str,
+        *,
+        kind: str | None = None,
+        limit: int = 100,
+        page_id: str | None = None,
+    ) -> JSON:
+        return self._send(
+            routes.search_events(
+                conversation_id, kind=kind, limit=limit, page_id=page_id
+            )
+        )
 
     def get_conversation(self, conversation_id: str) -> JSON:
         return self._send(
@@ -105,7 +122,9 @@ class AgentServerClient:
         )
 
     def get_errors(self, conversation_id: str, *, limit: int = 1) -> JSON:
-        return self._send(routes.errors(conversation_id, limit))
+        return self.search_events(
+            conversation_id, kind="ConversationErrorEvent", limit=limit
+        )
 
     def get_final_response(self, conversation_id: str) -> JSON:
         return self._send(routes.final_response(conversation_id))
@@ -203,7 +222,24 @@ class AsyncAgentServerClient:
                 plugins=plugins,
             )
         )
+        return await self.set_title(conversation_id, title)
+
+    async def set_title(self, conversation_id: str, title: str) -> JSON:
         return await self._send(routes.set_title(conversation_id, title))
+
+    async def search_events(
+        self,
+        conversation_id: str,
+        *,
+        kind: str | None = None,
+        limit: int = 100,
+        page_id: str | None = None,
+    ) -> JSON:
+        return await self._send(
+            routes.search_events(
+                conversation_id, kind=kind, limit=limit, page_id=page_id
+            )
+        )
 
     async def get_conversation(self, conversation_id: str) -> JSON:
         return await self._send(
@@ -225,7 +261,9 @@ class AsyncAgentServerClient:
         )
 
     async def get_errors(self, conversation_id: str, *, limit: int = 1) -> JSON:
-        return await self._send(routes.errors(conversation_id, limit))
+        return await self.search_events(
+            conversation_id, kind="ConversationErrorEvent", limit=limit
+        )
 
     async def get_final_response(self, conversation_id: str) -> JSON:
         return await self._send(routes.final_response(conversation_id))

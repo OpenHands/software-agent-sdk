@@ -59,19 +59,22 @@ def message(conversation_id: str, text: str, run: bool) -> Operation:
     )
 
 
-def errors(conversation_id: str, limit: int) -> Operation:
+def search_events(
+    conversation_id: str,
+    *,
+    kind: str | None = None,
+    limit: int = 100,
+    page_id: str | None = None,
+) -> Operation:
     if not 1 <= limit <= 100:
-        raise ValueError("Error page limit must be between 1 and 100")
+        raise ValueError("Event page limit must be between 1 and 100")
+    params: dict[str, Any] = {"sort_order": "TIMESTAMP_DESC", "limit": limit}
+    if kind is not None:
+        params["kind"] = kind
+    if page_id is not None:
+        params["page_id"] = page_id
     return Operation(
-        "GET",
-        conversation_path(conversation_id) + "/events/search",
-        {
-            "params": {
-                "kind": "ConversationErrorEvent",
-                "sort_order": "TIMESTAMP_DESC",
-                "limit": limit,
-            },
-        },
+        "GET", conversation_path(conversation_id) + "/events/search", {"params": params}
     )
 
 
