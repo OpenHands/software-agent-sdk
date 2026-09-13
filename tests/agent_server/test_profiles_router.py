@@ -16,7 +16,10 @@ from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.auth.credentials import OAuthCredentials
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
+from openhands.sdk.llm.provider_connection_store import (
+    ProviderConnection,
+    ProviderConnectionStore,
+)
 from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
 
 
@@ -244,7 +247,14 @@ def test_provider_connection_key_shared_by_linked_profiles(client):
 
     detail = client.get("/api/profiles/sonnet-4").json()
     assert detail["config"]["api_key"] is None
+    assert detail["config"]["base_url"] is None
     assert detail["api_key_set"] is True
+
+    runtime = client.get(
+        "/api/profiles/sonnet-4", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["config"]
+    assert runtime["api_key"] == "sk-ant-old"
+    assert runtime["base_url"] == "https://api.anthropic.com"
 
     activated = client.post("/api/profiles/sonnet-4/activate")
     assert activated.status_code == 200
@@ -271,6 +281,11 @@ def test_provider_connection_key_shared_by_linked_profiles(client):
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
     assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+    runtime = client.get(
+        "/api/profiles/sonnet-4", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["config"]
+    assert runtime["api_key"] == "sk-ant-new"
 
     # Re-activating re-resolves the connection and applies the rotated key.
     activated = client.post("/api/profiles/sonnet-4/activate")
@@ -1127,6 +1142,51 @@ def test_get_profile_with_plaintext_header_exposes_secrets(
     body = response.json()
     # Secret should be exposed
     assert body["config"]["api_key"] == "sk-test-secret-key"
+
+
+@pytest.mark.parametrize("expose_mode", [None, "encrypted", "plaintext"])
+def test_linked_profile_with_encrypted_provider_credentials(
+    client_with_cipher, store, temp_profiles_dir, cipher, expose_mode
+):
+    """Only runtime reads resolve a provider's encrypted-at-rest credentials."""
+    provider_store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+    provider_store.create(
+        ProviderConnection(
+            id="automation-provider",
+            display_name="Automation provider",
+            api_key=SecretStr("sk-linked-secret"),
+            base_url="https://provider.example/v1",
+            created_at=1,
+            updated_at=1,
+        ),
+        cipher=cipher,
+    )
+    store.save(
+        "linked-profile",
+        LLM(model="gpt-4o", provider_connection_id="automation-provider"),
+        cipher=cipher,
+    )
+
+    response = client_with_cipher.get(
+        "/api/profiles/linked-profile",
+        headers={"X-Expose-Secrets": expose_mode} if expose_mode else {},
+    )
+
+    assert response.status_code == 200
+    config = response.json()["config"]
+    assert config["provider_connection_id"] == "automation-provider"
+    if expose_mode == "plaintext":
+        assert config["api_key"] == "sk-linked-secret"
+        assert config["base_url"] == "https://provider.example/v1"
+    else:
+        assert config["api_key"] is None
+        assert config["base_url"] is None
+    # Reading runtime credentials must not copy them into the stored profile.
+    stored = store.load("linked-profile", cipher=cipher, resolve_provider=False)
+    assert stored.api_key is None
+    assert stored.base_url is None
 
 
 def test_get_profile_with_encrypted_header_encrypts_secrets(
