@@ -5,7 +5,6 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
 
 import openhands.agent_server.vscode_service as vscode_service_module
@@ -13,10 +12,7 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.runtime_router import (
-    add_legacy_runtime_routes,
-    create_runtime_router,
-)
+from openhands.agent_server.runtime_router import create_runtime_router
 from openhands.agent_server.vscode_service import VSCodeService
 
 
@@ -203,19 +199,30 @@ def test_runtime_routes_are_registered_with_dispatch_adapter():
     assert all(isinstance(route, CustomRuntimeRoute) for route in router.routes)
 
 
-def test_legacy_registration_exposes_deprecation_without_deprecating_local_routes():
-    async def endpoint():
-        return {"ok": True}
+@pytest.mark.asyncio
+async def test_concurrent_runtime_requests_share_event_loop_bash_service(
+    runtime_client, tmp_path, monkeypatch
+):
+    import openhands.agent_server.dependencies as dependencies
 
-    legacy = APIRouter()
-    add_legacy_runtime_routes(legacy, "bash", endpoint, endpoint)
-    app = FastAPI()
-    app.include_router(legacy, prefix="/api")
-    for operations in app.openapi()["paths"].values():
-        for operation in operations.values():
-            assert operation["deprecated"]
-            assert "v1.53.0" in operation["description"]
-    paths = create_app(Config()).openapi()["paths"]
-    for path, operations in paths.items():
-        if "/bash/" in path:
-            assert all(not op.get("deprecated", False) for op in operations.values())
+    client, app = runtime_client
+    cid = await _create(client, tmp_path / "workspace")
+    instances = []
+    loop = asyncio.get_running_loop()
+
+    def create_service(*args, **kwargs):
+        assert asyncio.get_running_loop() is loop
+        service = BashEventService(*args, **kwargs)
+        instances.append(service)
+        return service
+
+    monkeypatch.setattr(dependencies, "BashEventService", create_service)
+    responses = await asyncio.gather(
+        *(
+            client.get(f"/api/conversations/{cid}/bash/bash_events/search")
+            for _ in range(8)
+        )
+    )
+    assert all(response.status_code == 200 for response in responses)
+    event_service = await app.state.conversation_service.get_event_service(UUID(cid))
+    assert instances == [event_service.bash_event_service]

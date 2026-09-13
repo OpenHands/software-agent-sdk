@@ -238,7 +238,10 @@ class MCPProbeScope(BaseModel):
     scope: Literal["host", "runtime"] = "host"
     runtime_verified: bool = Field(
         default=False,
-        description="True only when a conversation runtime probe succeeded.",
+        description=(
+            "True only when the MCP connection probe succeeded in the selected "
+            "conversation runtime. This is not a general runtime health check."
+        ),
     )
 
 
