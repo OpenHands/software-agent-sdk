@@ -5,12 +5,15 @@ masker has to hold back partial matches; only real streams produce real
 boundaries.
 """
 
+import asyncio
+
 from openhands.sdk import get_logger
 from openhands.sdk.agent.stream_context import (
     StreamDelta,
     StreamProgress,
     StreamProgressCallbackType,
 )
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.llm import TextContent
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
@@ -51,7 +54,12 @@ class StreamingSecretMaskingTest(BaseIntegrationTest):
         return 5
 
     def setup(self) -> None:
-        self.conversation.update_secrets({"STREAM_VERIFICATION_PHRASE": SECRET_VALUE})
+        self.conversation.update_secrets({SECRET_NAME: SECRET_VALUE})
+
+    def run_instructions(self, conversation: LocalConversation) -> None:
+        # arun()/astep() is the path the agent-server streams through.
+        conversation.send_message(message=self.instruction_message)
+        asyncio.run(conversation.arun())
 
     def verify_result(self) -> TestResult:
         if not any(
@@ -68,10 +76,12 @@ class StreamingSecretMaskingTest(BaseIntegrationTest):
                 success=False, reason="no stream deltas were emitted with stream=True"
             )
 
-        streams: dict[tuple[str, int, str], str] = {}
+        # Joined per attempt and across attempts: a spurious attempt bump drops
+        # the masker's held-back tail, which can leave the secret in pieces.
+        streams: dict[tuple, str] = {}
         for d in deltas:
-            key = (d.item_id, d.attempt, d.kind)
-            streams[key] = streams.get(key, "") + d.content
+            for key in ((d.item_id, d.attempt, d.kind), (d.item_id, d.kind)):
+                streams[key] = streams.get(key, "") + d.content
         leaked = [key for key, text in streams.items() if SECRET_VALUE in text]
         if leaked:
             return TestResult(

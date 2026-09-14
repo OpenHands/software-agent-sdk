@@ -4,6 +4,7 @@ Chunk ids, reasoning fields and chunk boundaries all come from the provider, so
 these invariants can only be checked against real models.
 """
 
+import asyncio
 from collections import defaultdict
 
 from openhands.sdk import get_logger
@@ -14,8 +15,9 @@ from openhands.sdk.agent.stream_context import (
     StreamProgressCallbackType,
     StreamStarted,
 )
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event import ActionEvent, MessageEvent
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import Message, TextContent
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -23,6 +25,8 @@ INSTRUCTION = (
     "Use the terminal to run `echo streaming-check`. After it finishes, reply "
     "in two or three sentences describing what the command printed."
 )
+
+FOLLOWUP = "Now reply with one short sentence confirming you are done."
 
 
 logger = get_logger(__name__)
@@ -56,6 +60,7 @@ class StreamingProtocolTest(BaseIntegrationTest):
 
     def __init__(self, *args, **kwargs):
         self.progress: list[StreamProgress] = []
+        self.sync_frames = 0
         kwargs["llm_config"] = {**kwargs["llm_config"], "stream": True}
         super().__init__(*args, **kwargs)
 
@@ -63,10 +68,29 @@ class StreamingProtocolTest(BaseIntegrationTest):
     def stream_callbacks(self) -> list[StreamProgressCallbackType]:
         return [self.progress.append]
 
+    def run_instructions(self, conversation: LocalConversation) -> None:
+        conversation.send_message(message=self.instruction_message)
+        conversation.run()
+        self.sync_frames = len(self.progress)
+        # The agent-server drives agents through arun()/astep(), a separate
+        # streaming path from run()/step().
+        conversation.send_message(
+            message=Message(role="user", content=[TextContent(text=FOLLOWUP)])
+        )
+        asyncio.run(conversation.arun())
+
     def verify_result(self) -> TestResult:
         failures = check_stream_progress(
             self.progress, list(self.conversation.state.events)
         )
+        if not any(
+            isinstance(f, StreamStarted) for f in self.progress[: self.sync_frames]
+        ):
+            failures.append("run()/step() emitted no stream progress")
+        if not any(
+            isinstance(f, StreamStarted) for f in self.progress[self.sync_frames :]
+        ):
+            failures.append("arun()/astep() emitted no stream progress")
         if failures:
             return TestResult(success=False, reason="; ".join(failures))
         items = {f.item_id for f in self.progress if isinstance(f, StreamStarted)}
@@ -106,14 +130,10 @@ def check_stream_progress(progress: list[StreamProgress], events: list) -> list[
 
     for item_id, starts in started.items():
         attempts = [s.attempt for s in starts]
-        # A spurious attempt bump makes clients discard everything streamed so
-        # far; with no retry injected, every item must stream exactly once.
-        if attempts != [1]:
-            failures.append(
-                f"{item_id} streamed as attempts {attempts} "
-                f"({len(deltas[(item_id, attempts[-1])])} delta(s) in the last); "
-                "chunk ids changed within one response"
-            )
+        # A real provider retry legitimately re-streams under a higher attempt;
+        # a spurious bump shows up as the last attempt not matching the event.
+        if attempts != list(range(1, len(attempts) + 1)):
+            failures.append(f"{item_id} attempts are not 1..n: {attempts}")
 
         for attempt in attempts:
             orders = [d.order for d in deltas[(item_id, attempt)]]
@@ -144,11 +164,12 @@ def check_stream_progress(progress: list[StreamProgress], events: list) -> list[
         reasoning = "".join(d.content for d in last if d.kind == "reasoning")
         expected_text = _durable_text(event)
         expected_reasoning = _durable_reasoning(event)
-        if text and _normalize(text) != _normalize(expected_text):
+        if _normalize(text) != _normalize(expected_text):
             failures.append(
-                f"{item_id} text deltas ({len(text)} chars) differ from the "
-                f"{type(event).__name__} ({len(expected_text)} chars): "
-                f"{text[:80]!r} vs {expected_text[:80]!r}"
+                f"{item_id} text deltas of attempt {attempts[-1]}/{len(attempts)} "
+                f"({len(text)} chars) differ from the {type(event).__name__} "
+                f"({len(expected_text)} chars): {text[:80]!r} vs "
+                f"{expected_text[:80]!r}"
             )
         if expected_reasoning.strip() and _normalize(expected_reasoning) in _normalize(
             text
@@ -164,17 +185,16 @@ def check_stream_progress(progress: list[StreamProgress], events: list) -> list[
         if item_id not in started:
             failures.append(f"{item_id} was aborted without being started")
 
-    final = next(
-        (
-            e
-            for e in reversed(events)
-            if isinstance(e, MessageEvent) and e.source == "agent"
-        ),
-        None,
-    )
-    if final is not None and final.id not in started:
-        failures.append(
-            f"final agent message {final.id} was not streamed under its own id"
-        )
+    for event in events:
+        from_llm = (
+            isinstance(event, MessageEvent)
+            and event.source == "agent"
+            and event.llm_response_id is not None
+        ) or isinstance(event, ActionEvent)
+        if from_llm and _durable_text(event).strip() and event.id not in started:
+            failures.append(
+                f"{type(event).__name__} {event.id} has text that was not "
+                "streamed under its own id"
+            )
 
     return failures
