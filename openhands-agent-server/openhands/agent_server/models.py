@@ -360,6 +360,14 @@ class ConversationInfo(_ConversationInfoBase):
             "persisted events, avoiding 'Unknown kind' deserialization errors."
         ),
     )
+    tool_module_qualnames: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Tool names mapped to importable module qualnames. SDK clients use "
+            "this metadata to restore the registrations needed to deserialize "
+            "the conversation's tool events when attaching."
+        ),
+    )
 
 
 class ConversationPage(BaseModel):
