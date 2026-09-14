@@ -443,6 +443,14 @@ RUN set -eux; \
         ;; \
     esac
 
+# Refresh packages inherited from the base image after adding all apt sources
+# and capabilities so the published runtime includes available security fixes.
+RUN if command -v apt-get >/dev/null 2>&1; then \
+      apt-get update; \
+      apt-get upgrade -y --no-install-recommends; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 USER ${USERNAME}
 WORKDIR /
 ENV LOG_JSON=true
