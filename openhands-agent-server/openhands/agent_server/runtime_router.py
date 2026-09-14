@@ -5,11 +5,13 @@ checks are routing safeguards, not a sandbox for arbitrary shell commands.
 """
 
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 
 from openhands.agent_server.bash_router import bash_router
@@ -20,7 +22,6 @@ from openhands.agent_server.dependencies import (
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
-from openhands.agent_server.mcp_router import MCPTestResponse, test_mcp_server
 from openhands.agent_server.vscode_router import (
     VSCodeUrlResponse,
     get_vscode_url,
@@ -61,6 +62,10 @@ class RuntimeRouter(APIRouter):
         self, path: str, endpoint: Callable[..., Any], **kwargs: Any
     ) -> None:
         kwargs["route_class_override"] = self.route_class
+        if kwargs.get("response_class") is FileResponse:
+            responses = deepcopy(kwargs.get("responses", {}))
+            responses.get(200, {}).get("content", {}).pop("application/json", None)
+            kwargs["responses"] = responses
         super().add_api_route(path, endpoint, **kwargs)
 
 
@@ -83,13 +88,6 @@ def create_runtime_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
             router.add_api_route(
                 route.path, route.endpoint, methods=list(route.methods)
             )
-    router.add_api_route(
-        "/mcp/test",
-        test_mcp_server,
-        methods=["POST"],
-        response_model=MCPTestResponse,
-        response_model_exclude_none=True,
-    )
     return router
 
 

@@ -2,7 +2,6 @@ import { createServer, Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { ConversationManager } from '../conversation/conversation-manager';
 import { FileClient } from '../client/file-client';
-import { MCPClient } from '../client/mcp-client';
 import { HttpClient } from '../client/http-client';
 import { BashClient } from '../client/bash-client';
 import type { AgentBase } from '../types/base';
@@ -86,11 +85,6 @@ describe('conversation-scoped requests', () => {
     expect(urls.pop()).toBe('/api/file/home');
     await new BashClient(options).executeCommand({ command: 'pwd' });
     expect(urls.pop()).toBe('/api/conversations/selected/bash/execute_bash_command');
-    const mcp = new MCPClient(options);
-    await mcp.testServer({ server: { command: 'echo' } });
-    expect(urls.pop()).toBe('/api/conversations/selected/mcp/test');
-    await mcp.getOAuthStatus('job');
-    expect(urls.pop()).toBe('/api/mcp/oauth/status/job');
     await new RemoteWorkspace({ ...options, workingDir: '/workspace' }).gitChanges('/workspace');
     expect(urls.pop()).toBe('/api/conversations/selected/git/changes?path=%2Fworkspace');
   });
@@ -104,9 +98,6 @@ describe('conversation-scoped requests', () => {
       workspace.client.get('/api/file/download', { params: { cid: 'other' } })
     ).rejects.toThrow('cannot be overridden');
     await expect(workspace.client.get('/api/file/../../settings')).rejects.toThrow('API path');
-    await expect(
-      new FileClient({ host, conversationId: 'selected' }).downloadTrajectory('other')
-    ).rejects.toThrow('selected runtime');
     expect(
       () => new RemoteWorkspace({ host, workingDir: '/workspace', conversationId: '' })
     ).toThrow('conversation ID');

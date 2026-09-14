@@ -175,18 +175,6 @@ class _ConversationInfoBase(BaseModel):
     execution_status: ConversationExecutionStatus = Field(
         default=ConversationExecutionStatus.IDLE
     )
-    runtime_status: ConversationRuntimeStatus = Field(
-        default=ConversationRuntimeStatus.AVAILABLE,
-        description="Availability of the runtime that executes this conversation.",
-    )
-    can_resume: bool = Field(
-        default=True,
-        description="Whether retained state allows explicit execution resumption.",
-    )
-    runtime_error: ConversationRuntimeError | None = Field(
-        default=None,
-        description="Latest runtime lifecycle failure, if one is known.",
-    )
     confirmation_policy: ConfirmationPolicyBase = Field(default=NeverConfirm())
     security_analyzer: SecurityAnalyzerBase | None = Field(
         default=None,

@@ -1,6 +1,5 @@
 import asyncio
 import os
-import sys
 from uuid import UUID, uuid4
 
 import httpx
@@ -82,6 +81,10 @@ async def test_local_runtime_workspace_and_terminal_context(runtime_client, tmp_
         other + "/file/download", params={"path": str(first_dir / "marker")}
     )
     assert wrong_file.status_code == 422
+    relative_file = await client.get(
+        prefix + "/file/download", params={"path": "marker"}
+    )
+    assert relative_file.status_code == 422
     legacy = await client.get(
         "/api/file/download", params={"path": str(first_dir / "marker")}
     )
@@ -95,7 +98,6 @@ async def test_local_runtime_workspace_and_terminal_context(runtime_client, tmp_
     )
     assert unauthorized.status_code == 401
     info = (await client.get("/server_info")).json()
-    assert info["workspace_mode"] == "host"
     assert info["conversation_runtime"] == "local"
     assert "conversation_runtime_routes_v1" in info["capabilities"]
 
@@ -109,7 +111,6 @@ def test_canonical_runtime_openapi_preserves_methods_and_schemas():
         ("git", "get", "changes"),
         ("desktop", "get", "url"),
         ("vscode", "get", "url"),
-        ("mcp", "post", "test"),
     ]:
         operation = paths[
             f"/api/conversations/{{runtime_conversation_id}}/{resource}/{endpoint}"
@@ -119,44 +120,20 @@ def test_canonical_runtime_openapi_preserves_methods_and_schemas():
             for p in operation["parameters"]
         )
         assert operation["responses"]["200"]
-    assert not any("runtime_conversation_id}/mcp/oauth" in path for path in paths)
+    assert not any("runtime_conversation_id}/mcp" in path for path in paths)
     for endpoint in ("download", "archive", "download-trajectory/{conversation_id}"):
         content = paths[
             f"/api/conversations/{{runtime_conversation_id}}/file/{endpoint}"
         ]["get"]["responses"]["200"]["content"]
+        assert "application/json" not in content
         assert (
-            content
-            == paths[f"/api/file/{endpoint}"]["get"]["responses"]["200"]["content"]
+            "application/json"
+            in paths[f"/api/file/{endpoint}"]["get"]["responses"]["200"]["content"]
         )
         assert content["application/octet-stream"]["schema"] == {
             "type": "string",
             "format": "binary",
         }
-
-
-@pytest.mark.asyncio
-async def test_mcp_probe_scope_and_workspace_validation(runtime_client, tmp_path):
-    client, _ = runtime_client
-    root = tmp_path / "workspace"
-    cid = await _create(client, root)
-    script = root / "mcp_server.py"
-    script.write_text(
-        "from fastmcp import FastMCP\nm = FastMCP('test')\n@m.tool()\n"
-        "def echo(text: str) -> str: return text\nm.run()\n"
-    )
-    payload = {"server": {"command": sys.executable, "args": [str(script)]}}
-    host = await client.post("/api/mcp/test", json=payload)
-    assert host.json()["ok"] is True, host.text
-    assert host.json()["scope"] == "host"
-    assert host.json()["runtime_verified"] is False
-    runtime = await client.post(f"/api/conversations/{cid}/mcp/test", json=payload)
-    assert runtime.json()["ok"] is True, runtime.text
-    assert runtime.json()["scope"] == "runtime"
-    assert runtime.json()["runtime_verified"] is True
-    relative = await client.get(
-        f"/api/conversations/{cid}/file/download", params={"path": "mcp_server.py"}
-    )
-    assert relative.status_code == 422
 
 
 @pytest.mark.asyncio

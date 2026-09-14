@@ -29,11 +29,7 @@ export type AgentServerSettingsPatchRequest = UpdateSettingsApiSettingsPatchData
 export type AgentServerSettingsPatchResponse = UpdateSettingsApiSettingsPatchResponse;
 
 export type AgentServerMCPTestRequest = TestMcpServerApiMcpTestPostData['body'];
-export type AgentServerMCPTestResponse = TestMcpServerApiMcpTestPostResponse & {
-  /** Absent on older servers. Host success does not verify a conversation runtime. */
-  scope?: 'host' | 'runtime';
-  runtime_verified?: boolean;
-};
+export type AgentServerMCPTestResponse = TestMcpServerApiMcpTestPostResponse;
 export type AgentServerMCPToolCall = McpToolCallSpec;
 export type AgentServerMCPStartOAuthRequest = StartMcpOauthApiMcpOauthStartPostData['body'];
 export type AgentServerMCPStartOAuthResponse = StartMcpOauthApiMcpOauthStartPostResponse;

@@ -592,8 +592,6 @@ export interface MCPToolCallResult {
 }
 
 export interface MCPTestSuccess {
-  scope?: 'host' | 'runtime';
-  runtime_verified?: boolean;
   ok: true;
   tools: string[];
   tool_result?: MCPToolCallResult | null;
@@ -604,8 +602,6 @@ export interface MCPTestSuccess {
 export type MCPTestFailureKind = 'timeout' | 'connection' | 'unknown';
 
 export interface MCPTestFailure {
-  scope?: 'host' | 'runtime';
-  runtime_verified?: boolean;
   ok: false;
   error: string;
   error_kind: MCPTestFailureKind;

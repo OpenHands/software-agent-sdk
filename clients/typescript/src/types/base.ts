@@ -76,7 +76,6 @@ export interface ServerInfo {
   build_semver?: string;
   capabilities?: string[];
   conversation_runtime?: 'local' | 'docker';
-  workspace_mode?: 'host' | 'isolated';
   [key: string]: unknown;
 }
 

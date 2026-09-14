@@ -234,18 +234,7 @@ class MCPToolCallResult(BaseModel):
     text: str = Field(description="Concatenated text content of the result.")
 
 
-class MCPProbeScope(BaseModel):
-    scope: Literal["host", "runtime"] = "host"
-    runtime_verified: bool = Field(
-        default=False,
-        description=(
-            "True only when the MCP connection probe succeeded in the selected "
-            "conversation runtime. This is not a general runtime health check."
-        ),
-    )
-
-
-class MCPTestSuccess(MCPProbeScope):
+class MCPTestSuccess(BaseModel):
     """Response when the candidate server connects and lists its tools."""
 
     ok: Literal[True] = True
@@ -274,7 +263,7 @@ class MCPTestSuccess(MCPProbeScope):
     )
 
 
-class MCPTestFailure(MCPProbeScope):
+class MCPTestFailure(BaseModel):
     """Response when the candidate server fails to connect or list tools.
 
     The endpoint returns HTTP 200 in both success and failure cases: a
@@ -668,11 +657,7 @@ async def test_mcp_server(
     # reach back into ``http_request.app.state``.
     cipher = get_cipher(http_request)
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, _probe_mcp_server, request, cipher)
-    if "runtime_conversation_id" in http_request.path_params:
-        result.scope = "runtime"
-        result.runtime_verified = result.ok
-    return result
+    return await loop.run_in_executor(None, _probe_mcp_server, request, cipher)
 
 
 def _run_oauth_probe_job(job: _MCPOAuthProbeJob) -> None:

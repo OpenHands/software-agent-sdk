@@ -67,6 +67,8 @@ file_discovery_router = APIRouter(prefix="/file", tags=["Files"])
 _FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "content": {
+            # Existing routes advertised this media type. Runtime aliases discard it.
+            "application/json": {"schema": {}},
             "application/octet-stream": {
                 "schema": {"type": "string", "format": "binary"}
             },
@@ -665,7 +667,9 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.get("/download", responses=_FILE_DOWNLOAD_RESPONSES)
+@file_router.get(
+    "/download", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
 ) -> FileResponse:
@@ -880,6 +884,7 @@ async def search_subdirs(
 @file_router.get(
     "/download-trajectory/{conversation_id}",
     responses=_FILE_DOWNLOAD_RESPONSES,
+    response_class=FileResponse,
 )
 async def download_trajectory(
     conversation_id: UUID,
@@ -904,7 +909,9 @@ async def download_trajectory(
     )
 
 
-@file_router.get("/archive", responses=_FILE_DOWNLOAD_RESPONSES)
+@file_router.get(
+    "/archive", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def archive_directory(
     path: Annotated[
         str, Query(description="Absolute path of the directory to archive")

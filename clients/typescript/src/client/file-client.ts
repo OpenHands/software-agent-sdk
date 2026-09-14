@@ -18,7 +18,6 @@ export class FileClient {
   public readonly apiKey?: string;
   private readonly client: HttpClient;
   private readonly server: HttpClient;
-  private readonly conversationId?: string;
 
   constructor(options: FileClientOptions) {
     const { server, runtime } = runtimeServiceConnections(options);
@@ -26,7 +25,6 @@ export class FileClient {
     this.apiKey = options.apiKey;
     this.client = runtime;
     this.server = server;
-    this.conversationId = options.conversationId;
   }
 
   async searchSubdirectories(
@@ -96,9 +94,6 @@ export class FileClient {
   }
 
   async downloadTrajectory(conversationId: string): Promise<Blob> {
-    if (this.conversationId !== undefined && conversationId !== this.conversationId) {
-      throw new Error('Trajectory must belong to the selected runtime');
-    }
     const response = await this.client.get<Blob>(
       `/api/file/download-trajectory/${encodeURIComponent(conversationId)}`,
       { responseType: 'blob' }

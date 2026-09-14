@@ -85,7 +85,6 @@ def test_server_info_reports_credential_binding_probe(client):
         "conversation_runtime_routes_v1",
     } <= set(payload["capabilities"])
     assert payload["conversation_runtime"] == "local"
-    assert payload["workspace_mode"] == "host"
 
 
 def test_server_info_reports_runtime_timeout_cap(

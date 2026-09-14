@@ -44,12 +44,6 @@ export interface ConversationInfo {
    * Note: This field was renamed from agent_status to execution_status in the API.
    */
   execution_status: ConversationExecutionStatus;
-  /** Runtime availability. Absent on agent-server versions before this contract. */
-  runtime_status?: ConversationRuntimeStatus;
-  /** Whether retained state permits explicit execution resumption. */
-  can_resume?: boolean;
-  /** Latest structured runtime failure, when known. */
-  runtime_error?: ConversationRuntimeError | null;
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
    */

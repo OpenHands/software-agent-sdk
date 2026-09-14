@@ -60,7 +60,6 @@ class ServerInfo(BaseModel):
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
     conversation_runtime: Literal["local", "docker"] = "local"
-    workspace_mode: Literal["host", "isolated"] = "host"
     capabilities: list[str] = Field(
         default_factory=lambda: [
             "conversation_runtime_routes_v1",
