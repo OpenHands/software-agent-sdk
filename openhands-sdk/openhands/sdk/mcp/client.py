@@ -2,9 +2,12 @@
 
 import asyncio
 import inspect
+import threading
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from fastmcp import Client as AsyncMCPClient
 
 from openhands.sdk.mcp.exceptions import MCPError
@@ -42,13 +45,18 @@ class MCPClient(AsyncMCPClient):
     _closed: bool
     _tools: "list[MCPToolDefinition]"
     _tools_reconciled_callback: ToolsReconciledCallback | None
+    _connection_future: Future[None] | None = None
+    _connection_stop: anyio.Event | None = None
 
     def __init__(self, *args, **kwargs):
+        kwargs.setdefault("mode", "legacy")
         super().__init__(*args, **kwargs)
         self._executor = AsyncExecutor()
         self._closed = False
         self._tools = []
         self._tools_reconciled_callback = None
+        self._connection_future = None
+        self._connection_stop = None
 
     @property
     def tools(self) -> "list[MCPToolDefinition]":
@@ -61,6 +69,41 @@ class MCPClient(AsyncMCPClient):
             await self.__aenter__()
         except RuntimeError as exc:
             raise MCPError("MCP Connection Failure") from exc
+
+    async def _own_connection(
+        self, ready: threading.Event, errors: list[BaseException]
+    ) -> None:
+        try:
+            await self.connect()
+            self._connection_stop = anyio.Event()
+        except BaseException as exc:
+            errors.append(exc)
+            raise
+        finally:
+            ready.set()
+
+        assert self._connection_stop is not None
+        try:
+            await self._connection_stop.wait()
+        finally:
+            await self.__aexit__(None, None, None)
+
+    def sync_connect(self, timeout: float) -> None:
+        """Keep FastMCP's background session alive on the portal loop."""
+        if self._connection_future is not None:
+            return
+
+        ready = threading.Event()
+        errors: list[BaseException] = []
+        future = self._executor.portal.start_task_soon(
+            self._own_connection, ready, errors
+        )
+        self._connection_future = future
+        if not ready.wait(timeout):
+            future.cancel()
+            raise TimeoutError("MCP connection timed out")
+        if errors:
+            future.result()
 
     def call_async_from_sync(
         self,
@@ -99,12 +142,19 @@ class MCPClient(AsyncMCPClient):
         if self._closed:
             return
 
-        # Best-effort: try async close if parent provides it
-        if hasattr(self, "close") and inspect.iscoroutinefunction(self.close):
+        future = self._connection_future
+        stop = self._connection_stop
+        if future is not None and stop is not None:
+            try:
+                self._executor.portal.call(stop.set)
+                future.result(timeout=10.0)
+            except Exception:
+                future.cancel()
+        elif hasattr(self, "close") and inspect.iscoroutinefunction(self.close):
             try:
                 self._executor.run_async(self.close, timeout=10.0)
             except Exception:
-                pass  # Ignore close errors during cleanup
+                pass
 
         # Always cleanup the executor
         self._executor.close()

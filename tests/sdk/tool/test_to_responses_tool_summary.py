@@ -64,7 +64,7 @@ def test_mcp_tool_with_summary_param_preserves_original_description():
     mcp_tool = mcp.types.Tool(
         name="jira_create_issue",
         description="Create a Jira issue",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "project_key": {"type": "string"},

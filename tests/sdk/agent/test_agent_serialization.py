@@ -37,7 +37,7 @@ def create_mock_mcp_tool(name: str) -> MCPToolDefinition:
     mock_mcp_tool = mcp.types.Tool(
         name=name,
         description=f"A test MCP tool named {name}",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Query parameter"}
