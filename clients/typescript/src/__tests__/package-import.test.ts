@@ -11,15 +11,15 @@
  *
  *     import { RemoteWorkspace } from "@openhands/typescript-client";
  *
- * These tests pin the new behaviour: the WebSocket modules never throw at
- * module load, and the "no WebSocket implementation" condition is reported
- * via the existing `onError` callback only when `start()` is called.
+ * The `ws` fallback is gone. Every runtime this package supports supplies a
+ * standards-compatible WebSocket global, so the clients read
+ * `globalThis.WebSocket` directly.
  *
- * Implementation note: the default Jest runner is CommonJS, so plain
- * `require('ws')` *succeeds* in tests and hides the bug. Each test below
- * uses `jest.isolateModules` + `jest.doMock('ws', () => { throw ... })` so
- * the module-load path is exercised against the same conditions a real
- * Node.js ESM consumer hits.
+ * These tests pin two things: the WebSocket modules never throw at module
+ * load even when no implementation exists, and the "no WebSocket
+ * implementation" condition is reported via the existing `onError` callback
+ * only when `start()` is called. Deleting the global is the real condition a
+ * consumer would hit, rather than a simulation of it.
  */
 
 const WEBSOCKET_MODULES = [
@@ -27,18 +27,24 @@ const WEBSOCKET_MODULES = [
   '../events/bash-websocket-client',
 ] as const;
 
-const mockWsAsUnavailable = (): void => {
-  jest.doMock('ws', () => {
-    throw new Error('ws is not available in this environment');
-  });
+const originalWebSocket = globalThis.WebSocket;
+
+/** Remove the global before the module under test reads it at load time. */
+const removeWebSocketGlobal = (): void => {
+  globalThis.WebSocket = undefined as unknown as typeof WebSocket;
 };
 
-describe('package imports do not crash when `ws` is unavailable', () => {
+afterEach(() => {
+  globalThis.WebSocket = originalWebSocket;
+  jest.resetModules();
+});
+
+describe('package imports do not crash without a WebSocket implementation', () => {
   describe.each(WEBSOCKET_MODULES)('%s', (modulePath) => {
     it('does not throw at module load', () => {
       expect(() => {
         jest.isolateModules(() => {
-          mockWsAsUnavailable();
+          removeWebSocketGlobal();
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           require(modulePath);
         });
@@ -46,13 +52,13 @@ describe('package imports do not crash when `ws` is unavailable', () => {
     });
   });
 
-  it('importing the package barrel does not throw when `ws` is unavailable', () => {
+  it('importing the package barrel does not throw', () => {
     // This is the exact failure agent-canvas hit:
     //   import { RemoteWorkspace } from "@openhands/typescript-client";
     // would crash because the barrel transitively loads the websocket modules.
     expect(() => {
       jest.isolateModules(() => {
-        mockWsAsUnavailable();
+        removeWebSocketGlobal();
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const pkg = require('../index');
         // Touch a non-WebSocket export to make sure nothing is lazy in a way
@@ -64,10 +70,10 @@ describe('package imports do not crash when `ws` is unavailable', () => {
     }).not.toThrow();
   });
 
-  it('constructing RemoteWorkspace does not require `ws`', () => {
+  it('constructing RemoteWorkspace does not need a WebSocket', () => {
     expect(() => {
       jest.isolateModules(() => {
-        mockWsAsUnavailable();
+        removeWebSocketGlobal();
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { RemoteWorkspace } = require('../index');
         new RemoteWorkspace({
@@ -79,54 +85,77 @@ describe('package imports do not crash when `ws` is unavailable', () => {
     }).not.toThrow();
   });
 
-  it('WebSocketCallbackClient.start() reports the missing implementation via onError instead of throwing', () => {
-    let captured: Error | undefined;
+  it.each([
+    ['../events/websocket-client', 'WebSocketCallbackClient', { conversationId: 'conv-1' }],
+    ['../events/bash-websocket-client', 'BashWebSocketClient', {}],
+  ])(
+    '%s %s.start() reports the missing implementation via onError',
+    (modulePath, exportName, extra) => {
+      let captured: Error | undefined;
+
+      jest.isolateModules(() => {
+        removeWebSocketGlobal();
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const module = require(modulePath);
+        const client = new module[exportName]({
+          host: 'http://example.com',
+          callback: () => {},
+          onError: (err: Error) => {
+            captured = err;
+          },
+          ...(extra as Record<string, unknown>),
+        });
+        try {
+          client.start();
+        } finally {
+          client.stop();
+        }
+      });
+
+      expect(captured).toBeInstanceOf(Error);
+      expect(captured?.message).toMatch(/WebSocket implementation not available/i);
+    }
+  );
+});
+
+describe('the clients use globalThis.WebSocket when it exists', () => {
+  it.each([
+    {
+      modulePath: '../events/websocket-client',
+      exportName: 'WebSocketCallbackClient',
+      options: { host: 'http://example.com', conversationId: 'conv-1', callback: () => {} },
+      expectedUrl: 'ws://example.com/sockets/events/conv-1',
+    },
+    {
+      modulePath: '../events/bash-websocket-client',
+      exportName: 'BashWebSocketClient',
+      options: { host: 'http://example.com', callback: () => {} },
+      expectedUrl: 'ws://example.com/sockets/bash-events',
+    },
+  ])('$exportName opens $expectedUrl', ({ modulePath, exportName, options, expectedUrl }) => {
+    const urls: string[] = [];
+    class FakeWebSocket {
+      onopen?: () => void;
+      onmessage?: (event: { data: unknown }) => void;
+      onclose?: () => void;
+      onerror?: () => void;
+
+      constructor(url: string) {
+        urls.push(url);
+      }
+
+      close(): void {}
+    }
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
 
     jest.isolateModules(() => {
-      mockWsAsUnavailable();
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { WebSocketCallbackClient } = require('../events/websocket-client');
-      const client = new WebSocketCallbackClient({
-        host: 'http://example.com',
-        conversationId: 'conv-1',
-        callback: () => {},
-        onError: (err: Error) => {
-          captured = err;
-        },
-      });
-      try {
-        client.start();
-      } finally {
-        client.stop();
-      }
+      const module = require(modulePath);
+      const client = new module[exportName](options);
+      client.start();
+      client.stop();
     });
 
-    expect(captured).toBeInstanceOf(Error);
-    expect(captured?.message).toMatch(/WebSocket implementation not available/i);
-  });
-
-  it('BashWebSocketClient.start() reports the missing implementation via onError instead of throwing', () => {
-    let captured: Error | undefined;
-
-    jest.isolateModules(() => {
-      mockWsAsUnavailable();
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { BashWebSocketClient } = require('../events/bash-websocket-client');
-      const client = new BashWebSocketClient({
-        host: 'http://example.com',
-        callback: () => {},
-        onError: (err: Error) => {
-          captured = err;
-        },
-      });
-      try {
-        client.start();
-      } finally {
-        client.stop();
-      }
-    });
-
-    expect(captured).toBeInstanceOf(Error);
-    expect(captured?.message).toMatch(/WebSocket implementation not available/i);
+    expect(urls).toEqual([expectedUrl]);
   });
 });
