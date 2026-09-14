@@ -67,9 +67,11 @@ file_discovery_router = APIRouter(prefix="/file", tags=["Files"])
 _FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "content": {
+            # Retain the previously advertised media type with an explicit schema.
+            "application/json": {"schema": {"type": "string", "format": "binary"}},
             "application/octet-stream": {
                 "schema": {"type": "string", "format": "binary"}
-            }
+            },
         }
     }
 }
