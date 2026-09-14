@@ -19,14 +19,14 @@ from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.file_router import file_router
+from openhands.agent_server.file_router import file_discovery_router
 
 
 SEARCH_ROUTES = [
     (conversation_router, "/api/conversations/search"),
     (event_router, "/api/conversations/{conversation_id}/events/search"),
     (bash_router, "/api/bash/bash_events/search"),
-    (file_router, "/api/file/search_subdirs"),
+    (file_discovery_router, "/api/file/search_subdirs"),
 ]
 
 
