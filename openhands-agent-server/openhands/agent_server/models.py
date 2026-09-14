@@ -143,6 +143,12 @@ class _ConversationInfoBase(BaseModel):
             "Maximum number of iterations the agent can perform in a single run."
         ),
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Maximum LLM cost in USD per run; None means no cost limit.",
+    )
     stuck_detection: bool = Field(
         default=True,
         description="Whether to enable stuck detection for the agent.",

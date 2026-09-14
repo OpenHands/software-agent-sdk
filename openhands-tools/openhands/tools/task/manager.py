@@ -5,9 +5,8 @@ The TaskManager class is responsible for creating, resuming,
 and running sub-agent tasks. In other words, it handles
 everything related to task management.
 
-The conversation linked to a completed task is persisted in
-a temporary directory, ensuring the state can be restored
-if the task is resumed for further work later.
+Local task conversations are persisted for resume. Remote task conversations
+and their owned workspaces are retained in memory until the manager closes.
 """
 
 import shutil
@@ -22,7 +21,9 @@ from typing import TYPE_CHECKING, Final
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk import Agent
+from openhands.sdk.conversation import BaseConversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -35,6 +36,12 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.workspace import RemoteWorkspace
+from openhands.tools.task.workspace import (
+    SubagentWorkspaceFactory,
+    close_workspace,
+    enter_workspace,
+)
 
 
 if TYPE_CHECKING:
@@ -73,11 +80,12 @@ class Task(BaseModel):
     )
     result: str | None = Field(default=None, description="Result of the task.")
     error: str | None = Field(default=None, description="Error if task failed.")
-    conversation: LocalConversation | None = Field(
+    conversation: BaseConversation | None = Field(
         default=None,
         exclude=True,
         description="Conversation state of the task.",
     )
+    remote_workspace: RemoteWorkspace | None = Field(default=None, exclude=True)
 
     def set_result(self, result: str) -> None:
         """Set task as successful."""
@@ -98,12 +106,16 @@ class TaskManager:
     def __init__(
         self,
         confirmation_handler: ConfirmationHandler | None = None,
+        workspace_factory: SubagentWorkspaceFactory | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
+        self._workspace_factory = workspace_factory
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
+        self._pending_tasks: dict[str, RemoteWorkspace | None] = {}
+        self._closed = False
 
         # Set once in _ensure_parent: uses the parent's subagents dir
         # when the parent persists, otherwise a temporary directory.
@@ -127,16 +139,19 @@ class TaskManager:
         self._ensure_parent(conversation)
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:
-        if self._parent_conversation is None:
-            self._parent_conversation = conversation
-            parent_persistence_dir = conversation.state.persistence_dir
-            if parent_persistence_dir is not None:
-                self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
-                self._persistence_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                self._persistence_dir = Path(
-                    tempfile.mkdtemp(prefix="openhands_tasks_")
-                )
+        with self._tasks_lock:
+            if self._parent_conversation is None:
+                self._parent_conversation = conversation
+                parent_persistence_dir = conversation.state.persistence_dir
+                if parent_persistence_dir is not None:
+                    self._persistence_dir = (
+                        Path(parent_persistence_dir) / _SUBAGENTS_DIR
+                    )
+                    self._persistence_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    self._persistence_dir = Path(
+                        tempfile.mkdtemp(prefix="openhands_tasks_")
+                    )
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -149,12 +164,19 @@ class TaskManager:
 
     def _generate_ids(self) -> tuple[str, uuid.UUID]:
         """Generate a unique task ID, and a conversation ID."""
-        task_number = len(self._tasks) + 1
+        task_number = len(self._tasks) + len(self._pending_tasks) + 1
         task_id = f"task_{task_number:08x}"
+        while task_id in self._tasks or task_id in self._pending_tasks:
+            task_number += 1
+            task_id = f"task_{task_number:08x}"
         uuid_ = uuid.uuid4()
         return task_id, uuid_
 
     def _evict_task(self, task: Task) -> None:
+        if task.remote_workspace is not None:
+            # Remote task workspaces remain allocated for the lifetime of the
+            # TaskManager to support task resume.
+            return
         if task.conversation:
             task.conversation.pause()
             task.conversation.close()
@@ -209,15 +231,22 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
+            stored_task = self._tasks[resume]
+            if stored_task.remote_workspace is not None:
+                assert stored_task.conversation is not None
+                self._tasks[resume] = stored_task.model_copy(
+                    update={"status": TaskStatus.RUNNING}
+                )
+                return self._tasks[resume]
+
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
-            conversation_id = self._tasks[resume].conversation_id
             with detached_delegate_context() as link:
                 conversation = LocalConversation(
                     agent=worker_agent,
                     workspace=self.parent_conversation.state.workspace.working_dir,
                     persistence_dir=self._persistence_dir,
-                    conversation_id=conversation_id,
+                    conversation_id=stored_task.conversation_id,
                     hook_config=factory.definition.hooks,
                     delete_on_close=True,
                     observability_metadata=self._delegate_observability_metadata(
@@ -225,19 +254,16 @@ class TaskManager:
                     ),
                     observability_tags=["delegate"],
                 )
-
-            self._set_confirmation_policy(
-                conversation,
-                factory.definition.get_confirmation_policy(),
+            try:
+                self._set_confirmation_policy(
+                    conversation, factory.definition.get_confirmation_policy()
+                )
+            except BaseException:
+                conversation.close()
+                raise
+            self._tasks[resume] = stored_task.model_copy(
+                update={"conversation": conversation, "status": TaskStatus.RUNNING}
             )
-
-            self._tasks[resume] = self._tasks[resume].model_copy(
-                update={
-                    "conversation": conversation,
-                    "status": TaskStatus.RUNNING,
-                }
-            )
-
             return self._tasks[resume]
 
     def _create_task(
@@ -266,7 +292,33 @@ class TaskManager:
         )
 
         with self._tasks_lock:
+            if self._closed:
+                raise RuntimeError("TaskManager is closed")
             task_id, conversation_id = self._generate_ids()
+            self._pending_tasks[task_id] = None
+
+        workspace = None
+        sub_conversation = None
+        try:
+            provisioned = (
+                self._workspace_factory(task_id, subagent_type)
+                if self._workspace_factory is not None
+                else None
+            )
+            if provisioned is not None:
+                with self._tasks_lock:
+                    if provisioned is self.parent_conversation.state.workspace or any(
+                        owned is provisioned
+                        for owned in [
+                            *(task.remote_workspace for task in self._tasks.values()),
+                            *self._pending_tasks.values(),
+                        ]
+                    ):
+                        raise ValueError("Each subagent must own a distinct workspace")
+                    self._pending_tasks[task_id] = provisioned
+                # enter_workspace owns rollback if entering fails.
+                enter_workspace(provisioned)
+                workspace = provisioned
 
             sub_conversation = self._get_conversation(
                 description=description,
@@ -277,20 +329,34 @@ class TaskManager:
                 worker_agent=worker_agent,
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
+                remote_workspace=workspace,
             )
-
             self._set_confirmation_policy(
-                sub_conversation,
-                factory.definition.get_confirmation_policy(),
+                sub_conversation, factory.definition.get_confirmation_policy()
             )
-
-            self._tasks[task_id] = Task(
+            task = Task(
                 id=task_id,
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
                 status=TaskStatus.RUNNING,
+                remote_workspace=workspace,
             )
-            return self._tasks[task_id]
+            with self._tasks_lock:
+                if self._closed:
+                    raise RuntimeError("TaskManager closed during task creation")
+                self._tasks[task_id] = task
+            return task
+        except BaseException:
+            try:
+                if sub_conversation is not None:
+                    sub_conversation.close()
+            finally:
+                if workspace is not None:
+                    close_workspace(workspace)
+            raise
+        finally:
+            with self._tasks_lock:
+                self._pending_tasks.pop(task_id, None)
 
     def _get_conversation(
         self,
@@ -302,7 +368,8 @@ class TaskManager:
         worker_agent: Agent,
         hook_config: HookConfig | None = None,
         max_budget_per_run: float | None = None,
-    ) -> LocalConversation:
+        remote_workspace: RemoteWorkspace | None = None,
+    ) -> BaseConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
 
@@ -312,9 +379,16 @@ class TaskManager:
             visualizer = parent_visualizer.create_sub_visualizer(label)
 
         with detached_delegate_context() as link:
-            return LocalConversation(
+            conversation_class = (
+                LocalConversation if remote_workspace is None else RemoteConversation
+            )
+            conversation_kwargs: dict = dict(
                 agent=worker_agent,
-                workspace=parent.state.workspace.working_dir,
+                workspace=(
+                    remote_workspace
+                    if remote_workspace is not None
+                    else parent.state.workspace.working_dir
+                ),
                 visualizer=visualizer,
                 persistence_dir=self._persistence_dir,
                 conversation_id=conversation_id,
@@ -328,6 +402,7 @@ class TaskManager:
                 ),
                 observability_tags=["delegate"],
             )
+            return conversation_class(**conversation_kwargs)
 
     def _delegate_observability_metadata(
         self,
@@ -405,14 +480,18 @@ class TaskManager:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
-            self._update_parent_metrics(parent, task)
-            self._evict_task(task)
+            try:
+                self._update_parent_metrics(parent, task)
+            except Exception:
+                logger.warning("Failed to read subagent metrics", exc_info=True)
+            finally:
+                self._evict_task(task)
 
         return task
 
     @staticmethod
     def _run_stop_detail(
-        conversation: LocalConversation,
+        conversation: BaseConversation,
         status: ConversationExecutionStatus,
     ) -> str:
         """Why a sub-agent stopped without finishing (run-limit, stuck, paused, ...),
@@ -430,9 +509,7 @@ class TaskManager:
         partial = get_agent_final_response(conversation.state.events)
         return f"{reason}\nPartial result:\n{partial}" if partial else reason
 
-    def _run_until_finished(
-        self, task_id: str, conversation: LocalConversation
-    ) -> None:
+    def _run_until_finished(self, task_id: str, conversation: BaseConversation) -> None:
         """Run a sub-agent conversation to completion, handling confirmations."""
         conversation.run()
         while (
@@ -453,7 +530,7 @@ class TaskManager:
 
     def _set_confirmation_policy(
         self,
-        conversation: LocalConversation,
+        conversation: BaseConversation,
         confirmation_policy: ConfirmationPolicyBase | None,
     ) -> None:
         """
@@ -479,6 +556,19 @@ class TaskManager:
 
     def close(self) -> None:
         """Clean up temporary directory (if used) and remove all created tasks."""
+        with self._tasks_lock:
+            self._closed = True
+            tasks = list(self._tasks.values())
+            self._tasks.clear()
+        for task in tasks:
+            try:
+                if task.conversation is not None:
+                    task.conversation.close()
+            except Exception:
+                logger.warning("Failed to close subagent conversation", exc_info=True)
+            finally:
+                if task.remote_workspace is not None:
+                    close_workspace(task.remote_workspace)
         # Only clean up when using a temp dir (parent had no persistence).
         # When the parent persists, subagent data lives under its directory.
         parent_persists = (
@@ -491,6 +581,3 @@ class TaskManager:
             and self._persistence_dir.exists()
         ):
             shutil.rmtree(self._persistence_dir, ignore_errors=True)
-
-        with self._tasks_lock:
-            self._tasks.clear()
