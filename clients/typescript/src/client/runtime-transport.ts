@@ -10,6 +10,18 @@ export interface RuntimeServiceClientOptions {
   conversationId?: string;
 }
 
+function assertWorkspaceApiPath(options: RequestOptions): void {
+  if (
+    !options.url.startsWith('/api/') ||
+    options.url.includes('?') ||
+    options.url.includes('#') ||
+    options.url.includes('\\') ||
+    options.url.split('/').some((segment) => ['.', '..'].includes(decodeURIComponent(segment)))
+  ) {
+    throw new Error('Workspace requests require an API path and separate query parameters');
+  }
+}
+
 /** Internal transport for operations on one conversation's workspace. */
 class ConversationScopedHttpClient extends HttpClient {
   constructor(
@@ -24,15 +36,7 @@ class ConversationScopedHttpClient extends HttpClient {
   override async request<T = HttpResponse['data']>(
     options: RequestOptions
   ): Promise<HttpResponse<T>> {
-    if (
-      !options.url.startsWith('/api/') ||
-      options.url.includes('?') ||
-      options.url.includes('#') ||
-      options.url.includes('\\') ||
-      options.url.split('/').some((segment) => ['.', '..'].includes(decodeURIComponent(segment)))
-    ) {
-      throw new Error('Runtime requests require an API path and separate query parameters');
-    }
+    assertWorkspaceApiPath(options);
     if (options.params?.cid != null) {
       throw new Error('A runtime conversation cannot be overridden');
     }
@@ -51,6 +55,26 @@ class ConversationScopedHttpClient extends HttpClient {
   }
 }
 
+/** Transport for the server's trusted host workspace. */
+class HostWorkspaceHttpClient extends HttpClient {
+  constructor(
+    options: RuntimeServiceClientOptions,
+    private readonly serverClient: HttpClient
+  ) {
+    super({ baseUrl: options.host });
+  }
+
+  override async request<T = HttpResponse['data']>(
+    options: RequestOptions
+  ): Promise<HttpResponse<T>> {
+    assertWorkspaceApiPath(options);
+    return this.serverClient.request<T>({
+      ...options,
+      url: `/api/host/${options.url.slice(5)}`,
+    });
+  }
+}
+
 export function createRuntimeHttpClients(options: RuntimeServiceClientOptions): {
   serverClient: HttpClient;
   runtimeClient: HttpClient;
@@ -64,7 +88,7 @@ export function createRuntimeHttpClients(options: RuntimeServiceClientOptions): 
     serverClient,
     runtimeClient:
       options.conversationId === undefined
-        ? serverClient
+        ? new HostWorkspaceHttpClient(options, serverClient)
         : new ConversationScopedHttpClient(options, serverClient, options.conversationId),
   };
 }

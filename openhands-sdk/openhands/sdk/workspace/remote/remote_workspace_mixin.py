@@ -63,7 +63,7 @@ class RemoteWorkspaceMixin(BaseModel):
     def api_prefix(self) -> str:
         """The immutable runtime scope used by file, command, and Git operations."""
         if self.runtime_conversation_id is None:
-            return "/api"
+            return "/api/host"
         return f"/api/conversations/{self.runtime_conversation_id}"
 
     def model_post_init(self, context: Any) -> None:

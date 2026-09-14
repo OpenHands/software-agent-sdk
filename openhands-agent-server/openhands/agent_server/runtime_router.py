@@ -95,6 +95,20 @@ def create_runtime_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
     return router
 
 
+def create_host_workspace_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
+    """Expose the server's trusted host workspace independently of runtime mode."""
+    router = RuntimeRouter(prefix="/host", route_class=route_class)
+    for source in (
+        bash_router,
+        file_router,
+        git_router,
+        vscode_router,
+        desktop_router,
+    ):
+        router.include_router(source)
+    return router
+
+
 async def get_runtime_vscode_url(
     request: Request,
     base_url: str | None = None,

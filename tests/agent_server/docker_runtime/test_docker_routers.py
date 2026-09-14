@@ -377,7 +377,27 @@ def test_delete_preserves_files_until_container_stops(
 
 
 # ---------------------------------------------------------------------------
-# Global routers (bash/git/file/...) require ?cid=…
+# Explicit host workspace routes
+# ---------------------------------------------------------------------------
+
+
+def test_host_workspace_file_route_never_creates_a_container(docker_app, tmp_path):
+    client, app = docker_app
+    destination = tmp_path / "host-workspace" / "bundle.tar.gz"
+
+    response = client.post(
+        "/api/host/file/upload",
+        params={"path": str(destination)},
+        files={"file": ("bundle.tar.gz", b"host automation")},
+    )
+
+    assert response.status_code == 200
+    assert destination.read_bytes() == b"host automation"
+    assert app.state.docker_registry._workspaces == {}
+
+
+# ---------------------------------------------------------------------------
+# Legacy global routes require ?cid=… in Docker mode
 # ---------------------------------------------------------------------------
 
 
