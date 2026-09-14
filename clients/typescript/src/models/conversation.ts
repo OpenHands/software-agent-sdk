@@ -23,6 +23,20 @@ export enum ConversationSortOrder {
   UPDATED_AT_DESC = 'UPDATED_AT_DESC',
 }
 
+export type ConversationRuntimeStatus =
+  'available' | 'starting' | 'missing' | 'ownership_lost' | 'error';
+
+export interface ConversationRuntimeError {
+  code: string;
+  message: string;
+}
+
+export interface ConversationRuntimeInfo {
+  runtime_status: ConversationRuntimeStatus;
+  can_resume: boolean;
+  runtime_error: ConversationRuntimeError | null;
+}
+
 export interface ConversationInfo {
   id: ConversationID;
   /**
