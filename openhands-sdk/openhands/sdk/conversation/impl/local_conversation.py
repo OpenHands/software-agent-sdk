@@ -1626,8 +1626,7 @@ class LocalConversation(BaseConversation):
         thread an explicit ``call_context`` through the completion call
         (e.g. the condenser's dedicated LLM) still get correct per-
         conversation state.  The primary agent completion path threads
-        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
-        → ``llm.completion(call_context=...)``.
+        context explicitly via ``Agent.step()`` → ``llm.generate(call_context=...)``.
 
         See #3443 for background.
         """
@@ -2859,7 +2858,7 @@ class LocalConversation(BaseConversation):
             return agent_response
 
         # Import here to avoid circular imports
-        from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+        from openhands.sdk.agent.utils import prepare_llm_messages
 
         template_dir = (
             Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
@@ -2895,8 +2894,10 @@ class LocalConversation(BaseConversation):
             self.llm_registry.add(question_llm)
 
         # Pass agent tools so LLM can understand tool_calls in conversation history
-        response = make_llm_completion(
-            question_llm, messages, tools=list(self.agent.tools_map.values())
+        response = question_llm.generate(
+            messages=messages,
+            tools=list(self.agent.tools_map.values()),
+            store=False,
         )
 
         message = response.message

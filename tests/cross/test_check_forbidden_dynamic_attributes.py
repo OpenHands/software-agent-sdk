@@ -124,6 +124,20 @@ def test_setattr_also_detected(checker, tmp_path: Path):
     assert checker.main([str(f)]) == 1
 
 
+def test_dunder_dict_get_also_detected(checker, tmp_path: Path):
+    """Direct instance dictionary lookup is also forbidden."""
+    f = _write_py(tmp_path / "dict_get.py", 'value = obj.__dict__.get("attr")\n')
+
+    assert checker.main([str(f)]) == 1
+
+
+def test_regular_dict_get_is_allowed(checker, tmp_path: Path):
+    """Ordinary mapping access is not dynamic attribute access."""
+    f = _write_py(tmp_path / "dict_get.py", 'value = data.get("key")\n')
+
+    assert checker.main([str(f)]) == 0
+
+
 def test_deleted_baselined_file_is_stale(checker, tmp_path: Path):
     """Deleting a baselined file must be caught even when checking other files.
 
@@ -154,3 +168,68 @@ def test_multiline_arg_change_is_caught(checker, tmp_path: Path):
     # Change the argument on a subsequent line — same first line, different call.
     _write_py(f, "v = getattr(\n    obj,\n    'other',\n)\n")
     assert checker.main([str(f)]) == 1
+
+
+def test_baseline_addition_is_rejected(checker):
+    """A baseline may never gain a new allowance."""
+    reference = checker.Counter({("a.py", "getattr", "old"): 1})
+    current = checker.Counter(
+        {
+            ("a.py", "getattr", "old"): 1,
+            ("b.py", "setattr", "new"): 1,
+        }
+    )
+
+    assert checker._baseline_additions(reference, current) == checker.Counter(
+        {("b.py", "setattr", "new"): 1}
+    )
+
+
+def test_baseline_removal_is_allowed(checker):
+    """Deleting an existing allowance preserves baseline monotonicity."""
+    reference = checker.Counter(
+        {
+            ("a.py", "getattr", "old"): 1,
+            ("b.py", "setattr", "removed"): 1,
+        }
+    )
+    current = checker.Counter({("a.py", "getattr", "old"): 1})
+
+    assert not checker._baseline_additions(reference, current)
+
+
+def test_duplicate_baseline_addition_is_rejected(checker):
+    """Increasing an existing allowance's multiplicity is also an addition."""
+    key = ("a.py", "getattr", "same")
+
+    assert checker._baseline_additions(
+        checker.Counter({key: 1}), checker.Counter({key: 2})
+    ) == checker.Counter({key: 1})
+
+
+def test_baseline_ref_option_rejects_addition(checker, tmp_path: Path, monkeypatch):
+    """The CLI guard fails before accepting an expanded baseline."""
+    key = ("added.py", "getattr", "new")
+    checker.BASELINE_FILE.write_text(
+        json.dumps([{"file": key[0], "name": key[1], "hash": key[2]}])
+    )
+    monkeypatch.setattr(
+        checker, "_load_baseline_from_git", lambda _ref: checker.Counter()
+    )
+    clean = _write_py(tmp_path / "clean.py", "x = 1\n")
+
+    assert checker.main([str(clean), "--baseline-ref", "base-sha"]) == 1
+
+
+def test_baseline_ref_option_allows_removal(checker, tmp_path: Path, monkeypatch):
+    """The CLI guard permits a baseline that is a strict subset."""
+    removed = ("removed.py", "getattr", "old")
+    checker.BASELINE_FILE.write_text("[]\n")
+    monkeypatch.setattr(
+        checker,
+        "_load_baseline_from_git",
+        lambda _ref: checker.Counter({removed: 1}),
+    )
+    clean = _write_py(tmp_path / "clean.py", "x = 1\n")
+
+    assert checker.main([str(clean), "--baseline-ref", "base-sha"]) == 0

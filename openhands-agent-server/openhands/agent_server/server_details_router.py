@@ -60,6 +60,7 @@ class ServerInfo(BaseModel):
     )
     capabilities: list[str] = Field(
         default_factory=lambda: [
+            "profile_secret_scope_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
