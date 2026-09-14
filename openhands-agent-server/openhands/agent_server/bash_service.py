@@ -258,7 +258,7 @@ class BashEventService:
         self, request: ExecuteBashRequest
     ) -> tuple[BashCommand, asyncio.Task]:
         """Execute a bash command. The output will be published separately."""
-        if self._closed:
+        if self.default_cwd is not None and self._closed:
             raise RuntimeError("Bash event service is closed")
         cwd = request.cwd or self.default_cwd
         command = BashCommand(**{**request.model_dump(), "cwd": cwd})
@@ -267,8 +267,9 @@ class BashEventService:
 
         # Execute the bash command in a background task
         task = asyncio.create_task(self._execute_bash_command(command))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        if self.default_cwd is not None:
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         return command, task
 
     async def _execute_bash_command(self, command: BashCommand) -> None:
@@ -524,11 +525,12 @@ class BashEventService:
 
     async def close(self):
         """Close the bash event service and clean up resources."""
-        self._closed = True
-        tasks = list(self._tasks)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        if self.default_cwd is not None:
+            self._closed = True
+            tasks = list(self._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self._pub_sub.close()
 
     async def __aenter__(self):
