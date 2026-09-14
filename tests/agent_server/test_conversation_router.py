@@ -2694,3 +2694,15 @@ def test_start_conversation_client_tool_registration_error_returns_422(
         assert "collides with an existing non-client tool" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("method,suffix", [("get", ""), ("post", "/reprovision")])
+def test_runtime_requires_existing_conversation(
+    client, mock_conversation_service, method, suffix
+):
+    mock_conversation_service.get_conversation.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
+    assert response.status_code == 404

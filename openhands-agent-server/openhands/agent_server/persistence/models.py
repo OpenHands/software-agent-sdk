@@ -142,7 +142,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 2
+PERSISTED_SETTINGS_SCHEMA_VERSION = 3
 
 
 class PersistedSettings(BaseModel):
@@ -331,7 +331,12 @@ class PersistedSettings(BaseModel):
 
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
-        - **v2** (current): adds the opaque ``misc_settings`` container.
+        - **v2**: adds the opaque ``misc_settings`` container.
+        - **v3** (current): nested ``agent_settings`` advanced to schema v6
+          (dropped the removed ``llm.modify_params`` field). Nested payloads
+          are migrated through ``validate_agent_settings`` in
+          ``_normalize_inputs``; the top-level bump keeps the file schema in
+          step with the nested shape change.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)

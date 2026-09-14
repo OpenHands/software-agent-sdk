@@ -3426,7 +3426,7 @@ class TestAutoTitle:
         """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
 
         Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
-        to LLM.completion. Only the network boundary (LLM.completion) is mocked,
+        to LLM.generate. Only the generic dispatch boundary (LLM.generate) is mocked,
         so this catches regressions in profile loading, LLM passthrough, and the
         agent-server → SDK integration — the unit tests above only exercise
         AutoTitleSubscriber in isolation.
@@ -3457,7 +3457,7 @@ class TestAutoTitle:
 
         calls: list[str] = []
 
-        def fake_completion(self_llm, _messages, **_kwargs):
+        def fake_generate(self_llm, _messages, **_kwargs):
             calls.append(self_llm.usage_id)
             msg = LiteLLMMessage(content="✨ Generated", role="assistant")
             choice = Choices(finish_reason="stop", index=0, message=msg)
@@ -3492,9 +3492,9 @@ class TestAutoTitle:
         request.addfinalizer(reset_stores)
 
         with patch(
-            "openhands.sdk.llm.llm.LLM.completion",
+            "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
-            side_effect=fake_completion,
+            side_effect=fake_generate,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -3552,7 +3552,7 @@ class TestAutoTitle:
 
         seen_keys: list[str] = []
 
-        def fake_completion(self_llm, _messages, **_kwargs):
+        def fake_generate(self_llm, _messages, **_kwargs):
             seen_keys.append(
                 self_llm.api_key.get_secret_value() if self_llm.api_key else ""
             )
@@ -3586,9 +3586,9 @@ class TestAutoTitle:
         request.addfinalizer(reset_stores)
 
         with patch(
-            "openhands.sdk.llm.llm.LLM.completion",
+            "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
-            side_effect=fake_completion,
+            side_effect=fake_generate,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
