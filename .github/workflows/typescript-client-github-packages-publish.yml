@@ -27,7 +27,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Check out release tag
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
               with:
                   ref: v${{ inputs.version }}
 
