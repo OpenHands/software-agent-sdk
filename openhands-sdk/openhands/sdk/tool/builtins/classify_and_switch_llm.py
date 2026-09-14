@@ -4,7 +4,9 @@ The tool reads the *active meta-profile* (see
 :class:`~openhands.sdk.llm.meta_profile_store.MetaProfile`), asks the
 meta-profile's ``classifier_model`` to categorize the current task using the
 last few conversation messages, and switches the conversation to the LLM
-profile mapped to the chosen class (falling back to ``default_model``).
+profile mapped to the chosen class. When the classifier produces no usable
+answer, the tool fails loudly (returns an error observation) so the miss is
+visible and retryable, instead of silently routing to a default model.
 """
 
 import json
@@ -57,8 +59,8 @@ class ClassifyAndSwitchLLMObservation(Observation):
 
     chosen_class: str | None = Field(
         default=None,
-        description="Description of the matched class, or None when the "
-        "default model was used.",
+        description="Description of the matched class, or None when no class "
+        "matched and the tool returned an error.",
     )
     model: str | None = Field(
         default=None,
@@ -109,7 +111,7 @@ def build_classifier_prompt(meta: MetaProfile) -> str:
 def parse_class_index(text: str, num_classes: int) -> int:
     """Parse the classifier reply into a class index.
 
-    Returns 0 (use ``default_model``) when no in-range integer is found.
+    Returns 0 (no usable answer) when no in-range integer is found.
     """
     match = re.search(r"-?\d+", text)
     if match is None:
@@ -326,16 +328,23 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
 
         reply = "\n".join(content_to_str(response.message.content))
 
-        # 3) Resolve the target profile (chosen class, direct model, or default).
+        # 3) Resolve the target profile (chosen class or direct model). No
+        #    silent fallback: when the classifier produces no usable answer the
+        #    tool returns an error observation so the miss is visible/retryable.
         if meta.prompt_template is None:
             index = parse_class_index(reply, len(meta.classes))
             if index == 0:
-                target_profile = meta.default_model
-                chosen_class = None
-            else:
-                chosen = meta.classes[index - 1]
-                target_profile = chosen.model
-                chosen_class = chosen.description
+                return ClassifyAndSwitchLLMObservation.from_text(
+                    text=(
+                        "Classifier did not pick a valid category "
+                        f"(reply: {reply!r}); refusing to silently route to a "
+                        "default. Retry the tool or fix the meta-profile classes."
+                    ),
+                    is_error=True,
+                )
+            chosen = meta.classes[index - 1]
+            target_profile = chosen.model
+            chosen_class = chosen.description
         else:
             target_profile = parse_direct_model(
                 reply,
@@ -345,10 +354,15 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                 ),
             )
             if target_profile is None:
-                target_profile = meta.default_model
-                chosen_class = None
-            else:
-                chosen_class = f"model: {target_profile}"
+                return ClassifyAndSwitchLLMObservation.from_text(
+                    text=(
+                        "Classifier reply did not resolve to a saved LLM profile "
+                        f"(reply: {reply!r}); refusing to silently route to a "
+                        "default. Retry the tool or extend the model table."
+                    ),
+                    is_error=True,
+                )
+            chosen_class = f"model: {target_profile}"
 
         # 4) Switch the conversation to the target profile.
         try:
@@ -380,7 +394,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
             )
 
         active_model = conversation.agent.llm.model
-        label = chosen_class or "default"
+        label = chosen_class or target_profile
         return ClassifyAndSwitchLLMObservation.from_text(
             text=(
                 f"Classified task as '{label}' and switched to LLM profile "

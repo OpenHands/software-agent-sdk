@@ -49,11 +49,10 @@ def store(temp_meta_profiles_dir):
     return MetaProfileStore(base_dir=temp_meta_profiles_dir)
 
 
-def _meta(classifier="minimax", default="gpt", classes=None) -> dict:
+def _meta(classifier="minimax", classes=None) -> dict:
     return MetaProfile.model_validate(
         {
             "classifier_model": classifier,
-            "default_model": default,
             "classes": classes or [{"description": "UI", "model": "deepseek"}],
         }
     ).model_dump(mode="json")
@@ -106,7 +105,6 @@ def test_list_returns_summaries(client, store):
         {
             "name": "balanced",
             "classifier_model": "minimax",
-            "default_model": "gpt",
             "num_classes": 1,
         }
     ]
@@ -140,16 +138,14 @@ def test_save_creates_meta_profile(client, store):
 
 
 def test_save_overwrites(client, store):
-    client.post("/api/meta-profiles/p", json=_meta(classifier="a", default="b"))
-    response = client.post(
-        "/api/meta-profiles/p", json=_meta(classifier="c", default="d")
-    )
+    client.post("/api/meta-profiles/p", json=_meta(classifier="a"))
+    response = client.post("/api/meta-profiles/p", json=_meta(classifier="c"))
     assert response.status_code == 201
     assert store.load("p").classifier_model == "c"
 
 
 def test_save_invalid_body_returns_422(client):
-    response = client.post("/api/meta-profiles/p", json={"default_model": "gpt"})
+    response = client.post("/api/meta-profiles/p", json={"classes": []})
     assert response.status_code == 422
 
 

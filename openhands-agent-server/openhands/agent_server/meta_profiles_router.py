@@ -50,7 +50,6 @@ def _get_meta_profile_store() -> MetaProfileStore:
 class MetaProfileInfo(BaseModel):
     name: str
     classifier_model: str | None = None
-    default_model: str | None = None
     num_classes: int = 0
 
 

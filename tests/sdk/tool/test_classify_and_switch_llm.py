@@ -27,7 +27,6 @@ from openhands.sdk.tool.builtins.classify_and_switch_llm import (
 
 META = {
     "classifier_model": "classifier",
-    "default_model": "default",
     "classes": [
         {"description": "UI / images", "model": "fast"},
         {"description": "tests", "model": "slow"},
@@ -36,7 +35,6 @@ META = {
 
 DIRECT_META = {
     "classifier_model": "classifier",
-    "default_model": "default",
     "prompt_template": (
         "Pick one model.\n\n"
         "{{ model_table }}\n\n"
@@ -118,8 +116,8 @@ def test_build_classifier_prompt_lists_categories() -> None:
         ("1", 1),
         ("2", 2),
         ("0", 0),
-        ("9", 0),  # out of range -> default
-        ("none", 0),  # no integer -> default
+        ("9", 0),  # out of range -> no match
+        ("none", 0),  # no integer -> no match
         ("Category 2 fits best", 2),
     ],
 )
@@ -318,7 +316,6 @@ def test_executor_uses_inline_cloud_llms_without_profile_store(tmp_path) -> None
             "classifier": classifier,
             "fast": _make_llm("cloud-fast-model", "fast"),
             "slow": _make_llm("cloud-slow-model", "slow"),
-            "default": _make_llm("cloud-default-model", "default"),
         },
         meta_profile_store=MetaProfileStore(base_dir=tmp_path / "empty-meta"),
     )[0]
@@ -379,9 +376,12 @@ def test_repeated_routing_reuses_one_classifier_usage_bucket(
     assert usage_ids.count("classifier:classifier") == 1
 
 
-def test_executor_falls_back_to_default_when_no_class(
+def test_executor_errors_when_no_class_matches(
     profile_store, meta_store, monkeypatch
 ) -> None:
+    # Classifier returns 0 (no matching category): the tool must fail loudly
+    # instead of silently routing to a default model. The conversation's LLM
+    # is left untouched.
     conversation = _make_conversation()
     _register_tool(conversation, meta_store)
     _patch_classifier(conversation, monkeypatch, reply="0")
@@ -391,10 +391,10 @@ def test_executor_falls_back_to_default_when_no_class(
     )
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
-    assert not obs.is_error
-    assert obs.model == "default"
+    assert obs.is_error
+    assert obs.model is None
     assert obs.chosen_class is None
-    assert conversation.agent.llm.model == "default-profile-model"
+    assert conversation.agent.llm.model == "default-model"
 
 
 def test_executor_direct_prompt_switches_to_selected_model(
@@ -423,9 +423,11 @@ def test_executor_direct_prompt_switches_to_selected_model(
     assert conversation.agent.llm.model == "slow-model"
 
 
-def test_executor_direct_prompt_falls_back_to_default_when_model_is_unknown(
+def test_executor_direct_prompt_errors_when_model_is_unknown(
     profile_store, tmp_path, monkeypatch
 ) -> None:
+    # Classifier reply doesn't resolve to a saved profile: the tool must fail
+    # loudly instead of silently routing to a default model.
     meta_dir = tmp_path / "direct-meta-profiles"
     meta_dir.mkdir()
     (meta_dir / "pareto.json").write_text(json.dumps(DIRECT_META), encoding="utf-8")
@@ -443,10 +445,10 @@ def test_executor_direct_prompt_falls_back_to_default_when_model_is_unknown(
     )
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
-    assert not obs.is_error
-    assert obs.model == "default"
+    assert obs.is_error
+    assert obs.model is None
     assert obs.chosen_class is None
-    assert conversation.agent.llm.model == "default-profile-model"
+    assert conversation.agent.llm.model == "default-model"
 
 
 def test_executor_errors_when_classifier_profile_missing(

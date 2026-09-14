@@ -18,7 +18,6 @@ def _write(base: Path, name: str, data: dict) -> None:
 
 VALID = {
     "classifier_model": "minimax",
-    "default_model": "gpt",
     "classes": [
         {"description": "UI / images", "model": "deepseek"},
         {"description": "research", "model": "gemini"},
@@ -44,7 +43,6 @@ def test_load_valid_meta_profile(tmp_path: Path) -> None:
 
     assert isinstance(meta, MetaProfile)
     assert meta.classifier_model == "minimax"
-    assert meta.default_model == "gpt"
     assert [c.model for c in meta.classes] == ["deepseek", "gemini"]
 
 
@@ -88,7 +86,7 @@ def test_load_corrupted_json_raises_value_error(tmp_path: Path) -> None:
 
 
 def test_load_schema_violation_raises_value_error(tmp_path: Path) -> None:
-    _write(tmp_path, "bad", {"default_model": "gpt"})  # missing classifier_model
+    _write(tmp_path, "bad", {"classes": []})  # missing classifier_model
     store = MetaProfileStore(base_dir=tmp_path)
 
     with pytest.raises(ValueError):
@@ -99,7 +97,6 @@ def test_save_then_load_roundtrip(tmp_path: Path) -> None:
     store = MetaProfileStore(base_dir=tmp_path)
     meta = MetaProfile(
         classifier_model="minimax",
-        default_model="gpt",
         classes=[MetaProfileClass(description="UI / images", model="deepseek")],
     )
 
@@ -107,7 +104,6 @@ def test_save_then_load_roundtrip(tmp_path: Path) -> None:
 
     loaded = store.load("balanced")
     assert loaded.classifier_model == "minimax"
-    assert loaded.default_model == "gpt"
     assert [c.model for c in loaded.classes] == ["deepseek"]
 
 
@@ -115,7 +111,6 @@ def test_direct_prompt_meta_profile_roundtrip(tmp_path: Path) -> None:
     store = MetaProfileStore(base_dir=tmp_path)
     meta = MetaProfile(
         classifier_model="minimax",
-        default_model="default",
         prompt_template=(
             "Route the task.\n{{ model_table }}\nTask:\n{{ instance_text }}\n"
             'Return JSON: {"model": "<exact model name>"}'
@@ -134,7 +129,6 @@ def test_direct_prompt_requires_instance_text_placeholder() -> None:
     with pytest.raises(ValueError, match="instance_text"):
         MetaProfile(
             classifier_model="minimax",
-            default_model="default",
             prompt_template="Route without the task.",
         )
 
@@ -143,7 +137,6 @@ def test_direct_prompt_rejects_classes() -> None:
     with pytest.raises(ValueError, match="classes"):
         MetaProfile(
             classifier_model="minimax",
-            default_model="default",
             classes=[MetaProfileClass(description="tests", model="minimax")],
             prompt_template="Task:\n{{ instance_text }}",
         )
@@ -151,8 +144,8 @@ def test_direct_prompt_rejects_classes() -> None:
 
 def test_save_overwrites_existing(tmp_path: Path) -> None:
     store = MetaProfileStore(base_dir=tmp_path)
-    store.save("p", MetaProfile(classifier_model="a", default_model="b"))
-    store.save("p", MetaProfile(classifier_model="c", default_model="d"))
+    store.save("p", MetaProfile(classifier_model="a"))
+    store.save("p", MetaProfile(classifier_model="c"))
 
     assert store.load("p").classifier_model == "c"
     assert store.list() == ["p"]
@@ -162,21 +155,21 @@ def test_save_invalid_name_raises_value_error(tmp_path: Path) -> None:
     store = MetaProfileStore(base_dir=tmp_path)
 
     with pytest.raises(ValueError):
-        store.save("../escape", MetaProfile(classifier_model="a", default_model="b"))
+        store.save("../escape", MetaProfile(classifier_model="a"))
 
 
 def test_save_respects_max_profiles(tmp_path: Path) -> None:
     store = MetaProfileStore(base_dir=tmp_path)
-    store.save("a", MetaProfile(classifier_model="a", default_model="b"))
+    store.save("a", MetaProfile(classifier_model="a"))
 
     with pytest.raises(MetaProfileLimitExceeded):
         store.save(
-            "b", MetaProfile(classifier_model="a", default_model="b"), max_profiles=1
+            "b", MetaProfile(classifier_model="a"), max_profiles=1
         )
 
     # Overwriting an existing one is still allowed at the limit.
     store.save(
-        "a", MetaProfile(classifier_model="x", default_model="y"), max_profiles=1
+        "a", MetaProfile(classifier_model="x"), max_profiles=1
     )
     assert store.load("a").classifier_model == "x"
 
@@ -195,7 +188,7 @@ def test_concurrent_saves_respect_max_profiles(tmp_path: Path) -> None:
         try:
             store.save(
                 f"p{i:02d}",
-                MetaProfile(classifier_model="a", default_model="b"),
+                MetaProfile(classifier_model="a"),
                 max_profiles=limit,
             )
             return True
@@ -211,7 +204,7 @@ def test_concurrent_saves_respect_max_profiles(tmp_path: Path) -> None:
 
 def test_delete_is_idempotent(tmp_path: Path) -> None:
     store = MetaProfileStore(base_dir=tmp_path)
-    store.save("p", MetaProfile(classifier_model="a", default_model="b"))
+    store.save("p", MetaProfile(classifier_model="a"))
 
     store.delete("p")
     assert store.list() == []
@@ -230,7 +223,6 @@ def test_list_summaries_skips_corrupted(tmp_path: Path) -> None:
         {
             "name": "good",
             "classifier_model": "minimax",
-            "default_model": "gpt",
             "num_classes": 2,
         }
     ]

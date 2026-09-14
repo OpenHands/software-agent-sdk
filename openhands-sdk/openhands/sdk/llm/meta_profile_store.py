@@ -1,8 +1,8 @@
 """JSON-file storage for meta-profiles.
 
 Key invariant: every model reference in a meta-profile (``classifier_model``,
-``default_model``, each class's ``model``, and direct-routing prompt outputs) is
-the *name of a saved LLM profile* in
+each class's ``model``, and direct-routing prompt outputs) is the *name of a
+saved LLM profile* in
 :class:`~openhands.sdk.llm.llm_profile_store.LLMProfileStore`, not a raw model
 string — credentials/provider settings resolve through that store.
 """
@@ -66,9 +66,6 @@ class MetaProfile(BaseModel):
 
     classifier_model: str = Field(
         description="Name of the saved LLM profile used to classify the task."
-    )
-    default_model: str = Field(
-        description="Name of the saved LLM profile to use when no class matches."
     )
     classes: list[MetaProfileClass] = Field(
         default_factory=list,
@@ -271,7 +268,6 @@ class MetaProfileStore:
                 {
                     "name": name,
                     "classifier_model": data.get("classifier_model"),
-                    "default_model": data.get("default_model"),
                     "num_classes": len(classes) if isinstance(classes, list) else 0,
                 }
             )
