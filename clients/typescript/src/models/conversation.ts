@@ -14,7 +14,7 @@ import {
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
-import type { LaunchedProfile } from './agent-profile';
+import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
 
 export enum ConversationSortOrder {
   CREATED_AT = 'CREATED_AT',
@@ -63,8 +63,9 @@ export interface ConversationInfo {
    * Provenance of the agent profile that launched this conversation.
    * Present when the conversation was started via `agent_profile_id`; absent
    * for conversations started directly with `agent` or `agent_settings`.
-   * Lands with SDK PR #3784.
    */
+  launched_agent_profile?: LaunchedAgentProfile | null;
+  /** @deprecated Use launched_agent_profile, the canonical server field. */
   launched_profile?: LaunchedProfile | null;
   /**
    * @deprecated Use execution_status instead. This field is kept for backward compatibility.
