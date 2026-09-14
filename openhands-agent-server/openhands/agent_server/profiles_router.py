@@ -322,7 +322,7 @@ async def validate_profile(
 
             llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
 
-        # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
+        # Mirror the runtime dispatch (see ``LLM.agenerate``) and stay
         # async so provider I/O doesn't pin the FastAPI event loop.
         if llm.uses_responses_api():
             await llm.aresponses(messages=messages, max_tokens=1)
