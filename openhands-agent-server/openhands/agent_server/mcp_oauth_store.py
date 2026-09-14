@@ -340,9 +340,21 @@ class SettingsBackedMCPToolProvider:
         on_tools_changed: ToolsChangedCallback | None = None,
         on_tools_reconciled: ToolsReconciledCallback | None = None,
     ) -> MCPClient:
+        from openhands.agent_server.docker_runtime.credential_client import (
+            BrokerClient,
+            BrokerMCPAuth,
+        )
+
+        broker = BrokerClient.from_env()
+        factory = (
+            (lambda name, _server, _auth, _storage: BrokerMCPAuth(broker, name))
+            if broker is not None
+            else None
+        )
         return create_mcp_tools(
             mcp_config,
             timeout,
+            mcp_oauth_factory=factory,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,

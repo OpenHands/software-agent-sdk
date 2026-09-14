@@ -5,16 +5,15 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
+from openhands.sdk.utils.health import wait_for_server_health
 from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 from openhands.workspace.docker.workspace import (
     check_port_available,
@@ -344,28 +343,18 @@ class ApptainerWorkspace(RemoteWorkspace):
                 pass
 
     def _wait_for_health(self, *, timeout: float) -> None:
-        """Wait for the container to become healthy."""
-        start = time.time()
-        health_url = f"http://127.0.0.1:{self.host_port}/health"
-
-        while time.time() - start < timeout:
-            try:
-                with urlopen(health_url, timeout=1.0) as resp:
-                    if 200 <= getattr(resp, "status", 200) < 300:
-                        return
-            except Exception:
-                pass
-
-            # Check if process is still running
+        def check_running() -> None:
             if self._process and self._process.poll() is not None:
-                # Process has terminated
                 raise RuntimeError(
                     f"Container process stopped unexpectedly with "
                     f"exit code {self._process.returncode}"
                 )
 
-            time.sleep(1)
-        raise RuntimeError("Container failed to become healthy in time")
+        wait_for_server_health(
+            f"http://127.0.0.1:{self.host_port}",
+            timeout=timeout,
+            check_running=check_running,
+        )
 
     def __enter__(self) -> "ApptainerWorkspace":
         """Context manager entry - returns the workspace itself."""
