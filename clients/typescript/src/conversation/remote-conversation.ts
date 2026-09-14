@@ -99,15 +99,7 @@ export class RemoteConversation implements IConversation {
     options: RemoteConversationOptions = {}
   ) {
     this.agent = agent;
-    this._workspace =
-      options.conversationId && workspace.conversationId !== options.conversationId
-        ? new RemoteWorkspace({
-            host: workspace.host,
-            workingDir: workspace.workingDir,
-            apiKey: workspace.apiKey,
-            conversationId: options.conversationId,
-          })
-        : workspace;
+    this._workspace = workspace;
     this.callback = options.callback;
     this.onError = options.onError;
     this._conversationId = options.conversationId;

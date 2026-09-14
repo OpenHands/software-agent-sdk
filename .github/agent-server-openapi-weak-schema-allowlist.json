@@ -570,6 +570,42 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/paths/~1api~1conversations~1{runtime_conversation_id}~1file~1archive/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This route reuses the existing file download contract, including its legacy JSON media type.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1conversations~1{runtime_conversation_id}~1file~1download-trajectory~1{conversation_id}/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This route reuses the existing file download contract, including its legacy JSON media type.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1conversations~1{runtime_conversation_id}~1file~1download/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This route reuses the existing file download contract, including its legacy JSON media type.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1file~1archive/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1file~1download-trajectory~1{conversation_id}/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/paths/~1api~1file~1download/get/responses/200/content/application~1json/schema",
+    "kind": "empty-object-schema",
+    "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/paths/~1api~1settings~1secrets~1{name}/get/responses/200/content/application~1json/schema",
     "kind": "empty-object-schema",
     "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
