@@ -150,6 +150,24 @@ def test_resume_reconnects_on_a_fresh_port(k8s_mocks):
     assert connect.call_args.kwargs["preferred_port"] is None
 
 
+def test_exit_preserves_parent_lifecycle_and_cleanup(k8s_mocks):
+    """Context exit delegates to RemoteWorkspace and always cleans up."""
+    from openhands.sdk.workspace import RemoteWorkspace
+
+    ws = _make_ws()
+    error = RuntimeError("callback failed")
+
+    with (
+        patch.object(RemoteWorkspace, "__exit__", side_effect=error) as parent_exit,
+        patch.object(type(ws), "cleanup") as cleanup,
+        pytest.raises(RuntimeError, match="callback failed"),
+    ):
+        ws.__exit__(RuntimeError, error, None)
+
+    parent_exit.assert_called_once_with(RuntimeError, error, None)
+    cleanup.assert_called_once()
+
+
 def test_cleanup_terminates_sandbox(k8s_mocks):
     """cleanup() deletes the claim via the handle and is idempotent."""
     ws = _make_ws()

@@ -409,8 +409,11 @@ class AgentSandboxWorkspace(RemoteWorkspace):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
-        """Context manager exit - tears down the sandbox."""
-        self.cleanup()
+        """Send completion callbacks and tear down the sandbox."""
+        try:
+            super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.cleanup()
 
     def __del__(self) -> None:
         """Best-effort cleanup when the workspace is garbage collected."""
