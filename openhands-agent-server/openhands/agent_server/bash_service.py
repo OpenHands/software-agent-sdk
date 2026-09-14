@@ -355,8 +355,12 @@ class BashEventService:
                 )
                 exit_code = process.returncode
             except asyncio.CancelledError:
-                self._signal_process_group(process, signal.SIGKILL)
-                await process.wait()
+                # Conversation-owned services must not leave their process
+                # behind when the conversation is released. Keep the shared
+                # host service's existing cancellation behavior unchanged.
+                if self.default_cwd is not None:
+                    self._signal_process_group(process, signal.SIGKILL)
+                    await process.wait()
                 raise
             except TimeoutError:
                 # Send SIGTERM to the whole process group so user-installed
