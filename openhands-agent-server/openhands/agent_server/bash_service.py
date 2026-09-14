@@ -257,7 +257,9 @@ class BashEventService:
             )
 
     async def start_bash_command(
-        self, request: ExecuteBashRequest
+        self,
+        request: ExecuteBashRequest,
+        secret_registry: SecretRegistry | None = None,
     ) -> tuple[BashCommand, asyncio.Task]:
         """Execute a bash command. The output will be published separately."""
         if self._closed:
@@ -268,16 +270,25 @@ class BashEventService:
         await self._pub_sub(command)
 
         # Execute the bash command in a background task
-        task = asyncio.create_task(self._execute_bash_command(command))
+        task = asyncio.create_task(
+            self._execute_bash_command(command, secret_registry=secret_registry)
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return command, task
 
-    async def _execute_bash_command(self, command: BashCommand) -> None:
+    async def _execute_bash_command(
+        self,
+        command: BashCommand,
+        *,
+        secret_registry: SecretRegistry | None = None,
+    ) -> None:
         """Execute the bash event and create an observation event."""
         try:
             env = sanitized_env()
-            registry = self.secret_registry
+            registry = (
+                secret_registry if secret_registry is not None else self.secret_registry
+            )
             if registry is not None:
                 # Runtime commands can launch opaque scripts. The conversation
                 # registry already contains only its authorized secrets.

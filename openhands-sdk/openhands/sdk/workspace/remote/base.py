@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 from urllib.request import urlopen
+from uuid import UUID
 
 import httpx
 import tenacity
@@ -135,9 +136,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         command: str,
         cwd: str | Path | None = None,
         timeout: float = 30,
+        *,
+        agent_profile_id: UUID | None = None,
     ) -> str:
         """Start a command and return its ID without waiting for completion."""
-        return self._execute(self._start_command_generator(command, cwd, timeout))
+        return self._execute(
+            self._start_command_generator(command, cwd, timeout, agent_profile_id)
+        )
 
     def get_command_output(
         self, command_id: str | None = None
@@ -158,6 +163,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         command: str,
         cwd: str | Path | None = None,
         timeout: float = 30.0,
+        *,
+        agent_profile_id: UUID | None = None,
     ) -> CommandResult:
         """Execute a bash command on the remote system.
 
@@ -172,7 +179,9 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Returns:
             CommandResult: Result with stdout, stderr, exit_code, and other metadata
         """
-        generator = self._execute_command_generator(command, cwd, timeout)
+        generator = self._execute_command_generator(
+            command, cwd, timeout, agent_profile_id
+        )
         result = self._execute(generator)
         return result
 

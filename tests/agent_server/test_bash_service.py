@@ -346,3 +346,25 @@ async def test_scoped_bash_injects_registry_and_masks_split_output(tmp_path):
         assert "".join(event.stderr or "" for event in outputs) == "<secret-hidden>"
         for path in (tmp_path / "events").iterdir():
             assert "selected-secret-value" not in path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_per_command_empty_registry_does_not_inherit_service_secrets(tmp_path):
+    from openhands.agent_server.models import ExecuteBashRequest
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
+
+    service_registry = SecretRegistry()
+    service_registry.update_secrets({"UNSELECTED_TOKEN": "must-not-be-visible"})
+    async with BashEventService(
+        bash_events_dir=tmp_path / "events", secret_registry=service_registry
+    ) as service:
+        command, task = await service.start_bash_command(
+            ExecuteBashRequest(
+                command='test -z "${UNSELECTED_TOKEN+x}"',
+            ),
+            SecretRegistry(),
+        )
+        await task
+        page = await service.search_bash_events(command_id__eq=command.id)
+        outputs = [event for event in page.items if isinstance(event, BashOutput)]
+        assert outputs[-1].exit_code == 0

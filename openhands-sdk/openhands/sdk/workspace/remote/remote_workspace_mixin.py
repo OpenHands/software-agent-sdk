@@ -83,10 +83,13 @@ class RemoteWorkspaceMixin(BaseModel):
         command: str,
         cwd: str | Path | None,
         timeout: float,
+        agent_profile_id: UUID | None = None,
     ) -> Generator[dict[str, Any], httpx.Response, str]:
         payload: dict[str, Any] = {"command": command, "timeout": int(timeout)}
         if cwd is not None:
             payload["cwd"] = _remote_path(cwd)
+        if agent_profile_id is not None:
+            payload["agent_profile_id"] = str(agent_profile_id)
         response = yield {
             "method": "POST",
             "url": f"{self.host}{self.api_prefix}/bash/start_bash_command",
@@ -162,6 +165,7 @@ class RemoteWorkspaceMixin(BaseModel):
         command: str,
         cwd: str | Path | None,
         timeout: float,
+        agent_profile_id: UUID | None = None,
     ) -> Generator[dict[str, Any], httpx.Response, CommandResult]:
         """Execute a bash command on the remote system.
 
@@ -179,7 +183,9 @@ class RemoteWorkspaceMixin(BaseModel):
         _logger.debug("Executing remote command")
 
         try:
-            command_id = yield from self._start_command_generator(command, cwd, timeout)
+            command_id = yield from self._start_command_generator(
+                command, cwd, timeout, agent_profile_id
+            )
 
             _logger.debug(f"Started command with ID: {command_id}")
 
