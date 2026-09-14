@@ -13,7 +13,7 @@ dependencies = [
   "openai>=2.33.0,<3",
   "pydantic>=2",
   "sqlalchemy>=2",
-  "uvicorn>=0.31.1",
+  "uvicorn>=0.52.4",
   "websockets>=12",
   "wsproto>=1.2.0",
 ]
