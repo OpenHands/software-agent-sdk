@@ -7,7 +7,7 @@
 
 import { BashClient } from '../client/bash-client';
 import type { HttpClient } from '../client/http-client';
-import { runtimeServiceConnections } from '../client/runtime-transport';
+import { createRuntimeHttpClients } from '../client/runtime-transport';
 import {
   CommandResult,
   FileOperationResult,
@@ -43,7 +43,7 @@ export class RemoteWorkspace implements IWorkspace {
   public readonly apiKey?: string;
   public readonly client: HttpClient;
   public readonly conversationId?: string;
-  private readonly server: HttpClient;
+  private readonly serverClient: HttpClient;
   public readonly bash: BashClient;
 
   constructor(options: RemoteWorkspaceOptions) {
@@ -52,9 +52,9 @@ export class RemoteWorkspace implements IWorkspace {
     this.apiKey = options.apiKey;
     this.conversationId = options.conversationId;
 
-    const { server, runtime } = runtimeServiceConnections(options);
-    this.server = server;
-    this.client = runtime;
+    const { serverClient, runtimeClient } = createRuntimeHttpClients(options);
+    this.serverClient = serverClient;
+    this.client = runtimeClient;
 
     this.bash = new BashClient({
       host: this.host,
@@ -95,14 +95,14 @@ export class RemoteWorkspace implements IWorkspace {
     if (this.conversationId !== undefined && this.conversationId !== conversationId) {
       throw new Error('Workspace session must belong to the selected runtime');
     }
-    await this.server.post('/api/auth/workspace-session', undefined, {
+    await this.serverClient.post('/api/auth/workspace-session', undefined, {
       credentials: 'include',
     });
     return `${this.host}/api/conversations/${encodeURIComponent(conversationId)}/workspace/`;
   }
 
   async deleteWorkspaceSession(): Promise<void> {
-    await this.server.delete('/api/auth/workspace-session', {
+    await this.serverClient.delete('/api/auth/workspace-session', {
       credentials: 'include',
       acceptableStatusCodes: new Set([204]),
     });

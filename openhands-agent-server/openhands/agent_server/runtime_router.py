@@ -29,18 +29,22 @@ from openhands.agent_server.vscode_router import (
 )
 
 
-async def require_local_runtime(
+async def bind_local_conversation_runtime(
     runtime_conversation_id: UUID, request: Request
 ) -> None:
-    service = get_conversation_service(request)
-    event_service = await get_event_service(runtime_conversation_id, service)
+    conversation_service = get_conversation_service(request)
+    event_service = await get_event_service(
+        runtime_conversation_id, conversation_service
+    )
     request.state.runtime_event_service = event_service
-    root = Path(event_service.get_conversation().workspace.working_dir).resolve()
+    workspace_root = Path(
+        event_service.get_conversation().workspace.working_dir
+    ).resolve()
     for name in ("path", "workspace_dir"):
-        path = request.path_params.get(name) or request.query_params.get(name)
-        if path is not None and (
-            not Path(path).is_absolute()
-            or not Path(path).resolve().is_relative_to(root)
+        requested_path = request.path_params.get(name) or request.query_params.get(name)
+        if requested_path is not None and (
+            not Path(requested_path).is_absolute()
+            or not Path(requested_path).resolve().is_relative_to(workspace_root)
         ):
             raise HTTPException(
                 422, f"{name} must be inside the conversation workspace"
@@ -73,7 +77,7 @@ def create_runtime_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
     router = RuntimeRouter(
         prefix="/conversations/{runtime_conversation_id}",
         route_class=route_class,
-        dependencies=[Depends(require_local_runtime)],
+        dependencies=[Depends(bind_local_conversation_runtime)],
     )
     for source in (
         bash_router,

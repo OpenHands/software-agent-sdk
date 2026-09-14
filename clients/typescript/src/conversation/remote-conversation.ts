@@ -150,7 +150,7 @@ export class RemoteConversation implements IConversation {
       const { data } = await this.client.get<ConversationInfo>(
         `/api/conversations/${this._conversationId}`
       );
-      this.bindWorkspace(data);
+      this.bindConversationWorkspace(data);
       return;
     }
 
@@ -180,11 +180,11 @@ export class RemoteConversation implements IConversation {
     const response = await this.client.post<ConversationInfo>('/api/conversations', request);
     const conversationInfo = response.data;
     this._conversationId = conversationInfo.id;
-    this.bindWorkspace(conversationInfo);
+    this.bindConversationWorkspace(conversationInfo);
   }
 
-  private workspaceWorkingDir(info: ConversationInfo): string {
-    const workspace = info.workspace;
+  private getConversationWorkingDir(conversationInfo: ConversationInfo): string {
+    const workspace = conversationInfo.workspace;
     return workspace &&
       typeof workspace === 'object' &&
       'working_dir' in workspace &&
@@ -193,12 +193,12 @@ export class RemoteConversation implements IConversation {
       : this.workspace.workingDir;
   }
 
-  private bindWorkspace(info: ConversationInfo): void {
+  private bindConversationWorkspace(conversationInfo: ConversationInfo): void {
     this._workspace = new RemoteWorkspace({
       host: this.workspace.host,
-      workingDir: this.workspaceWorkingDir(info),
+      workingDir: this.getConversationWorkingDir(conversationInfo),
       apiKey: this.workspace.apiKey,
-      conversationId: info.id,
+      conversationId: conversationInfo.id,
     });
   }
 
@@ -387,7 +387,7 @@ export class RemoteConversation implements IConversation {
 
     const forkWorkspace = new RemoteWorkspace({
       host: this.workspace.host,
-      workingDir: this.workspaceWorkingDir(response.data),
+      workingDir: this.getConversationWorkingDir(response.data),
       apiKey: this.workspace.apiKey,
       conversationId: response.data.id,
     });

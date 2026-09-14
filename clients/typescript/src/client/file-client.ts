@@ -1,5 +1,5 @@
-import { runtimeServiceConnections } from './runtime-transport';
-import type { RuntimeServiceOptions } from './runtime-transport';
+import { createRuntimeHttpClients } from './runtime-transport';
+import type { RuntimeServiceClientOptions } from './runtime-transport';
 import type { HttpClient } from './http-client';
 import type {
   FileHomeOptions,
@@ -9,29 +9,29 @@ import type {
 } from '../models/api';
 import type { Success } from '../types/base';
 
-export type FileClientOptions = RuntimeServiceOptions;
+export type FileClientOptions = RuntimeServiceClientOptions;
 
 export type FileUploadContent = string | Blob | File;
 
 export class FileClient {
   public readonly host: string;
   public readonly apiKey?: string;
-  private readonly client: HttpClient;
-  private readonly server: HttpClient;
+  private readonly runtimeClient: HttpClient;
+  private readonly serverClient: HttpClient;
 
   constructor(options: FileClientOptions) {
-    const { server, runtime } = runtimeServiceConnections(options);
+    const { serverClient, runtimeClient } = createRuntimeHttpClients(options);
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
-    this.client = runtime;
-    this.server = server;
+    this.runtimeClient = runtimeClient;
+    this.serverClient = serverClient;
   }
 
   async searchSubdirectories(
     path: string,
     options: FileSearchSubdirsOptions = {}
   ): Promise<FileSubdirectoryPage> {
-    const response = await this.server.get<FileSubdirectoryPage>('/api/file/search_subdirs', {
+    const response = await this.serverClient.get<FileSubdirectoryPage>('/api/file/search_subdirs', {
       params: {
         path,
         page_id: options.pageId,
@@ -43,7 +43,7 @@ export class FileClient {
   }
 
   async getHome(options: FileHomeOptions = {}): Promise<FileHomeResponse> {
-    const response = await this.server.get<FileHomeResponse>('/api/file/home', {
+    const response = await this.serverClient.get<FileHomeResponse>('/api/file/home', {
       params: {
         include_hidden: options.includeHidden || undefined,
       },
@@ -52,7 +52,7 @@ export class FileClient {
   }
 
   async downloadFile(path: string): Promise<ArrayBuffer> {
-    const response = await this.client.get<ArrayBuffer>('/api/file/download', {
+    const response = await this.runtimeClient.get<ArrayBuffer>('/api/file/download', {
       params: { path },
       responseType: 'arrayBuffer',
     });
@@ -83,7 +83,7 @@ export class FileClient {
       );
     }
 
-    const response = await this.client.post<Success>('/api/file/upload', formData, {
+    const response = await this.runtimeClient.post<Success>('/api/file/upload', formData, {
       params: { path: destinationPath },
     });
     return response.data;
@@ -94,7 +94,7 @@ export class FileClient {
   }
 
   async downloadTrajectory(conversationId: string): Promise<Blob> {
-    const response = await this.client.get<Blob>(
+    const response = await this.runtimeClient.get<Blob>(
       `/api/file/download-trajectory/${encodeURIComponent(conversationId)}`,
       { responseType: 'blob' }
     );
@@ -102,6 +102,6 @@ export class FileClient {
   }
 
   close(): void {
-    this.client.close();
+    this.runtimeClient.close();
   }
 }

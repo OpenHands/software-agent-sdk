@@ -1,9 +1,9 @@
-import { runtimeServiceConnections } from './runtime-transport';
-import type { RuntimeServiceOptions } from './runtime-transport';
+import { createRuntimeHttpClients } from './runtime-transport';
+import type { RuntimeServiceClientOptions } from './runtime-transport';
 import type { HttpClient } from './http-client';
 import { DesktopUrlResponse } from '../models/api';
 
-export type DesktopClientOptions = RuntimeServiceOptions;
+export type DesktopClientOptions = RuntimeServiceClientOptions;
 
 export class DesktopClient {
   public readonly host: string;
@@ -11,10 +11,10 @@ export class DesktopClient {
   private readonly client: HttpClient;
 
   constructor(options: DesktopClientOptions) {
-    const { runtime } = runtimeServiceConnections(options);
+    const { runtimeClient } = createRuntimeHttpClients(options);
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
-    this.client = runtime;
+    this.client = runtimeClient;
   }
 
   async getUrl(baseUrl?: string): Promise<string | null> {

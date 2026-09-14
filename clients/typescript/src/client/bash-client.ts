@@ -1,6 +1,6 @@
 import { HttpError } from './http-client';
-import { runtimeServiceConnections } from './runtime-transport';
-import type { RuntimeServiceOptions } from './runtime-transport';
+import { createRuntimeHttpClients } from './runtime-transport';
+import type { RuntimeServiceClientOptions } from './runtime-transport';
 import type { HttpClient } from './http-client';
 import {
   BashCommand,
@@ -12,7 +12,7 @@ import {
   ExecuteBashRequest,
 } from '../models/workspace';
 
-export type BashClientOptions = RuntimeServiceOptions;
+export type BashClientOptions = RuntimeServiceClientOptions;
 
 export class BashClient {
   public readonly host: string;
@@ -20,10 +20,10 @@ export class BashClient {
   private readonly client: HttpClient;
 
   constructor(options: BashClientOptions) {
-    const { runtime } = runtimeServiceConnections(options);
+    const { runtimeClient } = createRuntimeHttpClients(options);
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
-    this.client = runtime;
+    this.client = runtimeClient;
   }
 
   async searchEvents(options: BashEventSearchOptions = {}): Promise<BashEventPage> {
