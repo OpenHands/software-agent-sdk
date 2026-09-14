@@ -531,6 +531,25 @@ def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
     assert settings.llm.base_url is None
 
 
+def test_validate_agent_settings_migrates_v5_modify_params() -> None:
+    """Persisted ``llm.modify_params`` (removed in v1.47.0) is dropped on load."""
+    settings = validate_agent_settings(
+        {
+            "schema_version": 5,
+            "agent_kind": "openhands",
+            "llm": {
+                "model": "gpt-4o",
+                "modify_params": True,
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.llm.model == "gpt-4o"
+    assert "modify_params" not in settings.llm.model_dump()
+
+
 def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
     settings = validate_agent_settings(
         {
@@ -1567,7 +1586,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@agentclientprotocol/codex-acp",
-        "@agentclientprotocol/codex-acp@1.1.7",
+        "@agentclientprotocol/codex-acp@1.10.0",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1590,7 +1609,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
         "npx",
         "-y",
         "--prefer-offline",
-        "@agentclientprotocol/codex-acp@1.1.7",
+        "@agentclientprotocol/codex-acp@1.10.0",
     ]
 
 

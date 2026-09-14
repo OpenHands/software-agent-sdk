@@ -2,14 +2,17 @@
 name: Publish TypeScript client to GitHub Packages
 
 on:
-    release:
-        types: [published]
     workflow_dispatch:
         inputs:
             version:
                 description: Version to publish without a leading v
                 required: true
                 type: string
+
+concurrency:
+    group: typescript-client-github-packages-publish-${{ inputs.version }}
+    cancel-in-progress: false
+
 
 permissions:
     contents: read
@@ -21,14 +24,12 @@ defaults:
 
 jobs:
     publish:
-        if: >-
-            github.event_name == 'workflow_dispatch' ||
-            (!github.event.release.prerelease &&
-             startsWith(github.event.release.tag_name, 'v'))
         runs-on: ubuntu-latest
         steps:
-            - name: Check out repository
+            - name: Check out release tag
               uses: actions/checkout@v4
+              with:
+                  ref: v${{ inputs.version }}
 
             - name: Set up Node.js for GitHub Packages
               uses: actions/setup-node@v6
@@ -45,17 +46,15 @@ jobs:
             - name: Run tests
               run: npm test
 
-            - name: Set package version
+            - name: Validate package version
               env:
-                  DISPATCH_VERSION: ${{ inputs.version }}
-                  RELEASE_TAG: ${{ github.event.release.tag_name }}
+                  VERSION: ${{ inputs.version }}
               run: |
-                  if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-                    target_version="$DISPATCH_VERSION"
-                  else
-                    target_version="${RELEASE_TAG#v}"
+                  current_version=$(node -p "require('./package.json').version")
+                  if [ "$current_version" != "$VERSION" ]; then
+                    echo "Package version $current_version does not match requested version $VERSION"
+                    exit 1
                   fi
-                  npm version "$target_version" --no-git-tag-version --allow-same-version
 
             - name: Build package
               run: npm run build

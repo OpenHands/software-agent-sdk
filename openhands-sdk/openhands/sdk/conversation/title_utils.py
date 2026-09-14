@@ -126,12 +126,7 @@ def generate_title_with_llm(
             ),
         ]
 
-        # Force non-streaming: the title is consumed whole with no on_token
-        # callback, which a streaming LLM requires.
-        if llm.stream:
-            llm = llm.model_copy(update={"stream": False})
-
-        response = llm.completion(messages)
+        response = llm.generate(messages, store=False)
 
         # Extract the title from the response
         if response.message.content and isinstance(

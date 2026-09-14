@@ -2,21 +2,20 @@
 name: Publish all OpenHands packages (uv)
 
 on:
-  # Run manually
     workflow_dispatch:
-  # Run automatically when a release is published
-    release:
-        types: [published]
+        inputs:
+            version:
+                description: Version to publish without a leading v
+                required: true
+                type: string
+
+concurrency:
+    group: pypi-release-${{ inputs.version }}
+    cancel-in-progress: false
+
 
 jobs:
     publish:
-        # Skip PyPI publishing for pre-releases (e.g., release candidates).
-        # Pre-releases can still be created on GitHub for testing without
-        # pushing packages to PyPI.  Manual workflow_dispatch always runs.
-        if: >
-            github.event_name == 'workflow_dispatch' ||
-            (!github.event.release.prerelease &&
-             startsWith(github.event.release.tag_name, 'v'))
         runs-on: ubuntu-24.04
         permissions:
             actions: write
@@ -24,23 +23,23 @@ jobs:
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
-            - name: Checkout
+            - name: Check out release tag
               uses: actions/checkout@v7
+              with:
+                  ref: v${{ inputs.version }}
 
-            - name: Extract version from release tag
+            - name: Validate release version
               id: extract_version
               env:
-                  GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+                  VERSION: ${{ inputs.version }}
               run: |
-                  # Get version from release tag (e.g., v1.2.3 -> 1.2.3)
-                  if [[ "${{ github.event_name }}" == "release" ]]; then
-                    VERSION="$GITHUB_EVENT_RELEASE_TAG_NAME"
-                    VERSION="${VERSION#v}"  # Remove 'v' prefix if present
-                  else
-                    # For manual dispatch, extract from pyproject.toml
-                    VERSION=$(grep -m1 '^version = ' openhands-sdk/pyproject.toml | cut -d'"' -f2)
+                  set -euo pipefail
+                  actual_version=$(grep -m1 '^version = ' openhands-sdk/pyproject.toml | cut -d'"' -f2)
+                  if [ "$actual_version" != "$VERSION" ]; then
+                    echo "❌ SDK version $actual_version does not match requested version $VERSION"
+                    exit 1
                   fi
-                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
                   echo "📦 Version: $VERSION"
 
             - name: Install uv
@@ -52,6 +51,7 @@ jobs:
             - name: Build and publish all packages
               env:
                   UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN_OPENHANDS }}
+                  VERSION: ${{ steps.extract_version.outputs.version }}
               run: |
                   set -euo pipefail
 

@@ -111,8 +111,8 @@ jobs:
                   ### What happens on merge
                   When this PR is merged, the `create-release.yml` workflow will automatically:
                   1. Create a GitHub release with tag `v{version}` and auto-generated notes, plus an explicit preamble for merged `release-note-required` PRs
-                  2. Trigger `pypi-release.yml` to publish all packages to PyPI
-                  3. Trigger `version-bump-prs.yml` to create downstream version bump PRs
+                  2. Explicitly dispatch PyPI, npm, GitHub Packages, agent-server image, and binary publishers against tag `v{version}`
+                  3. Trigger `version-bump-prs.yml` after successful PyPI publication
                   """
                   )
                   PY

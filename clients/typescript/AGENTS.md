@@ -270,19 +270,16 @@ src/hooks/
 
 ## Release Process
 
-TypeScript client releases are driven from the monorepo root by
-`.github/workflows/typescript-client-release.yml`, which delegates to OpenHands'
-centralized release-please workflow. The component configuration and state live
-in `.github/release-please/typescript-client-config.json` and
-`.github/release-please/typescript-client-manifest.json`.
+The TypeScript client is versioned with the Python packages by the monorepo's
+release process. `.github/workflows/prepare-release.yml` updates
+`clients/typescript/package.json` and its lockfile on the shared `rel-X.Y.Z`
+release branch. Merging that release PR publishes a `vX.Y.Z` GitHub release.
 
-Release-please maintains the client release PR and creates component tags named
-`typescript-client-vX.Y.Z`. Publishing that GitHub release triggers
+Publishing the GitHub release triggers
 `.github/workflows/typescript-client-npm-publish.yml` and
 `.github/workflows/typescript-client-github-packages-publish.yml`; both workflows
-also accept a `workflow_dispatch` version for manual recovery. The npm package
-version is independent of the Python SDK release and the tracked Agent Server
-image version.
+also accept a `workflow_dispatch` version for manual recovery. The tracked Agent
+Server image version remains independent and may lag the client package version.
 
 ### Tracking the agent-server / SDK version
 

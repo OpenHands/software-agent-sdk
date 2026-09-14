@@ -404,6 +404,34 @@ def start_child_span(
         logger.debug("Failed to create observability child span", exc_info=True)
 
 
+@contextlib.contextmanager
+def llm_call_span(name: str) -> Iterator[Any]:
+    """Open a span that stays current for the duration of one LLM call.
+
+    lmnr's LiteLLM instrumentation builds its span with ``Laminar.start_span``
+    (detached from the OTel context) and ends it in a ``finally`` before
+    ``litellm.completion`` returns, so attributes cannot be attached to it
+    afterwards -- OTel silently drops writes to an ended span. This span is
+    *current* while the call runs, so lmnr's span nests underneath it, and it
+    stays open long enough for Telemetry to attach the authoritative cost.
+
+    Yields ``None`` when observability is disabled, so callers stay branch-free.
+    """
+    if not should_enable_observability():
+        yield None
+        return
+    try:
+        from lmnr import Laminar
+
+        cm = Laminar.start_as_current_span(name=name, span_type="LLM")
+    except Exception:
+        logger.debug("Failed to open LLM observability span", exc_info=True)
+        yield None
+        return
+    with cm as span:
+        yield span
+
+
 # Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`
 # TOOL span; copied onto a detached delegate trace when present so the
 # originating tool call is visible from the delegate's trace alone.
