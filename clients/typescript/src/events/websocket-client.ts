@@ -100,7 +100,7 @@ export class WebSocketCallbackClient {
       // Convert HTTP URL to WebSocket URL
       const url = new URL(this.host);
       const wsScheme = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${wsScheme}//${url.host}${url.pathname.replace(/\/$/, '')}/sockets/events/${this.conversationId}`;
+      const wsUrl = `${wsScheme}//${url.host}${url.pathname.replace(/\/$/, '')}/sockets/session/${this.conversationId}`;
 
       // Add API key as query parameter if provided
       const finalUrl = this.apiKey ? `${wsUrl}?session_api_key=${this.apiKey}` : wsUrl;
@@ -114,8 +114,12 @@ export class WebSocketCallbackClient {
       this.ws.onmessage = (event: { data: any }) => {
         try {
           const message = typeof event.data === 'string' ? event.data : event.data.toString();
-          const eventData: Event = JSON.parse(message);
-          this.callback(eventData);
+          const frame = JSON.parse(message);
+          // Only these envelopes carry an Event; sync, progress and error frames are not forwarded.
+          if (frame.type !== 'durable' && frame.type !== 'transient') {
+            return;
+          }
+          this.callback(frame.event as Event);
         } catch (error) {
           this.reportError(
             new Error(

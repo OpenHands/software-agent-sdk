@@ -215,7 +215,7 @@ class WebSocketCallbackClient:
         parsed = urlparse(self.host)
         ws_scheme = "wss" if parsed.scheme == "https" else "ws"
         base = f"{ws_scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
-        ws_url = f"{base}/sockets/events/{self.conversation_id}"
+        ws_url = f"{base}/sockets/session/{self.conversation_id}"
 
         delay = 1.0
         has_connected = False
@@ -237,7 +237,12 @@ class WebSocketCallbackClient:
                         if self._stop.is_set():
                             break
                         try:
-                            event = Event.model_validate(json.loads(message))
+                            frame = json.loads(message)
+                            # Only these envelopes carry an Event; sync, progress
+                            # and error frames are not forwarded.
+                            if frame.get("type") not in ("durable", "transient"):
+                                continue
+                            event = Event.model_validate(frame["event"])
 
                             # Set ready on first ConversationStateUpdateEvent
                             # The server sends this immediately after subscription

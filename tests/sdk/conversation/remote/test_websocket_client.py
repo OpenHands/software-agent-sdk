@@ -193,19 +193,22 @@ def test_websocket_client_authenticates_outside_url(api_key, expected_messages):
         asyncio.run(client._client_loop())
 
     assert len(captured_urls) == 1
-    assert captured_urls[0] == ("ws://localhost:8000/sockets/events/test-conv-id")
+    assert captured_urls[0] == ("ws://localhost:8000/sockets/session/test-conv-id")
     assert sent_messages == expected_messages
 
 
-def _state_update_payload(event_id: str) -> str:
+def _state_update_payload(event_id: str, frame_type: str = "transient") -> str:
     return json.dumps(
         {
-            "kind": "ConversationStateUpdateEvent",
-            "id": event_id,
-            "timestamp": "2024-01-01T00:00:00Z",
-            "source": "environment",
-            "key": FULL_STATE_KEY,
-            "value": {"execution_status": "running"},
+            "type": frame_type,
+            "event": {
+                "kind": "ConversationStateUpdateEvent",
+                "id": event_id,
+                "timestamp": "2024-01-01T00:00:00Z",
+                "source": "environment",
+                "key": FULL_STATE_KEY,
+                "value": {"execution_status": "running"},
+            },
         }
     )
 
@@ -381,3 +384,54 @@ def test_websocket_client_calls_on_reconnect_after_subscription_restored():
     assert connect_calls == 2
     assert [event.id for event in callback_events] == ["state-1", "state-2"]
     reconnect.assert_called_once_with()
+
+
+def test_websocket_client_forwards_only_event_frames():
+    """Test that sync and progress frames are skipped, not forwarded."""
+    callback_events = []
+
+    def callback(event):
+        callback_events.append(event)
+        if event.id == "state-2":
+            client._stop.set()
+
+    frames = [
+        json.dumps({"type": "sync", "from_seq": None, "through_seq": 0}),
+        _state_update_payload("state-1", frame_type="durable"),
+        json.dumps({"type": "item_started", "item_id": "item-1", "attempt": 1}),
+        json.dumps(
+            {
+                "type": "delta",
+                "item_id": "item-1",
+                "attempt": 1,
+                "order": 0,
+                "kind": "text",
+                "content": "hi",
+            }
+        ),
+        _state_update_payload("state-2"),
+    ]
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            return _MockWebSocketContext(_MockWebSocket(frames, close_code=1000))
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=callback,
+    )
+
+    async def no_sleep(delay):
+        return None
+
+    client._sleep_before_retry = no_sleep
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert [event.id for event in callback_events] == ["state-1", "state-2"]
+    assert client._ready.is_set()
