@@ -23,19 +23,30 @@ if TYPE_CHECKING:
 
 def __getattr__(name: str):
     if name in {"MCPToolAction", "MCPToolObservation"}:
-        from openhands.sdk.mcp import definition
+        from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 
-        value = getattr(definition, name)
+        exports = {
+            "MCPToolAction": MCPToolAction,
+            "MCPToolObservation": MCPToolObservation,
+        }
     elif name in {"MCPToolDefinition", "MCPToolExecutor"}:
-        from openhands.sdk.mcp import tool
+        from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 
-        value = getattr(tool, name)
+        exports = {
+            "MCPToolDefinition": MCPToolDefinition,
+            "MCPToolExecutor": MCPToolExecutor,
+        }
     elif name in {"MCPToolProvider", "create_mcp_tools"}:
-        from openhands.sdk.mcp import utils
+        from openhands.sdk.mcp.utils import MCPToolProvider, create_mcp_tools
 
-        value = getattr(utils, name)
+        exports = {
+            "MCPToolProvider": MCPToolProvider,
+            "create_mcp_tools": create_mcp_tools,
+        }
     else:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    value = exports[name]
     globals()[name] = value
     return value
 
