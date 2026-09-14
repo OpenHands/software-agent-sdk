@@ -158,6 +158,7 @@ class BaseIntegrationTest(ABC):
             visualizer=DefaultConversationVisualizer(),  # Use default visualizer
             max_iteration_per_run=self.max_iteration_per_run,
             stream_callbacks=self.stream_callbacks,
+            persistence_dir=self.persistence_dir,
         )
 
     def conversation_callback(self, event: Event):
@@ -295,6 +296,15 @@ class BaseIntegrationTest(ABC):
 
         Returns:
             None by default, so no stream progress is emitted.
+        """
+        return None
+
+    @property
+    def persistence_dir(self) -> str | None:
+        """Where the conversation persists its events. Override to write to disk.
+
+        Returns:
+            None by default, so events are kept in memory only.
         """
         return None
 
