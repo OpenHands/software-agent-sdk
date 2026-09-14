@@ -17,6 +17,7 @@ from openhands.sdk import (
     Message,
     TextContent,
 )
+from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
@@ -156,6 +157,7 @@ class BaseIntegrationTest(ABC):
             callbacks=[self.conversation_callback],
             visualizer=DefaultConversationVisualizer(),  # Use default visualizer
             max_iteration_per_run=self.max_iteration_per_run,
+            stream_callbacks=self.stream_callbacks,
         )
 
     def conversation_callback(self, event: Event):
@@ -286,6 +288,15 @@ class BaseIntegrationTest(ABC):
             Maximum iterations (default: 100)
         """
         return 100
+
+    @property
+    def stream_callbacks(self) -> list[StreamProgressCallbackType] | None:
+        """Sinks for stream-progress frames. Override to capture them.
+
+        Returns:
+            None by default, so no stream progress is emitted.
+        """
+        return None
 
     def setup(self) -> None:
         """
