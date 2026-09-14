@@ -88,7 +88,8 @@ def get_llm_profile_names() -> list[str]:
     return [summary["name"] for summary in LLMProfileStore().list_summaries()]
 
 
-def _format_profiles(profile_names: Sequence[str]) -> str:
+def format_llm_profiles(profile_names: Sequence[str]) -> str:
+    """Format saved LLM profile names as a bullet list for tool descriptions."""
     if not profile_names:
         return "- No saved LLM profiles are currently available."
     return "\n".join(f"- {name}" for name in sorted(profile_names))
@@ -164,7 +165,7 @@ class SwitchLLMTool(ToolDefinition[SwitchLLMAction, SwitchLLMObservation]):
         return [
             cls(
                 description=_DESCRIPTION_TEMPLATE.format(
-                    profiles=_format_profiles(profile_names)
+                    profiles=format_llm_profiles(profile_names)
                 ),
                 action_type=SwitchLLMAction,
                 observation_type=SwitchLLMObservation,
