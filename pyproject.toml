@@ -43,7 +43,7 @@ dev = [
     "pyinstaller>=6.16.0",
     "streamlit>=1.49.1",
     "pytest-timeout>=2.4.0",
-    "griffe[pypi]>=2.0.0",
+    "griffe[pypi]>=2.3.0",
 ]
 
 # Ruff configuration
