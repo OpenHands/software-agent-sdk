@@ -44,10 +44,10 @@ interface AgentProfileBase {
    */
   mcp_server_refs: string[] | null;
   /**
-   * Which of the user's saved secrets to expose. Names only — the values live
-   * in the secrets store. `null` = all; `[]` = none; a non-null list = filter
-   * to the named keys. Strict: nothing is added back, so an ACP profile must
-   * list its own provider credential to receive it.
+   * Conversation secret allow-list. `null` preserves supplied secrets without
+   * loading additional saved secrets; `[]` exposes none. A list selects only
+   * those names, resolving matching saved secrets at launch. ACP profiles must
+   * include their provider credential when using an explicit list.
    */
   secret_refs?: string[] | null;
 }

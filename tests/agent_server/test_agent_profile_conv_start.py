@@ -1241,17 +1241,19 @@ class TestProfileSecretScope:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("secret_refs", "expected"),
+        ("secret_refs", "supply_selected", "expected"),
         [
-            (None, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
-            ([], set()),
-            (["GITHUB_TOKEN"], {"GITHUB_TOKEN"}),
-            (["GITHUB_TOKEN", "MISSING"], {"GITHUB_TOKEN"}),
-            (["MISSING"], set()),
+            (None, True, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            (None, False, {"DATADOG_API_KEY"}),
+            ([], True, set()),
+            (["GITHUB_TOKEN"], True, {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN"], False, {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN", "MISSING"], True, {"GITHUB_TOKEN"}),
+            (["MISSING"], True, set()),
         ],
     )
     async def test_start_conversation_drops_secrets_the_profile_disallows(
-        self, tmp_path, secret_refs, expected
+        self, tmp_path, secret_refs, supply_selected, expected
     ):
         """The filter runs on the request, so a client cannot widen the scope."""
         profile = _make_openhands_profile().model_copy(
@@ -1268,12 +1270,18 @@ class TestProfileSecretScope:
             },
         )
 
+        if not supply_selected:
+            request.secrets.pop("GITHUB_TOKEN")
+
         async with ConversationService(
             conversations_dir=tmp_path / "conversations"
         ) as service:
             with (
                 patch(_STORE_PATH) as MockStore,
                 patch(_LLM_STORE_PATH),
+                patch(
+                    "openhands.agent_server.persistence.get_secrets_store"
+                ) as MockSecretsStore,
                 patch(_RESOLVE_PATH) as MockResolve,
                 patch(_DISCOVER_PATH, return_value=[]),
                 patch(
@@ -1284,6 +1292,9 @@ class TestProfileSecretScope:
                     service, "_start_event_service", new_callable=AsyncMock
                 ) as mock_ses,
             ):
+                MockSecretsStore.return_value.get_secret.side_effect = {
+                    "GITHUB_TOKEN": "saved-gh"
+                }.get
                 store_inst = MockStore.return_value
                 store_inst.name_for_id.return_value = profile.name
                 store_inst.load.return_value = profile
@@ -1320,3 +1331,10 @@ class TestProfileSecretScope:
                 await service.start_conversation(request)
 
         assert set(captured["secrets"]) == expected
+        if "GITHUB_TOKEN" in expected:
+            value = "gh" if secret_refs is None else "saved-gh"
+            assert captured["secrets"]["GITHUB_TOKEN"].get_value() == value
+        assert {
+            call.args[0]
+            for call in MockSecretsStore.return_value.get_secret.call_args_list
+        } == set(secret_refs or [])
