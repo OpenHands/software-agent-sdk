@@ -11,7 +11,7 @@ dependencies = [
   "fastapi>=0.104",
   "openhands-sdk",
   "openai>=2.33.0,<3",
-  "pydantic>=2",
+  "pydantic>=2.13.5",
   "sqlalchemy>=2",
   "uvicorn>=0.31.1",
   "websockets>=12",

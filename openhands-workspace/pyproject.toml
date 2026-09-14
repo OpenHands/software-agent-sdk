@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "openhands-sdk",
     "openhands-agent-server",
-    "pydantic>=2.11.7",
+    "pydantic>=2.13.5",
 ]
 
 [project.urls]
