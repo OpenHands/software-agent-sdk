@@ -6,6 +6,7 @@ export interface RuntimeServiceOptions {
   host: string;
   apiKey?: string;
   timeout?: number;
+  /** Owning conversation. Omit for host-level use before a conversation exists. */
   conversationId?: string;
 }
 

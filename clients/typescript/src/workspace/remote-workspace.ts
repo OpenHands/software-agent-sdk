@@ -24,6 +24,7 @@ import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 export interface RemoteWorkspaceOptions extends BaseWorkspaceOptions {
   /** The remote host URL for the workspace (e.g., 'http://localhost:8000') */
   host: string;
+  /** Owning conversation. Omit for standalone use before a conversation exists. */
   conversationId?: string;
   /** API key for authenticating with the remote host (optional) */
   apiKey?: string;
