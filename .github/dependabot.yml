@@ -19,14 +19,10 @@ updates:
       directory: /
       schedule:
           interval: weekly
+      cooldown:
+          default-days: 7
       commit-message:
           prefix: chore(deps)
-      groups:
-        # Group all non-major updates together to reduce PR volume.
-          minor-and-patch:
-              update-types:
-                  - minor
-                  - patch
 
     - package-ecosystem: npm
       directory: /clients/typescript
