@@ -130,6 +130,29 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         assert isinstance(data, dict)
         return data
 
+    def start_command(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+        timeout: float = 30,
+    ) -> str:
+        """Start a command and return its ID without waiting for completion."""
+        return self._execute(self._start_command_generator(command, cwd, timeout))
+
+    def get_command_output(
+        self, command_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Read the latest output; a missing exit code means it is still running."""
+        return self._execute(self._get_command_output_generator(command_id))
+
+    def get_runtime_session_key(self) -> str:
+        """Get the scoped worker credential for this conversation runtime."""
+        return self._execute(self._runtime_lifecycle_generator(release=False))
+
+    def release_runtime(self) -> None:
+        """Release execution resources while retaining conversation history."""
+        self._execute(self._runtime_lifecycle_generator(release=True))
+
     def execute_command(
         self,
         command: str,
@@ -155,7 +178,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     def file_upload(
         self,
-        source_path: str | Path,
+        source_path: str | Path | bytes,
         destination_path: str | Path,
     ) -> FileOperationResult:
         """Upload a file to the remote system.
@@ -163,7 +186,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Reads the local file and sends it to the remote system via HTTP API.
 
         Args:
-            source_path: Path to the local source file
+            source_path: Local file path or in-memory bytes
             destination_path: Path where the file should be uploaded on remote system
 
         Returns:

@@ -247,6 +247,7 @@ export class ConversationManager {
     const workspace = new RemoteWorkspace({
       host: this.host,
       workingDir,
+      conversationId,
       apiKey: this.apiKey,
     });
 
