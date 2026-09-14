@@ -11,9 +11,9 @@ export class DesktopClient {
   private readonly client: HttpClient;
 
   constructor(options: DesktopClientOptions) {
-    const { server, runtime } = runtimeServiceConnections(options);
-    this.host = server.host;
-    this.apiKey = server.sessionApiKey;
+    const { runtime } = runtimeServiceConnections(options);
+    this.host = options.host.replace(/\/$/, '');
+    this.apiKey = options.apiKey;
     this.client = runtime;
   }
 

@@ -6,10 +6,8 @@
  */
 
 import { BashClient } from '../client/bash-client';
-import { RuntimeClient } from '../client/runtime-client';
-import { ServerConnection } from '../client/server-connection';
 import type { HttpClient } from '../client/http-client';
-import { GitClient } from '../client/git-client';
+import { runtimeServiceConnections } from '../client/runtime-transport';
 import {
   CommandResult,
   FileOperationResult,
@@ -26,8 +24,6 @@ import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 export interface RemoteWorkspaceOptions extends BaseWorkspaceOptions {
   /** The remote host URL for the workspace (e.g., 'http://localhost:8000') */
   host: string;
-  runtime?: RuntimeClient;
-  connection?: ServerConnection;
   conversationId?: string;
   /** API key for authenticating with the remote host (optional) */
   apiKey?: string;
@@ -45,37 +41,25 @@ export class RemoteWorkspace implements IWorkspace {
   public readonly workingDir: string;
   public readonly apiKey?: string;
   public readonly client: HttpClient;
-  public readonly connection: ServerConnection;
-  public readonly runtime?: RuntimeClient;
-  private readonly git: GitClient;
+  public readonly conversationId?: string;
+  private readonly server: HttpClient;
   public readonly bash: BashClient;
 
   constructor(options: RemoteWorkspaceOptions) {
-    this.connection =
-      options.runtime?.connection ?? options.connection ?? new ServerConnection(options);
-    this.host = this.connection.host;
+    this.host = options.host.replace(/\/$/, '');
     this.workingDir = options.workingDir;
-    this.apiKey = this.connection.sessionApiKey;
-    if (
-      options.runtime &&
-      options.conversationId !== undefined &&
-      options.conversationId !== options.runtime.conversationId
-    ) {
-      throw new Error('Conflicting workspace runtime IDs');
-    }
-    this.runtime =
-      options.runtime ??
-      (options.conversationId !== undefined
-        ? new RuntimeClient({
-            host: this.host,
-            connection: this.connection,
-            conversationId: options.conversationId,
-          })
-        : undefined);
-    this.client = this.runtime?.transport ?? this.connection;
-    this.bash =
-      this.runtime?.bash ?? new BashClient({ host: this.host, connection: this.connection });
-    this.git = this.runtime?.git ?? new GitClient({ host: this.host, connection: this.connection });
+    this.apiKey = options.apiKey;
+    this.conversationId = options.conversationId;
+
+    const { server, runtime } = runtimeServiceConnections(options);
+    this.server = server;
+    this.client = runtime;
+
+    this.bash = new BashClient({
+      host: this.host,
+      conversationId: this.conversationId,
+      ...(this.apiKey ? { apiKey: this.apiKey } : {}),
+    });
   }
 
   /**
@@ -107,21 +91,17 @@ export class RemoteWorkspace implements IWorkspace {
    *          suitable for joining a relative path onto.
    */
   async startWorkspaceSession(conversationId: ConversationID): Promise<string> {
-    if (this.runtime && this.runtime.conversationId !== conversationId) {
+    if (this.conversationId !== undefined && this.conversationId !== conversationId) {
       throw new Error('Workspace session must belong to the selected runtime');
     }
-    return (
-      this.runtime ??
-      new RuntimeClient({
-        host: this.host,
-        connection: this.connection,
-        conversationId,
-      })
-    ).startWorkspaceSession();
+    await this.server.post('/api/auth/workspace-session', undefined, {
+      credentials: 'include',
+    });
+    return `${this.host}/api/conversations/${encodeURIComponent(conversationId)}/workspace/`;
   }
 
   async deleteWorkspaceSession(): Promise<void> {
-    await this.connection.delete('/api/auth/workspace-session', {
+    await this.server.delete('/api/auth/workspace-session', {
       credentials: 'include',
       acceptableStatusCodes: new Set([204]),
     });
@@ -231,8 +211,15 @@ export class RemoteWorkspace implements IWorkspace {
   }
 
   async gitChanges(path: string, options: GitQueryOptions = {}): Promise<GitChange[]> {
+    const params: Record<string, string> = { path };
+    if (options.ref !== undefined) {
+      params.ref = options.ref;
+    }
     try {
-      return await this.git.changes(path, options);
+      const response = await this.client.get<GitChange[]>('/api/git/changes', {
+        params,
+      });
+      return response.data;
     } catch (error) {
       throw new Error(
         `Failed to get git changes: ${error instanceof Error ? error.message : String(error)}`,
@@ -242,8 +229,15 @@ export class RemoteWorkspace implements IWorkspace {
   }
 
   async gitDiff(path: string, options: GitQueryOptions = {}): Promise<GitDiff> {
+    const params: Record<string, string> = { path };
+    if (options.ref !== undefined) {
+      params.ref = options.ref;
+    }
     try {
-      return await this.git.diff(path, options);
+      const response = await this.client.get<GitDiff>('/api/git/diff', {
+        params,
+      });
+      return response.data;
     } catch (error) {
       throw new Error(
         `Failed to get git diff: ${error instanceof Error ? error.message : String(error)}`,

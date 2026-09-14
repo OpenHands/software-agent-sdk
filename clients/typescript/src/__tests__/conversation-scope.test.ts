@@ -1,11 +1,10 @@
 import { createServer, Server } from 'node:http';
 import { AddressInfo } from 'node:net';
-import { ServerClient } from '../client/server-client';
 import { ConversationManager } from '../conversation/conversation-manager';
 import { FileClient } from '../client/file-client';
 import { MCPClient } from '../client/mcp-client';
 import { HttpClient } from '../client/http-client';
-import { RuntimeClient } from '../client/runtime-client';
+import { BashClient } from '../client/bash-client';
 import type { AgentBase } from '../types/base';
 import { RemoteWorkspace } from '../workspace/remote-workspace';
 
@@ -18,6 +17,10 @@ describe('conversation-scoped requests', () => {
   beforeAll(async () => {
     server = createServer((req, res) => {
       urls.push(req.url!);
+      if (req.method === 'DELETE' && req.url === '/api/auth/workspace-session') {
+        res.writeHead(204).end();
+        return;
+      }
       if (req.url === '/server_info') {
         res.statusCode = discoveryStatus;
         res.setHeader('content-type', 'application/json');
@@ -54,157 +57,123 @@ describe('conversation-scoped requests', () => {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
-  it('advertises client-side runtime routing support', () => {
-    expect(ServerClient.supportsConversationRuntimeRoutes).toBe(true);
+  beforeEach(() => {
+    urls.length = 0;
+    scoped = true;
+    discoveryStatus = 200;
   });
-  it('scopes workspace commands to their conversation', async () => {
+  it.each([false, true])('routes workspace commands with scoped support=%s', async (supported) => {
+    scoped = supported;
     const workspace = new RemoteWorkspace({
       host,
       workingDir: '/workspace',
-      conversationId: 'demo-cid',
+      conversationId: 'selected',
     });
     const result = await workspace.executeCommand('pwd');
     expect(result.stdout).toBe('ok');
-    expect(urls.pop()).toBe('/api/bash/execute_bash_command?cid=demo-cid');
-  });
-  it('keeps runtime services scoped and setup operations global', async () => {
-    scoped = true;
-    try {
-      const manager = new ConversationManager({ host });
-      const runtime = manager.runtime('selected');
-      await runtime.files.downloadFile('/workspace/a');
-      expect(urls.pop()).toBe('/api/conversations/selected/file/download?path=%2Fworkspace%2Fa');
-      await runtime.bash.executeCommand({ command: 'pwd' });
-      expect(urls.pop()).toBe('/api/conversations/selected/bash/execute_bash_command');
-      await manager.files.getHome();
-      expect(urls.pop()).toBe('/api/file/home');
-      await runtime.mcp.testServer({ server: { command: 'echo' } });
-      expect(urls.pop()).toBe('/api/conversations/selected/mcp/test');
-      await manager.mcp.getOAuthStatus('job');
-      expect(urls.pop()).toBe('/api/mcp/oauth/status/job');
-    } finally {
-      scoped = false;
-    }
-  });
-  it('preserves mixed-scope legacy constructors without classifying URLs', async () => {
-    scoped = true;
-    try {
-      const files = new FileClient({ host, conversationId: 'legacy' });
-      await files.getHome();
-      expect(urls.pop()).toBe('/api/file/home');
-      await files.downloadFile('/workspace/a');
-      expect(urls.pop()).toContain('/api/conversations/legacy/file/download');
-      const mcp = new MCPClient({ host, conversationId: 'legacy' });
-      await mcp.getOAuthStatus('job');
-      expect(urls.pop()).toBe('/api/mcp/oauth/status/job');
-    } finally {
-      scoped = false;
-    }
-  });
-  it('rejects attempts to override immutable runtime identity', async () => {
-    const runtime = new RuntimeClient({ host, conversationId: 'selected' });
-    await expect(runtime.url('/api/file/download', { cid: 'other' })).rejects.toThrow(
-      'cannot be overridden'
+    expect(urls.pop()).toBe(
+      supported
+        ? '/api/conversations/selected/bash/execute_bash_command'
+        : '/api/bash/execute_bash_command?cid=selected'
     );
-    await expect(runtime.url('/api/file/../../settings')).rejects.toThrow('API path');
-    await expect(runtime.files.downloadTrajectory('other')).rejects.toThrow('selected runtime');
-    expect(() => new RuntimeClient({ host, conversationId: '' })).toThrow('conversation ID');
   });
-  it('leaves generic HTTP requests untouched without discovery', async () => {
-    const start = urls.length;
+  it('scopes workspace operations while keeping setup operations global', async () => {
+    const options = { host, conversationId: 'selected' };
+    const files = new FileClient(options);
+    await files.downloadFile('/workspace/a');
+    expect(urls.pop()).toBe('/api/conversations/selected/file/download?path=%2Fworkspace%2Fa');
+    await files.getHome();
+    expect(urls.pop()).toBe('/api/file/home');
+    await new BashClient(options).executeCommand({ command: 'pwd' });
+    expect(urls.pop()).toBe('/api/conversations/selected/bash/execute_bash_command');
+    const mcp = new MCPClient(options);
+    await mcp.testServer({ server: { command: 'echo' } });
+    expect(urls.pop()).toBe('/api/conversations/selected/mcp/test');
+    await mcp.getOAuthStatus('job');
+    expect(urls.pop()).toBe('/api/mcp/oauth/status/job');
+    await new RemoteWorkspace({ ...options, workingDir: '/workspace' }).gitChanges('/workspace');
+    expect(urls.pop()).toBe('/api/conversations/selected/git/changes?path=%2Fworkspace');
+  });
+  it('rejects requests that override the selected conversation', async () => {
+    const workspace = new RemoteWorkspace({
+      host,
+      workingDir: '/workspace',
+      conversationId: 'selected',
+    });
+    await expect(
+      workspace.client.get('/api/file/download', { params: { cid: 'other' } })
+    ).rejects.toThrow('cannot be overridden');
+    await expect(workspace.client.get('/api/file/../../settings')).rejects.toThrow('API path');
+    await expect(
+      new FileClient({ host, conversationId: 'selected' }).downloadTrajectory('other')
+    ).rejects.toThrow('selected runtime');
+    expect(
+      () => new RemoteWorkspace({ host, workingDir: '/workspace', conversationId: '' })
+    ).toThrow('conversation ID');
+    expect(urls).toEqual([]);
+  });
+  it('preserves unscoped clients without capability discovery', async () => {
     await new HttpClient({ baseUrl: host }).get('/api/file/download', {
       params: { cid: 'explicit' },
     });
-    expect(urls.slice(start)).toEqual(['/api/file/download?cid=explicit']);
+    await new FileClient({ host }).downloadFile('/workspace/a');
+    await new RemoteWorkspace({ host, workingDir: '/workspace' }).executeCommand('pwd');
+    expect(urls).toEqual([
+      '/api/file/download?cid=explicit',
+      '/api/file/download?path=%2Fworkspace%2Fa',
+      '/api/bash/execute_bash_command',
+    ]);
   });
-  it('coalesces capability discovery across concurrent runtime requests', async () => {
-    scoped = true;
-    const start = urls.length;
-    const manager = new ConversationManager({ host });
-    const client = manager.runtime('shared');
-    const other = manager.runtime('other');
-    try {
-      await Promise.all([
-        client.git.changes('/workspace'),
-        other.files.downloadFile('/workspace/a'),
-      ]);
-      expect(urls.slice(start).filter((url) => url === '/server_info')).toHaveLength(1);
-      expect(urls.slice(start)).toContain(
-        '/api/conversations/shared/git/changes?path=%2Fworkspace'
-      );
-      expect(urls.slice(start)).toContain(
-        '/api/conversations/other/file/download?path=%2Fworkspace%2Fa'
-      );
-    } finally {
-      scoped = false;
-    }
+  it('reuses existing discovery for concurrent requests on a client', async () => {
+    const files = new FileClient({ host, conversationId: 'selected' });
+    await Promise.all([files.downloadFile('/workspace/a'), files.downloadFile('/workspace/b')]);
+    expect(urls.filter((url) => url === '/server_info')).toHaveLength(1);
+    expect(urls).toContain('/api/conversations/selected/file/download?path=%2Fworkspace%2Fa');
+    expect(urls).toContain('/api/conversations/selected/file/download?path=%2Fworkspace%2Fb');
   });
-  it('retries discovery after errors without silently downgrading', async () => {
+  it('retries failed discovery without silently downgrading', async () => {
     discoveryStatus = 503;
-    const client = new RuntimeClient({ host, conversationId: 'retry' });
-    const start = urls.length;
-    try {
-      await expect(client.files.downloadFile('/workspace/a')).rejects.toMatchObject({
-        status: 503,
-      });
-      expect(urls.slice(start)).toEqual(['/server_info']);
-      discoveryStatus = 200;
-      scoped = true;
-      await client.files.downloadFile('/workspace/a');
-      expect(urls.pop()).toBe('/api/conversations/retry/file/download?path=%2Fworkspace%2Fa');
-    } finally {
-      discoveryStatus = 200;
-      scoped = false;
-    }
+    const files = new FileClient({ host, conversationId: 'retry' });
+    await expect(files.downloadFile('/workspace/a')).rejects.toMatchObject({ status: 503 });
+    expect(urls).toEqual(['/server_info']);
+    discoveryStatus = 200;
+    await files.downloadFile('/workspace/a');
+    expect(urls.pop()).toBe('/api/conversations/retry/file/download?path=%2Fworkspace%2Fa');
   });
-  it('falls back when server info is unavailable on an older server', async () => {
+  it('supports older servers without server info', async () => {
     discoveryStatus = 404;
-    try {
-      const client = new RuntimeClient({ host, conversationId: 'legacy' });
-      await client.files.downloadFile('/workspace/a');
-      expect(urls.pop()).toBe('/api/file/download?path=%2Fworkspace%2Fa&cid=legacy');
-    } finally {
-      discoveryStatus = 200;
-    }
+    const files = new FileClient({ host, conversationId: 'selected' });
+    await files.downloadFile('/workspace/a');
+    expect(urls.pop()).toBe('/api/file/download?path=%2Fworkspace%2Fa&cid=selected');
   });
-  it('shares the runtime instance with workspaces and keeps sessions global', async () => {
-    scoped = true;
-    try {
-      const runtime = new ConversationManager({ host }).runtime('preview');
-      const workspace = new RemoteWorkspace({ host, workingDir: '/workspace', runtime });
-      expect(workspace.bash).toBe(runtime.bash);
-      expect(workspace.client).toBe(runtime.transport);
-      expect(await workspace.startWorkspaceSession('preview')).toBe(
-        `${host}/api/conversations/preview/workspace/`
-      );
-      expect(urls.pop()).toBe('/api/auth/workspace-session');
-      await expect(workspace.startWorkspaceSession('other')).rejects.toThrow('selected runtime');
-      expect(await runtime.url('/api/file/download', { path: '/workspace/a' })).toBe(
-        `${host}/api/conversations/preview/file/download?path=%2Fworkspace%2Fa`
-      );
-    } finally {
-      scoped = false;
-    }
+  it('keeps workspace session authentication global and identity fixed', async () => {
+    const workspace = new RemoteWorkspace({
+      host,
+      workingDir: '/workspace',
+      conversationId: 'preview',
+    });
+    expect(await workspace.startWorkspaceSession('preview')).toBe(
+      `${host}/api/conversations/preview/workspace/`
+    );
+    expect(urls.pop()).toBe('/api/auth/workspace-session');
+    await expect(workspace.startWorkspaceSession('other')).rejects.toThrow('selected runtime');
+    await workspace.deleteWorkspaceSession();
+    expect(urls.pop()).toBe('/api/auth/workspace-session');
   });
-  it('binds created, loaded and forked workspaces to their own runtimes', async () => {
-    scoped = true;
-    try {
-      const manager = new ConversationManager({ host });
-      const created = await manager.createConversation({ kind: 'Agent' } as AgentBase, {
-        workingDir: '/workspace',
-      });
-      expect(created.workspace.runtime?.conversationId).toBe('created');
-      await created.workspace.executeCommand('pwd');
-      expect(urls.pop()).toBe('/api/conversations/created/bash/execute_bash_command');
-      const loaded = await manager.loadConversation('created', '/workspace');
-      expect(loaded.workspace.connection).toBe(created.workspace.connection);
-      const forked = await created.fork();
-      expect(forked.workspace.runtime?.conversationId).toBe('forked');
-      await forked.workspace.executeCommand('pwd');
-      expect(urls.pop()).toBe('/api/conversations/forked/bash/execute_bash_command');
-      expect(created.workspace.runtime?.conversationId).toBe('created');
-    } finally {
-      scoped = false;
-    }
+  it('binds created, loaded and forked workspaces to their conversations', async () => {
+    const manager = new ConversationManager({ host });
+    const created = await manager.createConversation({ kind: 'Agent' } as AgentBase, {
+      workingDir: '/workspace',
+    });
+    await created.workspace.executeCommand('pwd');
+    expect(urls.pop()).toBe('/api/conversations/created/bash/execute_bash_command');
+    const loaded = await manager.loadConversation('created', '/workspace');
+    await loaded.workspace.executeCommand('pwd');
+    expect(urls.pop()).toBe('/api/conversations/created/bash/execute_bash_command');
+    const forked = await created.fork();
+    await forked.workspace.executeCommand('pwd');
+    expect(urls.pop()).toBe('/api/conversations/forked/bash/execute_bash_command');
+    await created.workspace.executeCommand('pwd');
+    expect(urls.pop()).toBe('/api/conversations/created/bash/execute_bash_command');
   });
 });

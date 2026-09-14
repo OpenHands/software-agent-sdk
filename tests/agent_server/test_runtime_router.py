@@ -124,7 +124,10 @@ def test_canonical_runtime_openapi_preserves_methods_and_schemas():
         content = paths[
             f"/api/conversations/{{runtime_conversation_id}}/file/{endpoint}"
         ]["get"]["responses"]["200"]["content"]
-        assert "application/json" not in content
+        assert (
+            content
+            == paths[f"/api/file/{endpoint}"]["get"]["responses"]["200"]["content"]
+        )
         assert content["application/octet-stream"]["schema"] == {
             "type": "string",
             "format": "binary",

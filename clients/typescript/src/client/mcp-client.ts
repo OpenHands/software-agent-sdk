@@ -30,8 +30,8 @@ export class MCPClient {
 
   constructor(options: MCPClientOptions) {
     const { server, runtime } = runtimeServiceConnections(options);
-    this.host = server.host;
-    this.apiKey = server.sessionApiKey;
+    this.host = options.host.replace(/\/$/, '');
+    this.apiKey = options.apiKey;
     this.client = runtime;
     this.server = server;
   }

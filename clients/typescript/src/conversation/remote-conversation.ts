@@ -100,11 +100,11 @@ export class RemoteConversation implements IConversation {
   ) {
     this.agent = agent;
     this._workspace =
-      options.conversationId && workspace.runtime?.conversationId !== options.conversationId
+      options.conversationId && workspace.conversationId !== options.conversationId
         ? new RemoteWorkspace({
             host: workspace.host,
             workingDir: workspace.workingDir,
-            connection: workspace.connection,
+            apiKey: workspace.apiKey,
             conversationId: options.conversationId,
           })
         : workspace;
@@ -205,7 +205,7 @@ export class RemoteConversation implements IConversation {
     this._workspace = new RemoteWorkspace({
       host: this.workspace.host,
       workingDir: this.workspaceWorkingDir(info),
-      connection: this.workspace.connection,
+      apiKey: this.workspace.apiKey,
       conversationId: info.id,
     });
   }
@@ -396,7 +396,7 @@ export class RemoteConversation implements IConversation {
     const forkWorkspace = new RemoteWorkspace({
       host: this.workspace.host,
       workingDir: this.workspaceWorkingDir(response.data),
-      connection: this.workspace.connection,
+      apiKey: this.workspace.apiKey,
       conversationId: response.data.id,
     });
 

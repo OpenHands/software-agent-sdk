@@ -10,7 +10,6 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
 from fastapi.routing import APIRoute
 
 from openhands.agent_server.bash_router import bash_router
@@ -62,22 +61,6 @@ class RuntimeRouter(APIRouter):
         self, path: str, endpoint: Callable[..., Any], **kwargs: Any
     ) -> None:
         kwargs["route_class_override"] = self.route_class
-        if path in {
-            "/file/download",
-            "/file/archive",
-            "/file/download-trajectory/{conversation_id}",
-        }:
-            kwargs["response_class"] = FileResponse
-            kwargs["responses"] = {
-                **(kwargs.get("responses") or {}),
-                200: {
-                    "content": {
-                        "application/octet-stream": {
-                            "schema": {"type": "string", "format": "binary"}
-                        }
-                    }
-                },
-            }
         super().add_api_route(path, endpoint, **kwargs)
 
 

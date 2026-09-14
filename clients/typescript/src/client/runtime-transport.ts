@@ -1,30 +1,28 @@
-import { HttpClient } from './http-client';
+import { HttpClient, HttpError } from './http-client';
 import type { HttpResponse, RequestOptions } from './http-client';
-import { ServerConnection } from './server-connection';
-import type { ServerConnectionOptions } from './server-connection';
+import { clearAgentServerInfoCache, getCachedAgentServerInfo } from './agent-server-compatibility';
 
-export type RuntimeUrlParams = Record<
-  string,
-  string | number | boolean | Array<string | number | boolean> | null | undefined
->;
-
-export interface RuntimeServiceOptions extends ServerConnectionOptions {
+export interface RuntimeServiceOptions {
+  host: string;
+  apiKey?: string;
+  timeout?: number;
   conversationId?: string;
-  connection?: ServerConnection;
-  runtimeTransport?: RuntimeTransport;
 }
 
-/** Routes only runtime requests. Global operations must use the server connection. */
-export class RuntimeTransport extends HttpClient {
+/** Internal transport for operations on one conversation's workspace. */
+class RuntimeTransport extends HttpClient {
   constructor(
-    readonly connection: ServerConnection,
-    readonly conversationId: string
+    options: RuntimeServiceOptions,
+    private readonly server: HttpClient,
+    private readonly conversationId: string
   ) {
-    super({ baseUrl: connection.host, apiKey: connection.sessionApiKey });
+    super({ baseUrl: options.host });
     if (!conversationId.trim()) throw new Error('A runtime requires a conversation ID');
   }
 
-  private async scope(options: RequestOptions): Promise<RequestOptions> {
+  override async request<T = HttpResponse['data']>(
+    options: RequestOptions
+  ): Promise<HttpResponse<T>> {
     if (
       !options.url.startsWith('/api/') ||
       options.url.includes('?') ||
@@ -35,46 +33,37 @@ export class RuntimeTransport extends HttpClient {
       throw new Error('Runtime requests require an API path and separate query parameters');
     }
     if (options.params?.cid != null) {
-      throw new Error('A runtime conversation cannot be overridden; select another RuntimeClient');
+      throw new Error('A runtime conversation cannot be overridden');
     }
-    if (await this.connection.supportsRuntimeRoutes()) {
-      return {
-        ...options,
-        url: `/api/conversations/${encodeURIComponent(this.conversationId)}${options.url.slice(4)}`,
-      };
-    }
-    return { ...options, params: { ...options.params, cid: this.conversationId } };
-  }
-
-  override async request<T = HttpResponse['data']>(
-    options: RequestOptions
-  ): Promise<HttpResponse<T>> {
-    return this.connection.request<T>(await this.scope(options));
-  }
-
-  async url(path: string, params?: RuntimeUrlParams): Promise<string> {
-    const scoped = await this.scope({ method: 'GET', url: path, params });
-    return this.buildUrl(scoped.url, scoped.params).toString();
+    const info = await getCachedAgentServerInfo(this.server).catch((error: unknown) => {
+      if (error instanceof HttpError && error.status === 404) return null;
+      clearAgentServerInfoCache(this.server);
+      throw error;
+    });
+    const request = info?.capabilities?.includes('conversation_runtime_routes_v1')
+      ? {
+          ...options,
+          url: `/api/conversations/${encodeURIComponent(this.conversationId)}${options.url.slice(4)}`,
+        }
+      : { ...options, params: { ...options.params, cid: this.conversationId } };
+    return this.server.request<T>(request);
   }
 }
 
 export function runtimeServiceConnections(options: RuntimeServiceOptions): {
-  server: ServerConnection;
+  server: HttpClient;
   runtime: HttpClient;
 } {
-  const server =
-    options.runtimeTransport?.connection ?? options.connection ?? new ServerConnection(options);
-  if (
-    options.runtimeTransport &&
-    options.conversationId !== undefined &&
-    options.conversationId !== options.runtimeTransport.conversationId
-  ) {
-    throw new Error('Conflicting runtime conversation IDs');
-  }
-  const runtime =
-    options.runtimeTransport ??
-    (options.conversationId !== undefined
-      ? new RuntimeTransport(server, options.conversationId)
-      : server);
-  return { server, runtime };
+  const server = new HttpClient({
+    baseUrl: options.host,
+    apiKey: options.apiKey,
+    timeout: options.timeout,
+  });
+  return {
+    server,
+    runtime:
+      options.conversationId === undefined
+        ? server
+        : new RuntimeTransport(options, server, options.conversationId),
+  };
 }
