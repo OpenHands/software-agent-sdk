@@ -3,6 +3,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 from urllib.request import urlopen
+from uuid import UUID
 
 import httpx
 from pydantic import PrivateAttr
@@ -79,9 +80,13 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         command: str,
         cwd: str | Path | None = None,
         timeout: float = 30,
+        *,
+        agent_profile_id: UUID | None = None,
     ) -> str:
         """Start a command and return its ID without waiting for completion."""
-        return await self._execute(self._start_command_generator(command, cwd, timeout))
+        return await self._execute(
+            self._start_command_generator(command, cwd, timeout, agent_profile_id)
+        )
 
     async def get_command_output(
         self, command_id: str | None = None
@@ -102,6 +107,8 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         command: str,
         cwd: str | Path | None = None,
         timeout: float = 30.0,
+        *,
+        agent_profile_id: UUID | None = None,
     ) -> CommandResult:
         """Execute a bash command on the remote system.
 
@@ -116,7 +123,9 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         Returns:
             CommandResult: Result with stdout, stderr, exit_code, and other metadata
         """
-        generator = self._execute_command_generator(command, cwd, timeout)
+        generator = self._execute_command_generator(
+            command, cwd, timeout, agent_profile_id
+        )
         result = await self._execute(generator)
         return result
 

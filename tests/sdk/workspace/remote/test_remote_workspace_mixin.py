@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from unittest.mock import Mock, mock_open, patch
+from uuid import UUID
 
 import httpx
 import pytest
@@ -119,6 +120,18 @@ def test_execute_command_generator_basic_flow():
         assert result.stdout == "hello\n"
         assert result.stderr == ""
         assert result.timeout_occurred is False
+
+
+def test_start_command_generator_includes_agent_profile_id():
+    profile_id = UUID("01234567-89ab-cdef-0123-456789abcdef")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
+    generator = mixin._start_command_generator("echo hello", None, 30.0, profile_id)
+
+    request = next(generator)
+
+    assert request["json"]["agent_profile_id"] == str(profile_id)
 
 
 def test_execute_command_generator_without_cwd():

@@ -44,6 +44,7 @@ export interface ExecuteBashRequest {
   command: string;
   cwd?: string;
   timeout?: number;
+  agent_profile_id?: string | null;
 }
 
 export interface BashEventBase {
