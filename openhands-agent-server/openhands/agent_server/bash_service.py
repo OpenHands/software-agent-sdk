@@ -32,7 +32,6 @@ class BashEventService:
 
     bash_events_dir: Path = field()
     default_cwd: str | None = None
-    owns_spawned_processes: bool = False
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _closed: bool = field(default=False, init=False)
     _pub_sub: PubSub[BashEventBase] = field(
@@ -259,7 +258,7 @@ class BashEventService:
         self, request: ExecuteBashRequest
     ) -> tuple[BashCommand, asyncio.Task]:
         """Execute a bash command. The output will be published separately."""
-        if self.owns_spawned_processes and self._closed:
+        if self._closed:
             raise RuntimeError("Bash event service is closed")
         cwd = request.cwd or self.default_cwd
         command = BashCommand(**{**request.model_dump(), "cwd": cwd})
@@ -268,9 +267,8 @@ class BashEventService:
 
         # Execute the bash command in a background task
         task = asyncio.create_task(self._execute_bash_command(command))
-        if self.owns_spawned_processes:
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return command, task
 
     async def _execute_bash_command(self, command: BashCommand) -> None:
@@ -357,12 +355,8 @@ class BashEventService:
                 )
                 exit_code = process.returncode
             except asyncio.CancelledError:
-                # Conversation-owned services must not leave their process
-                # behind when the conversation is released. Keep the shared
-                # host service's existing cancellation behavior unchanged.
-                if self.owns_spawned_processes:
-                    self._signal_process_group(process, signal.SIGKILL)
-                    await process.wait()
+                self._signal_process_group(process, signal.SIGKILL)
+                await process.wait()
                 raise
             except TimeoutError:
                 # Send SIGTERM to the whole process group so user-installed
@@ -526,12 +520,11 @@ class BashEventService:
 
     async def close(self):
         """Close the bash event service and clean up resources."""
-        if self.owns_spawned_processes:
-            self._closed = True
-            tasks = list(self._tasks)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+        self._closed = True
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await self._pub_sub.close()
 
     async def __aenter__(self):
