@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from openhands.workspace.cloud.workspace import AGENT_SERVER
+
 
 # =============================================================================
 # Fixtures
@@ -233,10 +235,62 @@ def test_cloud_workspace_resume_calls_resume_sandbox(mock_cloud_workspace):
     """Test that resume() calls _resume_sandbox()."""
     workspace = mock_cloud_workspace
 
+    def ready():
+        # The real _wait_until_sandbox_ready refreshes these from the sandbox.
+        workspace._session_api_key = "session-key"
+        workspace._exposed_urls = [
+            {"name": AGENT_SERVER, "url": "https://agent-server.example.com"}
+        ]
+
     with patch.object(workspace, "_resume_sandbox") as mock_resume:
-        with patch.object(workspace, "_wait_until_sandbox_ready"):
+        with patch.object(workspace, "_wait_until_sandbox_ready", side_effect=ready):
             workspace.resume()
             mock_resume.assert_called_once()
+
+
+def test_cloud_workspace_resume_repoints_client_at_refreshed_connection(
+    mock_cloud_workspace,
+):
+    """A resumed sandbox can come back on a new URL with a rotated key.
+
+    The readiness poll re-reads both, but they only take effect once resume
+    pushes them onto host/api_key and drops the cached client. Without that the
+    workspace keeps talking to the previous endpoint with the previous key.
+    """
+    workspace = mock_cloud_workspace
+
+    def ready():
+        workspace._session_api_key = "rotated-key"
+        workspace._exposed_urls = [
+            {"name": AGENT_SERVER, "url": "https://agent-server-2.example.com/"}
+        ]
+
+    # The fixture leaves the sandbox's key on the private attribute; a live
+    # workspace has had it pushed onto api_key by _apply_ready_connection.
+    workspace.api_key = workspace._session_api_key
+
+    # Prime the cached client so this exercises the replacement rather than a
+    # first-time construction, and leave reset_client real: mocking it would only
+    # prove the helper was called, not that later requests reach the new sandbox.
+    stale_client = workspace.client
+    assert str(stale_client.base_url).rstrip("/") == "https://agent-server.example.com"
+    assert stale_client.headers["X-Session-API-Key"] == "session-key"
+
+    with patch.object(workspace, "_resume_sandbox"):
+        with patch.object(workspace, "_wait_until_sandbox_ready", side_effect=ready):
+            workspace.resume()
+
+    assert workspace.host == "https://agent-server-2.example.com"
+    assert workspace.api_key == "rotated-key"
+
+    refreshed_client = workspace.client
+    assert stale_client.is_closed, "the client for the previous sandbox must be closed"
+    assert refreshed_client is not stale_client
+    assert (
+        str(refreshed_client.base_url).rstrip("/")
+        == "https://agent-server-2.example.com"
+    )
+    assert refreshed_client.headers["X-Session-API-Key"] == "rotated-key"
 
 
 def test_cloud_workspace_resume_raises_if_no_sandbox():
