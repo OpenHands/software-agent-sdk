@@ -5,11 +5,20 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from pydantic import BaseModel, Field, SecretStr
 
+from openhands.agent_server._secrets_exposure import get_cipher, get_config
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_llm_profile_store,
+    get_settings_store,
+)
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.auth.openai import (
     DEVICE_CODE_TIMEOUT_SECONDS,
     OPENAI_CODEX_MODELS,
@@ -58,6 +67,19 @@ class VerifiedModelsResponse(BaseModel):
     """Response containing verified LLM models organized by provider."""
 
     models: dict[str, list[str]]
+
+
+class BalanceResponse(BaseModel):
+    """Credit balance information for the resolved LLM's provider."""
+
+    provider: str
+    limit: float | None = None
+    limit_remaining: float | None = None
+    usage: float
+    usage_daily: float | None = None
+    usage_weekly: float | None = None
+    usage_monthly: float | None = None
+    is_free_tier: bool = False
 
 
 class SubscriptionStatusResponse(BaseModel):
@@ -156,6 +178,141 @@ async def list_verified_models() -> VerifiedModelsResponse:
     with OpenHands.
     """
     return VerifiedModelsResponse(models=VERIFIED_MODELS)
+
+
+OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+BALANCE_HTTP_TIMEOUT_SECONDS = 10.0
+
+
+def _extract_api_key(llm: LLM) -> str | None:
+    """Return the LLM's API key as plaintext, or ``None`` if unset."""
+    key = llm.api_key
+    if isinstance(key, SecretStr):
+        key = key.get_secret_value()
+    if key is None:
+        return None
+    key = str(key).strip()
+    return key or None
+
+
+async def _fetch_openrouter_balance(api_key: str) -> BalanceResponse:
+    """Query OpenRouter's key endpoint for credit limit and usage information.
+
+    See https://openrouter.ai/docs/api-reference/limits for the response shape.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=BALANCE_HTTP_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                OPENROUTER_KEY_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                f"OpenRouter balance lookup failed with status {e.response.status_code}"
+            ),
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"OpenRouter balance lookup failed: {e}",
+        )
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="OpenRouter balance lookup returned an unexpected response",
+        )
+
+    return BalanceResponse(
+        provider="openrouter",
+        limit=data.get("limit"),
+        limit_remaining=data.get("limit_remaining"),
+        usage=data.get("usage", 0.0),
+        usage_daily=data.get("usage_daily"),
+        usage_weekly=data.get("usage_weekly"),
+        usage_monthly=data.get("usage_monthly"),
+        is_free_tier=bool(data.get("is_free_tier", False)),
+    )
+
+
+# Provider name -> balance fetcher taking the plaintext API key. Add new
+# providers here as they gain balance/credits endpoints.
+_BALANCE_FETCHERS: dict[str, Callable[[str], Awaitable[BalanceResponse]]] = {
+    "openrouter": _fetch_openrouter_balance,
+}
+
+
+def _resolve_balance_provider(llm: LLM) -> str | None:
+    """Map an LLM config to a provider supported by ``_BALANCE_FETCHERS``."""
+    base_url = llm.base_url or ""
+    if "openrouter.ai" in base_url or llm.model.startswith("openrouter/"):
+        return "openrouter"
+    return None
+
+
+def _resolve_llm_for_balance(request: Request, profile: str | None) -> LLM:
+    """Load the named profile's LLM, or the active agent settings LLM."""
+    if profile is not None:
+        store = get_llm_profile_store()
+        try:
+            return store.load(profile, cipher=get_cipher(request))
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Profile '{profile}' not found",
+            )
+
+    config = get_config(request)
+    settings = get_settings_store(config).load() or PersistedSettings()
+    return settings.agent_settings.llm
+
+
+@llm_router.get("/balance", response_model=BalanceResponse)
+async def get_balance(
+    request: Request,
+    profile: str | None = Query(
+        default=None,
+        description=(
+            "LLM profile name to check. Defaults to the currently active LLM settings."
+        ),
+    ),
+) -> BalanceResponse:
+    """Get the credit balance for the resolved LLM's provider.
+
+    Currently only OpenRouter is supported (detected via an ``openrouter.ai``
+    base URL or an ``openrouter/`` model prefix). The provider is queried
+    server-side with the stored API key; the key itself is never returned.
+
+    Returns 404 if the provider does not support balance lookup or no API key
+    is configured, and 502 if the upstream provider call fails.
+    """
+    llm = _resolve_llm_for_balance(request, profile)
+    provider = _resolve_balance_provider(llm)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Balance lookup is not supported for model '{llm.model}'. "
+                "Supported providers: " + ", ".join(sorted(_BALANCE_FETCHERS))
+            ),
+        )
+
+    api_key = _extract_api_key(llm)
+    if api_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No API key is configured for the resolved '{provider}' LLM; "
+                "cannot look up balance"
+            ),
+        )
+
+    return await _BALANCE_FETCHERS[provider](api_key)
 
 
 @llm_router.get(
