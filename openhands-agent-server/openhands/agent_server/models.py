@@ -45,6 +45,31 @@ from openhands.sdk.utils.models import (
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
+class ConversationRuntimeStatus(StrEnum):
+    """Availability of the runtime that executes a conversation."""
+
+    AVAILABLE = "available"
+    STARTING = "starting"
+    MISSING = "missing"
+    OWNERSHIP_LOST = "ownership_lost"
+    ERROR = "error"
+
+
+class ConversationRuntimeError(BaseModel):
+    """Structured details for the latest runtime lifecycle failure."""
+
+    code: str
+    message: str
+
+
+class ConversationRuntimeInfo(BaseModel):
+    """Runtime availability and recovery information for a conversation."""
+
+    runtime_status: ConversationRuntimeStatus
+    can_resume: bool
+    runtime_error: ConversationRuntimeError | None = None
+
+
 class ServerErrorEvent(Event):
     """Event emitted by the agent server when a server-level error occurs.
 
