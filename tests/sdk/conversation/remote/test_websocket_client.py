@@ -210,6 +210,18 @@ def _state_update_payload(event_id: str) -> str:
     )
 
 
+def _delta_payload(content: str) -> str:
+    return json.dumps(
+        {
+            "kind": "StreamingDeltaEvent",
+            "id": "delta-1",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "source": "agent",
+            "content": content,
+        }
+    )
+
+
 def _connection_closed(code: int) -> websockets.exceptions.ConnectionClosed:
     return websockets.exceptions.ConnectionClosed(
         rcvd=websockets.frames.Close(code, "test"),
@@ -381,3 +393,80 @@ def test_websocket_client_calls_on_reconnect_after_subscription_restored():
     assert connect_calls == 2
     assert [event.id for event in callback_events] == ["state-1", "state-2"]
     reconnect.assert_called_once_with()
+
+
+def test_websocket_client_routes_deltas_away_from_event_callback():
+    """A delta must bypass Event.model_validate and the durable callback."""
+    events = []
+    deltas = []
+
+    def callback(event):
+        events.append(event)
+        client._stop.set()
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            return _MockWebSocketContext(
+                _MockWebSocket(
+                    [_delta_payload("hel"), _state_update_payload("state-1")],
+                    close_code=1000,
+                )
+            )
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=callback,
+        delta_callback=deltas.append,
+    )
+
+    async def no_sleep(delay):
+        return None
+
+    client._sleep_before_retry = no_sleep
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert [delta.content for delta in deltas] == ["hel"]
+    assert [event.id for event in events] == ["state-1"]
+
+
+def test_websocket_client_drops_deltas_without_a_delta_callback():
+    """A client that wants no deltas still decodes the durable stream."""
+    events = []
+
+    def callback(event):
+        events.append(event)
+        client._stop.set()
+
+    class _MockConnect:
+        def __call__(self, url, *args, **kwargs):
+            return _MockWebSocketContext(
+                _MockWebSocket(
+                    [_delta_payload("hel"), _state_update_payload("state-1")],
+                    close_code=1000,
+                )
+            )
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=callback,
+    )
+
+    async def no_sleep(delay):
+        return None
+
+    client._sleep_before_retry = no_sleep
+
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.websockets.connect",
+        _MockConnect(),
+    ):
+        asyncio.run(client._client_loop())
+
+    assert [event.id for event in events] == ["state-1"]
