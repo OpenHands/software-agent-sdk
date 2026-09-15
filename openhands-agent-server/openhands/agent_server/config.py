@@ -346,6 +346,63 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    # ---- Docker runtime mode -----------------------------------------------
+    conversation_runtime: Literal["local", "docker"] = Field(
+        default="local",
+        description=(
+            "How to host conversations. ``local`` runs each conversation "
+            "in-process on this server. ``docker`` runs each conversation "
+            "in a dedicated agent-server container and proxies "
+            "conversation-scoped traffic to it."
+        ),
+    )
+    conversation_image: str = Field(
+        default="ghcr.io/openhands/agent-server:latest-python",
+        description="Container image used for conversations in docker mode.",
+    )
+    conversation_container_network: str | None = Field(
+        default=None,
+        description="Optional Docker network for conversation containers.",
+    )
+    conversation_container_forward_env: list[Literal["DEBUG"]] = Field(
+        default_factory=lambda: [
+            "DEBUG",
+        ],
+        description="Non-secret diagnostics forwarded to containers (DEBUG only).",
+    )
+    conversation_container_platform: str = Field(
+        default="linux/amd64",
+        description="Platform passed to Docker for conversation containers.",
+    )
+    conversation_container_memory: str | None = Field(
+        default="4g",
+        description=(
+            "Docker memory limit for each conversation container. Set to null to "
+            "leave memory unconstrained."
+        ),
+    )
+    conversation_container_cpus: float | None = Field(
+        default=2.0,
+        gt=0.0,
+        description=(
+            "Docker CPU limit for each conversation container. Set to null to "
+            "leave CPU unconstrained."
+        ),
+    )
+    conversation_container_pids_limit: int | None = Field(
+        default=512,
+        gt=0,
+        description=(
+            "Maximum processes in each conversation container. Set to null to "
+            "leave the process count unconstrained."
+        ),
+    )
+    conversation_container_startup_timeout: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="Seconds to wait for a conversation container to become ready.",
+    )
+
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
         description=(

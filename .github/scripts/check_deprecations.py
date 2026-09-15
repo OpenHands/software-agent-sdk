@@ -299,6 +299,31 @@ def _gather_rest_route_deprecations(
     tree: ast.AST, path: Path, *, package: str
 ) -> Iterator[DeprecationRecord]:
     for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_api_route"
+            and isinstance(
+                deprecated_flag := _extract_kw(node, "deprecated"), ast.Constant
+            )
+            and deprecated_flag.value is True
+        ):
+            identifier = ast.unparse(node.args[0]) if node.args else "<route>"
+            deprecated_in, removed_in = _parse_rest_route_deprecation_docstring(
+                _extract_string_literal(_extract_kw(node, "description")),
+                path=path,
+                line=node.lineno,
+                route_identifiers=[identifier],
+            )
+            yield DeprecationRecord(
+                identifier=identifier,
+                removed_in=removed_in,
+                deprecated_in=deprecated_in,
+                path=path,
+                line=node.lineno,
+                kind="rest_route",
+                package=package,
+            )
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
 

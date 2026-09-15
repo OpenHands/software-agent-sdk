@@ -92,7 +92,9 @@ def test_execute_command_generator_basic_flow():
     # First yield - start command
     start_kwargs = next(generator)
     assert start_kwargs["method"] == "POST"
-    assert start_kwargs["url"] == "http://localhost:8000/api/bash/start_bash_command"
+    assert (
+        start_kwargs["url"] == "http://localhost:8000/api/host/bash/start_bash_command"
+    )
     assert start_kwargs["json"]["command"] == "echo hello"
     assert start_kwargs["json"]["cwd"] == "/tmp"
     assert start_kwargs["json"]["timeout"] == 30
@@ -101,7 +103,9 @@ def test_execute_command_generator_basic_flow():
     # Send start response
     poll_kwargs = generator.send(start_response)
     assert poll_kwargs["method"] == "GET"
-    assert poll_kwargs["url"] == "http://localhost:8000/api/bash/bash_events/search"
+    assert (
+        poll_kwargs["url"] == "http://localhost:8000/api/host/bash/bash_events/search"
+    )
 
     # Send poll response and get result
     try:
@@ -322,7 +326,7 @@ def test_file_upload_generator_basic_flow(temp_file):
     # Get upload request
     upload_kwargs = next(generator)
     assert upload_kwargs["method"] == "POST"
-    assert upload_kwargs["url"] == "http://localhost:8000/api/file/upload"
+    assert upload_kwargs["url"] == "http://localhost:8000/api/host/file/upload"
     assert upload_kwargs["params"] == {"path": destination}
     assert "file" in upload_kwargs["files"]
     assert upload_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
@@ -422,7 +426,7 @@ def test_file_download_generator_basic_flow(temp_dir):
     # Get download request
     download_kwargs = next(generator)
     assert download_kwargs["method"] == "GET"
-    assert download_kwargs["url"] == "/api/file/download"
+    assert download_kwargs["url"] == "/api/host/file/download"
     assert download_kwargs["params"] == {"path": "/remote/file.txt"}
     assert download_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
 
@@ -457,7 +461,7 @@ def test_file_download_generator_with_path_objects(temp_dir):
     generator = mixin._file_download_generator(Path("/remote/file.txt"), destination)
 
     download_kwargs = next(generator)
-    assert download_kwargs["url"] == "/api/file/download"
+    assert download_kwargs["url"] == "/api/host/file/download"
     assert download_kwargs["params"] == {"path": "/remote/file.txt"}
 
 
@@ -650,7 +654,9 @@ def test_start_bash_command_endpoint_used():
     assert start_kwargs["method"] == "POST"
     # This is the critical check - must use start_bash_command,
     # not terminal_command
-    assert start_kwargs["url"] == "http://localhost:8000/api/bash/start_bash_command"
+    assert (
+        start_kwargs["url"] == "http://localhost:8000/api/host/bash/start_bash_command"
+    )
     assert "start_bash_command" in start_kwargs["url"], (
         "Must use /api/bash/start_bash_command endpoint. "
         "The /api/bash/terminal_command endpoint does not exist and causes "
@@ -665,7 +671,9 @@ def test_start_bash_command_endpoint_used():
     # Verify polling works correctly
     poll_kwargs = generator.send(start_response)
     assert poll_kwargs["method"] == "GET"
-    assert poll_kwargs["url"] == "http://localhost:8000/api/bash/bash_events/search"
+    assert (
+        poll_kwargs["url"] == "http://localhost:8000/api/host/bash/bash_events/search"
+    )
 
     # Verify command completes successfully
     try:
@@ -691,7 +699,7 @@ def test_git_changes_generator_uses_query_param_with_posix_paths():
     request_kwargs = next(generator)
 
     assert request_kwargs["method"] == "GET"
-    assert request_kwargs["url"] == "/api/git/changes"
+    assert request_kwargs["url"] == "/api/host/git/changes"
     assert request_kwargs["params"] == {"path": "C:/workspace/repo/subdir/file.py"}
     assert request_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
 
@@ -707,7 +715,7 @@ def test_git_diff_generator_uses_query_param_with_posix_paths():
     request_kwargs = next(generator)
 
     assert request_kwargs["method"] == "GET"
-    assert request_kwargs["url"] == "/api/git/diff"
+    assert request_kwargs["url"] == "/api/host/git/diff"
     assert request_kwargs["params"] == {"path": "C:/workspace/repo/nested/file.py"}
     assert request_kwargs["headers"] == {}
 

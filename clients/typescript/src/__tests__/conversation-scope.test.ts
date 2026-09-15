@@ -103,7 +103,7 @@ describe('conversation-scoped requests', () => {
     ).toThrow('conversation ID');
     expect(urls).toEqual([]);
   });
-  it('preserves unscoped clients without capability discovery', async () => {
+  it('keeps raw server requests unscoped and workspace requests on the host', async () => {
     await new HttpClient({ baseUrl: host }).get('/api/file/download', {
       params: { cid: 'explicit' },
     });
@@ -111,8 +111,8 @@ describe('conversation-scoped requests', () => {
     await new RemoteWorkspace({ host, workingDir: '/workspace' }).executeCommand('pwd');
     expect(urls).toEqual([
       '/api/file/download?cid=explicit',
-      '/api/file/download?path=%2Fworkspace%2Fa',
-      '/api/bash/execute_bash_command',
+      '/api/host/file/download?path=%2Fworkspace%2Fa',
+      '/api/host/bash/execute_bash_command',
     ]);
   });
   it('reuses existing discovery for concurrent requests on a client', async () => {
