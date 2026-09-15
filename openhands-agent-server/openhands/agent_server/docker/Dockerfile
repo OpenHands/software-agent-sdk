@@ -35,7 +35,7 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # stages below when needed.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
-FROM node:22.23.2-trixie-slim AS node-runtime
+FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
 
 COPY --from=python-runtime /usr/local /usr/local

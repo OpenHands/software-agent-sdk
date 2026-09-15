@@ -119,7 +119,7 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
 
     assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
     assert "FROM python:3.13.15-slim-trixie AS python-runtime" in dockerfile_text
-    assert "FROM node:22.23.2-trixie-slim AS node-runtime" in dockerfile_text
+    assert "FROM node:24.21.0-trixie-slim AS node-runtime" in dockerfile_text
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
     assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
