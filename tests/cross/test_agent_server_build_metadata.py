@@ -113,6 +113,46 @@ def test_agent_server_binary_copies_openhands_distribution_metadata() -> None:
         assert f'*copy_metadata("{distribution}")' in spec_text
 
 
+def test_python_image_uses_canonical_minimal_runtime() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
+    assert "FROM python:3.13.15-slim-trixie AS python-runtime" in dockerfile_text
+    assert "FROM node:24.21.0-trixie-slim AS node-runtime" in dockerfile_text
+    assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
+    assert re.search(r"ARG DEBIAN_SNAPSHOT=\d{8}T000000Z", dockerfile_text)
+    assert (
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
+        in dockerfile_text
+    )
+    assert (
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
+        in dockerfile_text
+    )
+    assert (
+        dockerfile_text.count(
+            "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg"
+        )
+        == 2
+    )
+    assert "Check-Valid-Until: no" in dockerfile_text
+    assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
+    full_stage = "FROM base-image-minimal AS base-image"
+    minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(
+        full_stage
+    )[0]
+    full_packages = dockerfile_text.partition(full_stage)[2]
+    assert "build-essential" not in minimal_packages
+    assert "COPY --from=ghcr.io/astral-sh/uv" not in minimal_packages
+    assert "build-essential" in full_packages
+    assert "COPY --from=ghcr.io/astral-sh/uv" in full_packages
+    assert "nikolaik/python-nodejs" not in dockerfile_text
+    assert "base_image: python-node-runtime" in workflow_text
+    assert "nikolaik/python-nodejs" not in workflow_text
+
+
 def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
     """The acp-providers stage must resolve packages/versions from the
     dependency-free catalog at build time, not from Dockerfile-baked arms.
