@@ -70,57 +70,147 @@ class MCPToolExecutor(ToolExecutor):
         self.client = client
         self.timeout = timeout
 
+    @staticmethod
+    def _is_connection_error(exc: Exception) -> bool:
+        """Whether *exc* indicates the MCP transport/session dropped.
+
+        Only these errors are worth a reconnect-and-retry: a dropped SSE
+        transport or a closed session. Semantic tool errors (bad args, tool
+        raised, permission denied, ...) must NOT trigger a blind retry because
+        the tool may already have executed on the server. A generic timeout is
+        deliberately excluded for the same reason: a slow tool may still have
+        run, and re-running it after a reconnect could double-execute it.
+        """
+        text = str(exc).lower()
+        return (
+            "connection closed" in text
+            or "connection failure" in text
+            or "connection lost" in text
+            or "session not connected" in text
+            or "session closed" in text
+            or "broken pipe" in text
+            or "econnreset" in text
+            or "socket hang up" in text
+            or "server disconnected" in text
+            or "client has been closed" in text
+        )
+
+    @staticmethod
+    def _result_error_text(result: mcp.types.CallToolResult) -> str:
+        """Flatten a CallToolResult's text blocks into a single string."""
+        parts = []
+        for block in result.content or []:
+            text = getattr(block, "text", None)
+            if text:
+                parts.append(str(text))
+        return "\n".join(parts)
+
+    async def _reconnect_client(self) -> None:
+        if self.client._closed:
+            raise RuntimeError("MCP client has been closed and cannot be reconnected")
+        logger.info(
+            f"MCP client not connected for tool '{self.tool_name}'; "
+            "dropping the stale session and reconnecting."
+        )
+        await self.client.reconnect()
+
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
         """Execute the MCP tool call using the already-connected client.
 
-        If the client's session has been lost (e.g., due to a transient
-        server error such as HTTP 503), attempt to reconnect once before
-        failing. This prevents a single transient error from permanently
-        disabling all MCP tools for the remainder of the conversation.
+        Reconnection policy: if the session is already known to be gone we
+        reconnect before the call; if a call fails mid-flight with a
+        connection error (e.g. the desktop SSE bridge restarted underneath
+        us), we reconnect once and retry the call a single time. A transient
+        drop therefore can never permanently disable MCP tools for the rest
+        of the conversation.
         """
-        if not self.client.is_connected():
-            if self.client._closed:
-                return MCPToolObservation.from_text(
-                    text=(
-                        f"MCP client not connected for tool '{self.tool_name}'. "
-                        "The client has been closed and cannot be reconnected."
-                    ),
-                    is_error=True,
-                    tool_name=self.tool_name,
-                )
-            logger.info(
-                f"MCP client not connected for tool '{self.tool_name}'; "
-                "attempting reconnection before failing."
-            )
-            try:
-                await self.client.connect()
-            except Exception as exc:
-                return MCPToolObservation.from_text(
-                    text=(
-                        f"MCP client not connected for tool '{self.tool_name}'. "
-                        f"Reconnection attempt failed: {exc}"
-                    ),
-                    is_error=True,
-                    tool_name=self.tool_name,
-                )
         try:
-            logger.debug(
-                f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
-            )
-            result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
-                name=self.tool_name, arguments=action.to_mcp_arguments()
-            )
-            return MCPToolObservation.from_call_tool_result(
-                tool_name=self.tool_name, result=result
-            )
-        except Exception as e:
-            error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            if not self.client.is_connected():
+                await self._reconnect_client()
+        except Exception as exc:
             return MCPToolObservation.from_text(
-                text=error_msg,
+                text=(
+                    f"MCP client not connected for tool '{self.tool_name}'. "
+                    f"Reconnection attempt failed: {exc}"
+                ),
                 is_error=True,
                 tool_name=self.tool_name,
+            )
+        for attempt in (1, 2):
+            try:
+                logger.debug(
+                    f"Calling MCP tool {self.tool_name} with args: "
+                    f"{action.model_dump()}"
+                )
+                result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
+                    name=self.tool_name, arguments=action.to_mcp_arguments()
+                )
+            except Exception as e:
+                if attempt == 1 and self._is_connection_error(e):
+                    logger.info(
+                        "MCP tool '%s' failed with a connection error (%s); "
+                        "reconnecting and retrying once.",
+                        self.tool_name,
+                        e,
+                    )
+                    try:
+                        await self._reconnect_client()
+                    except Exception as reconnect_exc:
+                        logger.error(
+                            "MCP tool '%s' reconnect failed: %s (original error: %s)",
+                            self.tool_name,
+                            reconnect_exc,
+                            e,
+                            exc_info=True,
+                        )
+                        return MCPToolObservation.from_text(
+                            text=(
+                                f"Error calling MCP tool {self.tool_name}: "
+                                f"reconnection failed ({reconnect_exc}); "
+                                f"original error: {e}"
+                            ),
+                            is_error=True,
+                            tool_name=self.tool_name,
+                        )
+                    continue
+                error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                return MCPToolObservation.from_text(
+                    text=error_msg,
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
+            # Some transports surface a dropped session as an *error result*
+            # rather than a raised exception (e.g. the in-process fastmcp
+            # gateway that fans out to the desktop bridge). Treat a
+            # connection-type error result exactly like a raised one:
+            # reconnect once and retry a single time.
+            is_err = getattr(result, "isError", getattr(result, "is_error", False))
+            if attempt == 1 and is_err and self._is_connection_error(
+                self._result_error_text(result)
+            ):
+                logger.info(
+                    "MCP tool '%s' returned a connection error result (%s); "
+                    "reconnecting and retrying once.",
+                    self.tool_name,
+                    self._result_error_text(result)[:200],
+                )
+                try:
+                    await self._reconnect_client()
+                except Exception as reconnect_exc:
+                    logger.error(
+                        "MCP tool '%s' reconnect failed: %s",
+                        self.tool_name,
+                        reconnect_exc,
+                        exc_info=True,
+                    )
+                    return MCPToolObservation.from_call_tool_result(
+                        tool_name=self.tool_name, result=result
+                    )
+                continue
+            return MCPToolObservation.from_call_tool_result(
+                tool_name=self.tool_name, result=result
             )
 
     def __call__(
