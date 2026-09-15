@@ -234,6 +234,7 @@ export type {
   AgentProfileSaveInput,
   AgentProfileSummary,
   AgentProfileDiagnostics,
+  LaunchedAgentProfile,
   LaunchedProfile,
 } from './models/agent-profile';
 
@@ -255,6 +256,9 @@ export type { SwitchPlan } from './profiles/derive-switch-plan';
 // Conversation models
 export type {
   ConversationInfo,
+  ConversationRuntimeStatus,
+  ConversationRuntimeError,
+  ConversationRuntimeInfo,
   ACPAgentConfig,
   ACPConversationInfo,
   SendMessageRequest,
