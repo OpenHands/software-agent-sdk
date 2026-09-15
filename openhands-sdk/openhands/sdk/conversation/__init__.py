@@ -5,7 +5,10 @@ from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.impl.remote_conversation import (
+    RemoteConversation,
+    RemoteConversationControl,
+)
 from openhands.sdk.conversation.resource_lock_manager import (
     ResourceLockManager,
     ResourceLockTimeout,
@@ -46,6 +49,7 @@ __all__ = [
     "ResourceLockTimeout",
     "LocalConversation",
     "RemoteConversation",
+    "RemoteConversationControl",
     "EventsListBase",
     "get_agent_final_response",
     "WebSocketConnectionError",

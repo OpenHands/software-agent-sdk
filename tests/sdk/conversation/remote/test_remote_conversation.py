@@ -15,7 +15,10 @@ from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     WebSocketConnectionError,
 )
-from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.impl.remote_conversation import (
+    RemoteConversation,
+    RemoteConversationControl,
+)
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
@@ -131,6 +134,66 @@ class TestRemoteConversation:
             "next_page_id": None,
         }
         return mock_response
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._validate_remote_agent",
+        side_effect=AssertionError("control client loaded agent state"),
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation._from_info",
+        side_effect=AssertionError("control client loaded interactive state"),
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient",
+        side_effect=AssertionError("control client opened a WebSocket"),
+    )
+    def test_control_client_creates_without_loading_interactive_state(
+        self, _websocket_client, _from_info, _validate_agent
+    ):
+        conversation_id = uuid.uuid4()
+        client = self.setup_mock_client(str(conversation_id))
+
+        control = RemoteConversationControl.create(
+            self.workspace,
+            StartConversationRequest(
+                agent=self.agent,
+                workspace=LocalWorkspace(working_dir="/workspace"),
+                conversation_id=conversation_id,
+            ),
+        )
+
+        assert control.id == conversation_id
+        assert client.request.call_args_list[0].args == (
+            "POST",
+            "/api/conversations",
+        )
+
+    def test_control_client_submits_a_turn_and_reads_status(self):
+        conversation_id = uuid.uuid4()
+        client = self.setup_mock_client(str(conversation_id))
+        control = RemoteConversationControl(self.workspace, conversation_id)
+
+        control.send_message("work on this", run=True)
+        status = control.get_execution_status()
+        assert status is not None
+        assert status.value == "finished"
+
+        message_request = client.request.call_args_list[0]
+        assert message_request.args == (
+            "POST",
+            f"/api/conversations/{conversation_id}/events",
+        )
+        assert message_request.kwargs["json"] == {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "work on this", "cache_prompt": False}
+            ],
+            "run": True,
+        }
+        assert client.request.call_args_list[1].args == (
+            "GET",
+            f"/api/conversations/{conversation_id}",
+        )
 
     @staticmethod
     def full_state_event(status: str, **values):
