@@ -1,7 +1,7 @@
 import json
 from abc import abstractmethod
 from collections.abc import Sequence
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from litellm import ChatCompletionMessageToolCall, ResponseFunctionToolCall
 from litellm.types.responses.main import (
@@ -16,6 +16,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.workspace.base import BaseWorkspace
 
 
 logger = get_logger(__name__)
@@ -158,6 +162,27 @@ class ReasoningItemModel(BaseModel):
     status: str | None = Field(default=None)
 
 
+class MaterializedRef(BaseModel):
+    """A pointer to content that a :class:`BaseContent` wrote to a workspace.
+
+    Returned by :meth:`BaseContent.materialize`. The ``path`` is where the bytes
+    now live on the workspace filesystem so the agent's file-oriented tools
+    (terminal, file editor) can act on it.
+    """
+
+    path: str = Field(description="Absolute path of the written file in the workspace")
+    source_url: str | None = Field(
+        default=None,
+        description="The originating URL (data: or http(s)://) if applicable",
+    )
+    mime_type: str | None = Field(
+        default=None, description="Detected MIME type of the materialized content"
+    )
+    size_bytes: int | None = Field(
+        default=None, description="Size of the written file in bytes"
+    )
+
+
 class BaseContent(BaseModel):
     cache_prompt: bool = False
 
@@ -168,6 +193,28 @@ class BaseContent(BaseModel):
         Subclasses should implement this method to return a list of dictionaries,
         even if they only have a single item.
         """
+
+    def materialize(
+        self,
+        workspace: "BaseWorkspace",  # noqa: ARG002
+    ) -> list[MaterializedRef]:
+        """Persist this content to the workspace filesystem, if applicable.
+
+        Mirrors the :meth:`to_llm_dict` contract: each content type knows how to
+        write *itself* out. The default is a no-op (e.g. :class:`TextContent`
+        carries nothing to materialize). Content types backed by bytes the agent
+        cannot reach inline (images, files, audio, blobs) override this to decode
+        or download their payload, write it into the workspace, and return the
+        resulting path(s).
+
+        Args:
+            workspace: The workspace to write into.
+
+        Returns:
+            A list of :class:`MaterializedRef` for every file written; empty when
+            there is nothing to materialize.
+        """
+        return []
 
 
 class TextContent(BaseContent):
@@ -213,6 +260,48 @@ class ImageContent(BaseContent):
         if self.cache_prompt and images:
             images[-1]["cache_control"] = {"type": "ephemeral"}
         return images
+
+    def materialize(self, workspace: "BaseWorkspace") -> list["MaterializedRef"]:
+        """Decode/download each image URL and write it into the workspace.
+
+        ``data:`` URLs are decoded from base64; ``http(s)://`` URLs are
+        downloaded with a size cap. Any URL that cannot be materialized is
+        logged and skipped rather than aborting the others.
+        """
+        from openhands.sdk.llm.utils.content_materialize import (
+            download_url,
+            parse_data_url,
+            write_bytes_to_workspace,
+        )
+
+        refs: list[MaterializedRef] = []
+        for url in self.image_urls:
+            try:
+                if url.startswith("data:"):
+                    data, mime_type = parse_data_url(url)
+                elif url.startswith(("http://", "https://")):
+                    data, mime_type = download_url(url)
+                else:
+                    logger.warning(
+                        "Skipping image URL with unsupported scheme during "
+                        "materialize: %s",
+                        url[:64],
+                    )
+                    continue
+                path, size = write_bytes_to_workspace(
+                    workspace, data, mime_type=mime_type
+                )
+                refs.append(
+                    MaterializedRef(
+                        path=path,
+                        source_url=url if not url.startswith("data:") else None,
+                        mime_type=mime_type,
+                        size_bytes=size,
+                    )
+                )
+            except Exception as e:
+                logger.warning("Failed to materialize image content: %s", e)
+        return refs
 
 
 class Message(BaseModel):
