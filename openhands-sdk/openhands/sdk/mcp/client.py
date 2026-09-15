@@ -49,7 +49,6 @@ class MCPClient(AsyncMCPClient):
     _connection_stop: anyio.Event | None = None
 
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault("mode", "legacy")
         super().__init__(*args, **kwargs)
         self._executor = AsyncExecutor()
         self._closed = False
