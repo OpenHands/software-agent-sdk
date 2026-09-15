@@ -1,5 +1,6 @@
 import asyncio
 import bisect
+import importlib
 import json
 import os
 import threading
@@ -83,6 +84,18 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _restore_tool_registrations(tool_module_qualnames: Mapping[str, str]) -> None:
+    """Import the tool modules persisted with a remote conversation."""
+    for tool_name, module_qualname in tool_module_qualnames.items():
+        try:
+            importlib.import_module(module_qualname)
+        except ImportError as exc:
+            raise ImportError(
+                f"Cannot attach to a conversation that uses tool {tool_name!r}: "
+                f"failed to import module {module_qualname!r}: {exc}"
+            ) from exc
 
 
 def _websocket_close_code(exc: ConnectionClosed) -> int | None:
@@ -974,6 +987,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
     ) -> Self:
+        _restore_tool_registrations(info.get("tool_module_qualnames") or {})
         conversation = cls.__new__(cls)
         conversation._initialize_connection(
             agent=_validate_remote_agent(info["agent"]),

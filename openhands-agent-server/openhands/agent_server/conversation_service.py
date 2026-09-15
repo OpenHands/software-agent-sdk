@@ -74,6 +74,7 @@ from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
+from openhands.sdk.tool.registry import get_tool_module_qualnames
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -538,6 +539,7 @@ def _compose_conversation_info(
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
+        tool_module_qualnames=dict(stored.tool_module_qualnames),
         launched_agent_profile=stored.launched_agent_profile,
     )
 
@@ -1740,6 +1742,21 @@ class ConversationService:
                     len(request.tool_module_qualnames),
                     conversation_id,
                 )
+
+        # The server may resolve built-in tools that the creating client does not
+        # import, as happens when a lightweight orchestrator starts a runtime
+        # conversation. Persist those server-resolved modules so another client
+        # can attach and deserialize the resulting tool events.
+        registered_tool_modules = get_tool_module_qualnames()
+        tool_module_qualnames = dict(request.tool_module_qualnames)
+        for tool in request.agent.tools:
+            module_qualname = registered_tool_modules.get(tool.name)
+            if module_qualname is not None:
+                tool_module_qualnames.setdefault(tool.name, module_qualname)
+        if tool_module_qualnames != request.tool_module_qualnames:
+            request = request.model_copy(
+                update={"tool_module_qualnames": tool_module_qualnames}
+            )
 
         # Register client-defined tools (JSON specs, no Python code). The
         # ClientTool *class* is registered statelessly; each tool's schema
