@@ -241,10 +241,11 @@ Body.
         (plugin_dir / "skills" / "shared").mkdir()
         (plugin_dir / "skills" / "shared" / "notes.md").write_text("# notes\n")
         (plugin_dir / "skills" / "loose.md").write_text("loose skill\n")
+        (plugin_dir / "skills" / "readme.md").write_text("# readme\n")
 
         plugin = Plugin.load(plugin_dir)
 
-        assert sorted(s.name for s in plugin.skills) == ["Summarize_Tool", "loose"]
+        assert [s.name for s in plugin.skills] == ["Summarize_Tool", "loose"]
 
     def test_skills_dir_bad_skill_skips_only_itself(self, tmp_path: Path):
         """A skill that fails to load does not abort the remaining skills."""

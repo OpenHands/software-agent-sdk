@@ -101,7 +101,9 @@ class PluginFormat(ABC):
             repo, knowledge, agent = load_skills_from_dir(
                 skills_dir, strict=False, recursive=False
             )
-            return [*repo.values(), *knowledge.values(), *agent.values()]
+            skills = [*repo.values(), *knowledge.values(), *agent.values()]
+            # Categorization groups skills by type; restore on-disk order.
+            return sorted(skills, key=lambda s: Path(s.source or ""))
 
         root_skill_md = find_skill_md(plugin_dir)
         if root_skill_md is not None:

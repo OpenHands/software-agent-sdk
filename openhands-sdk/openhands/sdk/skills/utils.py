@@ -466,7 +466,8 @@ def find_regular_md_files(
     Args:
         skill_dir: Path to the skills directory.
         exclude_dirs: Set of directories to exclude (e.g., SKILL.md directories).
-        recursive: If False, only scan the immediate children of skill_dir.
+        recursive: If False, only scan the immediate children of skill_dir,
+            where every .md file except a README is a skill.
 
     Returns:
         List of paths to regular .md skill files.
@@ -474,8 +475,13 @@ def find_regular_md_files(
     files: list[Path] = []
     if not skill_dir.exists():
         return files
-    candidates = skill_dir.rglob("*.md") if recursive else skill_dir.glob("*.md")
-    for f in sorted(candidates):
+    if not recursive:
+        return [
+            f
+            for f in sorted(skill_dir.glob("*.md"))
+            if f.is_file() and f.name.lower() != "readme.md"
+        ]
+    for f in sorted(skill_dir.rglob("*.md")):
         is_readme = f.name == "README.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
