@@ -1,6 +1,7 @@
 """Tests for browser tool executor cleanup and resource management."""
 
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -251,3 +252,57 @@ class TestBrowserCleanup:
 
         # _close_all_sessions is still called (it's a no-op if no sessions exist)
         mock_executor._server._close_all_sessions.assert_called_once()
+
+    def test_close_preserves_user_supplied_profile_dir(self, tmp_path):
+        """A user-supplied profile dir must never be deleted on close(), even if
+        its path contains the auto-generated 'browseruse/profiles/' substring."""
+        # Build a path that mimics the auto-generated default but is user-owned.
+        profile_dir = tmp_path / "browseruse" / "profiles" / "my-own-profile"
+        profile_dir.mkdir(parents=True)
+        marker = profile_dir / "precious-cookie.txt"
+        marker.write_text("user data that must survive")
+
+        with (
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                return_value="/usr/bin/chromium",
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=MagicMock(),
+            ),
+        ):
+            executor = BrowserToolExecutor(user_data_dir=str(profile_dir))
+            # Skip the real portal teardown; we only exercise the rmtree path.
+            executor._async_executor.run_async = lambda *a, **k: None  # type: ignore[method-assign]
+            executor.close()
+
+        assert marker.exists(), "close() deleted a user-supplied profile directory"
+
+    def test_close_removes_generated_profile_dir(self, tmp_path):
+        """The auto-generated default profile dir must still be removed on close()."""
+        mock_server = MagicMock()
+
+        with (
+            patch("openhands.tools.browser_use.impl.Path.home", return_value=tmp_path),
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
+                return_value="/usr/bin/chromium",
+            ),
+            patch(
+                "openhands.tools.browser_use.impl.CustomBrowserUseServer",
+                return_value=mock_server,
+            ),
+        ):
+            executor = BrowserToolExecutor()
+            profile_dir = Path(executor._config["user_data_dir"])
+            profile_dir.mkdir(parents=True)
+            (profile_dir / "marker.txt").write_text("x")
+            executor._async_executor.run_async = lambda *a, **k: None  # type: ignore[method-assign]
+            executor.close()
+
+        assert not profile_dir.exists(), (
+            "close() failed to remove the auto-generated profile directory"
+        )

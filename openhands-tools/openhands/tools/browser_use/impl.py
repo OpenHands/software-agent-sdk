@@ -250,6 +250,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _cleanup_initiated: bool
     _close_lock: threading.Lock
     _action_timeout_seconds: float
+    _owns_profile_dir: bool
 
     @staticmethod
     @functools.cache
@@ -323,6 +324,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         """
 
         self._close_lock = threading.Lock()
+        self._owns_profile_dir = "user_data_dir" not in config
 
         def init_logic():
             executable_path = self._ensure_chromium_available()
@@ -691,10 +693,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             except Exception as e:
                 logger.warning(f"Error during browser cleanup: {e}")
             finally:
-                # Remove the browser profile directory to avoid disk accumulation.
-                # browser_use doesn't clean up the user_data_dir on shutdown.
+                # Remove the browser profile directory we generated to avoid
+                # disk accumulation. browser_use doesn't clean up user_data_dir
+                # on shutdown, but we must never delete a user-supplied profile.
                 user_data_dir = self._config.get("user_data_dir")
-                if user_data_dir and "browseruse/profiles/" in user_data_dir:
+                if self._owns_profile_dir and user_data_dir:
                     try:
                         shutil.rmtree(user_data_dir, ignore_errors=True)
                     except Exception:
