@@ -15,6 +15,7 @@ constraint-dependencies = [
     "orjson>=3.11.7",  # CVE-2025-67221
     "rich>=14.3.3", # Version 14.3.2 essentially has a denial-of-service vulnerability which is outlined in https://github.com/Textualize/rich/issues/3958
     "lupa>=2.8",  # CVE-2026-34444
+    "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 49.0.0 dropped x86_64 macOS wheels; release-binaries.yml still builds on macos-15-intel
     "litellm==1.93.0",  # Workspace lock target for the requested LiteLLM upgrade
 ]
 
