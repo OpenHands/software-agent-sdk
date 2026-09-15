@@ -3,7 +3,7 @@
 # NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
 # PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
 # characters to underscores, breaking libtmux's format parsing.
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
+ARG BASE_IMAGE=python-node-runtime
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -25,6 +25,52 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
 ARG INSTALL_CAPABILITIES=vscode,browser,docker
+
+####################################################################################
+# Canonical Python + Node runtime
+#
+# Start from Debian itself and copy only the language runtimes from their official
+# images. The final stage installs only the shared libraries required by Python
+# and Node; developer and package-manager tooling is added by the agent-server
+# stages below when needed.
+####################################################################################
+FROM python:3.13.15-slim-trixie AS python-runtime
+FROM node:22.23.2-trixie-slim AS node-runtime
+FROM debian:trixie-slim AS python-node-runtime
+
+COPY --from=python-runtime /usr/local /usr/local
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+RUN set -eux; \
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    apt-get update; \
+    apt-get upgrade -y; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libbz2-1.0 \
+        libdb5.3t64 \
+        libffi8 \
+        libgcc-s1 \
+        libgdbm6t64 \
+        liblzma5 \
+        libncursesw6 \
+        libreadline8t64 \
+        libsqlite3-0 \
+        libssl3t64 \
+        libstdc++6 \
+        libtinfo6 \
+        libuuid1 \
+        libzstd1 \
+        netbase \
+        tzdata \
+        zlib1g; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 --version; \
+    node --version; \
+    npm --version
 
 ####################################################################################
 # Builder (source mode)

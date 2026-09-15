@@ -70,7 +70,7 @@ jobs:
                   uv sync --frozen
                   uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
                       --build-ctx-only --arch amd64 \
-                      --base-image nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      --base-image python-node-runtime
 
             - name: Build agent-server image from this branch
               uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -87,7 +87,7 @@ jobs:
                   # Scope server.yml populates with mode=max on push to main.
                   cache-from: type=gha,scope=agent-server-python-amd64
                   build-args: |
-                      BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      BASE_IMAGE=python-node-runtime
                       OPENHANDS_BUILD_GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
                       OPENHANDS_BUILD_GIT_REF=${{ github.head_ref != '' && format('refs/heads/{0}', github.head_ref) || github.ref }}
                       INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli

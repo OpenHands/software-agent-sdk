@@ -113,6 +113,20 @@ def test_agent_server_binary_copies_openhands_distribution_metadata() -> None:
         assert f'*copy_metadata("{distribution}")' in spec_text
 
 
+def test_python_image_uses_canonical_minimal_runtime() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "FROM debian:trixie-slim AS python-node-runtime" in dockerfile_text
+    assert "FROM python:3.13.15-slim-trixie AS python-runtime" in dockerfile_text
+    assert "FROM node:22.23.2-trixie-slim AS node-runtime" in dockerfile_text
+    assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
+    assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    assert "nikolaik/python-nodejs" not in dockerfile_text
+    assert "base_image: python-node-runtime" in workflow_text
+    assert "nikolaik/python-nodejs" not in workflow_text
+
+
 def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
     """The acp-providers stage must resolve packages/versions from the
     dependency-free catalog at build time, not from Dockerfile-baked arms.
