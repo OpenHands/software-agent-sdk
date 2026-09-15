@@ -3,8 +3,10 @@
 import asyncio
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -495,6 +497,64 @@ async def test_search_pagination(bash_service):
     page1_ids = {event.id for event in page1.items}
     page2_ids = {event.id for event in page2.items}
     assert len(page1_ids.intersection(page2_ids)) == 0  # No overlap
+
+
+@pytest.mark.asyncio
+async def test_search_pagination_applies_order_filter_before_limit(bash_service):
+    """Pagination should count only events that pass the order filter."""
+    command_id = UUID("00000000-0000-0000-0000-000000000001")
+    events = [
+        BashOutput(
+            command_id=command_id,
+            order=0,
+            timestamp=datetime(2024, 1, 1, 0, 0, 0, 1, tzinfo=UTC),
+        ),
+        BashOutput(
+            command_id=command_id,
+            order=1,
+            timestamp=datetime(2024, 1, 1, 0, 0, 0, 2, tzinfo=UTC),
+        ),
+        BashOutput(
+            command_id=command_id,
+            order=2,
+            timestamp=datetime(2024, 1, 1, 0, 0, 0, 3, tzinfo=UTC),
+        ),
+        BashOutput(
+            command_id=command_id,
+            order=3,
+            timestamp=datetime(2024, 1, 1, 0, 0, 0, 4, tzinfo=UTC),
+        ),
+    ]
+    for event in events:
+        bash_service._save_event_to_file(event)
+
+    page = await bash_service.search_bash_events(
+        kind__eq="BashOutput",
+        order__gt=1,
+        limit=1,
+    )
+
+    assert [event.order for event in page.items] == [2]
+    assert page.next_page_id is not None
+
+    next_page = await bash_service.search_bash_events(
+        kind__eq="BashOutput",
+        order__gt=1,
+        limit=1,
+        page_id=page.next_page_id,
+    )
+
+    assert [event.order for event in next_page.items] == [3]
+    assert next_page.next_page_id is None
+
+    empty_page = await bash_service.search_bash_events(
+        kind__eq="BashOutput",
+        order__gt=3,
+        limit=1,
+    )
+
+    assert empty_page.items == []
+    assert empty_page.next_page_id is None
 
 
 @pytest.mark.asyncio
