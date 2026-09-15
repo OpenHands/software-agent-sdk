@@ -477,6 +477,32 @@ def test_slim_flavor_has_distinct_image_and_cache_tags():
     )
 
 
+def test_minimal_flavor_names_binary_minimal_without_duplicate_suffix():
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        base_image="python-node-runtime",
+        custom_tags="python",
+        git_sha="abc1234567890fedcba",
+        git_ref="refs/tags/v1.48.0",
+        sdk_version="1.48.0",
+        image_flavor="minimal",
+        target="binary-minimal",
+        arch="amd64",
+        include_base_tag=False,
+        include_versioned_tag=True,
+    )
+
+    assert opts.all_tags == [
+        "ghcr.io/openhands/agent-server:abc1234-python-minimal-amd64",
+        "ghcr.io/openhands/agent-server:abc1234567890fedcba-python-minimal-amd64",
+        "ghcr.io/openhands/agent-server:1-python-minimal-amd64",
+        "ghcr.io/openhands/agent-server:1.48-python-minimal-amd64",
+        "ghcr.io/openhands/agent-server:1.48.0-python-minimal-amd64",
+    ]
+    assert all("minimal-binary-minimal" not in tag for tag in opts.all_tags)
+
+
 def test_all_tags_includes_versioned_tags():
     """Test that all_tags includes bare semver aliases when enabled for a tag build."""
     from openhands.agent_server.docker.build import BuildOptions
