@@ -194,8 +194,91 @@ class TestAppendCondensation:
         for event in view.events:
             assert not isinstance(event, Condensation)
 
+    def test_condensation_drops_orphan_observation(self) -> None:
+        """Condensation that forgets an action but keeps its observation must
+        drop the orphan observation via enforce_properties."""
+        view = View()
+        msg = message_event("msg")
+        action = create_action_event(
+            llm_response_id="resp_1", tool_call_id="call_1"
+        )
+        obs = create_observation_event(tool_call_id="call_1")
+        view.append_event(msg)
+        view.append_event(action)
+        view.append_event(obs)
 
-# --- CondensationRequest branch ---
+        # Forget the action only — leaves an orphan observation.
+        view.append_event(
+            Condensation(
+                forgotten_event_ids={action.id},
+                llm_response_id="resp_2",
+            )
+        )
+
+        ids = {e.id for e in view.events}
+        assert action.id not in ids
+        assert obs.id not in ids  # orphan dropped
+        assert msg.id in ids
+
+    def test_condensation_drops_orphan_action(self) -> None:
+        """Condensation that forgets an observation but keeps its action must
+        drop the orphan action via enforce_properties."""
+        view = View()
+        msg = message_event("msg")
+        action = create_action_event(
+            llm_response_id="resp_1", tool_call_id="call_1"
+        )
+        obs = create_observation_event(tool_call_id="call_1")
+        view.append_event(msg)
+        view.append_event(action)
+        view.append_event(obs)
+
+        # Forget the observation only — leaves an orphan action.
+        view.append_event(
+            Condensation(
+                forgotten_event_ids={obs.id},
+                llm_response_id="resp_2",
+            )
+        )
+
+        ids = {e.id for e in view.events}
+        assert obs.id not in ids
+        assert action.id not in ids  # orphan dropped
+        assert msg.id in ids
+
+    def test_condensation_keeps_matched_pairs(self) -> None:
+        """Matched action/observation pairs survive condensation of other
+        events."""
+        view = View()
+        msg = message_event("msg")
+        action1 = create_action_event(
+            llm_response_id="resp_1", tool_call_id="call_1"
+        )
+        obs1 = create_observation_event(tool_call_id="call_1")
+        action2 = create_action_event(
+            llm_response_id="resp_2", tool_call_id="call_2"
+        )
+        obs2 = create_observation_event(tool_call_id="call_2")
+        view.append_event(msg)
+        view.append_event(action1)
+        view.append_event(obs1)
+        view.append_event(action2)
+        view.append_event(obs2)
+
+        # Forget only the message — pairs stay intact.
+        view.append_event(
+            Condensation(
+                forgotten_event_ids={msg.id},
+                llm_response_id="resp_3",
+            )
+        )
+
+        ids = {e.id for e in view.events}
+        assert msg.id not in ids
+        assert action1.id in ids
+        assert obs1.id in ids
+        assert action2.id in ids
+        assert obs2.id in ids
 
 
 class TestAppendCondensationRequest:
