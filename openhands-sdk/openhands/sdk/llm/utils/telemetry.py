@@ -253,14 +253,24 @@ class Telemetry(BaseModel):
         """
         if isinstance(usage, Usage):
             details = usage.prompt_tokens_details
-            if details is None:
-                return 0, 0
+            cache_read = int(details.cached_tokens or 0) if details is not None else 0
+            if not cache_read:
+                priv = usage.__pydantic_private__ or {}
+                cache_read = int(priv.get("_cache_read_input_tokens", 0) or 0)
+            if not cache_read:
+                extra = usage.model_extra or {}
+                cache_read = int(extra.get("cached_tokens", 0) or 0)
+
             cache_write = (
-                details.cache_creation_tokens
-                if "cache_creation_tokens" in details.model_fields_set
+                int(details.cache_creation_tokens or 0)
+                if details is not None
+                and "cache_creation_tokens" in details.model_fields_set
                 else 0
             )
-            return int(details.cached_tokens or 0), int(cache_write or 0)
+            if not cache_write:
+                priv = usage.__pydantic_private__ or {}
+                cache_write = int(priv.get("_cache_creation_input_tokens", 0) or 0)
+            return cache_read, cache_write
 
         details = usage.input_tokens_details
         cache_read = details.cached_tokens if details is not None else 0
