@@ -214,9 +214,8 @@ RUN set -eux; \
 
 ####################################################################################
 # Base image (minimal)
-# It includes only basic packages and the UV runtime.
-# No Docker, no browser, no VSCode Web.
-# Suitable for running in headless/evaluation mode.
+# It includes only the packages required to run the agent server and its Bash
+# and Git APIs. Development tools and optional capabilities live in base-image.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
@@ -238,36 +237,22 @@ RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
         apt-get -o Acquire::Retries=5 update; \
         apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            bash ca-certificates curl wget sudo apt-utils git jq tmux tar \
-            build-essential coreutils util-linux procps findutils grep sed \
-            tini apt-transport-https gnupg lsb-release xz-utils; \
+            bash ca-certificates git tini tmux; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache \
-            bash ca-certificates curl wget sudo git jq tmux tar build-base \
-            coreutils util-linux procps findutils grep sed tini gnupg shadow xz; \
+        apk add --no-cache bash ca-certificates git shadow tini tmux; \
     elif command -v microdnf >/dev/null 2>&1; then \
-        microdnf install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        microdnf install -y bash ca-certificates git shadow-utils tmux; \
         microdnf clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
-        dnf install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        dnf install -y bash ca-certificates git shadow-utils tmux; \
         dnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
-        yum install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        yum install -y bash ca-certificates git shadow-utils tmux; \
         yum clean all; \
     elif command -v zypper >/dev/null 2>&1; then \
         zypper --non-interactive install --no-recommends \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps findutils grep sed shadow gpg2 xz; \
+            bash ca-certificates git shadow tmux; \
         zypper clean --all; \
     else \
         echo "Unsupported base image: no known package manager found" >&2; \
@@ -276,11 +261,6 @@ RUN set -eux; \
     grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
     grep -Eq "^${USERNAME}:" /etc/passwd || \
         useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
-    # Best-effort: add user to a sudo group when one exists (Debian-style
-    # `sudo` group). On Alpine/RHEL/SUSE there is no `sudo` group by default,
-    # and the NOPASSWD sudoers line below grants sudo regardless of group.
-    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
-    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers; \
     mkdir -p /workspace/project; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
@@ -320,10 +300,6 @@ RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
 RUN mkdir -p /etc/claude-code && \
     echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
-# since the agent might use it to perform other work (e.g. tools that use Python)
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
-
 USER ${USERNAME}
 WORKDIR /
 # Locale settings required for libtmux to work with PyInstaller builds
@@ -344,6 +320,47 @@ ARG USERNAME
 ARG INSTALL_CAPABILITIES
 
 USER root
+
+# Full images are general-purpose development environments. Keep compilers,
+# package/repository helpers, and command-line utilities out of binary-minimal.
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get -o Acquire::Retries=5 update; \
+        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+            apt-transport-https apt-utils build-essential coreutils curl \
+            findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
+            wget xz-utils; \
+        rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache \
+            build-base coreutils curl findutils gnupg grep jq procps sudo tar \
+            util-linux wget xz; \
+    elif command -v microdnf >/dev/null 2>&1; then \
+        microdnf install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        microdnf clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        dnf install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+        yum install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        yum clean all; \
+    elif command -v zypper >/dev/null 2>&1; then \
+        zypper --non-interactive install --no-recommends \
+            coreutils curl findutils gcc gcc-c++ gpg2 grep jq make procps sed \
+            sudo tar util-linux wget xz; \
+        zypper clean --all; \
+    fi; \
+    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
+    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Keep uv as part of the full development environment, but not binary-minimal.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so

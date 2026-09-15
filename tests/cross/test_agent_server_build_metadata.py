@@ -122,6 +122,16 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     assert "FROM node:22.23.2-trixie-slim AS node-runtime" in dockerfile_text
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
     assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
+    minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
+    full_stage = "FROM base-image-minimal AS base-image"
+    minimal_packages = dockerfile_text.partition(minimal_stage)[2].partition(
+        full_stage
+    )[0]
+    full_packages = dockerfile_text.partition(full_stage)[2]
+    assert "build-essential" not in minimal_packages
+    assert "COPY --from=ghcr.io/astral-sh/uv" not in minimal_packages
+    assert "build-essential" in full_packages
+    assert "COPY --from=ghcr.io/astral-sh/uv" in full_packages
     assert "nikolaik/python-nodejs" not in dockerfile_text
     assert "base_image: python-node-runtime" in workflow_text
     assert "nikolaik/python-nodejs" not in workflow_text
