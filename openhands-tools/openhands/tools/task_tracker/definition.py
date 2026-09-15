@@ -2,6 +2,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -30,6 +31,13 @@ TaskTrackerStatusType = Literal["todo", "in_progress", "done"]
 
 
 class TaskItem(BaseModel):
+    id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        description=(
+            "A stable identifier for the task. Preserve it when updating an "
+            "existing task; omit it only when creating a new task."
+        ),
+    )
     title: str = Field(..., description="A brief title for the task.")
     notes: str = Field("", description="Additional details or notes about the task.")
     status: TaskTrackerStatusType = Field(
@@ -48,7 +56,11 @@ class TaskTrackerAction(Action):
     )
     task_list: list[TaskItem] = Field(
         default_factory=list,
-        description="The full task list. Required parameter of `plan` command.",
+        description=(
+            "The full task list. Required parameter of `plan` command. When "
+            "updating tasks, preserve the IDs returned by `view`; omit IDs only "
+            "for new tasks."
+        ),
     )
 
     @property
@@ -130,7 +142,7 @@ class TaskTrackerObservation(Observation):
                     text.append("⏳ ", style="blue")
 
                 # Task title
-                text.append(f"{i}. {task.title}", style="white")
+                text.append(f"{i}. [{task.id}] {task.title}", style="white")
 
                 # NEW: show notes under the title if present
                 if task.notes:
@@ -155,7 +167,7 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
 
         Args:
             save_dir: Optional directory to save tasks to. If provided, tasks will be
-                     persisted to save_dir/TASKS.md
+                     persisted to save_dir/TASKS.json
         """
         self.save_dir = Path(save_dir) if save_dir else None
         logger.info(f"TaskTrackerExecutor initialized with save_dir: {self.save_dir}")
@@ -223,7 +235,7 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
             title = task.title
             notes = task.notes
 
-            content += f"{i}. {status_icon} {title}\n"
+            content += f"{i}. {status_icon} [{task.id}] {title}\n"
             if notes:
                 content += f"   {notes}\n"
             content += "\n"
@@ -291,6 +303,8 @@ Utilize this tool in the following situations:
    implementation. Maintain focus by limiting active work to one task
 7. Task completion - Update status to done and identify any additional work
    that emerged during implementation
+8. Task identity - Before updating a task list, view the current list and
+   preserve the IDs of existing tasks. Omit an ID only for a newly created task.
 
 ## Situations Where Tool Usage Is Unnecessary
 
