@@ -207,3 +207,20 @@ def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
         "scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}" in workflow_text
     )
     assert "variant: [python, python-slim, java, golang]" in workflow_text
+
+
+def test_agent_server_refreshes_apt_packages_after_capability_installs() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    _, _, base_image_and_targets = dockerfile_text.partition(
+        "FROM base-image-minimal AS base-image"
+    )
+    base_image_stage = base_image_and_targets.partition("# Build Targets")[0]
+
+    refresh = (
+        "apt-get update; \\\n"
+        "      apt-get upgrade -y --no-install-recommends; \\\n"
+        "      rm -rf /var/lib/apt/lists/*;"
+    )
+    assert base_image_stage.count(refresh) == 1
+    assert base_image_stage.index(refresh) > base_image_stage.index("# --- Browser ---")
+    assert base_image_stage.index(refresh) < base_image_stage.index("USER ${USERNAME}")
