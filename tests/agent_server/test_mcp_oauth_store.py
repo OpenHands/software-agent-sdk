@@ -385,3 +385,58 @@ def test_settings_backed_provider_forwards_on_tools_reconciled():
         provider.create_tools(config, on_tools_reconciled=callback)
 
     assert mock_create.call_args.kwargs["on_tools_reconciled"] is callback
+
+
+def test_oauth_callback_port_configuration():
+    """Verify that callback_port is passed from MCPOAuthAuthentication to OAuth.
+
+    This ensures OAuth providers that require pre-registered redirect URIs
+    (e.g., Atlassian Rovo, GitLab) receive a consistent callback URL.
+    """
+    from fastmcp.client.auth import OAuth
+
+    from openhands.sdk.mcp.config import MCPOAuthAuthentication
+    from openhands.sdk.mcp.utils import _oauth_auth_from_authentication_config
+
+    # Test with explicit callback_port
+    auth_config = MCPOAuthAuthentication(
+        type="oauth",
+        client_auth_method="none",
+        scopes=["mail.read"],
+        callback_port=9876,
+    )
+    oauth_instance = _oauth_auth_from_authentication_config(auth_config)
+    assert oauth_instance is not None
+    assert isinstance(oauth_instance, OAuth)
+    # Before binding, callback_port is stored in _callback_port
+    assert oauth_instance._callback_port == 9876
+    # Bind to verify redirect_port is set correctly
+    oauth_instance._bind("http://example.com/mcp")
+    assert oauth_instance.redirect_port == 9876
+
+    # Test with default callback_port (8765)
+    auth_config_default = MCPOAuthAuthentication(
+        type="oauth",
+        client_auth_method="none",
+        scopes=["mail.read"],
+    )
+    oauth_instance_default = _oauth_auth_from_authentication_config(auth_config_default)
+    assert oauth_instance_default is not None
+    assert oauth_instance_default._callback_port == 8765
+    oauth_instance_default._bind("http://example.com/mcp")
+    assert oauth_instance_default.redirect_port == 8765
+
+    # Test with null callback_port (random port via find_available_port)
+    auth_config_null = MCPOAuthAuthentication(
+        type="oauth",
+        client_auth_method="none",
+        scopes=["mail.read"],
+        callback_port=None,
+    )
+    oauth_instance_null = _oauth_auth_from_authentication_config(auth_config_null)
+    assert oauth_instance_null is not None
+    assert oauth_instance_null._callback_port is None
+    oauth_instance_null._bind("http://example.com/mcp")
+    # Random port should be > 0 and different from default
+    assert oauth_instance_null.redirect_port > 0
+    assert oauth_instance_null.redirect_port != 8765
