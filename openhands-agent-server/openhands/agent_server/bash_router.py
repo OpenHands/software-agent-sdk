@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
@@ -104,6 +105,7 @@ async def start_bash_command(
 ) -> BashCommand:
     """Execute a bash command in the background"""
     update_last_execution_time()
+    _validate_cwd(request, bash_event_service)
     command, _ = await bash_event_service.start_bash_command(request)
     return command
 
@@ -115,6 +117,7 @@ async def execute_bash_command(
 ) -> BashOutput:
     """Execute a bash command and wait for a result"""
     update_last_execution_time()
+    _validate_cwd(request, bash_event_service)
     command, task = await bash_event_service.start_bash_command(request)
     await task
     page = await bash_event_service.search_bash_events(command_id__eq=command.id)
@@ -129,3 +132,13 @@ async def clear_all_bash_events(
     """Clear all bash events from storage"""
     count = await bash_event_service.clear_all_events()
     return {"cleared_count": count}
+
+
+def _validate_cwd(request: ExecuteBashRequest, service: BashEventService) -> None:
+    if service.default_cwd is not None and request.cwd is not None:
+        if (
+            not Path(request.cwd)
+            .resolve()
+            .is_relative_to(Path(service.default_cwd).resolve())
+        ):
+            raise HTTPException(422, "cwd must be inside the conversation workspace")

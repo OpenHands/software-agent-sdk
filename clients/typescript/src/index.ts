@@ -256,6 +256,9 @@ export type { SwitchPlan } from './profiles/derive-switch-plan';
 // Conversation models
 export type {
   ConversationInfo,
+  ConversationRuntimeStatus,
+  ConversationRuntimeError,
+  ConversationRuntimeInfo,
   ACPAgentConfig,
   ACPConversationInfo,
   SendMessageRequest,
