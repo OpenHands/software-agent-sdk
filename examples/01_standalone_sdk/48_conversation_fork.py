@@ -47,13 +47,12 @@ print(f"Source events count    : {len(source.state.events)}")
 # =================================================================
 # 2. Fork and continue independently
 # =================================================================
-fork = source.fork(title="Follow-up fork")
+fork = source.fork()
 source_event_count = len(source.state.events)
 
 print("\n--- Fork created ---")
 print(f"Fork ID                : {fork.id}")
 print(f"Fork events (copied)   : {len(fork.state.events)}")
-print(f"Fork title             : {fork.state.tags.get('title')}")
 
 assert fork.id != source.id
 assert len(fork.state.events) == source_event_count
@@ -80,7 +79,6 @@ alt_agent = Agent(llm=alt_llm, tools=[Tool(name=TerminalTool.name)])
 
 fork_alt = source.fork(
     agent=alt_agent,
-    title="Tool-change experiment",
     tags={"purpose": "a/b-test"},
 )
 
@@ -104,7 +102,7 @@ cut_event_id = next(
     if isinstance(e, MessageEvent) and e.source == "user"
 )
 
-fork_slice = source.fork(from_event_id=cut_event_id, title="Branch from first turn")
+fork_slice = source.fork(from_event_id=cut_event_id)
 
 print("\n--- Branch-slice fork (from_event_id) ---")
 print(f"Cut event id          : {cut_event_id}")
