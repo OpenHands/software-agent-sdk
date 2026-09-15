@@ -3209,6 +3209,25 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_autotitle_skips_inert_acp_agent_llm(self):
+        """An ACP agent's llm is inert and has no usable credentials."""
+        service = self._make_service()
+        service._conversation.agent.agent_kind = "acp"
+        captured: dict[str, object] = {}
+
+        def _capture(message, llm, max_length, on_error=None):
+            captured["llm"] = llm
+            return "Fix the login bug"
+
+        with patch(self._GENERATE_TITLE_PATH, side_effect=_capture):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert captured["llm"] is None
+        assert service.stored.title == "Fix the login bug"
+
+    @pytest.mark.asyncio
     async def test_autotitle_skips_non_user_events(self):
         """Non-user events do not trigger title generation.
 
