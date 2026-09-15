@@ -126,6 +126,108 @@ def _send_request(
         raise e
 
 
+def _create_remote_conversation(
+    workspace: RemoteWorkspace, request: "StartConversationRequest"
+) -> dict:
+    response = _send_request(
+        workspace.client,
+        "POST",
+        CONVERSATIONS_PATH,
+        json=request.model_dump(
+            mode="json", exclude_none=True, context={"expose_secrets": True}
+        ),
+    )
+    info = response.json()
+    workspace.register_conversation(info["id"])
+    return info
+
+
+def _send_remote_message(
+    client: httpx.Client,
+    conversation_id: ConversationID,
+    message: str | Message,
+    sender: str | None,
+    *,
+    run: bool,
+) -> None:
+    if isinstance(message, str):
+        message = Message(role="user", content=[TextContent(text=message)])
+    assert message.role == "user", (
+        "Only user messages are allowed to be sent to the agent."
+    )
+    payload = {
+        "role": message.role,
+        "content": [content.model_dump() for content in message.content],
+        "run": run,
+    }
+    if sender is not None:
+        payload["sender"] = sender
+    _send_request(
+        client,
+        "POST",
+        f"{CONVERSATIONS_PATH}/{conversation_id}/events",
+        json=payload,
+    )
+
+
+def _get_remote_execution_status(
+    client: httpx.Client, conversation_id: ConversationID
+) -> ConversationExecutionStatus | None:
+    response = _send_request(
+        client,
+        "GET",
+        f"{CONVERSATIONS_PATH}/{conversation_id}",
+        timeout=30,
+    )
+    value = response.json().get("execution_status")
+    return ConversationExecutionStatus(value) if value is not None else None
+
+
+class RemoteConversationControl:
+    """Control a remote conversation without loading its agent or event state."""
+
+    def __init__(
+        self, workspace: RemoteWorkspace, conversation_id: ConversationID
+    ) -> None:
+        self.workspace = workspace
+        self._client = workspace.client
+        self._id = uuid.UUID(str(conversation_id))
+
+    @classmethod
+    def create(
+        cls,
+        workspace: RemoteWorkspace,
+        request: "StartConversationRequest",
+    ) -> Self:
+        """Create a conversation without opening an interactive connection."""
+        info = _create_remote_conversation(workspace, request)
+        return cls(workspace, uuid.UUID(info["id"]))
+
+    @property
+    def id(self) -> ConversationID:
+        return self._id
+
+    def send_message(
+        self,
+        message: str | Message,
+        sender: str | None = None,
+        *,
+        run: bool = False,
+    ) -> None:
+        """Append a user message and optionally start the agent loop."""
+        _send_remote_message(
+            self._client,
+            self._id,
+            message,
+            sender,
+            run=run,
+        )
+
+    def get_execution_status(self) -> ConversationExecutionStatus | None:
+        """Read execution status without loading conversation state."""
+        return _get_remote_execution_status(self._client, self._id)
+
+
 class WebSocketCallbackClient:
     """Minimal WS client: connects, forwards events, retries on error."""
 
@@ -921,16 +1023,7 @@ class RemoteConversation(BaseConversation):
         options. A supplied conversation ID follows the server's idempotency
         contract; this method does not probe for an existing conversation.
         """
-        response = _send_request(
-            workspace.client,
-            "POST",
-            CONVERSATIONS_PATH,
-            json=request.model_dump(
-                mode="json", exclude_none=True, context={"expose_secrets": True}
-            ),
-        )
-        info = response.json()
-        workspace.register_conversation(info["id"])
+        info = _create_remote_conversation(workspace, request)
         conversation = cls._from_info(workspace, info, callbacks, visualizer)
         conversation._start_observability_span(
             str(conversation.id),
@@ -1209,23 +1302,12 @@ class RemoteConversation(BaseConversation):
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
-        if isinstance(message, str):
-            message = Message(role="user", content=[TextContent(text=message)])
-        assert message.role == "user", (
-            "Only user messages are allowed to be sent to the agent."
-        )
-        payload = {
-            "role": message.role,
-            "content": [c.model_dump() for c in message.content],
-            "run": False,  # Mirror local semantics; explicit run() must be called
-        }
-        if sender is not None:
-            payload["sender"] = sender
-        _send_request(
+        _send_remote_message(
             self._client,
-            "POST",
-            f"{CONVERSATIONS_PATH}/{self._id}/events",
-            json=payload,
+            self._id,
+            message,
+            sender,
+            run=False,
         )
 
     @observe(name="conversation.run")
@@ -1430,14 +1512,8 @@ class RemoteConversation(BaseConversation):
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
-        resp = _send_request(
-            self._client,
-            "GET",
-            f"{CONVERSATIONS_PATH}/{self._id}",
-            timeout=30,
-        )
-        info = resp.json()
-        return info.get("execution_status")
+        status = _get_remote_execution_status(self._client, self._id)
+        return status.value if status is not None else None
 
     def _handle_conversation_status(self, status: str | None, since: int = 0) -> bool:
         """Handle non-running statuses; return True if the run is complete."""

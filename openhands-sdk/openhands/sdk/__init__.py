@@ -18,6 +18,7 @@ from openhands.sdk.conversation import (
     ConversationExecutionStatus,
     LocalConversation,
     RemoteConversation,
+    RemoteConversationControl,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
@@ -151,6 +152,7 @@ __all__ = [
     "BaseConversation",
     "LocalConversation",
     "RemoteConversation",
+    "RemoteConversationControl",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
     "Event",
