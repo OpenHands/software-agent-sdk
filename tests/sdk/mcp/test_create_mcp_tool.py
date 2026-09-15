@@ -19,7 +19,12 @@ from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
 from pydantic import SecretStr
 
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPApiKeyAuthCredential,
     MCPBasicAuthCredential,
@@ -32,6 +37,7 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.utils import _prepare_mcp_config
+from openhands.sdk.testing import TestLLM
 
 
 logger = logging.getLogger(__name__)
@@ -647,6 +653,170 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
         assert len(tools) == 0  # No tools from failed connection
     except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, MCPError):
         pass  # Expected connection errors are acceptable
+
+
+def test_unreachable_server_is_skipped_with_diagnostic_warning(caplog):
+    """An unavailable optional server must not prevent tool creation."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "broken": {
+                    "transport": "http",
+                    "url": "http://127.0.0.1:59999/mcp?api_key=secret",
+                }
+            }
+        }
+    )
+
+    with caplog.at_level(logging.WARNING):
+        tools = create_mcp_tools(config, timeout=5.0)
+
+    assert len(tools) == 0
+    assert "broken" in caplog.text
+    assert "http://127.0.0.1:59999/mcp?api_key=%3Credacted%3E" in caplog.text
+    assert "secret" not in caplog.text
+    assert "Possible solutions" in caplog.text
+    assert "strict=True" in caplog.text
+
+
+def test_unreachable_server_can_fail_fast_in_strict_mode():
+    """Strict mode retains the opt-in fail-fast behavior with context."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "broken": {
+                    "transport": "http",
+                    "url": "http://127.0.0.1:59999/mcp",
+                }
+            }
+        }
+    )
+
+    with pytest.raises(MCPError) as exc_info:
+        create_mcp_tools(config, timeout=5.0, strict=True)
+
+    assert "broken" in str(exc_info.value)
+    assert "http://127.0.0.1:59999/mcp" in str(exc_info.value)
+    assert exc_info.value.__cause__ is not None
+    assert exc_info.value.__cause__.__cause__ is not None
+
+
+def test_reachable_server_tools_survive_unreachable_server(
+    http_mcp_server: MCPTestServer,
+):
+    """A failed optional server must not discard tools from a healthy server."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "healthy": {
+                    "transport": "http",
+                    "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+                },
+                "broken": {
+                    "transport": "http",
+                    "url": "http://127.0.0.1:59999/mcp",
+                },
+            }
+        }
+    )
+
+    tools = create_mcp_tools(config, timeout=10.0)
+
+    assert {tool.name for tool in tools} == {"healthy_greet", "healthy_add_numbers"}
+
+
+def test_local_conversation_runs_with_unreachable_mcp_server(tmp_path: Path, caplog):
+    """An unavailable MCP source must not block the agent's LLM path."""
+    llm = TestLLM.from_messages(
+        [Message(role="assistant", content=[TextContent(text="done")])]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        include_default_tools=[],
+        mcp_config=native_mcp_config(
+            {
+                "mcpServers": {
+                    "broken": {
+                        "transport": "http",
+                        "url": "http://127.0.0.1:59999/mcp",
+                    }
+                }
+            }
+        ),
+    )
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+    )
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            conversation.send_message("hello")
+            conversation.run()
+    finally:
+        conversation.close()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert llm.call_count == 1
+    assert "broken" in caplog.text
+
+
+def test_cleanup_failure_does_not_mask_connection_failure():
+    """Cleanup errors must not replace the original MCP connection error."""
+    config = native_mcp_config(
+        {
+            "mcpServers": {
+                "broken": {
+                    "transport": "http",
+                    "url": "http://127.0.0.1:59999/mcp",
+                }
+            }
+        }
+    )
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.call_async_from_sync.side_effect = MCPError(
+            "MCP Connection Failure"
+        )
+        mock_client.sync_close.side_effect = BaseException("cleanup failed")
+
+        with pytest.raises(MCPError, match="broken") as exc_info:
+            create_mcp_tools(config, timeout=5.0, strict=True)
+
+    assert "MCP Connection Failure" in str(exc_info.value.__cause__)
+
+
+def test_sync_close_suppresses_base_exception_from_async_close():
+    """Client cleanup must handle cancellation-style BaseException values."""
+    client = MCPClient(
+        FastMCPConfig.model_validate(
+            {
+                "mcpServers": {
+                    "server": {
+                        "transport": "http",
+                        "url": "http://127.0.0.1:59999/mcp",
+                    }
+                }
+            }
+        )
+    )
+    with (
+        patch.object(
+            client._executor,
+            "run_async",
+            side_effect=BaseException("cleanup failed"),
+        ) as run_async,
+        patch.object(client._executor, "close") as executor_close,
+    ):
+        client.sync_close()
+
+    run_async.assert_called_once()
+    executor_close.assert_called_once()
+    assert client._closed is True
 
 
 def test_create_mcp_tools_stdio_server():
