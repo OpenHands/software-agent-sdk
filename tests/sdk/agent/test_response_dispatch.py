@@ -1,6 +1,7 @@
 """Unit tests for LLM response classification and dispatch."""
 
 from collections.abc import Callable
+from typing import Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,6 +24,7 @@ from openhands.sdk.llm import (
     ThinkingBlock,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import Action, Observation
 
 
@@ -203,6 +205,7 @@ def _run_single_step(
     record_emitted_events_in_state: bool = False,
     secrets: dict[str, str] | None = None,
     prepare: Callable[[LocalConversation], None] | None = None,
+    content_response_policy: Literal["finish", "nudge"] = "finish",
 ) -> tuple[list[Event], LocalConversation]:
     """Run one agent step with a canned LLM response."""
     from pydantic import PrivateAttr
@@ -220,7 +223,7 @@ def _run_single_step(
             return self._response
 
     llm = SingleShotLLM(llm_response)
-    agent = Agent(llm=llm, tools=[])
+    agent = Agent(llm=llm, tools=[], content_response_policy=content_response_policy)
     conversation = Conversation(agent=agent)
     conversation._ensure_agent_ready()
     if secrets is not None:
@@ -292,6 +295,172 @@ def test_content_response_sets_finished():
     assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
     assert len(msg_events) == 1
     assert msg_events[0].source == "agent"
+
+
+def test_content_response_default_policy_is_finish():
+    """The default policy is unchanged: content still finishes the conversation."""
+    assert (
+        Agent(llm=LLM(model="test-model"), tools=[]).content_response_policy == "finish"
+    )
+
+
+def test_content_response_nudge_policy_continues_loop():
+    """content_response_policy="nudge": prose without a tool call does not finish.
+
+    The agent message is preserved, a corrective nudge follows, and the
+    conversation stays runnable (regression for #3992: weaker/local models
+    narrating a step in prose were silently treated as finished mid-task).
+    """
+    msg = Message(
+        role="assistant",
+        content=[TextContent(text="Let me now check the config before I proceed.")],
+    )
+    events, convo = _run_single_step(
+        _make_llm_response(msg), content_response_policy="nudge"
+    )
+    msg_events = [e for e in events if isinstance(e, MessageEvent)]
+
+    assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
+    assert len(msg_events) == 2
+    assert msg_events[0].source == "agent"  # the prose is not dropped
+    assert msg_events[1].source == "environment"  # framework feedback, not a human turn
+    assert msg_events[1].llm_message.role == "user"  # but the model still reads it
+    nudge_content = msg_events[1].llm_message.content[0]
+    assert isinstance(nudge_content, TextContent)
+    assert "finish" in nudge_content.text  # points at the explicit completion path
+
+
+def test_finish_tool_still_finishes_under_nudge_policy():
+    """Explicit completion via the finish tool works under the nudge policy."""
+    tool_call = MessageToolCall(
+        id="tc-finish",
+        name="finish",
+        arguments='{"message": "All done"}',
+        origin="completion",
+    )
+    msg = Message(role="assistant", tool_calls=[tool_call])
+    _, convo = _run_single_step(
+        _make_llm_response(msg), content_response_policy="nudge"
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def _prose(text: str) -> Message:
+    return Message(role="assistant", content=[TextContent(text=text)])
+
+
+def _nudge_events(events: list[Event]) -> list[MessageEvent]:
+    return [
+        e
+        for e in events
+        if isinstance(e, MessageEvent)
+        and e.source == "environment"
+        and "finish" in _text(e)
+    ]
+
+
+def _text(e: MessageEvent) -> str:
+    return " ".join(c.text for c in e.llm_message.content if isinstance(c, TextContent))
+
+
+def test_nudge_policy_second_consecutive_prose_turn_finishes():
+    """Regression for the #3997 review: the nudge is bounded at +1 step, structurally.
+
+    A model that answers the nudge with more prose (no tool call in between) is
+    NOT nudged again — the second consecutive content-only turn finishes. This
+    drives the real multi-step loop so the bound is proven in control flow, not
+    inferred from a one-step test, and it holds without relying on the
+    conversation-level stuck detector.
+    """
+    prose: list[Message | Exception] = [
+        _prose(f"Let me keep thinking about step {i}.") for i in range(30)
+    ]
+    agent = Agent(
+        llm=TestLLM.from_messages(prose), tools=[], content_response_policy="nudge"
+    )
+    conversation = Conversation(agent=agent)
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Do the task.")])
+    )
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    events = list(conversation.state.events)
+    agent_msgs = [
+        e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
+    ]
+    assert len(agent_msgs) == 2  # prose → nudge → prose → finish; 28 replies unused
+    assert len(_nudge_events(events)) == 1  # exactly one synthetic nudge
+    # The nudge was not recorded as a human turn: only the task counts as one.
+    user_msgs = [
+        e for e in events if isinstance(e, MessageEvent) and e.source == "user"
+    ]
+    assert len(user_msgs) == 1
+
+
+def test_nudge_policy_nudges_again_after_the_model_acts():
+    """The bound is per prose *streak*: narrate → nudge → act → narrate nudges again."""
+    seed: list[Event] = [
+        _user_message("Fix the failing test."),
+        MessageEvent(
+            source="agent", llm_message=_prose("Let me look at the test first.")
+        ),
+        MessageEvent(
+            source="environment",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text=_content_nudge_text())],
+            ),
+        ),
+    ]
+    seed += _repeating_terminal_loop_events(1)  # the model acted after the nudge
+    events, convo = _run_single_step(
+        _make_llm_response(_prose("Now let me run the tests before proceeding.")),
+        seed_events=seed,
+        content_response_policy="nudge",
+    )
+    assert convo.state.execution_status != ConversationExecutionStatus.FINISHED
+    assert len(_nudge_events(events)) == 1
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    ["What does this function do?", "stop", "Wait", "thanks", "Never mind."],
+)
+def test_nudge_policy_not_applied_when_user_turn_is_not_a_task(user_text: str):
+    """A prose reply to a question, a hold, or chit-chat is an answer — it finishes."""
+    events, convo = _run_single_step(
+        _make_llm_response(_prose("It parses the config and returns a dict.")),
+        seed_events=[_user_message(user_text)],
+        content_response_policy="nudge",
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert _nudge_events(events) == []
+
+
+@pytest.mark.parametrize(
+    "model_text",
+    [
+        "Which database should I target, sqlite or postgres?",
+        "I can't modify the CI config without credentials.",
+        "I'm unable to reproduce the failure locally.",
+    ],
+)
+def test_nudge_policy_not_applied_when_model_asks_or_refuses(model_text: str):
+    """A model asking the user something, or refusing, is not narrating — no nudge."""
+    events, convo = _run_single_step(
+        _make_llm_response(_prose(model_text)),
+        seed_events=[_user_message("Migrate the schema to the new format.")],
+        content_response_policy="nudge",
+    )
+    assert convo.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert _nudge_events(events) == []
+
+
+def _content_nudge_text() -> str:
+    from openhands.sdk.agent.response_dispatch import _CONTENT_NUDGE_TEXT
+
+    return _CONTENT_NUDGE_TEXT
 
 
 def test_empty_response_sends_nudge():
