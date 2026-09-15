@@ -378,6 +378,39 @@ Review the changes and make sure they are as expected. Edit the file again if ne
     assert "This is a sample file." in test_file.read_text()
 
 
+@pytest.mark.parametrize(
+    ("replaced_line", "first_line", "last_line"),
+    [
+        (10, 6, 14),
+        # Near the top of the file the window is clamped instead of shifted.
+        (2, 1, 6),
+    ],
+)
+def test_str_replace_snippet_keeps_the_context_window_on_both_sides(
+    tmp_path, replaced_line, first_line, last_line
+):
+    editor = FileEditor()
+    test_file = tmp_path / "context.txt"
+    test_file.write_text("\n".join(f"line {number:02d}" for number in range(1, 22)))
+
+    result = editor(
+        command="str_replace",
+        path=str(test_file),
+        old_str=f"line {replaced_line:02d}",
+        new_str="replacement line",
+    )
+
+    assert result.text is not None
+    for number in range(first_line, last_line + 1):
+        expected = (
+            "replacement line" if number == replaced_line else f"line {number:02d}"
+        )
+        assert f"{number:6}\t{expected}" in result.text
+    if first_line > 1:
+        assert f"{first_line - 1:6}\tline {first_line - 1:02d}" not in result.text
+    assert f"{last_line + 1:6}\tline {last_line + 1:02d}" not in result.text
+
+
 def test_str_replace_multi_line_no_linting(editor):
     editor, test_file = editor
     result = editor(
