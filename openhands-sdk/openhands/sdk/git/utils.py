@@ -1,3 +1,4 @@
+import codecs
 import logging
 import re
 import shlex
@@ -20,6 +21,24 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
+def unquote_git_path(path_str: str) -> str:
+    """Unquote C-style double-quoted and octal-escaped Git path if needed."""
+    if not path_str or '"' not in path_str:
+        return path_str
+    parts = path_str.split("/")
+    unquoted_parts: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part.startswith('"') and part.endswith('"'):
+            try:
+                raw_bytes, _ = codecs.escape_decode(part[1:-1].encode("ascii"))
+                unquoted_parts.append(raw_bytes.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                unquoted_parts.append(part[1:-1])
+        else:
+            unquoted_parts.append(part)
+    return "/".join(unquoted_parts)
+
+
 def _run_git_subprocess(
     args: list[str],
     cwd: str | Path | None,
@@ -39,7 +58,8 @@ def _run_git_subprocess(
 
 def _run_git_probe(args: list[str], cwd: str | Path) -> str:
     try:
-        result = _run_git_subprocess(["git", "--no-pager", *args], cwd, timeout=30)
+        cmd = ["git", "-c", "core.quotePath=false", "--no-pager", *args]
+        result = _run_git_subprocess(cmd, cwd, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return ""
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -87,6 +107,8 @@ def run_git_command(
     Raises:
         GitCommandError: If the git command fails
     """
+    if args and args[0] == "git" and not any("core.quotePath" in a for a in args):
+        args = ["git", "-c", "core.quotePath=false", *args[1:]]
     redacted_args = [redact_url_credentials(a) for a in args]
     cmd_str = shlex.join(redacted_args)
 
