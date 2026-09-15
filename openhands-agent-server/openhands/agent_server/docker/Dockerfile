@@ -38,7 +38,8 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
-ARG DEBIAN_SNAPSHOT=20260908T000000Z
+# Temporary exception to pick up Debian 13.7 before the normal observation period.
+ARG DEBIAN_SNAPSHOT=20260913T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node

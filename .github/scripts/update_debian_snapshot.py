@@ -44,14 +44,19 @@ def verify_snapshot(snapshot: str) -> None:
             raise ValueError(f"unable to verify {url}: {exc}") from exc
 
 
-def update_dockerfile(path: Path, snapshot: str) -> bool:
-    text = path.read_text(encoding="utf-8")
-    matches = SNAPSHOT_RE.findall(text)
+def current_snapshot(path: Path) -> str:
+    matches = SNAPSHOT_RE.findall(path.read_text(encoding="utf-8"))
     if len(matches) != 1:
         raise ValueError(f"expected exactly one DEBIAN_SNAPSHOT in {path}")
-    updated = SNAPSHOT_RE.sub(f"ARG DEBIAN_SNAPSHOT={snapshot}", text)
-    if updated == text:
+    return matches[0]
+
+
+def update_dockerfile(path: Path, snapshot: str) -> bool:
+    current = current_snapshot(path)
+    if snapshot <= current:
         return False
+    text = path.read_text(encoding="utf-8")
+    updated = SNAPSHOT_RE.sub(f"ARG DEBIAN_SNAPSHOT={snapshot}", text)
     path.write_text(updated, encoding="utf-8")
     return True
 

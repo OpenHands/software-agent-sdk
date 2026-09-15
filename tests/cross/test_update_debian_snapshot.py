@@ -40,6 +40,16 @@ def test_update_dockerfile_replaces_exactly_one_pin(tmp_path: Path) -> None:
     assert not snapshot.update_dockerfile(dockerfile, "20260908T000000Z")
 
 
+def test_update_dockerfile_does_not_downgrade_newer_pin(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM debian:trixie-slim\nARG DEBIAN_SNAPSHOT=20260913T000000Z\n"
+    )
+
+    assert not snapshot.update_dockerfile(dockerfile, "20260908T000000Z")
+    assert "ARG DEBIAN_SNAPSHOT=20260913T000000Z" in dockerfile.read_text()
+
+
 def test_update_dockerfile_rejects_missing_pin(tmp_path: Path) -> None:
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM debian:trixie-slim\n")
