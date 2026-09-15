@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import IO, Annotated, Literal
+from typing import IO, Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
@@ -63,6 +63,18 @@ class HomeResponse(BaseModel):
 
 logger = get_logger(__name__)
 file_router = APIRouter(prefix="/file", tags=["Files"])
+file_discovery_router = APIRouter(prefix="/file", tags=["Files"])
+_FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "content": {
+            # Existing routes advertised this media type. Runtime aliases discard it.
+            "application/json": {"schema": {}},
+            "application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}
+            },
+        }
+    }
+}
 
 
 async def _upload_file(path: str, file: UploadFile) -> Success:
@@ -655,7 +667,9 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.get("/download")
+@file_router.get(
+    "/download", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
 ) -> FileResponse:
@@ -757,7 +771,7 @@ def _list_root_locations() -> list[FileBrowserEntry]:
     return [FileBrowserEntry(label="/", path="/")]
 
 
-@file_router.get("/home")
+@file_discovery_router.get("/home")
 async def get_home_directory(
     include_hidden: Annotated[
         bool,
@@ -780,7 +794,7 @@ async def get_home_directory(
     )
 
 
-@file_router.get("/search_subdirs")
+@file_discovery_router.get("/search_subdirs")
 async def search_subdirs(
     path: Annotated[
         str,
@@ -867,7 +881,11 @@ async def search_subdirs(
     return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
 
-@file_router.get("/download-trajectory/{conversation_id}")
+@file_router.get(
+    "/download-trajectory/{conversation_id}",
+    responses=_FILE_DOWNLOAD_RESPONSES,
+    response_class=FileResponse,
+)
 async def download_trajectory(
     conversation_id: UUID,
 ) -> FileResponse:
@@ -891,7 +909,9 @@ async def download_trajectory(
     )
 
 
-@file_router.get("/archive")
+@file_router.get(
+    "/archive", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def archive_directory(
     path: Annotated[
         str, Query(description="Absolute path of the directory to archive")
