@@ -2889,7 +2889,6 @@ class LocalConversation(BaseConversation):
                     "usage_id": ASK_AGENT_LLM_USAGE_ID,
                     "stream": False,
                 },
-                deep=True,
             )
             self.llm_registry.add(question_llm)
 
