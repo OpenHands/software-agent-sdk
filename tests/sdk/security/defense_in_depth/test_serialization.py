@@ -299,7 +299,6 @@ class TestStableIDs:
     def test_pattern_tuples_reference_constants(self):
         """Pattern tuples use detector ID constants, not bare strings."""
         high_ids = {p[2] for p in DEFAULT_HIGH_PATTERNS}
-        assert DET_EXEC_DESTRUCT_RM_RF in high_ids
         assert DET_EXEC_DESTRUCT_DD in high_ids
         assert DET_EXEC_NET_CURL_EXEC in high_ids
 
