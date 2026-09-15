@@ -58,18 +58,18 @@ def test_openhands_profile_round_trips() -> None:
 
 
 def test_openhands_profile_new_field_defaults() -> None:
-    """``enable_switch_llm_tool`` defaults True (global parity); ``disabled_skills``
+    """``enable_switch_llm_tool`` defaults False (global parity); ``disabled_skills``
     defaults ``[]`` — the deny-list starts empty, so an unset field means "all
     discovered skills" (#4017). Skills are selected by exclusion, never an
     allow-list of names that could dangle."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
-    assert profile.enable_switch_llm_tool is True
+    assert profile.enable_switch_llm_tool is False
     assert profile.disabled_skills == []
     reloaded = validate_agent_profile(
         {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
     )
     assert isinstance(reloaded, OpenHandsAgentProfile)
-    assert reloaded.enable_switch_llm_tool is True
+    assert reloaded.enable_switch_llm_tool is False
     assert reloaded.disabled_skills == []
 
 
