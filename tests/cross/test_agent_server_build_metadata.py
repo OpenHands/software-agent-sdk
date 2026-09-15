@@ -121,6 +121,22 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     assert "FROM python:3.13.15-slim-trixie AS python-runtime" in dockerfile_text
     assert "FROM node:24.21.0-trixie-slim AS node-runtime" in dockerfile_text
     assert "ARG BASE_IMAGE=python-node-runtime" in dockerfile_text
+    assert re.search(r"ARG DEBIAN_SNAPSHOT=\d{8}T000000Z", dockerfile_text)
+    assert (
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"
+        in dockerfile_text
+    )
+    assert (
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"
+        in dockerfile_text
+    )
+    assert (
+        dockerfile_text.count(
+            "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg"
+        )
+        == 2
+    )
+    assert "Check-Valid-Until: no" in dockerfile_text
     assert "apt-get update; \\\n    apt-get upgrade -y;" in dockerfile_text
     minimal_stage = "FROM ${BASE_IMAGE} AS base-image-minimal"
     full_stage = "FROM base-image-minimal AS base-image"

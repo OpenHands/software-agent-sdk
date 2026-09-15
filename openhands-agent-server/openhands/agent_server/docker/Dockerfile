@@ -32,11 +32,13 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # Start from Debian itself and copy only the language runtimes from their official
 # images. The final stage installs only the shared libraries required by Python
 # and Node; developer and package-manager tooling is added by the agent-server
-# stages below when needed.
+# stages below when needed. Package upgrades resolve against a dated snapshot so
+# newly published Debian packages have a seven-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
+ARG DEBIAN_SNAPSHOT=20260908T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
@@ -46,6 +48,21 @@ RUN set -eux; \
     ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
     ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
     ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/debian.sources; \
     apt-get update; \
     apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
