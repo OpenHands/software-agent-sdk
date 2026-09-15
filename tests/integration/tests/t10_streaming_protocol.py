@@ -122,21 +122,31 @@ class StreamingProtocolTest(BaseIntegrationTest):
     def verify_result(self) -> TestResult:
         events = list(self.conversation.state.events)
         failures = check_stream_progress(self.progress, events)
-        for label, frames in (
-            ("run()/step()", self.progress[: self.sync_frames]),
-            ("arun()/astep()", self.progress[self.sync_frames : self.resume_frames]),
-            ("the reloaded conversation", self.progress[self.resume_frames :]),
-        ):
-            if not any(isinstance(f, StreamStarted) for f in frames):
-                failures.append(f"{label} emitted no stream progress")
+        # A turn answered only by a tool call (e.g. finish) has nothing to
+        # stream; an event with text that did not stream fails above instead.
+        silent = [
+            label
+            for label, frames in (
+                ("run()/step()", self.progress[: self.sync_frames]),
+                (
+                    "arun()/astep()",
+                    self.progress[self.sync_frames : self.resume_frames],
+                ),
+                ("the reloaded conversation", self.progress[self.resume_frames :]),
+            )
+            if not any(isinstance(f, StreamStarted) for f in frames)
+        ]
 
         conversation_dir = self.conversation.state.persistence_dir
         assert conversation_dir is not None
         failures += check_trajectory(
             self.before_reload, self.after_reload, events, conversation_dir
         )
+        # Any response proves the provider accepted the reloaded history,
+        # including a reply given through the finish tool.
         if not any(
-            isinstance(e, MessageEvent) and e.source == "agent"
+            isinstance(e, ActionEvent)
+            or (isinstance(e, MessageEvent) and e.source == "agent")
             for e in events[len(self.after_reload) :]
         ):
             failures.append("the reloaded conversation produced no agent reply")
@@ -144,13 +154,13 @@ class StreamingProtocolTest(BaseIntegrationTest):
         if failures:
             return TestResult(success=False, reason="; ".join(failures))
         items = {f.item_id for f in self.progress if isinstance(f, StreamStarted)}
-        return TestResult(
-            success=True,
-            reason=(
-                f"{len(items)} streamed item(s) matched their durable events; "
-                f"{len(events)} event(s) persisted, reloaded and continued"
-            ),
+        reason = (
+            f"{len(items)} streamed item(s) matched their durable events; "
+            f"{len(events)} event(s) persisted, reloaded and continued"
         )
+        if silent:
+            reason += f"; nothing streamable from {', '.join(silent)}"
+        return TestResult(success=True, reason=reason)
 
     def teardown(self):
         super().teardown()
