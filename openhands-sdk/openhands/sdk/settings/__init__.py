@@ -131,7 +131,61 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     if name in _MODEL_EXPORTS:
-        from . import model
+        from .model import (
+            AGENT_SETTINGS_SCHEMA_VERSION,
+            CONVERSATION_SETTINGS_SCHEMA_VERSION,
+            ACPAgentSettings,
+            AgentKind,
+            AgentSettingsBase,
+            AgentSettingsConfig,
+            CondenserSettings,
+            CondenserSettingsConfig,
+            ConversationSettings,
+            LLMSummarizingCondenserSettings,
+            NoOpCondenserSettings,
+            OpenHandsAgentSettings,
+            SettingsChoice,
+            SettingsFieldSchema,
+            SettingsSchema,
+            SettingsSectionSchema,
+            VerificationSettings,
+            apply_agent_settings_diff,
+            create_agent_from_settings,
+            default_agent_settings,
+            export_agent_settings_schema,
+            export_settings_schema,
+            validate_agent_settings,
+        )
 
-        return getattr(model, name)
+        exports = {
+            "AGENT_SETTINGS_SCHEMA_VERSION": AGENT_SETTINGS_SCHEMA_VERSION,
+            "CONVERSATION_SETTINGS_SCHEMA_VERSION": (
+                CONVERSATION_SETTINGS_SCHEMA_VERSION
+            ),
+            "ACPAgentSettings": ACPAgentSettings,
+            "AgentKind": AgentKind,
+            "AgentSettingsBase": AgentSettingsBase,
+            "AgentSettingsConfig": AgentSettingsConfig,
+            "CondenserSettings": CondenserSettings,
+            "CondenserSettingsConfig": CondenserSettingsConfig,
+            "ConversationSettings": ConversationSettings,
+            "LLMSummarizingCondenserSettings": LLMSummarizingCondenserSettings,
+            "NoOpCondenserSettings": NoOpCondenserSettings,
+            "OpenHandsAgentSettings": OpenHandsAgentSettings,
+            "SettingsChoice": SettingsChoice,
+            "SettingsFieldSchema": SettingsFieldSchema,
+            "SettingsSchema": SettingsSchema,
+            "SettingsSectionSchema": SettingsSectionSchema,
+            "VerificationSettings": VerificationSettings,
+            "apply_agent_settings_diff": apply_agent_settings_diff,
+            "create_agent_from_settings": create_agent_from_settings,
+            "default_agent_settings": default_agent_settings,
+            "export_agent_settings_schema": export_agent_settings_schema,
+            "export_settings_schema": export_settings_schema,
+            "validate_agent_settings": validate_agent_settings,
+        }
+
+        value = exports[name]
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

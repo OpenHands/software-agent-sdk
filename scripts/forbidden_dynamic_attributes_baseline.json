@@ -480,31 +480,6 @@
         "hash": "fc0ade2f76973b01c91234391ee5b86111af1726cbba22671b3fa565f40e62b4"
     },
     {
-        "file": "openhands-sdk/openhands/sdk/marketplace/__init__.py",
-        "name": "getattr",
-        "hash": "9aa4828d48dae647719893510d2619568cbda8ac9f10643d4f3471a3a9fa07b1"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/marketplace/__init__.py",
-        "name": "getattr",
-        "hash": "a7b68b2aee3e1c77287fc8b9608f1fae0cc79e54d0bfa5c35d6475f78113fcfc"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/mcp/__init__.py",
-        "name": "getattr",
-        "hash": "552cdba2a411e0403dd9e5c09f2e9c4e50513ce077a816c024fe3937eba93958"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/mcp/__init__.py",
-        "name": "getattr",
-        "hash": "d43e3cfac08625006b821cd2668ea3f4e852319f06487ba5d6922b08d0102215"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/mcp/__init__.py",
-        "name": "getattr",
-        "hash": "edd18d2ff8519b8296dfb7aa7895bf5e1e2c668a626da725e41390c26747eae8"
-    },
-    {
         "file": "openhands-sdk/openhands/sdk/observability/laminar.py",
         "name": "getattr",
         "hash": "b5bcd8aea3ba63bce5220bc19ff504017e36402523dd1add6de1ece66d59be1c"
@@ -513,11 +488,6 @@
         "file": "openhands-sdk/openhands/sdk/profiles/agent_profile.py",
         "name": "getattr",
         "hash": "1d0607d791dcbf80ab835e909b2da5b4886b8b3d1e092f16f653f33053cbde08"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/__init__.py",
-        "name": "getattr",
-        "hash": "c813b420150ebdc58a521958ab0ebce7a2bebfd34e0f2e9da1fa6b4bdfa8e90c"
     },
     {
         "file": "openhands-sdk/openhands/sdk/settings/model.py",

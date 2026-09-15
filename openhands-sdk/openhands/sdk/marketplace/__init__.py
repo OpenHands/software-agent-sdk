@@ -23,7 +23,6 @@ Example marketplace.json:
 ```
 """
 
-from importlib import import_module
 from typing import Any
 
 from openhands.sdk.marketplace.registration import (
@@ -56,7 +55,48 @@ __all__ = sorted(_TYPE_EXPORTS | _REGISTRY_EXPORTS | {"MarketplaceRegistration"}
 
 def __getattr__(name: str) -> Any:
     if name in _TYPE_EXPORTS:
-        return getattr(import_module("openhands.sdk.marketplace.types"), name)
-    if name in _REGISTRY_EXPORTS:
-        return getattr(import_module("openhands.sdk.marketplace.registry"), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        from openhands.sdk.marketplace.types import (
+            MARKETPLACE_MANIFEST_DIRS,
+            MARKETPLACE_MANIFEST_FILE,
+            Marketplace,
+            MarketplaceEntry,
+            MarketplaceMetadata,
+            MarketplaceOwner,
+            MarketplacePluginEntry,
+            MarketplacePluginSource,
+        )
+
+        exports = {
+            "MARKETPLACE_MANIFEST_DIRS": MARKETPLACE_MANIFEST_DIRS,
+            "MARKETPLACE_MANIFEST_FILE": MARKETPLACE_MANIFEST_FILE,
+            "Marketplace": Marketplace,
+            "MarketplaceEntry": MarketplaceEntry,
+            "MarketplaceMetadata": MarketplaceMetadata,
+            "MarketplaceOwner": MarketplaceOwner,
+            "MarketplacePluginEntry": MarketplacePluginEntry,
+            "MarketplacePluginSource": MarketplacePluginSource,
+        }
+    elif name in _REGISTRY_EXPORTS:
+        from openhands.sdk.marketplace.registry import (
+            AmbiguousPluginError,
+            FetchedMarketplace,
+            MarketplaceNotFoundError,
+            MarketplaceRegistry,
+            PluginNotFoundError,
+            PluginResolutionError,
+        )
+
+        exports = {
+            "AmbiguousPluginError": AmbiguousPluginError,
+            "FetchedMarketplace": FetchedMarketplace,
+            "MarketplaceNotFoundError": MarketplaceNotFoundError,
+            "MarketplaceRegistry": MarketplaceRegistry,
+            "PluginNotFoundError": PluginNotFoundError,
+            "PluginResolutionError": PluginResolutionError,
+        }
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    value = exports[name]
+    globals()[name] = value
+    return value
