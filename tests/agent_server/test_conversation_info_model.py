@@ -31,9 +31,13 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
+    ConversationPublicState,
     ConversationState,
 )
+from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -338,3 +342,186 @@ def test_supports_runtime_model_switch_defaults_false():
     info = _compose_conversation_info(stored, state)
 
     assert info.supports_runtime_model_switch is False
+
+
+def test_conversation_info_from_sources_maps_state_fields():
+    state = _make_state(ACPAgent(acp_command=["echo", "test"]))
+    state.persistence_dir = "/tmp/conversations"
+    state.max_iterations = 17
+    state.stuck_detection = False
+    state.execution_status = ConversationExecutionStatus.PAUSED
+    state.activated_knowledge_skills = ["knowledge"]
+    state.invoked_skills = ["review"]
+    state.blocked_actions = {"action-id": "blocked"}
+    state.blocked_messages = {"message-id": "blocked"}
+    state.last_user_message_id = "message-id"
+    state.leaf_event_id = "leaf-id"
+    state.tags = {"source": "state"}
+    state.agent_state = {"key": "value"}
+    stored = _make_stored(state).model_copy(
+        update={
+            "id": uuid4(),
+            "max_iterations": 99,
+            "stuck_detection": True,
+            "tags": {"source": "stored"},
+        }
+    )
+
+    info = ConversationInfo.from_sources(
+        state,
+        stored,
+        current_model_id=None,
+        available_models=[],
+        supports_runtime_model_switch=False,
+        sub_conversation_ids=[],
+    )
+
+    public_state_fields = set(ConversationPublicState.model_fields)
+    assert info.model_dump(mode="json", include=public_state_fields) == (
+        state.model_dump(mode="json", include=public_state_fields)
+    )
+
+
+def test_conversation_info_from_sources_maps_stored_metadata():
+    state = _make_state(ACPAgent(acp_command=["echo", "test"]))
+    parent_id = uuid4()
+    fork_id = uuid4()
+    profile = LaunchedAgentProfile(agent_profile_id=uuid4(), revision=3)
+    client_tool = ClientToolSpec(
+        name="lookup", description="Look up a value", parameters={"type": "object"}
+    )
+    stored = _make_stored(state).model_copy(
+        update={
+            "title": "Stored title",
+            "metrics": MetricsSnapshot(model_name="test", accumulated_cost=1.25),
+            "parent_conversation_id": parent_id,
+            "forked_from_conversation_id": fork_id,
+            "forked_from_event_id": "fork-event",
+            "client_tools": [client_tool],
+            "launched_agent_profile": profile,
+        }
+    )
+
+    info = ConversationInfo.from_sources(
+        state,
+        stored,
+        current_model_id=None,
+        available_models=[],
+        supports_runtime_model_switch=False,
+        sub_conversation_ids=[],
+    )
+
+    stored_metadata_fields = set(ConversationInfo.STORED_METADATA_FIELDS)
+    assert info.model_dump(include=stored_metadata_fields) == stored.model_dump(
+        include=stored_metadata_fields
+    )
+
+
+def test_conversation_info_from_sources_maps_runtime_fields():
+    state = _make_state(ACPAgent(acp_command=["echo", "test"]))
+    stored = _make_stored(state)
+    child_ids = [uuid4(), uuid4()]
+    models = [ACPModelInfo(model_id="model-id", name="Model")]
+
+    info = ConversationInfo.from_sources(
+        state,
+        stored,
+        current_model_id="model-id",
+        available_models=models,
+        supports_runtime_model_switch=True,
+        sub_conversation_ids=child_ids,
+    )
+
+    assert info.current_model_id == "model-id"
+    assert info.available_models == models
+    assert info.supports_runtime_model_switch is True
+    assert info.sub_conversation_ids == child_ids
+
+
+def test_conversation_info_json_wire_contract():
+    agent = Agent(
+        llm=LLM(
+            model="gpt-4o",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        ),
+        tools=[Tool(name="TerminalTool")],
+    )
+    state = _make_state(agent)
+    info = _compose_conversation_info(_make_stored(state), state)
+
+    payload = info.model_dump(mode="json")
+
+    assert set(payload) == {
+        "id",
+        "agent",
+        "workspace",
+        "persistence_dir",
+        "max_iterations",
+        "stuck_detection",
+        "execution_status",
+        "confirmation_policy",
+        "security_analyzer",
+        "activated_knowledge_skills",
+        "invoked_skills",
+        "blocked_actions",
+        "blocked_messages",
+        "last_user_message_id",
+        "leaf_event_id",
+        "stats",
+        "secret_registry",
+        "tags",
+        "agent_state",
+        "hook_config",
+        "title",
+        "metrics",
+        "created_at",
+        "updated_at",
+        "forked_from_conversation_id",
+        "forked_from_event_id",
+        "parent_conversation_id",
+        "sub_conversation_ids",
+        "current_model_id",
+        "available_models",
+        "supports_runtime_model_switch",
+        "launched_agent_profile",
+        "client_tools",
+    }
+    assert "activated_path_rules" not in payload
+    assert "head_is_empty" not in payload
+    assert payload["id"] == str(state.id)
+    assert payload["agent"]["kind"] == "Agent"
+    assert payload["agent"]["llm"]["api_key"] is None
+
+
+def test_conversation_info_reuses_public_state_schema():
+    internal_state_fields = {"activated_path_rules", "head_is_empty"}
+
+    assert issubclass(ConversationState, ConversationPublicState)
+    assert issubclass(ConversationInfo, ConversationPublicState)
+    assert set(ConversationPublicState.model_fields) <= set(
+        ConversationInfo.model_fields
+    )
+    assert (
+        set(ConversationState.model_fields) - set(ConversationPublicState.model_fields)
+        == internal_state_fields
+    )
+    assert internal_state_fields.isdisjoint(ConversationInfo.model_fields)
+
+
+def test_stored_metadata_projection_has_one_field_definition():
+    runtime_fields = {
+        "current_model_id",
+        "available_models",
+        "supports_runtime_model_switch",
+        "sub_conversation_ids",
+    }
+
+    assert ConversationInfo.STORED_METADATA_FIELDS <= set(
+        StoredConversation.model_fields
+    )
+    assert set(ConversationInfo.model_fields) == (
+        set(ConversationPublicState.model_fields)
+        | ConversationInfo.STORED_METADATA_FIELDS
+        | runtime_fields
+    )
