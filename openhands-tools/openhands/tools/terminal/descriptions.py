@@ -88,5 +88,8 @@ WINDOWS_TOOL_DESCRIPTION = "\n".join(
         "  one becomes unresponsive.",
         "* Resetting the terminal clears loaded modules, environment variables,",
         "  working directory changes, and running processes.",
+        "* If the shell exits or stops responding (for example after `C-c` could",
+        "  not stop a command), it is recreated automatically before your next",
+        "  command and the output tells you so.",
     ]
 )
