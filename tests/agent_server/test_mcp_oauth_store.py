@@ -15,6 +15,7 @@ from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from mcp.server.auth.settings import ClientRegistrationOptions
+from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import SecretStr
 
 import openhands.sdk.mcp.utils as mcp_utils
@@ -76,12 +77,12 @@ class _HeadlessOAuth(OAuth):
         assert response.status_code in {302, 303, 307, 308}
         self._redirect_location = response.headers["location"]
 
-    async def callback_handler(self) -> tuple[str, str | None]:
+    async def callback_handler(self) -> AuthorizationCodeResult:
         assert self._redirect_location is not None
         query = parse_qs(urlparse(self._redirect_location).query)
         code = query.get("code", [None])[0]
         assert code is not None
-        return code, query.get("state", [None])[0]
+        return AuthorizationCodeResult(code=code, state=query.get("state", [None])[0])
 
 
 @pytest.fixture
