@@ -348,7 +348,7 @@ class TestTaskToolExamples:
     def teardown_method(self):
         _reset_registry_for_tests()
 
-    def test_matching_agent_example_included(self, tmp_path):
+    def test_matching_agent_example_included(self, mock_conversation_state):
         """When a registered agent name matches a TASK_TOOL_EXAMPLES key,
         its example appears in the tool description."""
         # Pick one key from the examples dict
@@ -363,13 +363,13 @@ class TestTaskToolExamples:
         )
 
         tools = TaskToolSet.create(
-            conv_state=None,  # type: ignore[arg-type]
+            conv_state=mock_conversation_state,
         )
         assert len(tools) == 1
         description = tools[0].description
         assert example_text.strip() in description
 
-    def test_no_matching_agent_example_excluded(self, tmp_path):
+    def test_no_matching_agent_example_excluded(self, mock_conversation_state):
         """When no registered agent name matches any TASK_TOOL_EXAMPLES key,
         no example text appears in the tool description."""
         # Register an agent whose name does NOT match any example key
@@ -380,14 +380,14 @@ class TestTaskToolExamples:
         )
 
         tools = TaskToolSet.create(
-            conv_state=None,  # type: ignore[arg-type]
+            conv_state=mock_conversation_state,
         )
         assert len(tools) == 1
         description = tools[0].description
         for name, example_text in TASK_TOOL_EXAMPLES.items():
             assert example_text.strip() not in description
 
-    def test_only_registered_examples_included(self, tmp_path):
+    def test_only_registered_examples_included(self, mock_conversation_state):
         """Only examples for registered agents appear; others are excluded."""
         keys = list(TASK_TOOL_EXAMPLES.keys())
         if len(keys) < 2:
@@ -403,7 +403,7 @@ class TestTaskToolExamples:
         )
 
         tools = TaskToolSet.create(
-            conv_state=None,  # type: ignore[arg-type]
+            conv_state=mock_conversation_state,
         )
         description = tools[0].description
         assert TASK_TOOL_EXAMPLES[included_name].strip() in description
