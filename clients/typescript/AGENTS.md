@@ -22,7 +22,7 @@ All pull requests must follow the repository's contribution and applicable code-
 - **Workspace Management**: File operations, uploads, downloads, and workspace state management
 - **Conversation Lifecycle**: Create, start, stop, and manage AI agent conversations
 - **Error Handling**: Robust error handling with custom exception classes and retry logic
-- **Modern Tooling**: ESLint, Prettier, Jest testing framework, and GitHub Actions CI/CD
+- **Modern Tooling**: ESLint, Prettier, Vitest, and GitHub Actions CI/CD
 
 ## Browser Compatibility Requirement
 
@@ -43,7 +43,7 @@ All pull requests must follow the repository's contribution and applicable code-
 - Web-standard APIs (`URL`, `Blob`, `File`, `FormData`, `TextEncoder`/`TextDecoder`, etc.)
 - Browser-compatible npm packages only
 
-This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Jest.
+This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Vitest.
 
 ## Source Material
 

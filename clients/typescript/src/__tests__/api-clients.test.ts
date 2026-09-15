@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import {
   Agent,
   ConversationExecutionStatus,
@@ -39,10 +40,10 @@ import * as http from 'node:http';
 import { EventEmitter } from 'node:events';
 
 // `fetch` rejects a GET body, so the batch endpoints route through node:http.
-// Its `request` export isn't configurable (jest.spyOn fails), so mock the module.
-jest.mock('node:http', () => ({
-  ...jest.requireActual('node:http'),
-  request: jest.fn(),
+// Its `request` export isn't configurable (vi.spyOn fails), so mock the module.
+vi.mock('node:http', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:http')>()),
+  request: vi.fn(),
 }));
 
 const originalFetch = global.fetch;
@@ -54,14 +55,14 @@ const originalFetch = global.fetch;
  */
 function mockNodeHttpRequest(responseBody: string, status = 200) {
   const captured: { url?: URL; options?: http.RequestOptions; body?: string } = {};
-  (http.request as jest.Mock).mockImplementation((url: unknown, options: unknown, cb: unknown) => {
+  (http.request as Mock).mockImplementation((url: unknown, options: unknown, cb: unknown) => {
     captured.url = url as URL;
     captured.options = options as http.RequestOptions;
     const callback = cb as (res: http.IncomingMessage) => void;
     const req = new EventEmitter() as unknown as http.ClientRequest;
-    (req as unknown as { setTimeout: unknown }).setTimeout = jest.fn();
-    (req as unknown as { destroy: unknown }).destroy = jest.fn();
-    (req as unknown as { end: unknown }).end = jest.fn((body?: string) => {
+    (req as unknown as { setTimeout: unknown }).setTimeout = vi.fn();
+    (req as unknown as { destroy: unknown }).destroy = vi.fn();
+    (req as unknown as { end: unknown }).end = vi.fn((body?: string) => {
       captured.body = body;
       process.nextTick(() => {
         const res = new EventEmitter() as unknown as http.IncomingMessage;
@@ -82,7 +83,7 @@ describe('Auxiliary API clients', () => {
   afterEach(() => {
     global.fetch = originalFetch;
     clearAgentServerInfoCache();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('ConversationManager exposes server and skills namespaces', () => {
@@ -111,7 +112,7 @@ describe('Auxiliary API clients', () => {
 
   describe('Aggregate clients', () => {
     it('AgentServerClient preserves the existing endpoint clients behind namespaces', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ status: 'ok' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -140,7 +141,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('CloudClient sends bearer auth and X-Org-Id for cloud app-host requests', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ items: [], current_org_id: 'org-1' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -168,7 +169,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('CloudClient routes hostOverride requests through the configured proxy', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ ok: true }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -202,7 +203,7 @@ describe('Auxiliary API clients', () => {
           }),
         })
       );
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body).toEqual({
         host: 'https://runtime.example.com',
         method: 'POST',
@@ -213,7 +214,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('CloudClient forwards app-conversation observability fields', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
             id: 'task-1',
@@ -258,7 +259,7 @@ describe('Auxiliary API clients', () => {
           }),
         })
       );
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body).toMatchObject({
         initial_message: null,
         observability_span_name: 'mySpanName',
@@ -293,7 +294,7 @@ describe('Auxiliary API clients', () => {
         ],
         active_agent_profile_id: 'uuid-1',
       };
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -314,7 +315,7 @@ describe('Auxiliary API clients', () => {
 
     it('getAgentProfile sets X-Expose-Secrets header when requested', async () => {
       const payload = { name: 'default', profile: { agent_kind: 'openhands' } };
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify(payload), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -324,14 +325,14 @@ describe('Auxiliary API clients', () => {
       const client = new AgentProfilesClient({ host: 'http://example.com' });
       await client.getAgentProfile('default', { exposeSecrets: 'plaintext' });
 
-      const call = (global.fetch as jest.Mock).mock.calls[0];
+      const call = (global.fetch as Mock).mock.calls[0];
       expect(call[0]).toBe('http://example.com/api/agent-profiles/default');
       const headers = call[1]?.headers as Record<string, string>;
       expect(headers['X-Expose-Secrets']).toBe('plaintext');
     });
 
     it('saveAgentProfile posts to /api/agent-profiles/{name}', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({ name: 'myprofile', message: "Agent profile 'myprofile' saved" }),
           {
@@ -352,12 +353,12 @@ describe('Auxiliary API clients', () => {
         'http://example.com/api/agent-profiles/myprofile',
         expect.objectContaining({ method: 'POST' })
       );
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body).toEqual({ agent_kind: 'openhands', llm_profile_ref: 'gpt-4o' });
     });
 
     it('deleteAgentProfile sends DELETE to /api/agent-profiles/{name}', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({ name: 'myprofile', message: "Agent profile 'myprofile' deleted" }),
           {
@@ -378,7 +379,7 @@ describe('Auxiliary API clients', () => {
     });
 
     it('renameAgentProfile posts new_name', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ name: 'newname', message: 'renamed' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -388,13 +389,13 @@ describe('Auxiliary API clients', () => {
       const client = new AgentProfilesClient({ host: 'http://example.com' });
       await client.renameAgentProfile('oldname', 'newname');
 
-      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body as string);
+      const body = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
       expect(body.new_name).toBe('newname');
     });
 
     it('activateAgentProfile posts to /{profileId}/activate', async () => {
       const profileId = 'uuid-abc-123';
-      global.fetch = jest
+      global.fetch = vi
         .fn()
         .mockResolvedValue(
           new Response(
@@ -430,7 +431,7 @@ describe('Auxiliary API clients', () => {
         acp_file_secret_names: [],
         resolved_settings: {},
       };
-      global.fetch = jest.fn().mockResolvedValue(
+      global.fetch = vi.fn().mockResolvedValue(
         new Response(JSON.stringify(diagnostics), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -462,7 +463,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ServerClient.getReady accepts a 503 readiness response', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ status: 'initializing', message: 'Booting' }), {
         status: 503,
         headers: { 'content-type': 'application/json' },
@@ -477,7 +478,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteEventsList can be constructed from client options', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ items: [], next_page_id: null }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -500,7 +501,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.switchLLM posts an explicit LLM config', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -520,7 +521,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('LLMMetadataClient.getOpenAISubscriptionModels returns models array', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ vendor: 'openai', models: ['gpt-5.2', 'gpt-5.3-codex'] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -551,7 +552,7 @@ describe('Auxiliary API clients', () => {
       { vendor: 'openai', connected: true, account_email: null, expires_at: 4102444800000 },
       { vendor: 'openai', connected: false, account_email: null, expires_at: null },
     ];
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify(responses.shift()), {
           status: 200,
@@ -599,12 +600,12 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/llm/subscription/openai/logout',
       expect.objectContaining({ method: 'POST' })
     );
-    expect(JSON.stringify((global.fetch as jest.Mock).mock.calls)).not.toContain('access-token');
-    expect(JSON.stringify((global.fetch as jest.Mock).mock.calls)).not.toContain('refresh-token');
+    expect(JSON.stringify((global.fetch as Mock).mock.calls)).not.toContain('access-token');
+    expect(JSON.stringify((global.fetch as Mock).mock.calls)).not.toContain('refresh-token');
   });
 
   it('SkillsClient.syncSkills posts to the sync endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ status: 'success', message: 'ok' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -656,7 +657,7 @@ describe('Auxiliary API clients', () => {
       refreshResponse,
       marketplaceResponse,
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -734,7 +735,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('SkillsClient.refreshSkill POSTs to the /refresh route', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ message: 'updated', skill: { name: 'my-skill' } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -752,7 +753,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('SkillsClient percent-encodes skill names with special characters', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'my skill', enabled: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -815,7 +816,7 @@ describe('Auxiliary API clients', () => {
         },
       ],
     };
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(payload), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -852,7 +853,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('SubAgentsClient.getSubAgents defaults to an empty request body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ agents: [] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -885,7 +886,7 @@ describe('Auxiliary API clients', () => {
         },
       ],
     };
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(payload), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -936,7 +937,7 @@ describe('Auxiliary API clients', () => {
       uninstallResponse,
       refreshResponse,
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1052,7 +1053,7 @@ describe('Auxiliary API clients', () => {
         workspaceParents: [{ id: '/home', name: 'home', path: '/home' }],
       },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1093,7 +1094,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('WorkspacesClient throws AgentServerVersionError for old agent servers', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1128,7 +1129,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('BashClient.startCommand normalizes string requests', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           id: 'bash-command-1',
@@ -1159,7 +1160,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.listProfiles GETs the profiles endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           profiles: [{ name: 'default', model: 'gpt-4o', api_key_set: true }],
@@ -1180,7 +1181,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.getProfile sends X-Expose-Secrets header when requested', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'default',
@@ -1196,7 +1197,7 @@ describe('Auxiliary API clients', () => {
 
     expect(result.name).toBe('default');
     expect(result.api_key_set).toBe(true);
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('http://example.com/api/profiles/default');
     expect(init.method).toBe('GET');
@@ -1204,7 +1205,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.getProfile omits X-Expose-Secrets header by default', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValue(
         new Response(
@@ -1216,13 +1217,13 @@ describe('Auxiliary API clients', () => {
     const client = new ProfilesClient({ host: 'http://example.com' });
     await client.getProfile('default');
 
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers['X-Expose-Secrets']).toBeUndefined();
   });
 
   it('ProfilesClient.getProfile percent-encodes the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'my profile', config: {}, api_key_set: false }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1239,7 +1240,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.saveProfile POSTs the profile body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'default', message: "Profile 'default' saved" }), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -1266,7 +1267,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.deleteProfile DELETEs the profile endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'default', message: "Profile 'default' deleted" }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1284,7 +1285,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.renameProfile POSTs to the rename endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'new', message: "Profile 'old' renamed to 'new'" }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1305,7 +1306,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.getProfile sends X-Expose-Secrets: encrypted', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'default',
@@ -1320,13 +1321,13 @@ describe('Auxiliary API clients', () => {
     const result = await client.getProfile('default', { exposeSecrets: 'encrypted' });
 
     expect(result.config.api_key).toBe('gAAAAA-encrypted-blob');
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers['X-Expose-Secrets']).toBe('encrypted');
   });
 
   it('ProfilesClient.getProfile surfaces HttpError on 404', async () => {
-    global.fetch = jest.fn(
+    global.fetch = vi.fn(
       async () =>
         new Response(JSON.stringify({ detail: "Profile 'missing' not found" }), {
           status: 404,
@@ -1343,7 +1344,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.saveProfile omits include_secrets when not provided', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'default', message: "Profile 'default' saved" }), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -1353,7 +1354,7 @@ describe('Auxiliary API clients', () => {
     const client = new ProfilesClient({ host: 'http://example.com' });
     await client.saveProfile('default', { llm: { model: 'gpt-4o' } });
 
-    const fetchMock = global.fetch as jest.Mock;
+    const fetchMock = global.fetch as Mock;
     const [, init] = fetchMock.mock.calls[0];
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ llm: { model: 'gpt-4o' } });
@@ -1361,7 +1362,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile POSTs to the validate endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ valid: true, error: null }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1383,7 +1384,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile returns a valid=false verdict with the error', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           valid: false,
@@ -1405,7 +1406,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile percent-encodes the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ valid: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1422,7 +1423,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.validateProfile surfaces HttpError on 404', async () => {
-    global.fetch = jest.fn(
+    global.fetch = vi.fn(
       async () =>
         new Response(JSON.stringify({ detail: 'Not Found' }), {
           status: 404,
@@ -1440,7 +1441,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.renameProfile percent-encodes the source name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'fresh', message: 'renamed' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1457,7 +1458,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ProfilesClient.activateProfile POSTs to the activate endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'default',
@@ -1483,7 +1484,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.listMetaProfiles GETs the meta-profiles endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           meta_profiles: [
@@ -1513,7 +1514,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.getMetaProfile percent-encodes the name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           name: 'my profile',
@@ -1539,7 +1540,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.saveMetaProfile POSTs the meta-profile body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' saved" }), {
         status: 201,
         headers: { 'content-type': 'application/json' },
@@ -1562,7 +1563,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.deleteMetaProfile DELETEs the meta-profile endpoint', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValue(
         new Response(
@@ -1582,7 +1583,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('MetaProfilesClient.activateMetaProfile POSTs to the activate endpoint', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValue(
         new Response(
@@ -1602,7 +1603,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.switchLlm POSTs the llm to the switch_llm endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1628,7 +1629,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.switchAcpModel POSTs the model to the switch_acp_model endpoint', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1660,7 +1661,7 @@ describe('Auxiliary API clients', () => {
     });
 
     // Omitted maxIterations must not appear on the wire (server default applies).
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1677,7 +1678,7 @@ describe('Auxiliary API clients', () => {
 
     // A 409 from the server (run/goal already active) must propagate as HttpError,
     // and maxIterations must be forwarded when supplied.
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'Conversation run or goal loop already running.' }), {
         status: 409,
         statusText: 'Conflict',
@@ -1697,7 +1698,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.resumeGoal POSTs to goal/resume and surfaces HttpError 400 when nothing is resumable', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'no_resumable_goal' }), {
         status: 400,
         statusText: 'Bad Request',
@@ -1721,7 +1722,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.stopGoal POSTs to goal/stop and surfaces HttpError 404 for a missing conversation', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ detail: 'Item not found' }), {
         status: 404,
         statusText: 'Not Found',
@@ -1745,7 +1746,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.setConfirmationPolicy wraps the SDK v1.23.0 request body', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1770,7 +1771,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('RemoteConversation.start sends the optional observability user ID', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'conv-123' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1791,7 +1792,7 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
       })
     );
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const [, init] = (global.fetch as Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({
       user_id: 'user-42',
       initial_message: {
@@ -1802,7 +1803,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationManager.createACPConversation sends the optional observability user ID', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'acp-123' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1821,14 +1822,14 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
       })
     );
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const [, init] = (global.fetch as Mock).mock.calls[0];
     expect(JSON.parse(init.body)).toMatchObject({
       user_id: 'user-42',
     });
   });
 
   it('HttpClient can parse blob responses when requested', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(new Blob(['zip-data']), {
         status: 200,
         headers: { 'content-type': 'application/zip' },
@@ -1849,7 +1850,7 @@ describe('Auxiliary API clients', () => {
       { name: 'slow', message: "Profile 'fast' renamed to 'slow'" },
       { name: 'slow', message: "Profile 'slow' deleted" },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -1910,7 +1911,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.switchProfile posts the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1930,7 +1931,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.switchAcpModel posts the model', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1950,7 +1951,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.navigateConversation POSTs event_id and returns the re-rooted info', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'conversation-1', leaf_event_id: 'event-7' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -1976,7 +1977,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationClient.navigateConversation selects the empty tree with a null event_id', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ id: 'conversation-1', leaf_event_id: null }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2000,7 +2001,7 @@ describe('Auxiliary API clients', () => {
     // navigateTo posts to the route and then GETs the conversation to refresh
     // the cache (leaf_event_id is not broadcast over the WebSocket). Two calls
     // means each needs its own Response (a body can only be read once).
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify({ id: 'conv-123', leaf_event_id: 'event-3' }), {
           status: 200,
@@ -2033,7 +2034,7 @@ describe('Auxiliary API clients', () => {
 
   it('RemoteConversation.navigateTo passes a null event_id for the empty tree', async () => {
     // Fresh Response per call: navigateTo posts and then refreshes state.
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify({ id: 'conv-123', leaf_event_id: null }), {
           status: 200,
@@ -2060,7 +2061,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('ConversationManager.switchProfile posts the profile name', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2088,7 +2089,7 @@ describe('Auxiliary API clients', () => {
       'plain-secret',
       { deleted: true },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       const isText = typeof body === 'string';
       return Promise.resolve(
@@ -2147,7 +2148,7 @@ describe('Auxiliary API clients', () => {
 
   it('FileClient wraps file browsing and download endpoints', async () => {
     const binary = new TextEncoder().encode('hello').buffer;
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ home: '/workspace' }), {
@@ -2192,7 +2193,7 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/file/upload?path=%2Fworkspace%2Fhello.txt',
       expect.objectContaining({ method: 'POST', body: expect.any(FormData) })
     );
-    const uploadInit = (global.fetch as jest.Mock).mock.calls[2][1];
+    const uploadInit = (global.fetch as Mock).mock.calls[2][1];
     expect(uploadInit.headers['Content-Type']).toBeUndefined();
     expect(global.fetch).toHaveBeenNthCalledWith(
       4,
@@ -2207,7 +2208,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ home: '/workspace' }), {
@@ -2241,7 +2242,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('FileClient omits include_hidden when includeHidden is not set', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ home: '/workspace' }), {
@@ -2260,14 +2261,14 @@ describe('Auxiliary API clients', () => {
     await client.getHome();
     await client.searchSubdirectories('/workspace');
 
-    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://example.com/api/file/home');
-    expect((global.fetch as jest.Mock).mock.calls[1][0]).toBe(
+    expect((global.fetch as Mock).mock.calls[0][0]).toBe('http://example.com/api/file/home');
+    expect((global.fetch as Mock).mock.calls[1][0]).toBe(
       'http://example.com/api/file/search_subdirs?path=%2Fworkspace'
     );
   });
 
   it('ConversationClient wraps agent-canvas conversation endpoints', async () => {
-    global.fetch = jest.fn().mockImplementation(() =>
+    global.fetch = vi.fn().mockImplementation(() =>
       Promise.resolve(
         new Response(JSON.stringify({ success: true, response: 'ok' }), {
           status: 200,
@@ -2347,7 +2348,7 @@ describe('Auxiliary API clients', () => {
       { success: true },
       { id: 'fork-1' },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2416,7 +2417,7 @@ describe('Auxiliary API clients', () => {
 
   describe('ConversationClient goal endpoints (error paths)', () => {
     function mockErrorResponse(status: number, statusText: string, detail: string): void {
-      global.fetch = jest.fn(
+      global.fetch = vi.fn(
         async () =>
           new Response(JSON.stringify({ detail }), {
             status,
@@ -2522,7 +2523,7 @@ describe('Auxiliary API clients', () => {
       serverInfo,
       { ok: true, tools: ['ping'] },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2573,7 +2574,7 @@ describe('Auxiliary API clients', () => {
   });
 
   it('new SDK v1.23.0 clients throw AgentServerVersionError for old servers', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -2620,7 +2621,7 @@ describe('Auxiliary API clients', () => {
         },
       },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift();
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -2695,7 +2696,7 @@ describe('Auxiliary API clients', () => {
       [{ id: 'shared-1', created_by_user_id: null, selected_repository: null }],
       { items: [], next_page_id: null },
     ];
-    global.fetch = jest.fn().mockImplementation(() => {
+    global.fetch = vi.fn().mockImplementation(() => {
       const body = responses.shift() ?? { success: true };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
