@@ -9,6 +9,7 @@ from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp._compat import compat_attr
 from openhands.sdk.tool import (
     Observation,
 )
@@ -66,9 +67,10 @@ class MCPToolObservation(Observation):
             if isinstance(block, mcp.types.TextContent):
                 content.append(TextContent(text=block.text))
             elif isinstance(block, mcp.types.ImageContent):
+                mime_type = compat_attr(block, "mime_type", "mimeType")
                 content.append(
                     ImageContent(
-                        image_urls=[f"data:{block.mimeType};base64,{block.data}"],
+                        image_urls=[f"data:{mime_type};base64,{block.data}"],
                     )
                 )
             else:
@@ -78,7 +80,7 @@ class MCPToolObservation(Observation):
 
         return cls(
             content=content,
-            is_error=result.isError,
+            is_error=compat_attr(result, "is_error", "isError"),
             tool_name=tool_name,
         )
 
