@@ -96,7 +96,7 @@ async def search_conversations(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     status: Annotated[
         ConversationExecutionStatus | None,
@@ -110,8 +110,6 @@ async def search_conversations(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationPage:
     """Search / List conversations"""
-    assert limit > 0
-    assert limit <= 100
     page = await conversation_service.search_conversations(
         page_id, limit, status, sort_order
     )
