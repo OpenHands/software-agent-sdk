@@ -88,7 +88,6 @@ VERIFIED_NVIDIA_MODELS = [
 VERIFIED_QWEN_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
-    "qwen3-6-plus",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
@@ -137,7 +136,6 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-ultra-550b-a55b",
     "qwen3.7-plus",
     "qwen3.6-plus",
-    "qwen3-6-plus",
     "qwen3.8-max",
     "qwen3.7-max",
     "qwen3.8-flash",
