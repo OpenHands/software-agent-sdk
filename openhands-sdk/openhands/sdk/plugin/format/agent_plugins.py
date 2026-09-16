@@ -183,14 +183,6 @@ class AgentPluginsFormat(PluginFormat):
         plugin_data = _plugin_data_dir(
             self.load_manifest(plugin_dir).name, self._plugin_data_root
         )
-        try:
-            # §9.1: the directory must exist and be writable before a plugin
-            # subprocess is launched.
-            plugin_data.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            logger.warning("Disabling MCP for %s: no data directory: %s", plugin_dir, e)
-            return {}
-
         return load_mcp_servers(
             plugin_dir, plugin_root=plugin_root, plugin_data=plugin_data
         )

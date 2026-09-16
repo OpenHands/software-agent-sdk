@@ -14,7 +14,9 @@ failure boundaries.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import re
 from collections.abc import Callable
 from functools import cache
 from pathlib import Path
@@ -42,7 +44,7 @@ _MCP_SCHEMA_FILE: Final[str] = "mcp-1.0.0.schema.json"
 #: (§7.2.2 rule 4) rather than quietly served over another transport.
 SUPPORTED_TRANSPORTS: Final[frozenset[str]] = frozenset({"stdio", "streamable-http"})
 
-_LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "::1"})
+_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\{(PLUGIN_ROOT|PLUGIN_DATA)\}")
 
 #: RFC 9110 token characters, the legal alphabet for a header field name.
 _TOKEN_CHARS: Final[frozenset[str]] = frozenset(
@@ -162,7 +164,7 @@ def _stdio_fields(
     env |= {"PLUGIN_ROOT": str(plugin_root), "PLUGIN_DATA": str(plugin_data)}
 
     cwd = entry.get("cwd")
-    return {
+    fields = {
         "transport": "stdio",
         # Never expanded (§9.2), and one token, never a shell string.
         "command": _resolve_command(entry["command"], plugin_root),
@@ -175,6 +177,14 @@ def _stdio_fields(
             else plugin_root
         ),
     }
+    try:
+        # §9.1: it must exist and be writable before the subprocess launches.
+        # Created only now, once this entry is known to be a usable stdio
+        # server, so a remote-only or invalid mcp.json leaves no trace on disk.
+        plugin_data.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise MCPConfigError(f"cannot create PLUGIN_DATA {plugin_data}: {e}") from e
+    return fields
 
 
 def _remote_fields(entry: dict[str, Any]) -> dict[str, Any]:
@@ -192,15 +202,14 @@ def _remote_fields(entry: dict[str, Any]) -> dict[str, Any]:
 def _expander(plugin_root: Path, plugin_data: Path) -> Callable[[str], str]:
     """Return the §9.2 expander: single-pass, non-recursive, two placeholders.
 
-    Two ``str.replace`` calls are exactly those semantics: neither replacement
-    can reintroduce the other's placeholder, so nothing is ever rescanned, and
-    any other placeholder-like text is left literal by construction.
+    One ``re.sub`` pass, so text a replacement introduces is never rescanned --
+    not even when a path itself contains ``${PLUGIN_DATA}`` -- and any other
+    placeholder-like text is left literal by construction.
     """
+    values = {"PLUGIN_ROOT": str(plugin_root), "PLUGIN_DATA": str(plugin_data)}
 
     def expand(value: str) -> str:
-        return value.replace("${PLUGIN_ROOT}", str(plugin_root)).replace(
-            "${PLUGIN_DATA}", str(plugin_data)
-        )
+        return _PLACEHOLDER.sub(lambda match: values[match.group(1)], value)
 
     return expand
 
@@ -250,9 +259,11 @@ def _validate_url(url: str) -> str:
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise MCPConfigError(f"url {url!r} must be an absolute http(s) URL")
-    if parts.username or parts.password:
+    # Checked on the raw text: urlsplit reports an empty user ("https://@host")
+    # or fragment ("https://host/#") as falsy, yet both are present.
+    if "@" in parts.netloc:
         raise MCPConfigError(f"url {url!r} must not contain user information")
-    if parts.fragment:
+    if "#" in url:
         raise MCPConfigError(f"url {url!r} must not contain a fragment")
     if parts.scheme == "http" and not _is_loopback(parts.hostname):
         raise MCPConfigError(f"url {url!r} must use https: {parts.hostname} is remote")
@@ -261,8 +272,13 @@ def _validate_url(url: str) -> str:
 
 def _is_loopback(host: str) -> bool:
     # Exactly ``localhost`` or an IP literal in a loopback range. A name that
-    # merely resolves to one does not qualify: resolution is not a load-time act.
-    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+    # merely resolves to one -- or merely starts with "127." -- does not qualify.
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _validate_headers(headers: dict[str, str]) -> dict[str, str]:

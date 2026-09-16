@@ -676,6 +676,7 @@ def _normalize_server_for_fastmcp(
     # already (see ``enabled_mcp_servers``) -- this only keeps the key from
     # leaking through the public ``to_fastmcp_mcp_config`` boundary.
     server.pop("enabled", None)
+    server.pop("literal_values", None)
     auth = server.pop("auth", None)
     raw_headers = server.get("headers")
     headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}

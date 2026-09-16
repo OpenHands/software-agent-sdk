@@ -1,15 +1,25 @@
 """Tests for the Agent Plugins ``mcp.json`` loader."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.plugin import AgentPluginsFormat, Plugin, get_plugin_data_dir
+from openhands.sdk import LLM, Agent
+from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
+from openhands.sdk.mcp.utils import create_mcp_tools
+from openhands.sdk.plugin import (
+    AgentPluginsFormat,
+    Plugin,
+    PluginSource,
+    get_plugin_data_dir,
+)
 from openhands.sdk.plugin.discovery import USER_PLUGINS_DIRS, load_user_plugins
 from openhands.sdk.plugin.installed import DEFAULT_PLUGIN_DATA_DIR
+from openhands.sdk.plugin.loader import load_plugins
+from openhands.sdk.skills.utils import expand_mcp_servers
 
 
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -283,16 +293,21 @@ class TestStdio:
         assert server is not None
         assert server.args == ["${HOME}", "${MISSING:-fallback}", "$PLUGIN_ROOT"]
 
-    def test_expansion_is_not_recursive(self, plugin_dir: Path, data_root: Path):
-        """Text a replacement introduces is not rescanned."""
+    def test_expansion_is_not_recursive(self, tmp_path: Path, data_root: Path):
+        """Text a replacement introduces is not rescanned, even when a path
+        itself contains the other placeholder."""
+        root = tmp_path / "${PLUGIN_DATA}"
+        root.mkdir()
+        (root / "plugin.json").write_text(json.dumps(MANIFEST), encoding="utf-8")
+
         server = load_one(
-            plugin_dir,
+            root,
             data_root,
-            {"type": "stdio", "command": "echo", "args": ["${PLUGIN_${PLUGIN_ROOT}"]},
+            {"type": "stdio", "command": "echo", "args": ["${PLUGIN_ROOT}"]},
         )
 
         assert server is not None
-        assert server.args == [f"${{PLUGIN_{plugin_dir.resolve()}"]
+        assert server.args == [str(root.resolve())]
 
     def test_reserved_variables_are_set_last(self, plugin_dir: Path, data_root: Path):
         """§9.1: the client supplies them and the plugin cannot override them."""
@@ -374,11 +389,18 @@ class TestRemote:
         assert server.headers is not None
         assert server.headers["X-Tenant"].get_secret_value() == "public-tenant"
 
-    def test_loopback_may_use_http(self, plugin_dir: Path, data_root: Path):
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:3000/mcp",
+            "http://127.0.0.1:3000/mcp",
+            "http://127.8.9.10/mcp",
+            "http://[::1]:3000/mcp",
+        ],
+    )
+    def test_loopback_may_use_http(self, plugin_dir: Path, data_root: Path, url: str):
         server = load_one(
-            plugin_dir,
-            data_root,
-            {"type": "streamable-http", "url": "http://127.0.0.1:3000/mcp"},
+            plugin_dir, data_root, {"type": "streamable-http", "url": url}
         )
 
         assert server is not None
@@ -391,6 +413,9 @@ class TestRemote:
             pytest.param("http://deploy.example.com/mcp", id="remote-plaintext"),
             pytest.param("https://user:pw@example.com/mcp", id="user-info"),
             pytest.param("https://example.com/mcp#frag", id="fragment"),
+            pytest.param("https://example.com/mcp#", id="empty-fragment"),
+            pytest.param("https://@example.com/mcp", id="empty-user-info"),
+            pytest.param("http://127.evil.example/mcp", id="loopback-lookalike-name"),
         ],
     )
     def test_invalid_url_skips_the_entry(
@@ -471,6 +496,35 @@ class TestLiteralValues:
         assert api["headers"] == {"X-Tenant": "public-tenant"}
         assert local["env"]["CONFIG"] == "visible"
 
+    def test_flag_does_not_leak_into_the_fastmcp_config(
+        self, plugin_dir: Path, data_root: Path
+    ):
+        servers = load(
+            plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}}
+        )
+
+        assert "literal_values" not in to_fastmcp_mcp_config(servers)["mcpServers"]["s"]
+
+    def test_secret_expansion_leaves_package_servers_literal(
+        self, plugin_dir: Path, data_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """§9.2: a package cannot pull a secret or env var into its subprocess."""
+        monkeypatch.setenv("LEAKED", "from-environment")
+        package = load_one(
+            plugin_dir,
+            data_root,
+            {"type": "stdio", "command": "echo", "args": ["${TOKEN}", "${LEAKED}"]},
+        )
+        ordinary = MCPServer(command="echo", args=["${TOKEN}", "${LEAKED}"])
+        assert package is not None
+
+        expanded = expand_mcp_servers(
+            {"package": package, "ordinary": ordinary}, {"TOKEN": "secret"}.get
+        )
+
+        assert expanded["package"].args == ["${TOKEN}", "${LEAKED}"]
+        assert expanded["ordinary"].args == ["secret", "from-environment"]
+
     def test_ordinary_servers_are_still_redacted(self):
         server = MCPServer(
             transport="streamable-http",
@@ -493,6 +547,36 @@ class TestPluginData:
         load(plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}})
 
         assert (data_root / "example").is_dir()
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            pytest.param("{not json", id="invalid-document"),
+            pytest.param(
+                json.dumps(
+                    {
+                        "$schema": MCP_SCHEMA,
+                        "mcpServers": {
+                            "api": {
+                                "type": "streamable-http",
+                                "url": "https://x.io/mcp",
+                            },
+                            "bad": {"type": "stdio", "command": "../escape"},
+                        },
+                    }
+                ),
+                id="no-usable-stdio-server",
+            ),
+        ],
+    )
+    def test_not_created_without_a_stdio_server(
+        self, plugin_dir: Path, data_root: Path, document: str
+    ):
+        write_mcp(plugin_dir, document)
+
+        AgentPluginsFormat(plugin_data_root=data_root).load_mcp_config(plugin_dir)
+
+        assert not data_root.exists()
 
     def test_lives_outside_the_plugin_package(self, plugin_dir: Path, data_root: Path):
         """Anything inside the package would be lost on update."""
@@ -524,3 +608,93 @@ class TestPluginData:
         )
 
         assert load_user_plugins() == []
+
+
+PROBE_SERVER = """\
+import json, os, sys
+from pathlib import Path
+from fastmcp import FastMCP
+
+Path(os.environ["PLUGIN_DATA"], "launch.json").write_text(json.dumps({
+    "cwd": os.getcwd(),
+    "argv": sys.argv[1:],
+    "env": {k: os.environ.get(k) for k in ("PLUGIN_ROOT", "PLUGIN_DATA", "CONFIG")},
+    "inherits_path": "PATH" in os.environ,
+}))
+mcp = FastMCP("probe")
+
+@mcp.tool()
+def ping() -> str:
+    return "pong"
+
+mcp.run(transport="stdio", show_banner=False)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shebang-launched probe server")
+def test_stdio_server_launches_with_the_agent_plugins_contract(
+    plugin_dir: Path, data_root: Path
+):
+    """End to end: load the package, connect over stdio, check what ran.
+
+    Unit tests pin the mapping; only a real launch shows the SDK's MCP client
+    honors it -- a plugin-relative command, the expanded args, cwd under
+    PLUGIN_DATA, and env overlaid on (not replacing) the base environment.
+    """
+    probe = plugin_dir / "bin" / "probe"
+    probe.write_text(f"#!{sys.executable}\n{PROBE_SERVER}", encoding="utf-8")
+    probe.chmod(0o755)
+    servers = load(
+        plugin_dir,
+        data_root,
+        {
+            "probe": {
+                "type": "stdio",
+                "command": "./bin/probe",
+                "args": ["${PLUGIN_ROOT}", "${HOME}"],
+                "env": {"CONFIG": "${PLUGIN_ROOT}/config.json"},
+                "cwd": "${PLUGIN_DATA}",
+            }
+        },
+    )
+
+    with create_mcp_tools(servers, timeout=60) as client:
+        assert any(tool.name.endswith("ping") for tool in client.tools)
+
+    root = plugin_dir.resolve()
+    data = get_plugin_data_dir("example", data_root=data_root)
+    launch = json.loads((data / "launch.json").read_text(encoding="utf-8"))
+    assert Path(launch["cwd"]).resolve() == data.resolve()
+    assert launch["argv"] == [str(root), "${HOME}"]
+    assert launch["env"] == {
+        "PLUGIN_ROOT": str(root),
+        "PLUGIN_DATA": str(data),
+        "CONFIG": f"{root}/config.json",
+    }
+    assert launch["inherits_path"] is True
+
+
+def test_load_plugins_does_not_expand_package_servers(
+    plugin_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The public loader expands secrets too; package servers must skip it."""
+    monkeypatch.setattr(
+        "openhands.sdk.plugin.installed.DEFAULT_PLUGIN_DATA_DIR", tmp_path / "data"
+    )
+    monkeypatch.setenv("LEAKED", "from-environment")
+    write_mcp(
+        plugin_dir,
+        {
+            "$schema": MCP_SCHEMA,
+            "mcpServers": {
+                "s": {"type": "stdio", "command": "echo", "args": ["${LEAKED}"]}
+            },
+        },
+    )
+    agent = Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[])
+
+    updated, _ = load_plugins(
+        [PluginSource(source=str(plugin_dir))], agent, get_secret={}.get
+    )
+
+    assert updated.mcp_config["s"].args == ["${LEAKED}"]
