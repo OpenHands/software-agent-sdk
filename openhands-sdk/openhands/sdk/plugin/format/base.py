@@ -19,7 +19,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
-from openhands.sdk.skills.skill import Skill
+from openhands.sdk.skills.skill import Skill, SkillResources
 from openhands.sdk.skills.utils import find_mcp_config, find_skill_md
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.path import resolves_within, to_posix_path
@@ -246,7 +246,30 @@ def _load_plugin_skill(skill_md: Path, skills_dir: Path, plugin_dir: Path) -> Sk
     """``Skill.load`` that ignores a skill-level ``.mcp.json`` escaping the root."""
     mcp_json = find_mcp_config(skill_md.parent)
     skip_mcp = mcp_json is not None and not resolves_within(mcp_json, plugin_dir)
-    return Skill.load(skill_md, skills_dir, strict=False, skip_mcp=skip_mcp)
+    skill = Skill.load(skill_md, skills_dir, strict=False, skip_mcp=skip_mcp)
+    return _without_escaping_resources(skill, plugin_dir)
+
+
+def _without_escaping_resources(skill: Skill, plugin_dir: Path) -> Skill:
+    """Drop resource files (``scripts/`` etc.) that resolve outside the root."""
+    res = skill.resources
+    if res is None:
+        return skill
+    root = Path(res.skill_root)
+
+    def kept(kind: str, files: list[str]) -> list[str]:
+        return [f for f in files if resolves_within(root / kind / f, plugin_dir)]
+
+    contained = SkillResources(
+        skill_root=res.skill_root,
+        scripts=kept("scripts", res.scripts),
+        references=kept("references", res.references),
+        assets=kept("assets", res.assets),
+    )
+    if contained == res:
+        return skill
+    resources = contained if contained.has_resources() else None
+    return skill.model_copy(update={"resources": resources})
 
 
 def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
@@ -263,7 +286,7 @@ def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
         # Skill.load() discovers resources, no need to do it again
         skill = Skill.load(skill_md, plugin_dir, strict=False, skip_mcp=True)
         logger.debug(f"Loaded single-skill plugin: {skill.name} from {skill_md}")
-        return [skill]
+        return [_without_escaping_resources(skill, plugin_dir)]
     except Exception as e:
         logger.warning(f"Failed to load root skill from {plugin_dir}: {e}")
         return []

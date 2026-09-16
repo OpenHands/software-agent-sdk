@@ -217,3 +217,69 @@ def test_unresolvable_path_is_skipped_not_fatal(plugin_dir, monkeypatch):
     plugin = Plugin.load(plugin_dir)
 
     assert [a.name for a in plugin.agents] == ["good"]
+
+
+def write_agent_plugin(plugin_dir: Path) -> None:
+    manifest = {"$schema": MANIFEST_SCHEMA_URL, "name": "demo", "version": "1.0.0"}
+    (plugin_dir / "plugin.json").write_text(json.dumps(manifest))
+
+
+def test_agent_plugins_mcp_json_escaping_root_disables_mcp(
+    plugin_dir, outside, tmp_path
+):
+    write_agent_plugin(plugin_dir)
+    document = {
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        "mcpServers": {"evil": {"type": "stdio", "command": "echo"}},
+    }
+    (outside / "mcp.json").write_text(json.dumps(document))
+    (plugin_dir / "mcp.json").symlink_to(outside / "mcp.json")
+
+    fmt = AgentPluginsFormat(plugin_data_root=tmp_path / "data")
+
+    assert fmt.load_mcp_config(plugin_dir) == {}
+
+
+def test_unresolvable_mcp_command_skips_only_that_server(
+    plugin_dir, tmp_path, monkeypatch
+):
+    write_agent_plugin(plugin_dir)
+    document = {
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        "mcpServers": {
+            "loop": {"type": "stdio", "command": "./loop"},
+            "ok": {"type": "stdio", "command": "echo"},
+        },
+    }
+    (plugin_dir / "mcp.json").write_text(json.dumps(document))
+    real_resolve = Path.resolve
+
+    def resolve(self, strict=False):
+        if self.name == "loop":
+            raise RuntimeError("Symlink loop")
+        return real_resolve(self, strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    fmt = AgentPluginsFormat(plugin_data_root=tmp_path / "data")
+
+    assert list(fmt.load_mcp_config(plugin_dir)) == ["ok"]
+
+
+@pytest.mark.parametrize("layout", ["skills_dir", "root_skill"])
+def test_escaping_skill_resources_are_dropped(plugin_dir, outside, layout):
+    skill_dir = plugin_dir / "skills" / "good" if layout == "skills_dir" else plugin_dir
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(SKILL.format(name="good"))
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "ok.sh").write_text("echo ok")
+    (outside / "secret.sh").write_text("echo secret")
+    (skill_dir / "scripts" / "evil.sh").symlink_to(outside / "secret.sh")
+    (outside / "refs").mkdir()
+    (outside / "refs" / "leak.md").write_text("leak")
+    (skill_dir / "references").symlink_to(outside / "refs", target_is_directory=True)
+
+    [skill] = ClaudeCodePluginFormat().load_skills(plugin_dir)
+
+    assert skill.resources is not None
+    assert skill.resources.scripts == ["ok.sh"]
+    assert skill.resources.references == []

@@ -29,6 +29,7 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.utils.path import resolves_within
 
 
 logger = get_logger(__name__)
@@ -102,7 +103,7 @@ def load_mcp_servers(
         document as a whole is invalid (§7.2.2 rule 2).
     """
     mcp_path = plugin_dir / MCP_FILE
-    if not mcp_path.is_file():
+    if not mcp_path.is_file() or not resolves_within(mcp_path, plugin_root):
         return {}
 
     try:
@@ -271,11 +272,9 @@ def _resolve_cwd(
 
 def _contained(path: Path, root: Path, field: str) -> Path:
     """Resolve ``path`` and require it to stay within ``root`` (§4.1)."""
-    resolved = path.resolve()
-    # Compare resolved forms so a symlinked root does not read as an escape.
-    if not resolved.is_relative_to(root.resolve()):
+    if not resolves_within(path, root):
         raise MCPConfigError(f"{field} {str(path)!r} escapes {root}")
-    return resolved
+    return path.resolve()
 
 
 def _validate_url(url: str) -> str:
