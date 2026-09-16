@@ -32,6 +32,18 @@ def container(conversation_id: UUID) -> ConversationContainer:
     )
 
 
+def test_missing_container_is_already_stopped(monkeypatch):
+    missing = container(uuid4())
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.execute_command",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="No such container"
+        ),
+    )
+
+    missing.stop()
+
+
 @pytest.mark.asyncio
 async def test_same_conversation_shares_one_start(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
@@ -71,6 +83,20 @@ async def test_different_conversations_start_concurrently(tmp_path, monkeypatch)
     release.set()
     await asyncio.gather(*tasks)
     assert entered == set(ids)
+
+
+@pytest.mark.asyncio
+async def test_stale_cached_container_is_replaced(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    stale = container(conversation_id)
+    fresh = ConversationContainer("http://fresh", "fresh-key", "fresh-container")
+    runtime._containers[conversation_id] = stale
+    monkeypatch.setattr(ConversationContainer, "is_running", lambda _self: False)
+    runtime._build_container = lambda conversation_id: fresh
+
+    assert await runtime.get_or_create(conversation_id) is fresh
+    assert runtime.get(conversation_id) is fresh
 
 
 def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):

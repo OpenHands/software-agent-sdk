@@ -49,8 +49,6 @@ def get_registry(request: Request) -> DockerConversationRegistry:
 async def _container(
     registry: DockerConversationRegistry, conversation_id: UUID
 ) -> ConversationContainer:
-    if container := registry.get(conversation_id):
-        return container
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise HTTPException(404, "Conversation not found")
     try:
@@ -217,6 +215,16 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     )
     await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
     return Response(status_code=200)
+
+
+@docker_conversation_router.api_route(
+    "/{conversation_id}",
+    methods=["GET", "POST", "PUT", "PATCH", "OPTIONS", "HEAD"],
+)
+async def proxy_conversation_root(
+    conversation_id: UUID, request: Request
+) -> StreamingResponse:
+    return await proxy_conversation(conversation_id, "", request)
 
 
 @docker_conversation_router.api_route(

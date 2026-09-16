@@ -50,8 +50,8 @@ _HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
-# Stream chunk size for request/response bodies. 64 KiB is the same default
-# httpx uses internally; we pin it so behavior is stable across versions.
+# Stream chunk size for request/response bodies. Set it explicitly so proxy
+# behavior does not depend on an httpx implementation default.
 _CHUNK_SIZE = 64 * 1024
 
 

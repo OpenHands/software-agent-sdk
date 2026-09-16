@@ -258,6 +258,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         api.state.bash_event_service = bash_svc
 
         conversation_registry.configure_service(service)
+        # Runtime cleanup must precede external-catalog recovery so stale
+        # runtime owners cannot lose their expired leases to the outer service.
+        await conversation_registry.start()
 
         async with service:
             api.state.conversation_service = service
@@ -276,7 +279,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 )
 
             try:
-                await conversation_registry.start()
                 yield
             finally:
                 await conversation_registry.shutdown()

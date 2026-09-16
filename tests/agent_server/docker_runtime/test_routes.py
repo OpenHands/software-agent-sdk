@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
@@ -36,8 +37,22 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
     assert "/api/conversations" in paths
     assert "/sockets/events/{conversation_id}" in paths
     assert "/api/conversations/{conversation_id}/{tail:path}" in paths
+    assert "/api/conversations/{conversation_id}" in paths
     assert "/api/host/bash/execute_bash_command" not in paths
     assert "/api/bash/execute_bash_command" in paths
+
+    scope = {
+        "type": "http",
+        "path": f"/api/conversations/{uuid4()}",
+        "root_path": "",
+        "method": "PATCH",
+    }
+    matched = [
+        route
+        for route in app.routes
+        if hasattr(route, "matches") and route.matches(scope)[0] is Match.FULL
+    ]
+    assert getattr(matched[0], "endpoint").__name__ == "proxy_conversation_root"
 
 
 def test_runtime_credentials_and_release_use_the_existing_sdk_contract(

@@ -44,10 +44,16 @@ class ConversationContainer:
 
     def stop(self) -> None:
         result = execute_command(["docker", "stop", self.container_id])
-        if result.returncode != 0:
+        if result.returncode != 0 and "No such container" not in result.stderr:
             raise RuntimeError(
                 f"Failed to stop conversation container: {result.stderr}"
             )
+
+    def is_running(self) -> bool:
+        result = execute_command(
+            ["docker", "inspect", "-f", "{{.State.Running}}", self.container_id]
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 class DockerConversationRegistry(ConversationRegistry):
@@ -123,8 +129,16 @@ class DockerConversationRegistry(ConversationRegistry):
 
     async def get_or_create(self, conversation_id: UUID) -> ConversationContainer:
         async with self._lock:
-            if container := self._containers.get(conversation_id):
+            container = self._containers.get(conversation_id)
+
+        if container is not None:
+            if await asyncio.to_thread(container.is_running):
                 return container
+            async with self._lock:
+                if self._containers.get(conversation_id) is container:
+                    self._containers.pop(conversation_id)
+
+        async with self._lock:
             task = self._starts.get(conversation_id)
             if task is None:
                 task = asyncio.create_task(
@@ -210,22 +224,21 @@ class DockerConversationRegistry(ConversationRegistry):
             "DEBUG",
         ):
             if name in env:
-                flags += ["-e", name]
+                flags.extend(("-e", name))
         for host, target in (
             (conversation_dir, f"{_CONVERSATIONS_DIR}/{conversation_id.hex}"),
             (persistence_dir, _PERSISTENCE_DIR),
             (workspace_dir, _WORKSPACE_DIR),
         ):
-            flags += ["-v", f"{host}:{target}"]
+            flags.extend(("-v", f"{host}:{target}"))
         if self.config.conversation_container_memory:
-            flags += ["--memory", self.config.conversation_container_memory]
+            flags.extend(("--memory", self.config.conversation_container_memory))
         if self.config.conversation_container_cpus is not None:
-            flags += ["--cpus", str(self.config.conversation_container_cpus)]
+            flags.extend(("--cpus", str(self.config.conversation_container_cpus)))
         if self.config.conversation_container_pids_limit is not None:
-            flags += [
-                "--pids-limit",
-                str(self.config.conversation_container_pids_limit),
-            ]
+            flags.extend(
+                ("--pids-limit", str(self.config.conversation_container_pids_limit))
+            )
 
         command = [
             "docker",
