@@ -6,6 +6,7 @@ constraints.
 """
 
 from openhands.sdk.context.view import View
+from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.llm import (
     ThinkingBlock,
 )
@@ -20,6 +21,17 @@ def test_empty_list() -> None:
     """Test manipulation_indices with empty event list."""
     view = View.from_events([])
     assert view.manipulation_indices == {0}
+
+
+def test_orphan_observation_does_not_break_view_indices() -> None:
+    orphan = AgentErrorEvent(
+        error="The tool was interrupted during restart recovery.",
+        tool_name="test_tool",
+        tool_call_id="orphan_call",
+    )
+    view = View(events=[orphan])
+
+    assert view.manipulation_indices == {0, 1}
 
 
 def test_single_message_event() -> None:

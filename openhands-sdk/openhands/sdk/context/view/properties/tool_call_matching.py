@@ -77,13 +77,17 @@ class ToolCallMatchingProperty(ViewPropertyBase):
         # tool calls -- these are any tool calls that have been introduced by an action
         # but not yet resolved by an observation. If there are any pending tool calls we
         # know we're between an action/observation pair.
+        action_tool_call_ids: set[ToolCallID] = set()
         pending_tool_call_ids: set[ToolCallID] = set()
 
         for index, event in enumerate(current_view_events):
             match event:
                 case ActionEvent():
+                    action_tool_call_ids.add(event.tool_call_id)
                     pending_tool_call_ids.add(event.tool_call_id)
                 case ObservationBaseEvent():
+                    if event.tool_call_id not in action_tool_call_ids:
+                        continue
                     # Intentionally use remove(), not discard(): a second
                     # observation-like event for the same tool_call_id means the
                     # view has already violated the 1 action -> 1 result
