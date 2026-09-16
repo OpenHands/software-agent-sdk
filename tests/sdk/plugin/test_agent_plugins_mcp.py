@@ -8,6 +8,8 @@ from pydantic import SecretStr
 
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin import AgentPluginsFormat, Plugin, get_plugin_data_dir
+from openhands.sdk.plugin.discovery import USER_PLUGINS_DIRS, load_user_plugins
+from openhands.sdk.plugin.installed import DEFAULT_PLUGIN_DATA_DIR
 
 
 MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -497,3 +499,28 @@ class TestPluginData:
         load(plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}})
 
         assert not (data_root / "example").is_relative_to(plugin_dir.resolve())
+
+    def test_default_location_is_not_scanned_for_plugins(self):
+        """A data directory under a scanned root loads as a plugin of its own.
+
+        ``_load_plugins_from_dir`` treats every child directory as a plugin, and
+        the Claude Code format accepts any directory, so ``plugins/data`` would
+        be discovered ambiently and merged into every agent.
+        """
+        assert not any(
+            DEFAULT_PLUGIN_DATA_DIR.is_relative_to(scanned)
+            for scanned in USER_PLUGINS_DIRS
+        )
+
+    def test_default_location_stays_out_of_ambient_discovery(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.discovery.USER_PLUGINS_DIRS",
+            [tmp_path / ".agents" / "plugins", tmp_path / "plugins"],
+        )
+        get_plugin_data_dir("example", data_root=tmp_path / "plugin-data").mkdir(
+            parents=True
+        )
+
+        assert load_user_plugins() == []
