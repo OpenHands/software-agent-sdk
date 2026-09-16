@@ -149,7 +149,7 @@ class Report:
 
     def render(self) -> str:
         if self.blocking:
-            status = f"❌ {len(self.blocking)} blocking finding(s)"
+            status = f"❌ {len(self.blocking)} finding(s)"
         elif self.warnings:
             status = f"⚠️ {len(self.warnings)} warning(s), nothing blocking"
         else:

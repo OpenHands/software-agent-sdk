@@ -18,6 +18,7 @@ Two configurations behave differently and are covered separately here:
 
 import asyncio
 import contextvars
+import inspect
 import threading
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -481,6 +482,12 @@ def test_agent_step_tool_spans_nest_under_dispatcher_without_lmnr(tracing) -> No
         patch(
             "openhands.sdk.agent.agent.should_enable_observability", return_value=True
         ),
+        # Run the undecorated ``step``. Its ``@observe`` wrapper builds a real
+        # lmnr span once observability is on anywhere in the process — and caches
+        # it — which interposes between this test's parent span and the tool
+        # spans. Without this, ambient ``LMNR_*`` env vars decide whether the test
+        # measures what its name claims.
+        patch.object(Agent, "step", inspect.unwrap(Agent.step)),
         patch("openhands.sdk.agent.agent.observe", side_effect=fake_observe),
     ):
         conversation.send_message(

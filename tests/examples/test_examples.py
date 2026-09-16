@@ -29,6 +29,8 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk" / "33_hooks",
     EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store",
     EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks",
+    EXAMPLES_ROOT / "01_standalone_sdk" / "57_prompt_hooks",
+    EXAMPLES_ROOT / "01_standalone_sdk" / "58_ask_oracle_tool",
     EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
@@ -57,6 +59,8 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/35_subscription_login.py",
     # Requires interactive input() which fails in CI with EOFError
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
+    # Requires a Kubernetes cluster with agent-sandbox and the agent-sandbox extra
+    "examples/02_remote_agent_server/17_convo_with_agent_sandbox_server.py",
 }
 
 
@@ -100,6 +104,12 @@ def test_directory_example_is_discovered() -> None:
     ) in EXAMPLES
     assert (
         EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks" / "main.py"
+    ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT / "01_standalone_sdk" / "57_prompt_hooks" / "main.py"
+    ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT / "01_standalone_sdk" / "58_ask_oracle_tool" / "main.py"
     ) in EXAMPLES
     assert (
         EXAMPLES_ROOT

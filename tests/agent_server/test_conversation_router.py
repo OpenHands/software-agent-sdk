@@ -14,7 +14,6 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -205,10 +204,9 @@ def test_search_conversations_limit_validation(client, mock_conversation_service
         response = client.get("/api/conversations/search", params={"limit": 0})
         assert response.status_code == 422
 
-        # Test limit too high - endpoint has FastAPI validation (lte=100) and assertion
-        # The assertion in the endpoint will cause an AssertionError to be raised
-        with pytest.raises(AssertionError):
-            response = client.get("/api/conversations/search", params={"limit": 101})
+        # Test limit too high - rejected by FastAPI validation (le=100)
+        response = client.get("/api/conversations/search", params={"limit": 101})
+        assert response.status_code == 422
 
         # Test valid limit
         mock_conversation_service.search_conversations.return_value = ConversationPage(
@@ -676,7 +674,7 @@ def test_start_conversation_agent_settings_uses_sdk_default_tools(
 
 def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
     now = utc_now()
-    acp_info = ACPConversationInfo(
+    acp_info = ConversationInfo(
         id=uuid4(),
         agent=ACPAgent(acp_command=["echo", "test"]),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
@@ -713,7 +711,7 @@ def test_start_conversation_accepts_acp_agent_settings(
     client, mock_conversation_service
 ):
     now = utc_now()
-    acp_info = ACPConversationInfo(
+    acp_info = ConversationInfo(
         id=uuid4(),
         agent=ACPAgent(acp_command=["echo", "settings"]),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
@@ -2695,3 +2693,15 @@ def test_start_conversation_client_tool_registration_error_returns_422(
         assert "collides with an existing non-client tool" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("method,suffix", [("get", ""), ("post", "/reprovision")])
+def test_runtime_requires_existing_conversation(
+    client, mock_conversation_service, method, suffix
+):
+    mock_conversation_service.get_conversation.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
+    assert response.status_code == 404

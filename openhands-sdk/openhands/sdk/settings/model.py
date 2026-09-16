@@ -12,6 +12,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    Self,
     TypeVar,
     get_args,
     get_origin,
@@ -283,6 +284,13 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
             exclude={"enabled", "condenser_kind"},
             exclude_none=True,
         )
+        # If the user didn't explicitly configure a condenser token limit, inherit
+        # the agent LLM's effective max input tokens so condensation can be
+        # triggered by token count, not just event count.
+        if "max_tokens" not in self.model_fields_set:
+            effective_max_input_tokens = llm.effective_max_input_tokens
+            if effective_max_input_tokens is not None:
+                condenser_kwargs["max_tokens"] = effective_max_input_tokens
         return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
 
 
@@ -462,17 +470,18 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 5
+AGENT_SETTINGS_SCHEMA_VERSION = 6
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
 class AgentSettingsBase(BaseModel):
     """Shared base for all agent-settings variants.
 
-    Provides the three pieces common to every variant:
+    Provides the pieces common to every variant:
 
     - :attr:`schema_version` — used for persisted-payload migrations.
     - :meth:`export_schema` — structured field description for UIs.
+    - :meth:`from_persisted` — load persisted settings through migrations.
     - :meth:`create_agent` — canonical construction path; concrete subclasses
       must override this.
 
@@ -491,6 +500,51 @@ class AgentSettingsBase(BaseModel):
     def export_schema(cls) -> SettingsSchema:
         """Export a structured schema describing configurable settings."""
         return export_settings_schema(cls)
+
+    @classmethod
+    def from_persisted(
+        cls,
+        data: Any,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> Self:
+        """Load persisted agent settings into this concrete variant.
+
+        Applies registered schema migrations, then validates the migrated
+        payload against ``cls`` directly. This method is intended for concrete
+        subclasses; callers that want union dispatch across settings variants
+        should use :func:`validate_agent_settings`. Current-schema payloads
+        with the deprecated ``agent_kind='llm'`` discriminator are rejected by
+        :meth:`OpenHandsAgentSettings.from_persisted`.
+
+        When loading an encrypted persisted mapping, pass the same validation
+        context used to write it (for example ``{"cipher": cipher}``) so
+        secret-bearing fields can be decrypted. An already-validated instance
+        of this concrete variant is returned unchanged, preserving its secrets
+        without a lossy serialization round trip.
+
+        Returns:
+            An instance of ``cls``.
+
+        Raises:
+            TypeError: If *data* is not a mapping/BaseModel or has a
+                non-integer ``schema_version``.
+            ValueError: If ``schema_version`` is negative, newer than
+                supported, or cannot be migrated.
+            pydantic.ValidationError: If the migrated payload is invalid for
+                ``cls``.
+        """
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, BaseModel):
+            data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+        payload = _apply_persisted_migrations(
+            data,
+            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+            migrations=_AGENT_SETTINGS_MIGRATIONS,
+            payload_name="AgentSettings",
+        )
+        return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
         """Build an agent from these settings.
@@ -626,6 +680,27 @@ def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
     if isinstance(mcp_config, Mapping):
         migrated["mcp_config"] = _migrate_mcp_config_to_server_map(mcp_config)
     migrated["schema_version"] = 5
+    return migrated
+
+
+def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop the deprecated ``llm.modify_params`` compatibility field.
+
+    ``LLM.modify_params`` was deprecated in v1.42.0 and removed in v1.47.0
+    (LiteLLM parameter modification is enabled process-wide). Persisted payloads
+    written by older releases still carry ``llm.modify_params``; drop it here so
+    the migrated payload is a clean current-schema shape. (``LLM`` itself uses
+    ``extra="ignore"``, so an un-migrated field would also be dropped on load,
+    but migrations should still emit canonical payloads rather than lean on
+    lenient validation.)
+    """
+    migrated = dict(payload)
+    llm = migrated.get("llm")
+    if isinstance(llm, Mapping):
+        llm = dict(llm)
+        llm.pop("modify_params", None)
+        migrated["llm"] = llm
+    migrated["schema_version"] = 6
     return migrated
 
 
@@ -924,6 +999,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
+    5: _migrate_agent_settings_v5_to_v6,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1148,7 +1224,9 @@ class ConversationSettings(BaseModel):
 
 AgentKind = Literal["openhands", "llm", "acp"]
 
-ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
+ACPServerKind = Literal[
+    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
+]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
@@ -1335,7 +1413,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             include_default_tools.append(SwitchLLMTool.__name__)
 
         llm = create_subscription_llm_from_config(self.llm)
-        condenser = None if llm.is_subscription else self.build_condenser(llm)
+        condenser = self.build_condenser(llm)
         return Agent(
             llm=llm,
             tools=tools,

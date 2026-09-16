@@ -120,6 +120,50 @@ class TestDefaultConversationTags:
             assert "skills" not in tags
 
 
+class TestRemoteWorkspaceDefaultConversationTags:
+    """Tests for automation tags on the base RemoteWorkspace.
+
+    Local-mode automation runs use a plain RemoteWorkspace against the local
+    agent server, so the base class itself must derive the automation tags
+    from the dispatcher-injected env vars (the derivation edge cases are
+    covered above through the OpenHandsCloudWorkspace subclass, which
+    inherits this implementation).
+    """
+
+    @pytest.fixture
+    def workspace(self):
+        """Create a plain RemoteWorkspace (constructing makes no requests)."""
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        return RemoteWorkspace(host="http://localhost:1", working_dir="/tmp")
+
+    def test_empty_tags_when_no_env_vars(self, workspace):
+        """Should return empty dict when no automation env vars are set."""
+        with patch.dict(os.environ, {}, clear=True):
+            assert workspace.default_conversation_tags == {}
+
+    def test_derives_automation_tags_from_env_vars(self, workspace):
+        """Should stamp all four automation tags from the dispatcher env vars."""
+        payload = {
+            "trigger": "cron",
+            "automation_id": "auto-abc",
+            "automation_name": "Nightly Audit",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "AUTOMATION_EVENT_PAYLOAD": json.dumps(payload),
+                "AUTOMATION_RUN_ID": "run-xyz",
+            },
+        ):
+            assert workspace.default_conversation_tags == {
+                "automationtrigger": "cron",
+                "automationid": "auto-abc",
+                "automationname": "Nightly Audit",
+                "automationrunid": "run-xyz",
+            }
+
+
 class TestConversationTagMerging:
     """Tests for automatic tag merging in Conversation factory."""
 

@@ -7,12 +7,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import frontmatter
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.path import to_posix_path
 
 
@@ -268,26 +267,6 @@ class AgentDefinition(BaseModel):
             }
         ],
     )
-    mcp_servers: dict[str, Any] | None = Field(
-        default=None,
-        deprecated=True,
-        description=(
-            "Deprecated compatibility alias for mcp_config. "
-            "Use mcp_config for new clients."
-        ),
-        examples=[
-            {
-                "fetch": {
-                    "command": "uvx",
-                    "args": [
-                        "--with",
-                        "mcp==1.29.0",
-                        "mcp-server-fetch==2026.7.10",
-                    ],
-                }
-            }
-        ],
-    )
     profile_store_dir: str | None = Field(
         default=None,
         description="Path to the directory where LLM profiles are stored. "
@@ -301,35 +280,6 @@ class AgentDefinition(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_mcp_servers(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        if value.get("mcp_config") is not None or value.get("mcp_servers") is None:
-            return value
-        warn_deprecated(
-            "AgentDefinition.mcp_servers",
-            deprecated_in="1.36.0",
-            removed_in="1.41.0",
-            details="Use AgentDefinition.mcp_config instead.",
-            stacklevel=3,
-        )
-        return {**value, "mcp_config": value["mcp_servers"]}
-
-    @model_validator(mode="after")
-    def _mirror_mcp_config_to_legacy_field(self) -> AgentDefinition:
-        if self.__dict__.get("mcp_servers") is None and self.mcp_config is not None:
-            self.mcp_servers = {
-                name: server.model_dump(
-                    mode="json",
-                    exclude_none=True,
-                    exclude_defaults=True,
-                )
-                for name, server in self.mcp_config.items()
-            }
-        return self
 
     def get_confirmation_policy(self) -> ConfirmationPolicyBase | None:
         """Convert permission_mode to a ConfirmationPolicyBase instance.

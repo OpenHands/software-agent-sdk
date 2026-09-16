@@ -6,6 +6,8 @@ from typing import Annotated, Any
 import httpx
 from pydantic import BeforeValidator, Field, PrivateAttr
 
+from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -95,8 +97,10 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
           - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
           - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
 
-        Includes ``conversation_id`` in the payload if one was registered, and
-        ``cost`` if one was registered via ``register_cost()``.
+        Includes ``conversation_id`` and ``cost`` when registered. On failure,
+        ``error`` is the existing structured ``ConversationErrorEvent`` carried
+        by ``ConversationRunError``, or a classified fallback event for errors
+        outside a conversation.
 
         Args:
             exc_type: Exception type if an exception was raised, None otherwise
@@ -114,7 +118,23 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         if run_id:
             payload["run_id"] = run_id
         if exc_val is not None:
-            payload["error"] = str(exc_val)
+            error = (
+                exc_val.conversation_error
+                if isinstance(exc_val, ConversationRunError)
+                else None
+            )
+            if error is None:
+                cause = (
+                    exc_val.original_exception
+                    if isinstance(exc_val, ConversationRunError)
+                    else exc_val
+                )
+                error = ConversationErrorEvent(
+                    source="environment",
+                    code=type(cause).__name__,
+                    detail=str(cause),
+                )
+            payload["error"] = error.model_dump(mode="json")
 
         # Include conversation_id if one was registered
         if self._conversation_id is not None:

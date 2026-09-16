@@ -62,6 +62,16 @@ body:
               5. Error appears
       validations:
           required: false
+    - type: textarea
+      id: acceptance-criteria
+      attributes:
+          label: Acceptance Criteria
+          description: List the testable checklist item(s) that would prove this bug is fixed.
+          placeholder: |
+              - [ ] The reported error no longer occurs
+              - [ ] The fix works with a fresh agent instance
+      validations:
+          required: false
 
     - type: input
       id: installation

@@ -3,7 +3,7 @@
 # NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
 # PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
 # characters to underscores, breaking libtmux's format parsing.
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
+ARG BASE_IMAGE=python-node-runtime
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -13,6 +13,82 @@ ARG PORT=8000
 # to bundle google-cloud-aiplatform so the resulting binary supports
 # `vertex_ai/*` partner models (MiniMax, Qwen, Kimi MaaS endpoints).
 ARG ENABLE_VERTEX=0
+# Comma-separated ACP provider keys (see ACP_INSTALL_CATALOG in
+# openhands-sdk/openhands/sdk/settings/acp_install_catalog.py) to bake into the
+# acp-providers stage below. The default reproduces the full provider set
+# shipped today (DEFAULT_PREINSTALLED_ACP_PROVIDERS); an unknown key fails the
+# build rather than silently installing nothing.
+ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
+# Comma-separated capability keys to include in the `base-image` stage below
+# (`base-image-minimal` is unaffected). The default reproduces today's full
+# contents; an unknown key fails the build. The GitHub CLI is expected to
+# join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
+# below is written so that's a one-case addition, not a signature change.
+ARG INSTALL_CAPABILITIES=vscode,browser,docker
+
+####################################################################################
+# Canonical Python + Node runtime
+#
+# Start from Debian itself and copy only the language runtimes from their official
+# images. The final stage installs only the shared libraries required by Python
+# and Node; developer and package-manager tooling is added by the agent-server
+# stages below when needed. Package upgrades resolve against a dated snapshot so
+# newly published Debian packages have a seven-day observation period.
+####################################################################################
+FROM python:3.13.15-slim-trixie AS python-runtime
+FROM node:24.21.0-trixie-slim AS node-runtime
+FROM debian:trixie-slim AS python-node-runtime
+# Temporary exception to pick up Debian 13.7 before the normal observation period.
+ARG DEBIAN_SNAPSHOT=20260913T000000Z
+
+COPY --from=python-runtime /usr/local /usr/local
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+RUN set -eux; \
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/debian.sources; \
+    apt-get update; \
+    apt-get upgrade -y; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libbz2-1.0 \
+        libdb5.3t64 \
+        libffi8 \
+        libgcc-s1 \
+        libgdbm6t64 \
+        liblzma5 \
+        libncursesw6 \
+        libreadline8t64 \
+        libsqlite3-0 \
+        libssl3t64 \
+        libstdc++6 \
+        libtinfo6 \
+        libuuid1 \
+        libzstd1 \
+        netbase \
+        tzdata \
+        zlib1g; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 --version; \
+    node --version; \
+    npm --version
 
 ####################################################################################
 # Builder (source mode)
@@ -79,10 +155,85 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 RUN test -x /agent-server/dist/openhands-agent-server
 
 ####################################################################################
+# ACP providers (parent-independent)
+#
+# Built from a fixed base rather than ${BASE_IMAGE} so that COPY --from=acp-providers
+# below produces the exact same compressed layer for every base-image-minimal build,
+# regardless of which BASE_IMAGE it lands on. This is what lets the ~600MB provider
+# payload be shared across per-instance evaluation image builds instead of being
+# reinstalled (and re-uploaded) once per instance.
+#
+# Failures here are fatal: there is no per-BASE_IMAGE fallback for a broken build of
+# the shared payload itself (see the compatibility probe in base-image-minimal for
+# the per-target-image fallback).
+#
+# The Node pin below is a floor, not a preference: this stage installs every
+# selected provider under one runtime, so it has to clear the highest
+# `min_node_version` in ACP_INSTALL_CATALOG (asserted by
+# tests/cross/test_agent_server_build_metadata.py).
+####################################################################################
+FROM python:3.13-bookworm AS acp-providers
+ARG INSTALL_ACP_PROVIDERS
+# A fresh top-level path, not nested under a directory (e.g. /opt) that base
+# images commonly already populate (SWE-bench images ship /opt/miniconda3):
+# COPY --from=<stage> only produces a byte-identical layer across different
+# BASE_IMAGE parents when the destination itself doesn't already exist in the
+# parent, mirroring /agent-server's own top-level placement in the builder
+# stage above.
+ENV ACP_NODE_DIR=/acp-node
+# The catalog module is dependency-free (stdlib only), so it can be COPYed
+# into this bare `python` image and run as-is — no pip install, and no need
+# to pull in the rest of the SDK source (which would break the zero-context
+# fast path `build.py` uses for the `base-image-minimal` target). Adding an
+# npm provider is a catalog edit only; this stage never needs to change.
+COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py /tmp/acp_install_catalog.py
+RUN set -eux; \
+    ACP_WRAPPER_DIR=/opt/acp-wrappers; \
+    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
+    PLAN=$(python3 /tmp/acp_install_catalog.py "$INSTALL_ACP_PROVIDERS") || exit 1; \
+    eval "$PLAN"; \
+    if [ -z "$PACKAGES" ]; then \
+      echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
+      exit 0; \
+    fi; \
+    apt-get -o Acquire::Retries=5 update; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+        ca-certificates curl xz-utils; \
+    rm -rf /var/lib/apt/lists/*; \
+    ARCH=$(uname -m); \
+    case "$ARCH" in \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=0b2d9f564b6594222a62c82e1df2efe119dd4a4aff29644f4dd325bf360b6bcc;; \
+      *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
+    esac; \
+    NODE_TARBALL="/tmp/node-v22.19.0-linux-${NARCH}.tar.xz"; \
+    curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+        "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
+    tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
+    rm -f "$NODE_TARBALL"; \
+    "$ACP_NODE_DIR/bin/node" --version; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
+    for bin in $WRAPPER_BINS; do \
+      # Fail the build rather than ship a wrapper that execs a missing target:
+      # a wrong binary_name is otherwise invisible until someone launches the
+      # provider, since the wrapper is only a shell script we chmod +x.
+      [ -x "$ACP_NODE_DIR/bin/$bin" ] || { \
+        echo "ACP wrapper target not installed: $ACP_NODE_DIR/bin/$bin" >&2; \
+        echo "(check binary_name in acp_install_catalog.py against the package's npm bin)" >&2; \
+        exit 1; \
+      }; \
+      printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
+        "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
+        > "$ACP_WRAPPER_DIR/$bin"; \
+      chmod +x "$ACP_WRAPPER_DIR/$bin"; \
+    done; \
+    printf '%s\n' $WRAPPER_BINS > "$ACP_NODE_DIR/acp-wrappers.txt"
+
+####################################################################################
 # Base image (minimal)
-# It includes only basic packages and the UV runtime.
-# No Docker, no VNC, no Desktop, no VSCode Web.
-# Suitable for running in headless/evaluation mode.
+# It includes only the packages required to run the agent server and its Bash
+# and Git APIs. Development tools and optional capabilities live in base-image.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
@@ -104,36 +255,22 @@ RUN set -eux; \
     if command -v apt-get >/dev/null 2>&1; then \
         apt-get -o Acquire::Retries=5 update; \
         apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            bash ca-certificates curl wget sudo apt-utils git jq tmux tar \
-            build-essential coreutils util-linux procps findutils grep sed \
-            tini apt-transport-https gnupg lsb-release xz-utils; \
+            bash ca-certificates git tini tmux; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache \
-            bash ca-certificates curl wget sudo git jq tmux tar build-base \
-            coreutils util-linux procps findutils grep sed tini gnupg shadow xz; \
+        apk add --no-cache bash ca-certificates git shadow tini tmux; \
     elif command -v microdnf >/dev/null 2>&1; then \
-        microdnf install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        microdnf install -y bash ca-certificates git shadow-utils tmux; \
         microdnf clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
-        dnf install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        dnf install -y bash ca-certificates git shadow-utils tmux; \
         dnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
-        yum install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        yum install -y bash ca-certificates git shadow-utils tmux; \
         yum clean all; \
     elif command -v zypper >/dev/null 2>&1; then \
         zypper --non-interactive install --no-recommends \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps findutils grep sed shadow gpg2 xz; \
+            bash ca-certificates git shadow tmux; \
         zypper clean --all; \
     else \
         echo "Unsupported base image: no known package manager found" >&2; \
@@ -142,104 +279,142 @@ RUN set -eux; \
     grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
     grep -Eq "^${USERNAME}:" /etc/passwd || \
         useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
-    # Best-effort: add user to a sudo group when one exists (Debian-style
-    # `sudo` group). On Alpine/RHEL/SUSE there is no `sudo` group by default,
-    # and the NOPASSWD sudoers line below grants sudo regardless of group.
-    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
-    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers; \
     mkdir -p /workspace/project; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
-# Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
-# Install Node.js 22 to a dedicated prefix so ACP packages get a modern runtime
+# Install the ACP servers selected by INSTALL_ACP_PROVIDERS (see the stage above).
+# The payload itself (Node.js 22 + the ACP npm packages, under $ACP_NODE_DIR) is
+# built once in the acp-providers stage above, independent of BASE_IMAGE, and
+# copied in here so the layer is byte-identical across every base image it lands
+# on. Only the compatibility probe below runs against the real BASE_IMAGE.
+#
+# Node.js 22 lives at a dedicated prefix so ACP packages get a modern runtime
 # WITHOUT overwriting the repo-specific Node.js that test suites depend on.
 # SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
-#
-# This step is best-effort: SWE-Bench Pro base images come from many distros
-# and some have an old glibc (or use musl) that cannot run the upstream Node
-# 22 glibc tarball. When that happens we leave $ACP_NODE_DIR empty and skip
-# ACP setup so the rest of the build (and non-ACP agents) still work.
-ENV ACP_NODE_DIR=/opt/acp-node
-RUN set -ux; \
-    mkdir -p "$ACP_NODE_DIR"; \
-    ARCH=$(uname -m); \
-    NARCH=""; \
-    NODE_SHA256=""; \
-    case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
-    esac; \
-    NODE_TARBALL=""; \
-    if [ -z "$NARCH" ]; then \
-      echo "Skipping ACP Node install: unsupported architecture '$ARCH'" >&2; \
-    else \
-      NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
-      if curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL" \
-         && echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c - \
-         && tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL" \
-         && "$ACP_NODE_DIR/bin/node" --version; then \
-        PATH="$ACP_NODE_DIR/bin:$PATH"; \
-        if "$ACP_NODE_DIR/bin/npm" install -g \
-            @agentclientprotocol/claude-agent-acp@0.44.0 \
-            @agentclientprotocol/codex-acp@1.1.2 \
-            @google/gemini-cli@0.46.0; then \
-          # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
-          # This ensures the ACP binary's #!/usr/bin/env node shebang resolves
-          # to Node 22, while the repo's own node (NVM/system) stays untouched
-          # for tests.
-          for bin in claude-agent-acp codex-acp gemini; do \
-            if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
-              printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
-                "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
-                > /usr/local/bin/"$bin"; \
-              chmod +x /usr/local/bin/"$bin"; \
-            fi; \
-          done; \
-        else \
-          echo "Warning: ACP npm install failed; ACP agents will not be available on this image" >&2; \
-          rm -rf "$ACP_NODE_DIR"/*; \
-        fi; \
-      else \
-        echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
-        rm -rf "$ACP_NODE_DIR"/*; \
+ENV ACP_NODE_DIR=/acp-node
+COPY --from=acp-providers /acp-node /acp-node
+COPY --from=acp-providers /opt/acp-wrappers/. /usr/local/bin/
+
+# This probe is best-effort: SWE-Bench Pro base images come from many distros
+# and some have an old glibc (or use musl) that cannot run the upstream Node 22
+# glibc build. The payload above was built and sha256-verified against a fixed,
+# glibc-modern stage, so a failure here means "incompatible with this specific
+# BASE_IMAGE", not "the ACP install failed". When that happens we remove the
+# copied payload and wrappers so the rest of the build (and non-ACP agents)
+# still work, rather than leaving binaries in place that cannot execute. The
+# wrapper names come from the manifest the acp-providers stage wrote, so this
+# tracks INSTALL_ACP_PROVIDERS instead of a list that goes stale per provider.
+RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
+      echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
+      if [ -f "$ACP_NODE_DIR/acp-wrappers.txt" ]; then \
+        while read -r bin; do rm -f "/usr/local/bin/$bin"; done \
+          < "$ACP_NODE_DIR/acp-wrappers.txt"; \
       fi; \
-    fi; \
-    rm -f "$NODE_TARBALL" 2>/dev/null || true
+      rm -rf "$ACP_NODE_DIR"/*; \
+    fi
 
 # Configure Claude Code managed settings for headless operation:
 # Allow all tool permissions (no human in the loop to approve).
 RUN mkdir -p /etc/claude-code && \
     echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
-# since the agent might use it to perform other work (e.g. tools that use Python)
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
-
 USER ${USERNAME}
 WORKDIR /
 # Locale settings required for libtmux to work with PyInstaller builds
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
+# The ACP CLIs run without the user's host home here, so OpenHands supplies the
+# managed skill catalog they cannot read for themselves (#4019).
+ENV OH_ACP_SKILL_SOURCING=openhands_managed
 EXPOSE ${PORT}
 
 ####################################################################################
 # Base image (full)
-# It includes additional Docker, VNC, Desktop, and VSCode Web.
+# It includes additional Docker, browser, and VSCode Web.
 ####################################################################################
 FROM base-image-minimal AS base-image
 ARG USERNAME
+ARG INSTALL_CAPABILITIES
 
 USER root
+
+# Full images are general-purpose development environments. Keep compilers,
+# package/repository helpers, and command-line utilities out of binary-minimal.
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get -o Acquire::Retries=5 update; \
+        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+            apt-transport-https apt-utils build-essential coreutils curl \
+            findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
+            wget xz-utils; \
+        rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache \
+            build-base coreutils curl findutils gnupg grep jq procps sudo tar \
+            util-linux wget xz; \
+    elif command -v microdnf >/dev/null 2>&1; then \
+        microdnf install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        microdnf clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        dnf install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+        yum install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        yum clean all; \
+    elif command -v zypper >/dev/null 2>&1; then \
+        zypper --non-interactive install --no-recommends \
+            coreutils curl findutils gcc gcc-c++ gpg2 grep jq make procps sed \
+            sudo tar util-linux wget xz; \
+        zypper clean --all; \
+    fi; \
+    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
+    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Keep uv as part of the full development environment, but not binary-minimal.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+
+# Fail fast on a typo'd capability name before spending any time on the
+# installs below (each block only checks for ITS OWN keyword's presence, so
+# an unrecognized one would otherwise be silently ignored rather than erroring).
+RUN set -eux; \
+    for capability in $(echo "$INSTALL_CAPABILITIES" | tr ',' ' '); do \
+      case "$capability" in \
+        vscode|browser|docker) ;; \
+        *) echo "Unknown capability '$capability' in INSTALL_CAPABILITIES" \
+             "(expected one of: vscode, browser, docker)" >&2; exit 1;; \
+      esac; \
+    done
+
 # --- VSCode Web ---
+# EDITOR/VISUAL/GIT_EDITOR/OPENVSCODE_SERVER_ROOT are declared unconditionally:
+# nothing execs `code` unless VSCode Web itself is running, so a dangling
+# path when `vscode` is excluded is harmless (same reasoning as CHROME_BIN
+# below, applied to VSCode).
 ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
     OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
 ARG RELEASE_TAG="openvscode-server-v1.98.2"
 ARG RELEASE_ORG="gitpod-io"
+# The --mount=from=builder on the extensions RUN below is unconditional at
+# the Dockerfile level, so BuildKit still builds the full `builder` stage
+# (the entire SDK venv) even when `vscode` is excluded from
+# INSTALL_CAPABILITIES — the case check inside each RUN only decides what
+# lands in THIS image, not what gets built as a dependency. Excluding vscode
+# shrinks the result, not the build time.
 RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,vscode,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
+    esac; \
+    \
     # Create necessary directories
     mkdir -p $(dirname ${OPENVSCODE_SERVER_ROOT}); \
     \
@@ -264,13 +439,31 @@ RUN set -eux; \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
 
-
-# Include VSCode extensions alongside the server so targets inheriting base-image
-# implicitly get the extensions; minimal images (without VSCode) won't.
-COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions ${OPENVSCODE_SERVER_ROOT}/extensions
+# Kept as its own RUN, separate from the tarball download above: extensions
+# are actively-edited local source (unlike the pinned release tarball), so
+# splitting them keeps an extension-only change from invalidating the ~100MB
+# download's cache layer.
+RUN --mount=type=bind,from=builder,source=/agent-server/openhands-agent-server/openhands/agent_server/vscode_extensions,target=/tmp/vscode_extensions \
+    set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,vscode,*) ;; \
+      *) exit 0;; \
+    esac; \
+    \
+    # Trailing slashes matter: OpenVSCode Server's tarball already ships its
+    # own extensions/ dir, so a bare `cp -r src dst` would nest src under the
+    # existing dst instead of merging into it the way `COPY` does.
+    mkdir -p ${OPENVSCODE_SERVER_ROOT}/extensions; \
+    cp -r /tmp/vscode_extensions/. ${OPENVSCODE_SERVER_ROOT}/extensions/; \
+    chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}/extensions
 
 # --- Docker ---
 RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,docker,*) ;; \
+      *) echo "INSTALL_CAPABILITIES excludes docker; skipping Docker Engine"; exit 0;; \
+    esac; \
+    \
     # Determine OS type and install Docker accordingly
     if grep -q "ubuntu" /etc/os-release; then \
         # Handle Ubuntu
@@ -289,10 +482,10 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
     apt-get clean; \
-    rm -rf /var/lib/apt/lists/*
-
-# Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
-RUN mkdir -p /etc/docker && \
+    rm -rf /var/lib/apt/lists/*; \
+    \
+    # Configure Docker daemon with MTU 1450 to prevent packet fragmentation issues
+    mkdir -p /etc/docker; \
     echo '{"mtu": 1450}' > /etc/docker/daemon.json
 
 # --- GitHub CLI ---
@@ -308,33 +501,36 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
-# --- VNC + Desktop + noVNC ---
-RUN set -eux; \
-  apt-get update; \
-  apt-get install -y --no-install-recommends \
-    # GUI bits (remove entirely if headless)
-    tigervnc-standalone-server xfce4 dbus-x11 novnc websockify \
-    # Browser
-    $(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi); \
-  apt-get clean; rm -rf /var/lib/apt/lists/*
-
-ENV NOVNC_WEB=/usr/share/novnc \
-    NOVNC_PORT=8002 \
-    DISPLAY=:1 \
-    VNC_GEOMETRY=1280x800 \
-    CHROME_BIN=/usr/bin/chromium \
+# --- Browser ---
+# Chromium for BrowserToolSet. Selected by the `browser` capability.
+ENV CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
 
-RUN chown -R ${USERNAME}:${USERNAME} ${NOVNC_WEB}
-# Override default XFCE wallpaper
-COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server/openhands/agent_server/docker/wallpaper.svg /usr/share/backgrounds/xfce/xfce-shapes.svg
+# CHROME_BIN/PUPPETEER_EXECUTABLE_PATH above are declared unconditionally
+# regardless of which capabilities are selected. Nothing in this repo trusts
+# them as an availability signal — browser_use's chromium detection
+# (openhands-tools/openhands/tools/browser_use/impl.py) does its own filesystem
+# probe of standard install paths — so when `browser` is excluded these simply
+# point at a path that doesn't exist, rather than causing a false "available"
+# signal downstream.
+RUN set -eux; \
+    case ",$INSTALL_CAPABILITIES," in \
+      *,browser,*) \
+        apt-get update; \
+        apt-get install -y --no-install-recommends \
+          "$(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi)"; \
+        apt-get clean; rm -rf /var/lib/apt/lists/*; \
+        ;; \
+    esac
 
 USER ${USERNAME}
 WORKDIR /
-ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
-EXPOSE ${PORT} ${NOVNC_PORT}
+# The ACP CLIs run without the user's host home here, so OpenHands supplies the
+# managed skill catalog they cannot read for themselves (#4019).
+ENV OH_ACP_SKILL_SOURCING=openhands_managed
+EXPOSE ${PORT}
 
 
 ####################################################################################

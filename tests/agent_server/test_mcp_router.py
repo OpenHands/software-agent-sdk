@@ -9,9 +9,7 @@ import time
 from collections.abc import Generator
 from types import SimpleNamespace
 
-import anyio
 import pytest
-from deprecation import DeprecatedWarning
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -522,49 +520,6 @@ def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
     assert response.status_code == 422
 
 
-def test_mcp_test_accepts_legacy_remote_api_key_field_as_bearer():
-    with pytest.warns(
-        DeprecatedWarning,
-        match="_RemoteMCPServerSpec\\.api_key",
-    ) as warning_records:
-        request = MCPTestRequest.model_validate(
-            {
-                "server": {
-                    "transport": "http",
-                    "url": "https://example.com/mcp",
-                    "api_key": "some-token",
-                },
-                "timeout": 5.0,
-            }
-        )
-
-    warning_message = str(warning_records[0].message)
-    assert "deprecated as of 1.36.0" in warning_message
-    assert "removed in 1.41.0" in warning_message
-    auth = request.resolved_server.auth
-    assert auth is not None
-    assert auth.strategy == "bearer"
-    assert auth.value is not None
-    assert auth.value.get_secret_value() == "some-token"
-
-
-def test_mcp_test_rejects_legacy_api_key_with_auth(client: TestClient):
-    response = client.post(
-        "/api/mcp/test",
-        json={
-            "server": {
-                "transport": "http",
-                "url": "https://example.com/mcp",
-                "api_key": "some-token",
-                "auth": {"strategy": "bearer", "value": "other-token"},
-            },
-            "timeout": 5.0,
-        },
-    )
-
-    assert response.status_code == 422
-
-
 def test_mcp_test_rejects_oauth_auth_with_auth_header(client: TestClient):
     """OAuth auth is mutually exclusive with a top-level Authorization header."""
     response = client.post(
@@ -813,9 +768,10 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
     assert access_token != "oauth-access-token"
 
 
-def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
+def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """Return FastMCP's result untouched; re-wrapping it broke mcp 2.x."""
     job = _MCPOAuthProbeJob(
         request=MCPTestRequest.model_validate(
             {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
@@ -827,48 +783,26 @@ def test_browser_coordinated_oauth_callback_handler_uses_fastmcp_callback_api(
         mcp_url="https://mcp.example.com/mcp",
         callback_port=64801,
     )
-    calls: list[dict[str, object]] = []
 
-    class FakeServer:
-        should_exit = False
+    sentinel = object()
+    seen: list[bool] = []
 
-        def __init__(self, *, result_container, result_ready):
-            self.result_container = result_container
-            self.result_ready = result_ready
-
-        async def serve(self):
-            self.result_container.code = "oauth-code"
-            self.result_container.state = "oauth-state"
-            self.result_ready.set()
-            while not self.should_exit:
-                await anyio.sleep(0.01)
-
-    def fake_create_oauth_callback_server(**kwargs):
-        calls.append(kwargs)
-        return FakeServer(
-            result_container=kwargs["result_container"],
-            result_ready=kwargs["result_ready"],
-        )
+    async def fake_base_callback_handler(self):
+        # The URL must be published before the base blocks on the callback,
+        # otherwise the frontend never learns where to send the browser.
+        seen.append(job.callback_ready.is_set())
+        return sentinel
 
     monkeypatch.setattr(
-        "openhands.agent_server.mcp_router.create_oauth_callback_server",
-        fake_create_oauth_callback_server,
+        "fastmcp.client.auth.oauth.OAuth.callback_handler",
+        fake_base_callback_handler,
     )
 
-    code, state = asyncio.run(oauth.callback_handler())
+    result = asyncio.run(oauth.callback_handler())
 
-    assert (code, state) == ("oauth-code", "oauth-state")
-    assert job.callback_ready.is_set()
+    assert result is sentinel
+    assert seen == [True]
     assert job.callback_url == "http://localhost:64801/callback"
-    assert calls == [
-        {
-            "port": 64801,
-            "server_url": "https://mcp.example.com/mcp",
-            "result_container": calls[0]["result_container"],
-            "result_ready": calls[0]["result_ready"],
-        }
-    ]
-    assert "host" not in calls[0]
 
 
 def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):

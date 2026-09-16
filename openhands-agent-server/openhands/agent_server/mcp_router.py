@@ -26,15 +26,10 @@ import uuid
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-import anyio
 import httpx
 import mcp.types
 from fastapi import APIRouter, HTTPException, Request
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
-from fastmcp.client.oauth_callback import (
-    OAuthCallbackResult,
-    create_oauth_callback_server,
-)
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
@@ -53,7 +48,6 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
@@ -100,44 +94,13 @@ class _RemoteMCPServerSpec(BaseModel):
     type: Literal["http", "shttp", "streamable-http", "sse"]
     url: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
-    api_key: str | None = Field(
-        default=None,
-        deprecated=True,
-        description=(
-            "Deprecated bearer token. Prefer auth.strategy='bearer'. If provided "
-            "without auth, sent as 'Authorization: Bearer <token>'."
-        ),
-    )
     auth: MCPAuthCredential | None = None
     timeout: float | None = None
     sse_read_timeout: float | None = None
     keep_alive: bool | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _warn_legacy_api_key(cls, value: object) -> object:
-        if isinstance(value, dict) and value.get("api_key") is not None:
-            warn_deprecated(
-                "_RemoteMCPServerSpec.api_key",
-                deprecated_in="1.36.0",
-                removed_in="1.41.0",
-                details="Use auth.strategy='bearer' with auth.value instead.",
-                stacklevel=3,
-            )
-        return value
-
     @model_validator(mode="after")
     def _reject_ambiguous_auth(self) -> _RemoteMCPServerSpec:
-        api_key = self.__dict__.get("api_key")
-        if api_key is not None and self.auth is not None:
-            raise ValueError("api_key cannot be combined with auth.")
-        if api_key is not None and any(
-            name.lower() == "authorization" for name in self.headers
-        ):
-            raise ValueError(
-                "api_key cannot be combined with an explicit top-level "
-                "'Authorization' header; use auth.strategy='header' instead."
-            )
         if self.auth is not None and any(
             name.lower() == "authorization" for name in self.headers
         ):
@@ -149,7 +112,6 @@ class _RemoteMCPServerSpec(BaseModel):
 
     def to_mcp_server(self) -> MCPServer:
         transport = "http" if self.type == "shttp" else self.type
-        api_key = self.__dict__.get("api_key")
         data: dict[str, Any] = {
             "url": self.url,
             "transport": transport,
@@ -160,8 +122,6 @@ class _RemoteMCPServerSpec(BaseModel):
         }
         if self.auth is not None:
             data["auth"] = self.auth
-        elif api_key is not None:
-            data["auth"] = {"strategy": "bearer", "value": api_key}
         return MCPServer.model_validate(data)
 
 
@@ -503,44 +463,21 @@ class _BrowserCoordinatedOAuth(OAuth):
         logger.info("MCP OAuth authorization URL captured for job %s", self._job.id)
         self._job.set_authorization_url(authorization_url)
 
-    async def callback_handler(self) -> tuple[str, str | None]:
-        """Run FastMCP's callback server and expose readiness to the frontend."""
-        result = OAuthCallbackResult()
-        result_ready = anyio.Event()
-        server = create_oauth_callback_server(
-            port=self.redirect_port,
-            server_url=self.mcp_url,
-            result_container=result,
-            result_ready=result_ready,
-        )
+    async def callback_handler(self):
+        """Publish the callback URL, then defer to FastMCP.
+
+        Reimplementing this froze the return type as a tuple, which mcp 2.x
+        rejects -- it wants an ``AuthorizationCodeResult``. Only
+        ``redirect_port`` is read: ``_callback_host`` is absent in fastmcp 3.2.0.
+        """
         callback_url = f"http://localhost:{self.redirect_port}/callback"
-        callback_timeout = 300.0
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(server.serve)
-            self._job.set_callback_ready(callback_url)
-            logger.info(
-                "MCP OAuth callback server ready for job %s at %s",
-                self._job.id,
-                callback_url,
-            )
-
-            try:
-                with anyio.fail_after(callback_timeout):
-                    await result_ready.wait()
-                    if result.error:
-                        raise result.error
-                    return result.code, result.state  # type: ignore[return-value]
-            except TimeoutError as e:
-                raise TimeoutError(
-                    f"OAuth callback timed out after {callback_timeout} seconds"
-                ) from e
-            finally:
-                server.should_exit = True
-                await anyio.sleep(0.1)
-                tg.cancel_scope.cancel()
-
-        raise RuntimeError("OAuth callback handler could not be started")
+        self._job.set_callback_ready(callback_url)
+        logger.info(
+            "MCP OAuth callback server ready for job %s at %s",
+            self._job.id,
+            callback_url,
+        )
+        return await super().callback_handler()
 
 
 def _run_tool_call(
