@@ -44,7 +44,6 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -436,7 +435,6 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(git_router)
     api_router.include_router(file_router)
     api_router.include_router(vscode_router)
-    api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
     api_router.include_router(sub_agents_router)
     api_router.include_router(plugins_router)
