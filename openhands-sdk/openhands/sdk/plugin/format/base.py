@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -156,11 +157,9 @@ def _resolves_within(path: Path, plugin_dir: Path) -> bool:
     Symlinks may point anywhere inside the package but not outside it. Callers
     apply the narrowest failure boundary; this only reports the escape.
     """
-    try:
+    with suppress(OSError, RuntimeError):  # e.g. a symlink loop
         if path.resolve().is_relative_to(plugin_dir.resolve()):
             return True
-    except (OSError, RuntimeError):  # e.g. a symlink loop
-        pass
     logger.warning(f"Denying {path}: it resolves outside plugin root {plugin_dir}")
     return False
 
