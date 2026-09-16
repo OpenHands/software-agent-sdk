@@ -201,6 +201,7 @@ class TestGetSecrets:
         mock_req.assert_called_once_with(
             "GET",
             f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/secrets",
+            params=None,
         )
 
         assert len(secrets) == 2

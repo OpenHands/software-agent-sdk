@@ -497,10 +497,15 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        request_kwargs: dict[str, Any] = {"headers": self._headers}
-        if agent_profile_id is not None:
-            request_kwargs["params"] = {"agent_profile_id": agent_profile_id}
-        response = self.client.get("/api/settings/secrets", **request_kwargs)
+        response = self.client.get(
+            "/api/settings/secrets",
+            headers=self._headers,
+            params=(
+                {"agent_profile_id": agent_profile_id}
+                if agent_profile_id is not None
+                else None
+            ),
+        )
         response.raise_for_status()
 
         # Validate response using shared SDK model

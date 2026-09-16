@@ -663,11 +663,14 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
 
-        request_kwargs: dict[str, Any] = {}
-        if agent_profile_id is not None:
-            request_kwargs["params"] = {"agent_profile_id": agent_profile_id}
         resp = self._send_settings_request(
-            "GET", f"{self._settings_base_url}/secrets", **request_kwargs
+            "GET",
+            f"{self._settings_base_url}/secrets",
+            params=(
+                {"agent_profile_id": agent_profile_id}
+                if agent_profile_id is not None
+                else None
+            ),
         )
         data = resp.json()
 
