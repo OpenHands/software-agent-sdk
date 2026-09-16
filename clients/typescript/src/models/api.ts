@@ -354,7 +354,7 @@ export interface RenameProfileRequest {
 
 /**
  * Meta-profiles: declarative model-routing configurations consumed by the
- * ``classify_and_switch_llm`` tool (agent-server ``/api/meta-profiles``).
+ * ``route_task_to_model`` tool (agent-server ``/api/meta-profiles``).
  *
  * Every model reference (``classifier_model``, ``default_model`` and each
  * class's ``model``) is the name of a saved LLM profile, not a raw model
