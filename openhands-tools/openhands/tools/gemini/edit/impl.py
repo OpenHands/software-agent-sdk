@@ -102,7 +102,7 @@ class EditExecutor(ToolExecutor[EditAction, EditObservation]):
 
         try:
             # Read current content
-            with open(resolved_path, encoding="utf-8", errors="replace") as f:
+            with open(resolved_path, encoding="utf-8") as f:
                 old_content = f.read()
 
             # Check for no-op
