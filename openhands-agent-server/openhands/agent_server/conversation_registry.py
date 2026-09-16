@@ -42,10 +42,26 @@ class ConversationRegistry:
         return workspace_router
 
     @property
-    def sockets_router(self) -> APIRouter:
-        from openhands.agent_server.sockets import sockets_router
+    def conversation_sockets_router(self) -> APIRouter:
+        from openhands.agent_server.sockets import conversation_sockets_router
 
-        return sockets_router
+        return conversation_sockets_router
+
+    @property
+    def session_sockets_router(self) -> APIRouter:
+        from openhands.agent_server.session_socket import session_router
+
+        return session_router
+
+    @property
+    def sockets_router(self) -> APIRouter:
+        from openhands.agent_server.sockets import bash_sockets_router
+
+        router = APIRouter()
+        router.include_router(self.conversation_sockets_router)
+        router.include_router(self.session_sockets_router)
+        router.include_router(bash_sockets_router)
+        return router
 
 
 def create_conversation_registry(config: Config) -> ConversationRegistry:

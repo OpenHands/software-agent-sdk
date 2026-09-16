@@ -29,7 +29,10 @@ from openhands.agent_server.config import (
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
-from openhands.agent_server.conversation_router import conversation_router
+from openhands.agent_server.conversation_router import (
+    conversation_catalog_router,
+    conversation_router,
+)
 from openhands.agent_server.conversation_service import (
     CredentialBindingActivationRequired,
     get_default_conversation_service,
@@ -67,7 +70,6 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
-from openhands.agent_server.session_socket import session_router
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sub_agents_router import sub_agents_router
@@ -423,6 +425,9 @@ def _add_api_routes(app: FastAPI) -> None:
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(file_discovery_router)
+    # Collection routes must precede runtime catch-alls such as
+    # ``/conversations/{conversation_id}``.
+    api_router.include_router(conversation_catalog_router)
     conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
     api_router.include_router(credential_binding_router)
@@ -462,8 +467,6 @@ def _add_api_routes(app: FastAPI) -> None:
     app.include_router(api_router)
 
     app.include_router(conversation_registry.sockets_router)
-
-    app.include_router(session_router)
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:

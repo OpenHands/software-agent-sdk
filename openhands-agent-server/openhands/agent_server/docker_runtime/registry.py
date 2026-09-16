@@ -94,10 +94,18 @@ class DockerConversationRegistry(ConversationRegistry):
         return docker_workspace_router
 
     @property
-    def sockets_router(self) -> APIRouter:
+    def conversation_sockets_router(self) -> APIRouter:
         from openhands.agent_server.docker_runtime.routers import docker_sockets_router
 
         return docker_sockets_router
+
+    @property
+    def session_sockets_router(self) -> APIRouter:
+        from openhands.agent_server.docker_runtime.routers import (
+            docker_session_sockets_router,
+        )
+
+        return docker_session_sockets_router
 
     def conversation_dir(self, conversation_id: UUID) -> Path:
         return self.provisioning.direct_child(

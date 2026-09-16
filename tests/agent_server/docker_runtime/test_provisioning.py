@@ -34,6 +34,23 @@ def test_each_runtime_gets_encrypted_independent_credentials(tmp_path, monkeypat
     assert manifest.parent.stat().st_mode & 0o777 == 0o700
 
 
+def test_runtime_identity_cache_refreshes_after_manifest_update(tmp_path, monkeypatch):
+    runtime_config = config(tmp_path, monkeypatch)
+    writer = RuntimeProvisioningStore(runtime_config)
+    identity = writer.create(uuid4())
+    reader = RuntimeProvisioningStore(runtime_config)
+
+    cached = reader.load(identity.conversation_id)
+    assert reader.load(identity.conversation_id) is cached
+
+    updated = identity.model_copy(update={"api_key": SecretStr("rotated-key")})
+    writer.save(updated)
+    refreshed = reader.load(identity.conversation_id)
+
+    assert refreshed is not cached
+    assert refreshed.api_key.get_secret_value() == "rotated-key"
+
+
 def test_existing_local_conversation_is_not_reinterpreted(tmp_path, monkeypatch):
     runtime_config = config(tmp_path, monkeypatch)
     store = RuntimeProvisioningStore(runtime_config)

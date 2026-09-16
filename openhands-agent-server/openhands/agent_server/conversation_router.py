@@ -63,6 +63,7 @@ from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
 
 
+conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 
 # Examples
@@ -88,6 +89,7 @@ START_CONVERSATION_EXAMPLES = [
 # Read methods
 
 
+@conversation_catalog_router.get("/search", include_in_schema=False)
 @conversation_router.get("/search")
 async def search_conversations(
     page_id: Annotated[
@@ -128,6 +130,7 @@ async def search_conversations(
     return page
 
 
+@conversation_catalog_router.get("/count", include_in_schema=False)
 @conversation_router.get("/count")
 async def count_conversations(
     status: Annotated[

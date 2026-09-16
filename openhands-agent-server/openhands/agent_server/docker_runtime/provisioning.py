@@ -6,6 +6,7 @@ import os
 import secrets
 import tempfile
 from pathlib import Path
+from stat import S_ISREG
 from uuid import UUID
 
 from filelock import FileLock
@@ -53,6 +54,7 @@ class RuntimeProvisioningStore:
         persistence = _get_persistence_dir(config).resolve()
         self.control_root = persistence / "runtime-control"
         self.data_root = persistence / "runtime-data"
+        self._identities: dict[UUID, tuple[tuple[int, int, int], RuntimeIdentity]] = {}
         for root in (self.control_root, self.data_root):
             if root.is_symlink():
                 raise ValueError("Runtime storage roots must not be symlinks")
@@ -77,13 +79,28 @@ class RuntimeProvisioningStore:
 
     def load(self, conversation_id: UUID) -> RuntimeIdentity:
         path = self.manifest_path(conversation_id)
-        if not path.is_file() or path.is_symlink():
+        try:
+            manifest_stat = path.lstat()
+        except OSError:
+            self._identities.pop(conversation_id, None)
+            raise ValueError("Conversation runtime identity is unavailable") from None
+        if not S_ISREG(manifest_stat.st_mode):
+            self._identities.pop(conversation_id, None)
             raise ValueError("Conversation runtime identity is unavailable")
+        signature = (
+            manifest_stat.st_ino,
+            manifest_stat.st_mtime_ns,
+            manifest_stat.st_size,
+        )
+        cached = self._identities.get(conversation_id)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
         identity = RuntimeIdentity.model_validate_json(
             path.read_text(), context={"cipher": self.cipher}
         )
         if identity.conversation_id != conversation_id:
             raise ValueError("Runtime identity does not match conversation")
+        self._identities[conversation_id] = (signature, identity)
         return identity
 
     def create(
@@ -139,5 +156,8 @@ class RuntimeProvisioningStore:
             with os.fdopen(fd, "w") as stream:
                 stream.write(payload)
             os.replace(temporary, self.manifest_path(identity.conversation_id))
+            stat = self.manifest_path(identity.conversation_id).stat()
+            signature = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+            self._identities[identity.conversation_id] = (signature, identity)
         finally:
             Path(temporary).unlink(missing_ok=True)

@@ -296,13 +296,14 @@ async def proxy_workspace_file(
 
 
 docker_sockets_router = APIRouter(prefix="/sockets", tags=["Docker WebSockets"])
+docker_session_sockets_router = APIRouter(prefix="/sockets", tags=["Docker WebSockets"])
 
 
-@docker_sockets_router.websocket("/events/{conversation_id}")
-async def proxy_events(
+async def _proxy_socket(
     websocket: WebSocket,
     conversation_id: UUID,
-    session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
+    session_api_key: str | None,
+    socket_name: str,
 ) -> None:
     from openhands.agent_server.sockets import _accept_authenticated_websocket
 
@@ -318,9 +319,27 @@ async def proxy_events(
         await websocket.close(code=1008 if exc.status_code == 404 else 1011)
         return
     query = strip_auth_query("?" + websocket.url.query).lstrip("?")
-    path = f"/sockets/events/{conversation_id}"
+    path = f"/sockets/{socket_name}/{conversation_id}"
     await bridge_websocket(
         websocket,
         container,
         upstream_path=f"{path}?{query}" if query else path,
     )
+
+
+@docker_sockets_router.websocket("/events/{conversation_id}")
+async def proxy_events(
+    websocket: WebSocket,
+    conversation_id: UUID,
+    session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
+) -> None:
+    await _proxy_socket(websocket, conversation_id, session_api_key, "events")
+
+
+@docker_session_sockets_router.websocket("/session/{conversation_id}")
+async def proxy_session(
+    websocket: WebSocket,
+    conversation_id: UUID,
+    session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
+) -> None:
+    await _proxy_socket(websocket, conversation_id, session_api_key, "session")

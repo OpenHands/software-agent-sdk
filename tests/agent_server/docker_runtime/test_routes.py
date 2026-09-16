@@ -36,6 +36,8 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
     paths = [getattr(route, "path", "") for route in app.routes]
     assert "/api/conversations" in paths
     assert "/sockets/events/{conversation_id}" in paths
+    assert "/sockets/session/{conversation_id}" in paths
+    assert "/sockets/bash-events" in paths
     assert "/api/conversations/{conversation_id}/{tail:path}" in paths
     assert "/api/conversations/{conversation_id}" in paths
     assert "/api/host/bash/execute_bash_command" not in paths
@@ -53,6 +55,24 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
         if hasattr(route, "matches") and route.matches(scope)[0] is Match.FULL
     ]
     assert getattr(matched[0], "endpoint").__name__ == "proxy_conversation_root"
+
+    session_scope = {
+        "type": "websocket",
+        "path": f"/sockets/session/{uuid4()}",
+        "root_path": "",
+    }
+    matched = [
+        route
+        for route in app.routes
+        if hasattr(route, "matches") and route.matches(session_scope)[0] is Match.FULL
+    ]
+    assert getattr(matched[0], "endpoint").__name__ == "proxy_session"
+
+    # Static collection paths must reach their real handlers before the
+    # Docker ``/{conversation_id}`` catch-all tries to parse them as UUIDs.
+    client = TestClient(app)
+    for path in ("/api/conversations/search", "/api/conversations/count"):
+        assert client.get(path).status_code != 422
 
 
 def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
