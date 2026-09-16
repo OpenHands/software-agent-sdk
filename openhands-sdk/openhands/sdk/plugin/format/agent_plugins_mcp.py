@@ -1,0 +1,311 @@
+"""The Agent Plugins ``mcp.json`` loader (spec §7.2, §9).
+
+Reads a root-level ``mcp.json`` (no dot) and maps each entry onto an
+:class:`~openhands.sdk.mcp.config.MCPServer`. The mapping is not a rename: the
+portable format carries semantics our model does not, so the work here is
+placeholder expansion (§9.2), path containment (§4.1, §7.2.1) and remote URL /
+header validation — all applied per entry, so one bad server never takes down
+its siblings or another component type (§7.2.2).
+
+Lives beside ``agent_plugins.py`` rather than inside it: the manifest and the
+MCP configuration are separate documents with separate schemas and separate
+failure boundaries.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from functools import cache
+from pathlib import Path
+from typing import Any, Final
+from urllib.parse import urlsplit
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
+from pydantic import SecretStr, ValidationError
+
+from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import MCPServer
+
+
+logger = get_logger(__name__)
+
+#: At the plugin root, with no leading dot (unlike the Claude Code ``.mcp.json``).
+MCP_FILE: Final[str] = "mcp.json"
+
+MCP_SCHEMA_URL: Final[str] = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+_MCP_SCHEMA_FILE: Final[str] = "mcp-1.0.0.schema.json"
+
+#: Transports we connect with. ``sse`` is OPTIONAL in the spec and deprecated by
+#: MCP itself, so an ``sse`` entry is skipped as an unsupported transport
+#: (§7.2.2 rule 4) rather than quietly served over another transport.
+SUPPORTED_TRANSPORTS: Final[frozenset[str]] = frozenset({"stdio", "streamable-http"})
+
+_LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset({"localhost", "::1"})
+
+#: RFC 9110 token characters, the legal alphabet for a header field name.
+_TOKEN_CHARS: Final[frozenset[str]] = frozenset(
+    "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+class MCPConfigError(ValueError):
+    """An ``mcp.json`` document, or one server entry in it, is invalid.
+
+    Never fatal to the plugin: the caller turns it into a disabled MCP component
+    or a skipped server entry, per §7.2.2.
+    """
+
+
+def load_mcp_servers(
+    plugin_dir: Path,
+    *,
+    plugin_root: Path,
+    plugin_data: Path,
+) -> dict[str, MCPServer]:
+    """Load ``mcp.json`` from ``plugin_dir``.
+
+    Args:
+        plugin_dir: The plugin directory as given (used in messages).
+        plugin_root: The filesystem-resolved plugin root — ``${PLUGIN_ROOT}``,
+            and the containment boundary for package paths.
+        plugin_data: The plugin's persistent data directory — ``${PLUGIN_DATA}``.
+
+    Returns:
+        The servers that loaded. Empty when ``mcp.json`` is absent (§6.2) or the
+        document as a whole is invalid (§7.2.2 rule 2).
+    """
+    mcp_path = plugin_dir / MCP_FILE
+    if not mcp_path.is_file():
+        return {}
+
+    try:
+        entries = _read_document(mcp_path)
+    except MCPConfigError as e:
+        logger.warning("Disabling MCP for %s: %s", plugin_dir, e)
+        return {}
+
+    servers: dict[str, MCPServer] = {}
+    for name, entry in entries.items():
+        try:
+            servers[name] = _load_server(entry, plugin_root, plugin_data)
+        except MCPConfigError as e:
+            logger.warning("Skipping MCP server %r in %s: %s", name, mcp_path, e)
+
+    if servers:
+        logger.info("Loaded %d MCP server(s) from %s", len(servers), mcp_path)
+    return servers
+
+
+def _read_document(mcp_path: Path) -> dict[str, Any]:
+    """Validate the top-level document and return its ``mcpServers`` map.
+
+    Only the top level is checked here. Entries are validated one at a time in
+    :func:`_load_server`, so a single malformed entry cannot disable MCP for the
+    whole plugin.
+    """
+    try:
+        # utf-8-sig: tolerate a leading BOM, which RFC 8259 lets us ignore.
+        document = json.loads(mcp_path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as e:
+        raise MCPConfigError(f"invalid JSON in {mcp_path}: {e}") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise MCPConfigError(f"failed to read {mcp_path}: {e}") from e
+
+    try:
+        Draft202012Validator(_top_level_schema()).validate(document)
+    except JSONSchemaValidationError as e:
+        raise MCPConfigError(f"invalid {MCP_FILE}: {e.message}") from e
+
+    # The declared version is pinned by the schema's ``$schema`` const, and the
+    # manifest is pinned to the same 1.0.0 release, so §7.2.2's "targets a
+    # different version than plugin.json" case cannot arise while we support
+    # exactly one version.
+    return document["mcpServers"]
+
+
+def _load_server(entry: Any, plugin_root: Path, plugin_data: Path) -> MCPServer:
+    """Validate one server entry and map it onto an ``MCPServer``."""
+    try:
+        _server_validator().validate(entry)
+    except JSONSchemaValidationError as e:
+        raise MCPConfigError(e.message) from e
+
+    transport = entry["type"]
+    if transport not in SUPPORTED_TRANSPORTS:
+        raise MCPConfigError(f"unsupported transport {transport!r}")
+
+    fields = (
+        _stdio_fields(entry, plugin_root, plugin_data)
+        if transport == "stdio"
+        else _remote_fields(entry)
+    )
+    try:
+        # literal_values: env and headers here are visible package data, not
+        # secrets (§7.2.1, §9.2), so they must survive serialization unredacted
+        # and must not be expanded again against the environment or secrets.
+        return MCPServer.model_validate(fields | {"literal_values": True})
+    except ValidationError as e:  # pragma: no cover - the schema constrains this
+        raise MCPConfigError(str(e)) from e
+
+
+def _stdio_fields(
+    entry: dict[str, Any], plugin_root: Path, plugin_data: Path
+) -> dict[str, Any]:
+    """Map a stdio entry: resolve the command, expand, contain the cwd."""
+    expand = _expander(plugin_root, plugin_data)
+
+    env = {key: expand(value) for key, value in entry.get("env", {}).items()}
+    # §9.1: ours are set last and a plugin cannot override them. The schema
+    # already rejects an entry that declares either name itself.
+    env |= {"PLUGIN_ROOT": str(plugin_root), "PLUGIN_DATA": str(plugin_data)}
+
+    cwd = entry.get("cwd")
+    return {
+        "transport": "stdio",
+        # Never expanded (§9.2), and one token, never a shell string.
+        "command": _resolve_command(entry["command"], plugin_root),
+        "args": [expand(arg) for arg in entry.get("args", [])],
+        "env": {key: SecretStr(value) for key, value in env.items()},
+        # §7.2.1: the plugin root is the default working directory.
+        "cwd": str(
+            _resolve_cwd(cwd, expand, plugin_root, plugin_data)
+            if cwd is not None
+            else plugin_root
+        ),
+    }
+
+
+def _remote_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    """Map a ``streamable-http`` entry: validate the URL and literal headers."""
+    return {
+        "transport": entry["type"],
+        "url": _validate_url(entry["url"]),
+        "headers": {
+            name: SecretStr(value)
+            for name, value in _validate_headers(entry.get("headers", {})).items()
+        },
+    }
+
+
+def _expander(plugin_root: Path, plugin_data: Path) -> Callable[[str], str]:
+    """Return the §9.2 expander: single-pass, non-recursive, two placeholders.
+
+    Two ``str.replace`` calls are exactly those semantics: neither replacement
+    can reintroduce the other's placeholder, so nothing is ever rescanned, and
+    any other placeholder-like text is left literal by construction.
+    """
+
+    def expand(value: str) -> str:
+        return value.replace("${PLUGIN_ROOT}", str(plugin_root)).replace(
+            "${PLUGIN_DATA}", str(plugin_data)
+        )
+
+    return expand
+
+
+def _resolve_command(command: str, plugin_root: Path) -> str:
+    """Resolve ``command``: a bare executable name, or a ``./`` package path."""
+    if not command.startswith("./"):
+        # A bare name goes to the platform's executable search. Anything else --
+        # absolute, ``../``, or a bare relative path -- is not a legal form.
+        if "/" in command or "\\" in command:
+            raise MCPConfigError(
+                f"command {command!r} must be a bare executable name or a "
+                "plugin-relative path beginning with './'"
+            )
+        return command
+    return str(_contained(plugin_root / command[2:], plugin_root, "command"))
+
+
+def _resolve_cwd(
+    cwd: str,
+    expand: Callable[[str], str],
+    plugin_root: Path,
+    plugin_data: Path,
+) -> Path:
+    """Resolve an explicit ``cwd``, keeping it inside the root it is written for.
+
+    The schema constrains the three legal prefixes; what it cannot check is where
+    they land once expanded and resolved, which is what this enforces.
+    """
+    if cwd.startswith("./"):
+        return _contained(plugin_root / expand(cwd[2:]), plugin_root, "cwd")
+    root = plugin_data if cwd.startswith("${PLUGIN_DATA}") else plugin_root
+    return _contained(Path(expand(cwd)), root, "cwd")
+
+
+def _contained(path: Path, root: Path, field: str) -> Path:
+    """Resolve ``path`` and require it to stay within ``root`` (§4.1)."""
+    resolved = path.resolve()
+    # Compare resolved forms so a symlinked root does not read as an escape.
+    if not resolved.is_relative_to(root.resolve()):
+        raise MCPConfigError(f"{field} {str(path)!r} escapes {root}")
+    return resolved
+
+
+def _validate_url(url: str) -> str:
+    """Enforce §7.2.1's remote endpoint rules."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise MCPConfigError(f"url {url!r} must be an absolute http(s) URL")
+    if parts.username or parts.password:
+        raise MCPConfigError(f"url {url!r} must not contain user information")
+    if parts.fragment:
+        raise MCPConfigError(f"url {url!r} must not contain a fragment")
+    if parts.scheme == "http" and not _is_loopback(parts.hostname):
+        raise MCPConfigError(f"url {url!r} must use https: {parts.hostname} is remote")
+    return url
+
+
+def _is_loopback(host: str) -> bool:
+    # Exactly ``localhost`` or an IP literal in a loopback range. A name that
+    # merely resolves to one does not qualify: resolution is not a load-time act.
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _validate_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Enforce §7.2.1's header rules: valid fields, no case-insensitive dupes."""
+    seen: set[str] = set()
+    for name, value in headers.items():
+        if not name or not set(name) <= _TOKEN_CHARS:
+            raise MCPConfigError(f"header name {name!r} is not a valid HTTP token")
+        if name.lower() in seen:
+            raise MCPConfigError(f"header {name!r} is declared more than once")
+        if not all(char in " \t" or 0x21 <= ord(char) <= 0x7E for char in value):
+            raise MCPConfigError(
+                f"header {name!r} has a value that is not a field value"
+            )
+        seen.add(name.lower())
+    return headers
+
+
+@cache
+def _load_schema() -> dict[str, Any]:
+    """Read the vendored MCP schema. Cached; never fetched over the network."""
+    schemas_dir = Path(__file__).parent / "schemas"
+    return json.loads((schemas_dir / _MCP_SCHEMA_FILE).read_text(encoding="utf-8"))
+
+
+@cache
+def _top_level_schema() -> dict[str, Any]:
+    """The vendored schema with per-server validation removed.
+
+    Derived from the vendored document rather than restated, so the closed set of
+    top-level fields and the ``$schema`` const stay single-sourced.
+    """
+    schema = _load_schema()
+    top_level = {key: value for key, value in schema.items() if key != "$defs"}
+    top_level["properties"] = dict(
+        top_level["properties"], mcpServers={"type": "object"}
+    )
+    return top_level
+
+
+@cache
+def _server_validator() -> Draft202012Validator:
+    """Validate one entry against the ``#/$defs/server`` the spec exposes."""
+    return Draft202012Validator(
+        {"$ref": "#/$defs/server", "$defs": _load_schema()["$defs"]}
+    )

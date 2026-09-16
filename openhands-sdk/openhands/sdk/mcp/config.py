@@ -520,6 +520,17 @@ class MCPServer(_MCPBaseModel):
             "ACP subprocess."
         ),
     )
+    literal_values: bool | None = Field(
+        default=None,
+        description=(
+            "Whether 'env' and 'headers' hold literal, visible configuration "
+            "rather than secrets or variable templates. Set by loaders of "
+            "package-declared config -- Agent Plugins forbids credentials and "
+            "any expansion in those fields -- so the values serialize as "
+            "written instead of being redacted, and are not expanded again. "
+            "Unset means ordinary config."
+        ),
+    )
 
     @field_validator("env", "headers", mode="after")
     @classmethod
@@ -534,6 +545,11 @@ class MCPServer(_MCPBaseModel):
     def _serialize_secret_mapping(
         self, value: dict[str, SecretStr] | None, info: SerializationInfo
     ) -> dict[str, str | None] | None:
+        if value is not None and self.literal_values:
+            # Redacting a non-secret does not protect anything, and the redacted
+            # value is what a round-trip through storage or a remote conversation
+            # would hand the server.
+            return {key: secret.get_secret_value() for key, secret in value.items()}
         return _serialize_secret_map(value, info)
 
     @model_validator(mode="after")

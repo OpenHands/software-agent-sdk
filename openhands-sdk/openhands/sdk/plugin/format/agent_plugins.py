@@ -18,6 +18,7 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.plugin.format.agent_plugins_mcp import MCP_FILE, load_mcp_servers
 from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _read_command_definitions,
@@ -79,12 +80,16 @@ class AgentPluginsFormat(PluginFormat):
     moving those directories rather than rewriting them. Namespaces other than
     ours are ignored without validating their contents.
 
-    ``mcp.json`` is a follow-up under #4405, so its loader still returns empty.
-
-    Not registered in ``_FORMATS`` yet; see the package docstring.
+    Args:
+        plugin_data_root: Parent of the per-plugin ``PLUGIN_DATA`` directories.
+            Defaults to the user's plugin data directory; injectable for tests
+            and for callers that keep plugin state somewhere else.
     """
 
     name: ClassVar[str] = "agent-plugins"
+
+    def __init__(self, *, plugin_data_root: Path | None = None) -> None:
+        self._plugin_data_root = plugin_data_root
 
     @classmethod
     def detect(cls, plugin_dir: Path) -> bool:
@@ -161,9 +166,34 @@ class AgentPluginsFormat(PluginFormat):
             data | _extension_manifest_fields(data, manifest_path)
         )
 
-    def load_mcp_config(self, plugin_dir: Path) -> dict[str, MCPServer]:  # noqa: ARG002
-        """Not read yet: root ``mcp.json`` is a follow-up."""
-        return {}
+    def load_mcp_config(self, plugin_dir: Path) -> dict[str, MCPServer]:
+        """Load MCP servers from the root ``mcp.json`` (no leading dot).
+
+        Unlike the Claude Code format, expansion is complete here: Agent Plugins
+        defines exactly two placeholders and forbids every other kind, so there
+        is nothing left to expand once per-conversation secrets arrive.
+        """
+        plugin_root = plugin_dir.resolve()
+        if not (plugin_root / MCP_FILE).is_file():
+            return {}
+
+        # The manifest is re-read for its name, which keys PLUGIN_DATA. Costs one
+        # small parse; the alternative -- keying on the directory -- would move a
+        # plugin's data every time it is fetched into a fresh checkout.
+        plugin_data = _plugin_data_dir(
+            self.load_manifest(plugin_dir).name, self._plugin_data_root
+        )
+        try:
+            # §9.1: the directory must exist and be writable before a plugin
+            # subprocess is launched.
+            plugin_data.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning("Disabling MCP for %s: no data directory: %s", plugin_dir, e)
+            return {}
+
+        return load_mcp_servers(
+            plugin_dir, plugin_root=plugin_root, plugin_data=plugin_data
+        )
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
         """Load hooks from ``dev.openhands/hooks/hooks.json``."""
@@ -176,6 +206,14 @@ class AgentPluginsFormat(PluginFormat):
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from ``dev.openhands/commands/``."""
         return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE)
+
+
+def _plugin_data_dir(plugin_name: str, data_root: Path | None) -> Path:
+    # Imported lazily: installed.py reaches plugin.py, which imports this
+    # package, so a module-level import would close the cycle.
+    from openhands.sdk.plugin.installed import get_plugin_data_dir
+
+    return get_plugin_data_dir(plugin_name, data_root=data_root)
 
 
 def _extension_manifest_fields(

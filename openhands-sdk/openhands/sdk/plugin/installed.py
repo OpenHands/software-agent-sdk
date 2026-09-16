@@ -22,10 +22,26 @@ InstalledPluginInfo = InstallationInfo
 
 DEFAULT_INSTALLED_PLUGINS_DIR = get_user_persistence_dir() / "plugins" / "installed"
 
+#: Parent of the per-plugin ``PLUGIN_DATA`` directories. A sibling of
+#: ``installed/`` on purpose: an update replaces the installed tree, so data kept
+#: inside it would not survive one (Agent Plugins §9.1).
+DEFAULT_PLUGIN_DATA_DIR = get_user_persistence_dir() / "plugins" / "data"
+
 
 def get_installed_plugins_dir() -> Path:
     """Get the default directory for installed plugins."""
     return DEFAULT_INSTALLED_PLUGINS_DIR
+
+
+def get_plugin_data_dir(plugin_name: str, *, data_root: Path | None = None) -> Path:
+    """Get the persistent data directory for one plugin (``PLUGIN_DATA``).
+
+    Keyed by manifest name rather than by directory, so a plugin fetched fresh
+    into a new temporary checkout on every conversation still finds the state it
+    left behind. The directory is not created here; the caller creates it before
+    launching a plugin subprocess.
+    """
+    return (data_root or DEFAULT_PLUGIN_DATA_DIR) / plugin_name
 
 
 # ---------------------------------------------------------------------------

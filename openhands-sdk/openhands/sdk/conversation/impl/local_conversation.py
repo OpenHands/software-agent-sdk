@@ -1205,16 +1205,23 @@ class LocalConversation(BaseConversation):
         # - Variables with defaults that don't have secrets fall back to their defaults
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
-        if merged_mcp:
+        # Servers declared by an Agent Plugins package are exempt: their config
+        # is literal package data, already fully expanded by the loader, and the
+        # standard forbids expanding anything else in it.
+        expandable = {n: s for n, s in merged_mcp.items() if not s.literal_values}
+        if expandable:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
             expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(merged_mcp)},
+                {"mcpServers": dump_mcp_config(expandable)},
                 {},
                 get_secret=self._state.secret_registry.get_secret_value,
                 expand_defaults=True,
             )
-            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
+            merged_mcp = {
+                **merged_mcp,
+                **coerce_mcp_config(expanded_mcp["mcpServers"]),
+            }
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
