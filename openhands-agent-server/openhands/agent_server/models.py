@@ -608,6 +608,13 @@ class BashEventBase(DiscriminatedUnionMixin, ABC):
 class ExecuteBashRequest(BaseModel):
     command: str = Field(description="The bash command to execute")
     cwd: str | None = Field(default=None, description="The current working directory")
+    agent_profile_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Agent profile whose selected saved secrets are available to this "
+            "command. This scopes command credentials without creating a conversation."
+        ),
+    )
     timeout: int = Field(
         default=300,
         description="The max number of seconds a command may be permitted to run.",
