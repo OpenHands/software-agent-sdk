@@ -876,9 +876,8 @@ async def _reapply_session_model_on_resume(
     persisted mechanism hint when that response omits the model block.
 
     Gated on runtime-switch support (skip only known providers that don't); a
-    server that rejects the call is tolerated (logged) — like the
-    ``load_session`` fallback — so resume can't break and the session keeps the
-    server default until the next switch.
+    server that rejects the model-setting call is tolerated (logged), so the
+    resumed session keeps the server default until the next switch.
 
     Returns ``True`` only when a model-setting call was issued and accepted, so
     the caller knows the resumed live session is actually running ``acp_model``.
@@ -1753,10 +1752,10 @@ class ACPAgent(AgentBase):
             "for environments where the per-conversation filesystem (and "
             "therefore ``base_state.json``) does not survive across restarts "
             "(e.g. cloud sandbox recycles), but the id has been mirrored "
-            "into durable storage elsewhere. Falls back to a fresh session "
-            "if the server cannot load the id. Treated as a secret on the "
-            "wire — possession of the id is enough to resume the underlying "
-            "ACP session, so default serialization redacts it; pass "
+            "into durable storage elsewhere. If the server cannot load the "
+            "id, startup fails without replacing the session. Treated as a "
+            "secret on the wire — possession of the id is enough to resume "
+            "the underlying ACP session, so default serialization redacts it; pass "
             "``expose_secrets='plaintext'`` (trusted backend) or "
             "``expose_secrets='encrypted'`` plus a cipher (frontend round-"
             "trip) when the value must cross a serialization boundary."
@@ -2301,8 +2300,8 @@ class ACPAgent(AgentBase):
 
         self._register_atexit_cleanup(replace=True)
 
-        # A successful resume keeps the prior id; cwd mismatch and load_session
-        # failure both fall back to ``new_session``, which mints a fresh one.
+        # A successful resume keeps the prior id; cwd mismatch falls back to
+        # ``new_session``, which mints a fresh one.
         # The session-id comparison is the only authoritative signal — the
         # decision happens inside ``_start_acp_server`` and isn't otherwise
         # observable here.
@@ -2964,8 +2963,7 @@ class ACPAgent(AgentBase):
         # always lands in the same ``working_dir``). We therefore assume
         # cwd-compatibility and let the ACP server's own ``session/load``
         # validation be the last line of defence: a server-side cwd mismatch
-        # returns an ``ACPRequestError``, already caught below and falling back
-        # to ``new_session`` — the same recovery path as a forgotten id.
+        # returns an ``ACPRequestError`` and aborts startup.
         fs_session_id: str | None = state.agent_state.get("acp_session_id")
         fs_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
         if self.acp_resume_session_id and self.acp_resume_session_id != fs_session_id:
@@ -3145,15 +3143,8 @@ class ACPAgent(AgentBase):
                     else:
                         _warn_auth_selection_failure(auth_methods, env, auth_provider)
 
-            # Resume the prior ACP session if we have its id.  If the server
-            # has forgotten it (state wiped, new host, etc.) fall through to
-            # new_session so the conversation still starts cleanly.
-            #
-            # We only swallow ACPRequestError here: that is the protocol-level
-            # "I don't know this session" signal and is recoverable by
-            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
-            # subprocess crash) propagate — there is no working connection to
-            # fall back on, and the outer init_state handler cleans up.
+            # A new ACP session does not inherit the provider's conversation
+            # history, so a failed resume must not silently replace it.
             session_id: str | None = None
             reported_model_id: str | None = None
             available_models: list[ACPModelInfo] | None = None
@@ -3187,11 +3178,13 @@ class ACPAgent(AgentBase):
                         working_dir,
                     )
                 except ACPRequestError as e:
-                    logger.warning(
-                        "ACP load_session(%s) failed (%s); starting a fresh session",
-                        _fingerprint_session_id(prior_session_id),
-                        e,
-                    )
+                    raise ACPRequestError(
+                        e.code,
+                        "Could not resume the existing ACP session. "
+                        "No new session was started. Resolve the provider error "
+                        "and retry, or explicitly start a new conversation. " + str(e),
+                        e.data,
+                    ) from e
 
             # Track whether ``acp_model`` was actually pushed to the server so
             # ``current_model_id`` below can stay honest: a caller override that
