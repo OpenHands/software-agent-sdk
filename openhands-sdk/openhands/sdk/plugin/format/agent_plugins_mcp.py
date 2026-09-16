@@ -147,8 +147,7 @@ def _load_server(entry: Any, plugin_root: Path, plugin_data: Path) -> MCPServer:
         server = MCPServer.model_validate(fields)
     except ValidationError as e:  # pragma: no cover - the schema constrains this
         raise MCPConfigError(str(e)) from e
-    # env and headers here are visible package data, not secrets (§7.2.1,
-    # §9.2): keep them unredacted and never expand them again.
+    # Fully expanded already; §9.2 forbids expanding anything else.
     return server.as_literal()
 
 

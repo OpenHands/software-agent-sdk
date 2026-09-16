@@ -177,11 +177,10 @@ class AgentPluginsFormat(PluginFormat):
         if not (plugin_root / MCP_FILE).is_file():
             return {}
 
-        # The manifest is re-read for its name, which keys PLUGIN_DATA. Costs one
-        # small parse; the alternative -- keying on the directory -- would move a
-        # plugin's data every time it is fetched into a fresh checkout.
+        # The manifest is re-read only to give the data directory a readable
+        # name; the plugin root is what keys it.
         plugin_data = _plugin_data_dir(
-            self.load_manifest(plugin_dir).name, self._plugin_data_root
+            self.load_manifest(plugin_dir).name, plugin_root, self._plugin_data_root
         )
         return load_mcp_servers(
             plugin_dir, plugin_root=plugin_root, plugin_data=plugin_data
@@ -200,12 +199,14 @@ class AgentPluginsFormat(PluginFormat):
         return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE)
 
 
-def _plugin_data_dir(plugin_name: str, data_root: Path | None) -> Path:
+def _plugin_data_dir(
+    plugin_name: str, plugin_root: Path, data_root: Path | None
+) -> Path:
     # Imported lazily: installed.py reaches plugin.py, which imports this
     # package, so a module-level import would close the cycle.
     from openhands.sdk.plugin.installed import get_plugin_data_dir
 
-    return get_plugin_data_dir(plugin_name, data_root=data_root)
+    return get_plugin_data_dir(plugin_name, plugin_root, data_root=data_root)
 
 
 def _extension_manifest_fields(

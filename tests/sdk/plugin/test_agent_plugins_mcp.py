@@ -274,7 +274,7 @@ class TestStdio:
 
         assert server is not None
         root = str(plugin_dir.resolve())
-        data = str(get_plugin_data_dir("example", data_root=data_root))
+        data = str(get_plugin_data_dir("example", plugin_dir, data_root=data_root))
         assert server.args == [f"--root={root}", f"{data}/cache", "plain"]
         assert server.env is not None
         assert server.env["CONFIG"].get_secret_value() == f"{root}/config.json"
@@ -322,7 +322,7 @@ class TestStdio:
         assert server.env is not None
         assert server.env["PLUGIN_ROOT"].get_secret_value() == str(plugin_dir.resolve())
         assert server.env["PLUGIN_DATA"].get_secret_value() == str(
-            get_plugin_data_dir("example", data_root=data_root)
+            get_plugin_data_dir("example", plugin_dir, data_root=data_root)
         )
 
     def test_default_cwd_is_the_plugin_root(self, plugin_dir: Path, data_root: Path):
@@ -350,7 +350,9 @@ class TestStdio:
 
         roots = {
             "root": plugin_dir.resolve(),
-            "data": get_plugin_data_dir("example", data_root=data_root).resolve(),
+            "data": get_plugin_data_dir(
+                "example", plugin_dir, data_root=data_root
+            ).resolve(),
         }
         head, _, tail = expected.partition("/")
         assert server is not None
@@ -470,9 +472,12 @@ class TestRemote:
 class TestLiteralValues:
     """Package data is visible, so it must survive serialization unredacted."""
 
-    def test_plugin_values_serialize_as_written(
+    def test_plugin_values_are_redacted_like_any_secret(
         self, plugin_dir: Path, data_root: Path
     ):
+        """Plugins must not put secrets in headers or env; if one does anyway,
+        redaction still protects the user. The client needs no plaintext copy:
+        plugin servers are rebuilt from the package on every load."""
         servers = load(
             plugin_dir,
             data_root,
@@ -482,20 +487,18 @@ class TestLiteralValues:
                     "url": "https://example.com/mcp",
                     "headers": {"X-Tenant": "public-tenant"},
                 },
-                "local": {
-                    "type": "stdio",
-                    "command": "echo",
-                    "env": {"CONFIG": "visible"},
-                },
+                "local": {"type": "stdio", "command": "echo", "env": {"K": "v"}},
             },
         )
 
-        # No serialization context: what storage and a remote conversation get.
-        api = servers["api"].model_dump(mode="json")
-        local = servers["local"].model_dump(mode="json")
-        assert servers["api"].literal_values is True
-        assert api["headers"] == {"X-Tenant": "public-tenant"}
-        assert local["env"]["CONFIG"] == "visible"
+        assert servers["api"].model_dump(mode="json")["headers"] == {
+            "X-Tenant": "**********"
+        }
+        assert servers["local"].model_dump(mode="json")["env"]["K"] == "**********"
+        # The connection path still gets the real values.
+        fastmcp = to_fastmcp_mcp_config(servers)["mcpServers"]
+        assert fastmcp["api"]["headers"] == {"X-Tenant": "public-tenant"}
+        assert fastmcp["local"]["env"]["K"] == "v"
 
     def test_flag_is_never_serialized(self, plugin_dir: Path, data_root: Path):
         servers = load(
@@ -588,12 +591,41 @@ class TestLiteralValues:
 class TestPluginData:
     """§9.1: a writable directory that outlives an update."""
 
-    def test_created_and_keyed_by_manifest_name(
-        self, plugin_dir: Path, data_root: Path
-    ):
+    def test_created_under_a_readable_name(self, plugin_dir: Path, data_root: Path):
         load(plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}})
 
-        assert (data_root / "example").is_dir()
+        (created,) = data_root.iterdir()
+        assert created == get_plugin_data_dir(
+            "example", plugin_dir, data_root=data_root
+        )
+        assert created.name.startswith("example-")
+
+    def test_same_name_elsewhere_gets_its_own_directory(
+        self, plugin_dir: Path, tmp_path: Path, data_root: Path
+    ):
+        """A project plugin borrowing an installed plugin's name must not share,
+        and be able to plant files in, that plugin's data directory."""
+        impostor = tmp_path / "repo" / ".agents" / "plugins" / "example"
+        impostor.mkdir(parents=True)
+        (impostor / "plugin.json").write_text(json.dumps(MANIFEST), encoding="utf-8")
+
+        assert get_plugin_data_dir(
+            "example", impostor, data_root=data_root
+        ) != get_plugin_data_dir("example", plugin_dir, data_root=data_root)
+
+    def test_survives_an_update_in_place(self, plugin_dir: Path, data_root: Path):
+        """Installs and fetches update the same root, so the key must not
+        depend on package contents."""
+        load(plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}})
+        data = get_plugin_data_dir("example", plugin_dir, data_root=data_root)
+        (data / "state.txt").write_text("kept", encoding="utf-8")
+
+        updated = MANIFEST | {"version": "2.0.0", "description": "Updated."}
+        (plugin_dir / "plugin.json").write_text(json.dumps(updated), encoding="utf-8")
+        load(plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}})
+
+        assert (data / "state.txt").read_text(encoding="utf-8") == "kept"
+        assert list(data_root.iterdir()) == [data]
 
     @pytest.mark.parametrize(
         "document",
@@ -650,9 +682,9 @@ class TestPluginData:
             "openhands.sdk.plugin.discovery.USER_PLUGINS_DIRS",
             [tmp_path / ".agents" / "plugins", tmp_path / "plugins"],
         )
-        get_plugin_data_dir("example", data_root=tmp_path / "plugin-data").mkdir(
-            parents=True
-        )
+        get_plugin_data_dir(
+            "example", tmp_path / "example", data_root=tmp_path / "plugin-data"
+        ).mkdir(parents=True)
 
         assert load_user_plugins() == []
 
@@ -709,7 +741,7 @@ def test_stdio_server_launches_with_the_agent_plugins_contract(
         assert any(tool.name.endswith("ping") for tool in client.tools)
 
     root = plugin_dir.resolve()
-    data = get_plugin_data_dir("example", data_root=data_root)
+    data = get_plugin_data_dir("example", plugin_dir, data_root=data_root)
     launch = json.loads((data / "launch.json").read_text(encoding="utf-8"))
     assert Path(launch["cwd"]).resolve() == data.resolve()
     assert launch["argv"] == [str(root), "${HOME}"]
