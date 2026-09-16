@@ -23,6 +23,10 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
+from openhands.agent_server.conversation_registry import (
+    ConversationRegistry,
+    create_conversation_registry,
+)
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.server_details_router import mark_initialization_complete
 from openhands.agent_server.telemetry import (
@@ -201,6 +205,7 @@ class InitService:
         self._error: str | None = None
         self._lock = asyncio.Lock()
         self._entered_service: ConversationService | None = None
+        self._entered_conversation_registry: ConversationRegistry | None = None
         self._entered_bash_service: BashEventService | None = None
 
     @property
@@ -244,6 +249,8 @@ class InitService:
 
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
+            conversation_registry = create_conversation_registry(new_config)
+            conversation_registry.configure_service(service)
 
             bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
             await bash_svc.__aenter__()
@@ -251,8 +258,11 @@ class InitService:
 
             await service.__aenter__()
             self._entered_service = service
+            await conversation_registry.start()
+            self._entered_conversation_registry = conversation_registry
             self._app.state.config = new_config
             self._app.state.conversation_service = service
+            self._app.state.conversation_registry = conversation_registry
             self._app.state.bash_event_service = bash_svc
 
             # Re-derive root_path from the merged config so Doc URLS are valid
@@ -284,6 +294,9 @@ class InitService:
         that were never initialized don't need any cleanup.
         """
         if self._entered_service is not None:
+            if self._entered_conversation_registry is not None:
+                await self._entered_conversation_registry.shutdown()
+                self._entered_conversation_registry = None
             await self._entered_service.__aexit__(None, None, None)
             self._entered_service = None
         if self._entered_bash_service is not None:
