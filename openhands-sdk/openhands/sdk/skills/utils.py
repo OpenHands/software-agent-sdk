@@ -7,7 +7,7 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -20,6 +20,7 @@ from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.skills.skill import Skill, SkillResources
 
 # Type alias for secret lookup functions
@@ -215,6 +216,32 @@ def expand_mcp_variables(
     if not isinstance(expanded_config, dict):
         raise TypeError("expanded MCP config must be a dictionary")
     return expanded_config
+
+
+def expand_mcp_servers(
+    servers: Mapping[str, MCPServer],
+    get_secret: SecretLookup | None = None,
+) -> dict[str, MCPServer]:
+    """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
+
+    Servers with ``literal_values`` are returned untouched: they come from an
+    Agent Plugins package, whose loader has already expanded the only two
+    placeholders the standard allows, and §9.2 forbids expanding anything else
+    -- a package must not be able to pull a secret into its own subprocess.
+    """
+    # Imported lazily: openhands.sdk.mcp imports this module.
+    from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
+
+    expandable = {name: s for name, s in servers.items() if not s.literal_values}
+    if not expandable:
+        return dict(servers)
+    expanded = expand_mcp_variables(
+        {"mcpServers": dump_mcp_config(expandable)},
+        {},
+        get_secret=get_secret,
+        expand_defaults=True,
+    )
+    return {**servers, **coerce_mcp_config(expanded["mcpServers"])}
 
 
 def load_mcp_config(
