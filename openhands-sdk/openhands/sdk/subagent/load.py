@@ -172,7 +172,9 @@ def discover_agents(
     return result
 
 
-def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
+def load_agents_from_dir(
+    agents_dir: Path, root: Path | None = None
+) -> list[AgentDefinition]:
     """Scans a directory for Markdown-based agent definitions.
 
     Iterates through the top-level of the provided directory, attempting to load
@@ -181,6 +183,8 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
 
     Args:
         agents_dir: The filesystem path to the directory containing agent files.
+        root: If given, files that resolve outside this directory (e.g. through
+            a symlink) are skipped. Plugins pass their root here.
 
     Returns:
         A list of successfully instantiated AgentDefinition objects.
@@ -202,6 +206,9 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
             or md_file.suffix.lower() != ".md"
             or md_file.name in _SKIP_FILES
         ):
+            continue
+        if root is not None and not md_file.resolve().is_relative_to(root.resolve()):
+            logger.warning(f"Skipping {md_file}: it resolves outside {root}")
             continue
 
         try:

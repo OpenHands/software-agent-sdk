@@ -22,6 +22,7 @@ from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _read_command_definitions,
     _read_hooks_config,
+    _resolves_within,
 )
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
 from openhands.sdk.subagent.load import load_agents_from_dir
@@ -111,6 +112,10 @@ class AgentPluginsFormat(PluginFormat):
             ValueError: On any fatal manifest violation.
         """
         manifest_path = plugin_dir / MANIFEST_FILE
+        if not _resolves_within(manifest_path, plugin_dir):
+            raise ValueError(
+                f"Manifest {manifest_path} resolves outside the plugin root"
+            )
         try:
             # utf-8-sig: tolerate a leading BOM, which RFC 8259 lets us ignore.
             data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -167,15 +172,17 @@ class AgentPluginsFormat(PluginFormat):
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
         """Load hooks from ``dev.openhands/hooks/hooks.json``."""
-        return _read_hooks_config(plugin_dir / EXTENSION_NAMESPACE)
+        return _read_hooks_config(plugin_dir / EXTENSION_NAMESPACE, plugin_dir)
 
     def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:
         """Load agent definitions from ``dev.openhands/agents/``."""
-        return load_agents_from_dir(plugin_dir / EXTENSION_NAMESPACE / "agents")
+        return load_agents_from_dir(
+            plugin_dir / EXTENSION_NAMESPACE / "agents", root=plugin_dir
+        )
 
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from ``dev.openhands/commands/``."""
-        return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE)
+        return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE, plugin_dir)
 
 
 def _extension_manifest_fields(

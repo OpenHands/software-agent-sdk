@@ -22,6 +22,7 @@ from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _read_command_definitions,
     _read_hooks_config,
+    _resolves_within,
 )
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -80,6 +81,10 @@ class ClaudeCodePluginFormat(PluginFormat):
                 break
 
         if manifest_path:
+            if not _resolves_within(manifest_path, plugin_dir):
+                raise ValueError(
+                    f"Manifest {manifest_path} resolves outside the plugin root"
+                )
             try:
                 with open(manifest_path, encoding="utf-8") as f:
                     data = json.load(f)
@@ -121,7 +126,10 @@ class ClaudeCodePluginFormat(PluginFormat):
         during plugin loading before secrets are available.
         """
         mcp_json = plugin_dir / ".mcp.json"
-        if not mcp_json.exists():
+        if not mcp_json.exists() or not _resolves_within(mcp_json, plugin_dir):
+            return {}
+        if not mcp_json.is_file():
+            logger.warning(f"Ignoring MCP config: {mcp_json} is not a regular file")
             return {}
 
         try:
@@ -145,12 +153,12 @@ class ClaudeCodePluginFormat(PluginFormat):
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
         """Load hooks configuration from ``hooks/hooks.json``."""
-        return _read_hooks_config(plugin_dir)
+        return _read_hooks_config(plugin_dir, plugin_dir)
 
     def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:
         """Load agent definitions from the ``agents/`` directory."""
-        return load_agents_from_dir(plugin_dir / "agents")
+        return load_agents_from_dir(plugin_dir / "agents", root=plugin_dir)
 
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from the ``commands/`` directory."""
-        return _read_command_definitions(plugin_dir)
+        return _read_command_definitions(plugin_dir, plugin_dir)

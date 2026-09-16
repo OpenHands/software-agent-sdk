@@ -10,6 +10,7 @@ overview and the recipe to add a new format.
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -95,11 +96,16 @@ class PluginFormat(ABC):
         to support Claude Code plugins which may use different naming conventions.
         """
         skills_dir = plugin_dir / "skills"
-        if skills_dir.is_dir():
-            return _load_skills_from_skills_dir(skills_dir)
+        if os.path.lexists(skills_dir):
+            if not _resolves_within(skills_dir, plugin_dir):
+                return []
+            if not skills_dir.is_dir():
+                logger.warning(f"Ignoring skills: {skills_dir} is not a directory")
+                return []
+            return _load_skills_from_skills_dir(skills_dir, plugin_dir)
 
         root_skill_md = find_skill_md(plugin_dir)
-        if root_skill_md is not None:
+        if root_skill_md is not None and _resolves_within(root_skill_md, plugin_dir):
             return _load_root_skill(plugin_dir, root_skill_md)
 
         return []
@@ -144,7 +150,22 @@ class PluginFormat(ABC):
         )
 
 
-def _read_hooks_config(root: Path) -> HookConfig | None:
+def _resolves_within(path: Path, plugin_dir: Path) -> bool:
+    """Whether ``path`` resolves inside the resolved plugin root (spec §4.1).
+
+    Symlinks may point anywhere inside the package but not outside it. Callers
+    apply the narrowest failure boundary; this only reports the escape.
+    """
+    try:
+        if path.resolve().is_relative_to(plugin_dir.resolve()):
+            return True
+    except (OSError, RuntimeError):  # e.g. a symlink loop
+        pass
+    logger.warning(f"Denying {path}: it resolves outside plugin root {plugin_dir}")
+    return False
+
+
+def _read_hooks_config(root: Path, plugin_dir: Path) -> HookConfig | None:
     """Read ``hooks/hooks.json`` under ``root``, or None if it is absent.
 
     Shared by the concrete strategies: hooks, agents and commands use the same
@@ -153,7 +174,7 @@ def _read_hooks_config(root: Path) -> HookConfig | None:
     Agent Plugins).
     """
     hooks_json = root / "hooks" / "hooks.json"
-    if not hooks_json.exists():
+    if not hooks_json.exists() or not _resolves_within(hooks_json, plugin_dir):
         return None
 
     try:
@@ -171,7 +192,7 @@ def _read_hooks_config(root: Path) -> HookConfig | None:
         return None
 
 
-def _read_command_definitions(root: Path) -> list[CommandDefinition]:
+def _read_command_definitions(root: Path, plugin_dir: Path) -> list[CommandDefinition]:
     """Read command definitions from the ``commands/`` directory under ``root``.
 
     Commands have no counterpart to :func:`load_agents_from_dir`, so this is the
@@ -179,7 +200,7 @@ def _read_command_definitions(root: Path) -> list[CommandDefinition]:
     file predicate, so ``commands/`` and ``agents/`` stay symmetric.
     """
     commands_dir = root / "commands"
-    if not commands_dir.is_dir():
+    if not commands_dir.is_dir() or not _resolves_within(commands_dir, plugin_dir):
         return []
 
     commands: list[CommandDefinition] = []
@@ -192,6 +213,7 @@ def _read_command_definitions(root: Path) -> list[CommandDefinition]:
                 "README.md",
                 "readme.md",
             )
+            and _resolves_within(item, plugin_dir)
         ):
             try:
                 command = CommandDefinition.load(item)
@@ -203,13 +225,13 @@ def _read_command_definitions(root: Path) -> list[CommandDefinition]:
     return commands
 
 
-def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
+def _load_skills_from_skills_dir(skills_dir: Path, plugin_dir: Path) -> list[Skill]:
     """Load every skill under a plugin's ``skills/`` directory."""
     skills: list[Skill] = []
     for item in sorted(skills_dir.iterdir()):
         if item.is_dir():
             skill_md = find_skill_md(item)
-            if skill_md:
+            if skill_md and _resolves_within(skill_md, plugin_dir):
                 try:
                     # Skill.load() discovers resources, no need to do it again
                     skill = Skill.load(skill_md, skills_dir, strict=False)
@@ -217,7 +239,11 @@ def _load_skills_from_skills_dir(skills_dir: Path) -> list[Skill]:
                     logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
                 except Exception as e:
                     logger.warning(f"Failed to load skill from {item}: {e}")
-        elif item.suffix == ".md" and item.name.lower() != "readme.md":
+        elif (
+            item.suffix == ".md"
+            and item.name.lower() != "readme.md"
+            and _resolves_within(item, plugin_dir)
+        ):
             # Also support single .md files in skills/ directory
             try:
                 skill = Skill.load(item, skills_dir, strict=False)
