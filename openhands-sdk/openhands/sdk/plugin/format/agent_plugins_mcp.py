@@ -144,12 +144,12 @@ def _load_server(entry: Any, plugin_root: Path, plugin_data: Path) -> MCPServer:
         else _remote_fields(entry)
     )
     try:
-        # literal_values: env and headers here are visible package data, not
-        # secrets (§7.2.1, §9.2), so they must survive serialization unredacted
-        # and must not be expanded again against the environment or secrets.
-        return MCPServer.model_validate(fields | {"literal_values": True})
+        server = MCPServer.model_validate(fields)
     except ValidationError as e:  # pragma: no cover - the schema constrains this
         raise MCPConfigError(str(e)) from e
+    # env and headers here are visible package data, not secrets (§7.2.1,
+    # §9.2): keep them unredacted and never expand them again.
+    return server.as_literal()
 
 
 def _stdio_fields(

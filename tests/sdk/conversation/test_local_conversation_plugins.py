@@ -1748,4 +1748,5 @@ class TestAgentPluginsMCPExpansion:
 
         server = conversation.agent.mcp_config["portable-server"]
         assert server.args == ["${SECRET_TOKEN}", "${MISSING:-fallback}"]
+        assert server.literal_values
         conversation.close()

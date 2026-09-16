@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
@@ -19,6 +19,7 @@ from openhands.sdk.plugin import (
 from openhands.sdk.plugin.discovery import USER_PLUGINS_DIRS, load_user_plugins
 from openhands.sdk.plugin.installed import DEFAULT_PLUGIN_DATA_DIR
 from openhands.sdk.plugin.loader import load_plugins
+from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.skills.utils import expand_mcp_servers
 
 
@@ -496,14 +497,60 @@ class TestLiteralValues:
         assert api["headers"] == {"X-Tenant": "public-tenant"}
         assert local["env"]["CONFIG"] == "visible"
 
-    def test_flag_does_not_leak_into_the_fastmcp_config(
-        self, plugin_dir: Path, data_root: Path
-    ):
+    def test_flag_is_never_serialized(self, plugin_dir: Path, data_root: Path):
         servers = load(
             plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}}
         )
 
+        assert "literal_values" not in servers["s"].model_dump(mode="json")
         assert "literal_values" not in to_fastmcp_mcp_config(servers)["mcpServers"]["s"]
+
+    @pytest.mark.parametrize(
+        "validate",
+        [
+            pytest.param(MCPServer.model_validate, id="server"),
+            pytest.param(
+                lambda server: OpenHandsAgentSettings.model_validate(
+                    {"mcp_config": {"mine": server}}
+                ),
+                id="settings-payload",
+            ),
+        ],
+    )
+    def test_flag_cannot_be_set_from_input(self, validate):
+        """Otherwise a payload could have real secrets stored in plaintext."""
+        with pytest.raises(ValidationError, match="literal_values"):
+            validate(
+                {
+                    "url": "https://api.example.com/mcp",
+                    "headers": {"Authorization": "Bearer real-secret"},
+                    "literal_values": True,
+                }
+            )
+
+    def test_flag_does_not_survive_a_data_round_trip(
+        self, plugin_dir: Path, data_root: Path
+    ):
+        """Only the loader grants it; reloaded data is ordinary config again."""
+        server = load_one(plugin_dir, data_root, {"type": "stdio", "command": "echo"})
+        assert server is not None
+
+        reloaded = MCPServer.model_validate(
+            server.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+        )
+
+        assert not reloaded.literal_values
+
+    def test_flag_survives_in_memory_copies(self, plugin_dir: Path, data_root: Path):
+        """The conversation merge uses model_copy, on the server and its agent."""
+        server = load_one(plugin_dir, data_root, {"type": "stdio", "command": "echo"})
+        assert server is not None
+        agent = Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[])
+
+        copied = agent.model_copy(update={"mcp_config": {"s": server}})
+
+        assert server.model_copy(update={"enabled": False}).literal_values
+        assert copied.mcp_config["s"].literal_values
 
     def test_secret_expansion_leaves_package_servers_literal(
         self, plugin_dir: Path, data_root: Path, monkeypatch: pytest.MonkeyPatch

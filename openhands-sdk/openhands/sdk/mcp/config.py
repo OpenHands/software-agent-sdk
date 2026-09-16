@@ -14,6 +14,7 @@ from pydantic import (
     Field,
     GetCoreSchemaHandler,
     GetJsonSchemaHandler,
+    PrivateAttr,
     SecretStr,
     SerializationInfo,
     TypeAdapter,
@@ -520,17 +521,9 @@ class MCPServer(_MCPBaseModel):
             "ACP subprocess."
         ),
     )
-    literal_values: bool | None = Field(
-        default=None,
-        description=(
-            "Whether 'env' and 'headers' hold literal, visible configuration "
-            "rather than secrets or variable templates. Set by loaders of "
-            "package-declared config -- Agent Plugins forbids credentials and "
-            "any expansion in those fields -- so the values serialize as "
-            "written instead of being redacted, and are not expanded again. "
-            "Unset means ordinary config."
-        ),
-    )
+    # Never a field: a payload that could claim it would have real secrets stored
+    # and returned in plaintext. Only code sets it, via ``as_literal()``.
+    _literal_values: bool = PrivateAttr(default=False)
 
     @field_validator("env", "headers", mode="after")
     @classmethod
@@ -545,7 +538,7 @@ class MCPServer(_MCPBaseModel):
     def _serialize_secret_mapping(
         self, value: dict[str, SecretStr] | None, info: SerializationInfo
     ) -> dict[str, str | None] | None:
-        if value is not None and self.literal_values:
+        if value is not None and self._literal_values:
             # Redacting a non-secret does not protect anything, and the redacted
             # value is what a round-trip through storage or a remote conversation
             # would hand the server.
@@ -569,6 +562,29 @@ class MCPServer(_MCPBaseModel):
                     "'Authorization' header; use auth.strategy='header' instead."
                 )
         return self
+
+    @property
+    def literal_values(self) -> bool:
+        """Whether ``env`` and ``headers`` are literal package data, not secrets.
+
+        True only for servers built by a package loader through
+        :meth:`as_literal`. Such values serialize as written instead of being
+        redacted, and are not expanded against the environment or secrets.
+        The flag lives in memory only: it is never read from input nor written
+        by a dump, so data from outside can neither set it nor carry it.
+        """
+        return self._literal_values
+
+    def as_literal(self) -> MCPServer:
+        """Return a copy whose ``env`` and ``headers`` are literal package data.
+
+        For loaders of package-declared config (Agent Plugins forbids secrets
+        and any expansion in those fields). Never call it on user config: its
+        secrets would be serialized in plaintext.
+        """
+        server = self.model_copy()
+        server._literal_values = True
+        return server
 
     @property
     def effective_transport(self) -> MCPTransport | None:
@@ -676,7 +692,6 @@ def _normalize_server_for_fastmcp(
     # already (see ``enabled_mcp_servers``) -- this only keeps the key from
     # leaking through the public ``to_fastmcp_mcp_config`` boundary.
     server.pop("enabled", None)
-    server.pop("literal_values", None)
     auth = server.pop("auth", None)
     raw_headers = server.get("headers")
     headers = dict(raw_headers) if isinstance(raw_headers, Mapping) else {}
