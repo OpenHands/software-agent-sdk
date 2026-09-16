@@ -56,7 +56,8 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-v3.2-reasoner",
 ]
 
-# Kimi K3 and K2.7; ``kimi-for-coding`` is the current alias.
+# Kimi K3 and K2.7; ``kimi-for-coding`` is Moonshot's own alias (direct API only;
+# the OpenHands proxy does not serve it, so it is not in the openhands list).
 VERIFIED_MOONSHOT_MODELS = [
     "kimi-k3",
     "kimi-k2.7-code",

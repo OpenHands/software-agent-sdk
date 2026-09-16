@@ -150,14 +150,35 @@ def test_openhands_haiku_uses_full_infra_name():
 
 
 def test_verified_lists_keep_two_latest_versions_per_line():
-    """Spot-check the curation rule: two latest versions per model line,
-    older versions dropped (see the module docstring and llm/utils/AGENTS.md).
+    """Check the curation rule for every provider: the two latest versions of a
+    line are present and the version before them is gone (see the module
+    docstring and ``llm/utils/AGENTS.md``). Update the table when a new version
+    lands.
     """
-    assert {"gpt-6-astra", "gpt-5.6"}.issubset(VERIFIED_OPENAI_MODELS)
-    assert not {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"} & set(VERIFIED_OPENAI_MODELS)
-    assert {"claude-opus-5", "claude-opus-4-8"}.issubset(VERIFIED_MODELS["anthropic"])
-    assert "claude-opus-4-7" not in VERIFIED_MODELS["anthropic"]
-    assert {"minimax-m3", "minimax-m2.7"} == set(VERIFIED_MODELS["minimax"])
+    expectations = {
+        "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
+        "anthropic": ({"claude-opus-5", "claude-opus-4-8"}, {"claude-opus-4-7"}),
+        "mistral": (
+            {"devstral-2512", "devstral-medium-2512"},
+            {"devstral-medium-2507"},
+        ),
+        "gemini": ({"gemini-3.8-flash", "gemini-3.7-flash"}, {"gemini-3.6-flash"}),
+        "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
+        "moonshot": ({"kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
+        "minimax": ({"minimax-m3", "minimax-m2.7"}, {"minimax-m2.5"}),
+        "glm": ({"glm-5.3", "glm-5.2"}, {"glm-5.1"}),
+        "nvidia": ({"nemotron-3.5-lightning-30b-a3b", "nemotron-3-nano"}, set()),
+        "qwen": ({"qwen3.8-max", "qwen3.7-max"}, {"qwen3-max", "qwen3-6-plus"}),
+    }
+    assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}
+    for provider, (present, absent) in expectations.items():
+        models = set(VERIFIED_MODELS[provider])
+        assert present <= models, f"{provider}: missing {present - models}"
+        assert not (absent & models), f"{provider}: stale {absent & models}"
+    assert {"gpt-6-astra", "gpt-5.6", "claude-opus-5"} <= set(VERIFIED_OPENHANDS_MODELS)
+    assert not {"gpt-5.5", "claude-opus-4-7", "minimax-m2.5"} & set(
+        VERIFIED_OPENHANDS_MODELS
+    )
 
 
 def test_trinity_model_is_openhands_only():
