@@ -11,7 +11,7 @@ on:
             base_image:
                 description: Base runtime image
                 type: string
-                default: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                default: python-node-runtime
             image:
                 description: GHCR image name
                 type: string
@@ -276,7 +276,7 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Explicit matrix: 4 variants × 2 architectures = 8 jobs
+                # Explicit matrix: 5 variants × 2 architectures = 10 jobs
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
@@ -284,8 +284,9 @@ jobs:
                       custom_tags: python
                       image_flavor: default
                       acp_provider_flavor: default
+                      target: binary
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
@@ -293,8 +294,9 @@ jobs:
                       custom_tags: python
                       image_flavor: default
                       acp_provider_flavor: default
+                      target: binary
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
@@ -303,8 +305,9 @@ jobs:
                       custom_tags: python
                       image_flavor: slim
                       acp_provider_flavor: none
+                      target: binary
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
@@ -312,8 +315,30 @@ jobs:
                       custom_tags: python
                       image_flavor: slim
                       acp_provider_flavor: none
+                      target: binary
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Minimal Python variant without ACP providers or capabilities
+                    - variant: python-minimal
+                      custom_tags: python
+                      image_flavor: minimal
+                      acp_provider_flavor: none
+                      target: binary-minimal
+                      arch: amd64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-minimal
+                      custom_tags: python
+                      image_flavor: minimal
+                      acp_provider_flavor: none
+                      target: binary-minimal
+                      arch: arm64
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
@@ -373,7 +398,7 @@ jobs:
             IMAGE_FLAVOR: ${{ matrix.image_flavor }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
-            TARGET: binary
+            TARGET: ${{ matrix.target || 'binary' }}
             PLATFORM: ${{ matrix.platform }}
             # Use SDK_SHA/SDK_REF so build.py tags PR images with the head commit and branch.
             # GITHUB_SHA/GITHUB_REF point at the synthetic merge ref on pull_request events.
@@ -437,6 +462,12 @@ jobs:
                       echo "install_acp_providers=$INSTALL_ACP_PROVIDERS" >> $GITHUB_OUTPUT
                   fi
 
+                  if [ "${{ matrix.target }}" = "binary-minimal" ]; then
+                      echo "install_capabilities=" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_capabilities=$INSTALL_CAPABILITIES" >> $GITHUB_OUTPUT
+                  fi
+
                   # Verify outputs
                   echo "=== Build outputs ==="
                   echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
@@ -462,7 +493,7 @@ jobs:
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
                       INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}
-                      INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}
+                      INSTALL_CAPABILITIES=${{ steps.prep.outputs.install_capabilities }}
 
             - name: Cleanup build context
               if: always()
@@ -533,7 +564,7 @@ jobs:
         runs-on: ubuntu-24.04
         strategy:
             matrix:
-                variant: [python, python-slim, java, golang]
+                variant: [python, python-slim, python-minimal, java, golang]
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 
