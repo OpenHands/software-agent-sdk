@@ -312,6 +312,9 @@ jobs:
         steps:
             - name: Checkout SDK release tooling
               uses: actions/checkout@v7
+              with:
+                  # The default GITHUB_TOKEN cannot push the bump branch.
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
             - name: Install Node.js
               uses: actions/setup-node@v6

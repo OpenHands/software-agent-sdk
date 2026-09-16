@@ -242,8 +242,32 @@ def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
         "INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}"
         in workflow_text
     )
-    assert "INSTALL_CAPABILITIES=${{ env.INSTALL_CAPABILITIES }}" in workflow_text
+    assert (
+        "INSTALL_CAPABILITIES=${{ steps.prep.outputs.install_capabilities }}"
+        in workflow_text
+    )
     assert (
         "scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}" in workflow_text
     )
-    assert "variant: [python, python-slim, java, golang]" in workflow_text
+    assert (
+        "variant: [python, python-slim, python-minimal, java, golang]" in workflow_text
+    )
+
+
+def test_server_workflow_publishes_binary_minimal_without_baked_extras() -> None:
+    workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
+
+    minimal_entries = re.findall(
+        r"- variant: python-minimal\n"
+        r"\s+custom_tags: python\n"
+        r"\s+image_flavor: minimal\n"
+        r"\s+acp_provider_flavor: none\n"
+        r"\s+target: binary-minimal\n"
+        r"\s+arch: (amd64|arm64)\n"
+        r"\s+base_image: python-node-runtime",
+        workflow_text,
+    )
+    assert minimal_entries == ["amd64", "arm64"]
+    assert "TARGET: ${{ matrix.target || 'binary' }}" in workflow_text
+    assert 'if [ "${{ matrix.target }}" = "binary-minimal" ]; then' in workflow_text
+    assert 'echo "install_capabilities=" >> $GITHUB_OUTPUT' in workflow_text

@@ -398,7 +398,7 @@ class BuildOptions(BaseModel):
         default="", description="Comma-separated list of custom tags."
     )
     image: str = Field(default="ghcr.io/openhands/agent-server")
-    image_flavor: Literal["default", "slim"] = Field(default="default")
+    image_flavor: Literal["default", "slim", "minimal"] = Field(default="default")
     target: TargetType = Field(default="binary")
     platforms: list[PlatformType] = Field(default=["linux/amd64"])
     push: bool | None = Field(
@@ -600,8 +600,10 @@ class BuildOptions(BaseModel):
             for versioned_tag in self.versioned_tags:
                 tags.append(f"{self.image}:{versioned_tag}{arch_suffix}")
 
-        # Append target suffix for clarity (binary is default, no suffix needed)
-        if self.target != "binary":
+        # The minimal image flavor already names its binary-minimal target.
+        if self.target != "binary" and not (
+            self.target == "binary-minimal" and self.image_flavor == "minimal"
+        ):
             tags = [f"{t}-{self.target}" for t in tags]
         return list(dict.fromkeys(tags))
 
@@ -1083,7 +1085,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--image-flavor",
         default=_env("IMAGE_FLAVOR", "default"),
-        choices=("default", "slim"),
+        choices=("default", "slim", "minimal"),
         help="Image flavor (default from $IMAGE_FLAVOR).",
     )
     parser.add_argument(
