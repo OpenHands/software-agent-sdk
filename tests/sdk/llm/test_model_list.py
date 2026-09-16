@@ -14,12 +14,12 @@ from openhands.sdk.llm.utils.verified_models import (
 
 def test_organize_models_and_providers():
     models = [
-        "openai/gpt-4o",
-        "anthropic/claude-sonnet-4-20250514",
-        "o3",
-        "o4-mini",
-        "devstral-small-2505",
-        "mistral/devstral-small-2505",
+        "openai/gpt-5.6",
+        "anthropic/claude-sonnet-5",
+        "gpt-5.3-codex",
+        "gpt-6-astra",
+        "devstral-2512",
+        "mistral/devstral-2512",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
         "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
@@ -139,16 +139,25 @@ def test_nemotron_3_super_uses_full_infra_name():
         )
 
 
-def test_claude_opus_4_5_uses_full_infra_name():
-    """The OpenHands proxy serves the dated snapshot ``claude-opus-4-5-20251101``;
-    the bare alias ``claude-opus-4-5`` is not a valid proxy model name and must
-    not be offered under the OpenHands provider.
+def test_openhands_haiku_uses_full_infra_name():
+    """The OpenHands proxy serves dated snapshots for some Anthropic models
+    (``claude-haiku-4-5-20251001``); bare aliases that the proxy does not know
+    must not be offered under the OpenHands provider.
     """
-    assert "claude-opus-4-5-20251101" in VERIFIED_OPENHANDS_MODELS
-    # Scope is intentionally narrower than test_nemotron_3_super_uses_full_infra_name
-    # (which loops over all providers): VERIFIED_ANTHROPIC_MODELS legitimately keeps
-    # the bare alias because direct-Anthropic BYOK may accept it.
-    assert "claude-opus-4-5" not in VERIFIED_OPENHANDS_MODELS
+    assert "claude-haiku-4-5" not in VERIFIED_OPENHANDS_MODELS
+    # VERIFIED_ANTHROPIC_MODELS keeps the dated name; direct-Anthropic BYOK is fine.
+    assert "claude-haiku-4-5-20251001" in VERIFIED_MODELS["anthropic"]
+
+
+def test_verified_lists_keep_two_latest_versions_per_line():
+    """Spot-check the curation rule: two latest versions per model line,
+    older versions dropped (see the module docstring and llm/utils/AGENTS.md).
+    """
+    assert {"gpt-6-astra", "gpt-5.6"}.issubset(VERIFIED_OPENAI_MODELS)
+    assert not {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"} & set(VERIFIED_OPENAI_MODELS)
+    assert {"claude-opus-5", "claude-opus-4-8"}.issubset(VERIFIED_MODELS["anthropic"])
+    assert "claude-opus-4-7" not in VERIFIED_MODELS["anthropic"]
+    assert {"minimax-m3", "minimax-m2.7"} == set(VERIFIED_MODELS["minimax"])
 
 
 def test_trinity_model_is_openhands_only():
