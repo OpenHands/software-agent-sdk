@@ -46,6 +46,29 @@ SUPPORTED_TRANSPORTS: Final[frozenset[str]] = frozenset({"stdio", "streamable-ht
 
 _PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\{(PLUGIN_ROOT|PLUGIN_DATA)\}")
 
+#: Headers the client generates to implement HTTP or MCP. §7.2.1 gives them
+#: precedence over a configured header of the same name, so a configured one is
+#: dropped: left in, httpx would send it as written -- a forged ``Host``, or a
+#: ``Content-Length`` that contradicts the body.
+_CLIENT_HEADERS: Final[frozenset[str]] = frozenset(
+    {
+        "accept",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "keep-alive",
+        "last-event-id",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
 #: RFC 9110 token characters, the legal alphabet for a header field name.
 _TOKEN_CHARS: Final[frozenset[str]] = frozenset(
     "!#$%&'*+-.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -193,7 +216,9 @@ def _remote_fields(entry: dict[str, Any]) -> dict[str, Any]:
         "url": _validate_url(entry["url"]),
         "headers": {
             name: SecretStr(value)
-            for name, value in _validate_headers(entry.get("headers", {})).items()
+            for name, value in _validate_headers(
+                entry.get("headers", {}), entry["url"]
+            ).items()
         },
     }
 
@@ -280,8 +305,8 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
-def _validate_headers(headers: dict[str, str]) -> dict[str, str]:
-    """Enforce §7.2.1's header rules: valid fields, no case-insensitive dupes."""
+def _validate_headers(headers: dict[str, str], url: str) -> dict[str, str]:
+    """Enforce §7.2.1's header rules and drop headers the client generates."""
     seen: set[str] = set()
     for name, value in headers.items():
         if not name or not set(name) <= _TOKEN_CHARS:
@@ -293,7 +318,15 @@ def _validate_headers(headers: dict[str, str]) -> dict[str, str]:
                 f"header {name!r} has a value that is not a field value"
             )
         seen.add(name.lower())
-    return headers
+
+    dropped = sorted(name for name in headers if name.lower() in _CLIENT_HEADERS)
+    if dropped:
+        logger.warning(
+            "Ignoring client-generated header(s) %s configured for %s",
+            ", ".join(dropped),
+            url,
+        )
+    return {k: v for k, v in headers.items() if k.lower() not in _CLIENT_HEADERS}
 
 
 @cache

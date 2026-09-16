@@ -2,7 +2,11 @@
 
 import json
 import sys
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -453,6 +457,38 @@ class TestRemote:
             is None
         )
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Host",
+            "content-length",
+            "Transfer-Encoding",
+            "Connection",
+            "Accept",
+            "Content-Type",
+            "Mcp-Session-Id",
+            "MCP-Protocol-Version",
+        ],
+    )
+    def test_client_generated_headers_are_dropped(
+        self, plugin_dir: Path, data_root: Path, name: str
+    ):
+        """§7.2.1: the client's own headers take precedence; httpx would
+        otherwise send a configured one as written."""
+        server = load_one(
+            plugin_dir,
+            data_root,
+            {
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "headers": {name: "configured", "X-Tenant": "public-tenant"},
+            },
+        )
+
+        assert server is not None
+        assert server.headers is not None
+        assert list(server.headers) == ["X-Tenant"]
+
     def test_headers_are_never_expanded(self, plugin_dir: Path, data_root: Path):
         server = load_one(
             plugin_dir,
@@ -777,3 +813,89 @@ def test_load_plugins_does_not_expand_package_servers(
     )
 
     assert updated.mcp_config["s"].args == ["${LEAKED}"]
+
+
+@pytest.fixture
+def http_capture() -> Iterator[tuple[dict[str, list[dict[str, str]]], str, str]]:
+    """Two local origins: ``a`` redirects within itself, then to ``b``.
+
+    Returns the requests each path saw, keyed ``"a/mcp"``, ``"a/moved"`` and
+    ``"b/mcp"``, plus both base URLs.
+    """
+    seen: dict[str, list[dict[str, str]]] = {}
+    servers: list[ThreadingHTTPServer] = []
+
+    def make_handler(label: str, redirects: dict[str, str]):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                seen.setdefault(f"{label}{self.path}", []).append(
+                    {k.lower(): v for k, v in self.headers.items()}
+                )
+                target = redirects.get(self.path)
+                self.send_response(307 if target else 400)
+                if target:
+                    self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_DELETE = do_POST
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        return Handler
+
+    b = ThreadingHTTPServer(("127.0.0.1", 0), make_handler("b", {}))
+    b_url = f"http://127.0.0.1:{b.server_port}"
+    a = ThreadingHTTPServer(("127.0.0.1", 0), make_handler("a", {}))
+    a_url = f"http://127.0.0.1:{a.server_port}"
+    a.RequestHandlerClass = make_handler(
+        "a", {"/mcp": f"{a_url}/moved", "/moved": f"{b_url}/mcp"}
+    )
+    for server in (a, b):
+        servers.append(server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield seen, a_url, b_url
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def test_configured_headers_do_not_follow_a_redirect_off_origin(
+    plugin_dir: Path, data_root: Path, http_capture
+):
+    """§7.2.1, over real HTTP: kept on a same-origin redirect, dropped once the
+    request leaves the origin, and never allowed to override the client's own
+    headers."""
+    seen, a_url, b_url = http_capture
+    servers = load(
+        plugin_dir,
+        data_root,
+        {
+            "api": {
+                "type": "streamable-http",
+                "url": f"{a_url}/mcp",
+                "headers": {"X-Tenant": "public-tenant", "Host": "evil.example"},
+            }
+        },
+    )
+
+    with pytest.raises(Exception):
+        # The stub never answers MCP; only the requests matter.
+        with create_mcp_tools(servers, timeout=10):
+            pass
+
+    first, same_origin, other_origin = (
+        seen["a/mcp"][0],
+        seen["a/moved"][0],
+        seen["b/mcp"][0],
+    )
+    assert first["x-tenant"] == "public-tenant"
+    assert first["host"] == a_url.removeprefix("http://")
+    assert same_origin["x-tenant"] == "public-tenant"
+    assert "x-tenant" not in other_origin
+    assert other_origin["host"] == b_url.removeprefix("http://")
