@@ -1,7 +1,7 @@
 """Deferred-init router for warm-pool agent servers.
 
 When ``Config.deferred_init`` is True the server starts in *dormant* mode:
-stateless services (VSCode, desktop, tool preload) come up as usual, but
+stateless services (VSCode, tool preload) come up as usual, but
 the conversation, event, and bash routers return 503 until ``POST /api/init``
 delivers the runtime configuration. This is intended for warm-pool
 deployments where pods are pre-warmed before a user is matched and the

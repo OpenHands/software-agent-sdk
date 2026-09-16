@@ -85,7 +85,7 @@ def update_last_execution_time():
 def mark_initialization_complete() -> None:
     """Mark the server as fully initialized and ready to serve requests.
 
-    This should be called after all services (VSCode, desktop, tool preload, etc.)
+    This should be called after all services (VSCode, tool preload, etc.)
     have finished initializing. Until this is called, the /ready endpoint will
     return 503 Service Unavailable.
     """
