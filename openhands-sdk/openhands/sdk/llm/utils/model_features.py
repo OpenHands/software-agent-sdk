@@ -139,6 +139,10 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-8",
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     "claude-opus-5",
+    # Claude Sonnet 5 supports prompt caching but is not covered by any
+    # "claude-sonnet-4*" entry above; without this, every input token bills
+    # uncached, which cancels the tier's price advantage on agent workloads.
+    "claude-sonnet-5",
     # https://www.anthropic.com/news/claude-fable-5
     "claude-fable-5",
     # Do NOT add Gemini: explicit cache_control markers freeze its cache at the

@@ -11,12 +11,14 @@ name: Issue Readiness Check
 # Acceptance Criteria sections, the latter with at least one checklist item.
 #
 # When criteria are met the label is added (idempotently); when they are not the
-# label is removed. A feedback comment is posted (or updated) in three cases:
+# label is removed. A feedback comment is posted (or updated) in four cases:
 #   1. The issue is first opened or reopened — always comment so the author
 #      knows whether their issue is ready or what is missing.
 #   2. The label is being added (issue became ready) — comment celebrating it.
 #   3. The label is being removed (issue was ready but is no longer) — comment
 #      explaining what changed.
+#   4. The ready-for-dev label is applied manually — comment confirming whether
+#      the issue meets the criteria.
 # Edits that do not change the label state do not produce a new comment. All
 # comments are upserted by a hidden marker so there is at most one per issue.
 
@@ -48,7 +50,10 @@ jobs:
                   GITHUB_EVENT_PATH: ${{ github.event_path }}
               run: |
                   set -euo pipefail
-                  python .github/scripts/check_issue_readiness.py --json > /tmp/result.json
+                  # The script exits 1 for a not-ready issue; `|| true` keeps
+                  # pipefail from aborting the workflow before label/comment
+                  # handling. The JSON result stays machine-readable.
+                  python .github/scripts/check_issue_readiness.py --json > /tmp/result.json || true
                   echo "ready=$(jq -r '.ready' /tmp/result.json)" >> "$GITHUB_OUTPUT"
                   # Write reasons to a file so the comment step can read them
                   # without shell-escaping multiline text.
@@ -89,6 +94,7 @@ jobs:
               if: >-
                   github.event.action == 'opened'
                   || github.event.action == 'reopened'
+                  || (github.event.action == 'labeled' && github.event.label.name == 'ready-for-dev')
                   || (steps.readiness.outputs.ready == 'true' && !contains(github.event.issue.labels.*.name, 'ready-for-dev'))
                   || (steps.readiness.outputs.ready != 'true' && contains(github.event.issue.labels.*.name, 'ready-for-dev'))
               env:

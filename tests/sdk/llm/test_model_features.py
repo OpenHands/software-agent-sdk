@@ -1,3 +1,16 @@
+"""Capability-detection tests.
+
+LiteLLM fetches ``model_prices_and_context_window.json`` from its upstream
+``main`` branch at import time, so pinning litellm in ``uv.lock`` pins its code
+but not its model database — and the SDK sets no override, in tests or in
+production. These tests therefore run against data that changes without us.
+
+Assert what the SDK owns: its override lists, its model-name normalization, and
+that a routing wrapper does not change the answer. A bare capability value with
+no SDK rule behind it is upstream's to change, and pinning one here fails the
+day it does (#4877).
+"""
+
 import pytest
 from litellm.utils import supports_vision
 
@@ -54,10 +67,13 @@ def test_model_matches(name, pattern, expected):
         ("moonshot/kimi-k2.5", False),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
-        # OpenRouter docs list these as reasoning models, but LiteLLM capability
-        # metadata does not currently mark them as reasoning-capable.
+        # Route-dependent, and both directions are correct: OpenRouter accepts
+        # `reasoning_effort` and translates it, while Moonshot's own API does
+        # not take the parameter at all (see the two rows above). These follow
+        # LiteLLM's per-route `supported_openai_params` rather than an SDK
+        # override, so a value here tracks upstream and may move again (#4877).
         ("openrouter/moonshotai/kimi-k2.5", False),
-        ("openrouter/moonshotai/kimi-k2-thinking", False),
+        ("openrouter/moonshotai/kimi-k2-thinking", True),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
         ("openrouter/anthropic/claude-opus-4.5", True),
@@ -148,6 +164,11 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-opus-5", True),
         ("anthropic/claude-opus-5", True),
         ("litellm_proxy/anthropic/claude-opus-5", True),
+        # claude-sonnet-5 is not matched by any claude-sonnet-4* entry and must
+        # be listed explicitly, same as claude-fable-5.
+        ("claude-sonnet-5", True),
+        ("anthropic/claude-sonnet-5", True),
+        ("litellm_proxy/anthropic/claude-sonnet-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),

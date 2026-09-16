@@ -21,6 +21,7 @@ from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -38,9 +39,8 @@ from openhands.agent_server.dependencies import (
     check_workspace_session,
 )
 from openhands.agent_server.desktop_router import desktop_router
-from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
-from openhands.agent_server.file_router import file_router
+from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.init_router import (
@@ -60,11 +60,13 @@ from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
 )
+from openhands.agent_server.runtime_router import create_runtime_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
     mark_initialization_complete,
     server_details_router,
 )
+from openhands.agent_server.session_socket import session_router
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
 from openhands.agent_server.sockets import sockets_router
@@ -166,7 +168,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             emit_server_started()
 
         vscode_service = get_vscode_service()
-        desktop_service = get_desktop_service()
         tool_preload_service = get_tool_preload_service()
 
         # Define async functions for starting each service
@@ -182,18 +183,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("VSCode service is disabled")
 
-        async def start_desktop_service():
-            if desktop_service is not None:
-                desktop_started = await desktop_service.start()
-                if desktop_started:
-                    logger.info("Desktop service started successfully")
-                else:
-                    logger.warning(
-                        "Desktop service failed to start, continuing without desktop"
-                    )
-            else:
-                logger.info("Desktop service is disabled")
-
         async def start_tool_preload_service():
             if tool_preload_service is not None:
                 tool_preload_started = await tool_preload_service.start()
@@ -207,7 +196,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # Start all services concurrently
         results = await asyncio.gather(
             start_vscode_service(),
-            start_desktop_service(),
             start_tool_preload_service(),
             return_exceptions=True,
         )
@@ -230,17 +218,12 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 if vscode_service is not None:
                     await vscode_service.stop()
 
-            async def stop_desktop_service():
-                if desktop_service is not None:
-                    await desktop_service.stop()
-
             async def stop_tool_preload_service():
                 if tool_preload_service is not None:
                     await tool_preload_service.stop()
 
             await asyncio.gather(
                 stop_vscode_service(),
-                stop_desktop_service(),
                 stop_tool_preload_service(),
                 return_exceptions=True,
             )
@@ -429,6 +412,8 @@ def _add_api_routes(app: FastAPI) -> None:
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
+    api_router.include_router(file_discovery_router)
+    api_router.include_router(create_runtime_router())
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
     api_router.include_router(credential_binding_router)
@@ -441,6 +426,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(sub_agents_router)
     api_router.include_router(plugins_router)
+    api_router.include_router(canvas_extensions_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(provider_connections_router)
@@ -468,6 +454,8 @@ def _add_api_routes(app: FastAPI) -> None:
     app.include_router(workspace_api_router)
 
     app.include_router(sockets_router)
+
+    app.include_router(session_router)
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:

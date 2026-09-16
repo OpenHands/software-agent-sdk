@@ -14,7 +14,13 @@ The criteria are type-specific:
 GitHub issue forms render each field as an `### <Label>` (h3) heading followed
 by the field text, with empty optional fields rendered as `_No response_`. This
 parser splits the body on those headings so each criterion is checked against
-the right field rather than the whole body.
+the right field rather than the whole body. Headings inside fenced code blocks
+(pasted logs, quoted templates) are ignored.
+
+The exit code is `0` when the issue is ready and `1` when it is not, in both
+text and `--json` modes. JSON output stays machine-readable on stdout either
+way; the workflow invokes the script with `|| true` so a not-ready result does
+not abort the run under `set -euo pipefail` before label/comment handling.
 
 Local usage:
 
@@ -33,14 +39,18 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from markdown_sections import find_headings
+
 
 BUG_LABEL = "bug"
 ENHANCEMENT_LABEL = "enhancement"
 
-# Issue-form fields render as `### Label` h3 headings. Match case-insensitively
-# and tolerate trailing whitespace/colons. `^###\s+` is specific enough because
-# h1/h2 are not produced by issue forms.
-HEADING_RE = re.compile(r"(?m)^###\s+(.+?)\s*$")
+# Issue-form fields render as `### Label` h3 headings, but free-form issues
+# (and issues edited by agents) commonly use `##` h2 headings. Match any
+# heading level of two or more hashes case-insensitively and tolerate trailing
+# whitespace/colons, so `##` and `###` sections are treated equivalently. A
+# bare `#` (single-hash title) is deliberately not matched.
+HEADING_RE = re.compile(r"(?m)^#{2,}\s+(.+?)\s*$")
 
 # `_No response_` is what GitHub writes for an empty optional form field.
 NO_RESPONSE = "_No response_"
@@ -85,7 +95,7 @@ def extract_sections(body: str) -> dict[str, str]:
     form) may still use `###` headings; if they don't, the map is empty and the
     caller falls back to whole-body checks.
     """
-    matches = list(HEADING_RE.finditer(body))
+    matches = find_headings(body, HEADING_RE)
     sections: dict[str, str] = {}
     for index, match in enumerate(matches):
         start = match.end()
@@ -246,12 +256,7 @@ def main() -> int:
 
     if args.json:
         print(json.dumps({"ready": result.ready, "reasons": result.reasons}))
-        # In --json mode the exit code is not meaningful: the result is consumed
-        # via the printed JSON, and the workflow must run to completion for both
-        # ready and not-ready issues (label add/remove, feedback comment).
-        return 0
-
-    if result.ready:
+    elif result.ready:
         print("Issue meets ready-for-dev criteria.")
     else:
         print("Issue does not meet ready-for-dev criteria:")

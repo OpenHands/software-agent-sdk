@@ -16,7 +16,7 @@ from fastmcp.mcp_config import MCPConfig
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 if TYPE_CHECKING:
@@ -518,9 +518,10 @@ def get_skills_cache_dir() -> Path:
     """Get the local cache directory for public skills repository.
 
     Returns:
-        Path to the skills cache directory (~/.openhands/cache/skills).
+        Path to the ``cache/skills`` subdirectory of the user persistence
+        directory (``~/.openhands/cache/skills`` absent OH_PERSISTENCE_DIR).
     """
-    cache_dir = Path.home() / ".openhands" / "cache" / "skills"
+    cache_dir = get_user_persistence_dir() / "cache" / "skills"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
