@@ -17,7 +17,6 @@ from openhands.agent_server.models import (
     ExecuteBashRequest,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.sdk.conversation.secret_registry import SecretRegistry, StreamOutputMask
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env, utc_now
 
@@ -33,7 +32,6 @@ class BashEventService:
 
     bash_events_dir: Path = field()
     default_cwd: str | None = None
-    secret_registry: SecretRegistry | None = field(default=None, repr=False)
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _closed: bool = field(default=False, init=False)
     _pub_sub: PubSub[BashEventBase] = field(
@@ -276,24 +274,6 @@ class BashEventService:
     async def _execute_bash_command(self, command: BashCommand) -> None:
         """Execute the bash event and create an observation event."""
         try:
-            env = sanitized_env()
-            registry = self.secret_registry
-            if registry is not None:
-                # Runtime commands can launch opaque scripts. The conversation
-                # registry already contains only its authorized secrets.
-                env.update(
-                    await asyncio.to_thread(registry.get_all_secrets_as_env_vars)
-                )
-            stdout_mask = (
-                registry.compile_stream_mask()
-                if registry
-                else StreamOutputMask(None, 0)
-            )
-            stderr_mask = (
-                registry.compile_stream_mask()
-                if registry
-                else StreamOutputMask(None, 0)
-            )
             # Create subprocess in a new session so we can signal the whole
             # process group on teardown (the shell's children, e.g. sleep, must
             # die before the shell can run user-installed traps).
@@ -303,7 +283,7 @@ class BashEventService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 shell=True,
-                env=env,
+                env=sanitized_env(),
                 start_new_session=True,
             )
 
@@ -316,7 +296,6 @@ class BashEventService:
                 nonlocal output_order, stdout_buffer, stderr_buffer
 
                 buffer = stderr_buffer if is_stderr else stdout_buffer
-                masker = stderr_mask if is_stderr else stdout_mask
 
                 while True:
                     try:
@@ -325,7 +304,7 @@ class BashEventService:
                         if not data:
                             break
 
-                        text = masker.feed(data.decode("utf-8", errors="replace"))
+                        text = data.decode("utf-8", errors="replace")
                         buffer += text
 
                         # Update the appropriate buffer
@@ -401,8 +380,8 @@ class BashEventService:
                 )
 
             # Create final output event with any remaining buffer content and exit code
-            final_stdout = (stdout_buffer + stdout_mask.flush()) or None
-            final_stderr = (stderr_buffer + stderr_mask.flush()) or None
+            final_stdout = stdout_buffer if stdout_buffer else None
+            final_stderr = stderr_buffer if stderr_buffer else None
 
             # Only create final event if there's remaining content or we need to report
             # exit code

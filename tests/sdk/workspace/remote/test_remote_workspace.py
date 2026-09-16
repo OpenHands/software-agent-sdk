@@ -750,6 +750,27 @@ def test_get_secrets_filters_by_names():
     assert "OPENAI_API_KEY" not in secrets
 
 
+def test_get_secrets_requests_agent_profile_scope():
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {"secrets": [{"name": "GITHUB_TOKEN"}]}
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets(agent_profile_id="profile-id")
+
+    assert list(secrets) == ["GITHUB_TOKEN"]
+    mock_client.get.assert_called_once_with(
+        "/api/settings/secrets",
+        headers={"X-Session-API-Key": "test-key"},
+        params={"agent_profile_id": "profile-id"},
+    )
+
+
 def test_get_secrets_returns_empty_dict_when_no_secrets():
     """Test get_secrets returns empty dict when no secrets exist."""
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")

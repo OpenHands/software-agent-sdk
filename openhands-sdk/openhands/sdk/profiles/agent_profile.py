@@ -117,14 +117,18 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
-    # Names only; selected saved values are resolved when launching a conversation.
+    # Names only — the values live in the user's secrets store and reach a
+    # conversation as ``LookupSecret``s resolved at spawn time, so this keeps the
+    # profile secret-free. Unlike ``mcp_server_refs`` a ref here can never
+    # dangle: this is an allow-list applied to whatever the conversation was
+    # given, so a name with no matching secret simply never matches.
     secret_refs: list[str] | None = Field(
         default=None,
         description=(
-            "Conversation secret allow-list. null preserves supplied secrets without "
-            "loading additional saved secrets; [] exposes none. A list selects only "
-            "those names, resolving matching saved secrets at launch. An ACP profile "
-            "must include its provider credential when using an explicit list."
+            "Which of the user's saved secrets to expose to this agent. "
+            "null = all; [] = none; a non-null list = filter to the named keys. "
+            "Strict: nothing is added back. An ACP profile must list its own "
+            "provider credential to receive it."
         ),
     )
 

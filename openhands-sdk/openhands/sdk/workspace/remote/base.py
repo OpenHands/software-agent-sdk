@@ -454,7 +454,12 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_secrets(self, names: list[str] | None = None) -> dict[str, "LookupSecret"]:
+    def get_secrets(
+        self,
+        names: list[str] | None = None,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> dict[str, "LookupSecret"]:
         """Build ``LookupSecret`` references for the agent-server's secrets.
 
         Fetches the list of available secret **names** from the agent-server
@@ -468,6 +473,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Args:
             names: Optional list of secret names to include. If ``None``,
                 all available secrets are returned.
+            agent_profile_id: Optional agent profile whose ``secret_refs``
+                restrict the names returned by the agent server.
 
         Returns:
             A dictionary mapping secret names to ``LookupSecret`` instances.
@@ -490,7 +497,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        response = self.client.get("/api/settings/secrets", headers=self._headers)
+        request_kwargs: dict[str, Any] = {"headers": self._headers}
+        if agent_profile_id is not None:
+            request_kwargs["params"] = {"agent_profile_id": agent_profile_id}
+        response = self.client.get("/api/settings/secrets", **request_kwargs)
         response.raise_for_status()
 
         # Validate response using shared SDK model
