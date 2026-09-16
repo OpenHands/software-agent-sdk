@@ -22,11 +22,11 @@ from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _read_command_definitions,
     _read_hooks_config,
-    _resolves_within,
 )
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
 from openhands.sdk.subagent.load import load_agents_from_dir
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import resolves_within
 
 
 logger = get_logger(__name__)
@@ -112,7 +112,7 @@ class AgentPluginsFormat(PluginFormat):
             ValueError: On any fatal manifest violation.
         """
         manifest_path = plugin_dir / MANIFEST_FILE
-        if not _resolves_within(manifest_path, plugin_dir):
+        if not resolves_within(manifest_path, plugin_dir):
             raise ValueError(
                 f"Manifest {manifest_path} resolves outside the plugin root"
             )

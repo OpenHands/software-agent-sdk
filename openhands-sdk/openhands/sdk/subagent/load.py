@@ -40,7 +40,7 @@ from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.path import get_user_persistence_dir
+from openhands.sdk.utils.path import get_user_persistence_dir, resolves_within
 
 
 logger = get_logger(__name__)
@@ -207,8 +207,7 @@ def load_agents_from_dir(
             or md_file.name in _SKIP_FILES
         ):
             continue
-        if root is not None and not md_file.resolve().is_relative_to(root.resolve()):
-            logger.warning(f"Skipping {md_file}: it resolves outside {root}")
+        if root is not None and not resolves_within(md_file, root):
             continue
 
         try:

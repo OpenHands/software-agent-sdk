@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from contextlib import suppress
 from functools import cache
 from pathlib import Path, PureWindowsPath
 
@@ -56,6 +57,19 @@ def get_user_persistence_dir(default: Path | None = None) -> Path:
     if default is not None:
         return default
     return Path.home() / ".openhands"
+
+
+def resolves_within(path: Path, root: Path) -> bool:
+    """Whether ``path`` resolves inside the resolved ``root``.
+
+    Symlinks may point anywhere under ``root`` but not outside it. A path that
+    cannot be resolved (a symlink loop raises on Python 3.12) counts as outside.
+    """
+    with suppress(OSError, RuntimeError):
+        if path.resolve().is_relative_to(root.resolve()):
+            return True
+    logger.warning(f"Denying {path}: it resolves outside {root}")
+    return False
 
 
 def to_posix_path(path: str | os.PathLike[str]) -> str:

@@ -22,7 +22,6 @@ from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _read_command_definitions,
     _read_hooks_config,
-    _resolves_within,
 )
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -32,6 +31,7 @@ from openhands.sdk.plugin.types import (
 from openhands.sdk.skills.utils import load_mcp_config
 from openhands.sdk.subagent.load import load_agents_from_dir
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import resolves_within
 
 
 logger = get_logger(__name__)
@@ -76,12 +76,13 @@ class ClaudeCodePluginFormat(PluginFormat):
 
         for manifest_dir in PLUGIN_MANIFEST_DIRS:
             candidate = plugin_dir / manifest_dir / PLUGIN_MANIFEST_FILE
-            if candidate.exists():
+            # is_symlink(): a dangling link must be rejected, not skipped.
+            if candidate.exists() or candidate.is_symlink():
                 manifest_path = candidate
                 break
 
         if manifest_path:
-            if not _resolves_within(manifest_path, plugin_dir):
+            if not resolves_within(manifest_path, plugin_dir):
                 raise ValueError(
                     f"Manifest {manifest_path} resolves outside the plugin root"
                 )
@@ -126,10 +127,7 @@ class ClaudeCodePluginFormat(PluginFormat):
         during plugin loading before secrets are available.
         """
         mcp_json = plugin_dir / ".mcp.json"
-        if not mcp_json.exists() or not _resolves_within(mcp_json, plugin_dir):
-            return {}
-        if not mcp_json.is_file():
-            logger.warning(f"Ignoring MCP config: {mcp_json} is not a regular file")
+        if not mcp_json.exists() or not resolves_within(mcp_json, plugin_dir):
             return {}
 
         try:
@@ -153,7 +151,7 @@ class ClaudeCodePluginFormat(PluginFormat):
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
         """Load hooks configuration from ``hooks/hooks.json``."""
-        return _read_hooks_config(plugin_dir, plugin_dir)
+        return _read_hooks_config(plugin_dir)
 
     def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:
         """Load agent definitions from the ``agents/`` directory."""
@@ -161,4 +159,4 @@ class ClaudeCodePluginFormat(PluginFormat):
 
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from the ``commands/`` directory."""
-        return _read_command_definitions(plugin_dir, plugin_dir)
+        return _read_command_definitions(plugin_dir)

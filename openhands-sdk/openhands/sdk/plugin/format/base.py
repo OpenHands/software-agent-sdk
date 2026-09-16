@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -21,9 +20,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
 from openhands.sdk.skills.skill import Skill
-from openhands.sdk.skills.utils import find_skill_md
+from openhands.sdk.skills.utils import find_mcp_config, find_skill_md
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import resolves_within, to_posix_path
 
 
 if TYPE_CHECKING:
@@ -98,7 +97,7 @@ class PluginFormat(ABC):
         """
         skills_dir = plugin_dir / "skills"
         if os.path.lexists(skills_dir):
-            if not _resolves_within(skills_dir, plugin_dir):
+            if not resolves_within(skills_dir, plugin_dir):
                 return []
             if not skills_dir.is_dir():
                 logger.warning(f"Ignoring skills: {skills_dir} is not a directory")
@@ -106,7 +105,7 @@ class PluginFormat(ABC):
             return _load_skills_from_skills_dir(skills_dir, plugin_dir)
 
         root_skill_md = find_skill_md(plugin_dir)
-        if root_skill_md is not None and _resolves_within(root_skill_md, plugin_dir):
+        if root_skill_md is not None and resolves_within(root_skill_md, plugin_dir):
             return _load_root_skill(plugin_dir, root_skill_md)
 
         return []
@@ -151,20 +150,7 @@ class PluginFormat(ABC):
         )
 
 
-def _resolves_within(path: Path, plugin_dir: Path) -> bool:
-    """Whether ``path`` resolves inside the resolved plugin root (spec §4.1).
-
-    Symlinks may point anywhere inside the package but not outside it. Callers
-    apply the narrowest failure boundary; this only reports the escape.
-    """
-    with suppress(OSError, RuntimeError):  # e.g. a symlink loop
-        if path.resolve().is_relative_to(plugin_dir.resolve()):
-            return True
-    logger.warning(f"Denying {path}: it resolves outside plugin root {plugin_dir}")
-    return False
-
-
-def _read_hooks_config(root: Path, plugin_dir: Path) -> HookConfig | None:
+def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig | None:
     """Read ``hooks/hooks.json`` under ``root``, or None if it is absent.
 
     Shared by the concrete strategies: hooks, agents and commands use the same
@@ -173,7 +159,7 @@ def _read_hooks_config(root: Path, plugin_dir: Path) -> HookConfig | None:
     Agent Plugins).
     """
     hooks_json = root / "hooks" / "hooks.json"
-    if not hooks_json.exists() or not _resolves_within(hooks_json, plugin_dir):
+    if not hooks_json.exists() or not resolves_within(hooks_json, plugin_dir or root):
         return None
 
     try:
@@ -191,15 +177,18 @@ def _read_hooks_config(root: Path, plugin_dir: Path) -> HookConfig | None:
         return None
 
 
-def _read_command_definitions(root: Path, plugin_dir: Path) -> list[CommandDefinition]:
+def _read_command_definitions(
+    root: Path, plugin_dir: Path | None = None
+) -> list[CommandDefinition]:
     """Read command definitions from the ``commands/`` directory under ``root``.
 
     Commands have no counterpart to :func:`load_agents_from_dir`, so this is the
     one loader of the three the plugin format still owns. It applies the same
     file predicate, so ``commands/`` and ``agents/`` stay symmetric.
     """
+    plugin_dir = plugin_dir or root
     commands_dir = root / "commands"
-    if not commands_dir.is_dir() or not _resolves_within(commands_dir, plugin_dir):
+    if not commands_dir.is_dir() or not resolves_within(commands_dir, plugin_dir):
         return []
 
     commands: list[CommandDefinition] = []
@@ -212,7 +201,7 @@ def _read_command_definitions(root: Path, plugin_dir: Path) -> list[CommandDefin
                 "README.md",
                 "readme.md",
             )
-            and _resolves_within(item, plugin_dir)
+            and resolves_within(item, plugin_dir)
         ):
             try:
                 command = CommandDefinition.load(item)
@@ -228,30 +217,36 @@ def _load_skills_from_skills_dir(skills_dir: Path, plugin_dir: Path) -> list[Ski
     """Load every skill under a plugin's ``skills/`` directory."""
     skills: list[Skill] = []
     for item in sorted(skills_dir.iterdir()):
+        # Checked before find_skill_md() so an escaping directory is not listed.
+        if not resolves_within(item, plugin_dir):
+            continue
         if item.is_dir():
             skill_md = find_skill_md(item)
-            if skill_md and _resolves_within(skill_md, plugin_dir):
+            if skill_md and resolves_within(skill_md, plugin_dir):
                 try:
                     # Skill.load() discovers resources, no need to do it again
-                    skill = Skill.load(skill_md, skills_dir, strict=False)
+                    skill = _load_plugin_skill(skill_md, skills_dir, plugin_dir)
                     skills.append(skill)
                     logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
                 except Exception as e:
                     logger.warning(f"Failed to load skill from {item}: {e}")
-        elif (
-            item.suffix == ".md"
-            and item.name.lower() != "readme.md"
-            and _resolves_within(item, plugin_dir)
-        ):
+        elif item.suffix == ".md" and item.name.lower() != "readme.md":
             # Also support single .md files in skills/ directory
             try:
-                skill = Skill.load(item, skills_dir, strict=False)
+                skill = _load_plugin_skill(item, skills_dir, plugin_dir)
                 skills.append(skill)
                 logger.debug(f"Loaded skill: {skill.name} from {item}")
             except Exception as e:
                 logger.warning(f"Failed to load skill from {item}: {e}")
 
     return skills
+
+
+def _load_plugin_skill(skill_md: Path, skills_dir: Path, plugin_dir: Path) -> Skill:
+    """``Skill.load`` that ignores a skill-level ``.mcp.json`` escaping the root."""
+    mcp_json = find_mcp_config(skill_md.parent)
+    skip_mcp = mcp_json is not None and not resolves_within(mcp_json, plugin_dir)
+    return Skill.load(skill_md, skills_dir, strict=False, skip_mcp=skip_mcp)
 
 
 def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
