@@ -219,10 +219,32 @@ class TestMCPServers:
         assert env_of(server)["PLUGIN_DATA"] == data
         conversation.close()
 
+    def test_the_declared_transport_reaches_the_tool_provider(
+        self, agent: Agent, workspace: Path
+    ):
+        """§7.2.1: the transport the entry declares is the one tools connect with."""
+        created: list[dict[str, MCPServer]] = []
+        conversation = conversation_with(
+            "full-package",
+            agent,
+            workspace,
+            mcp_tool_provider=RecordingMCPToolProvider(created),
+        )
+
+        conversation._ensure_agent_ready()
+
+        assert created[-1]["local-tools"].transport == "stdio"
+        assert created[-1]["remote-api"].transport == "streamable-http"
+        conversation.close()
+
     def test_placeholders_are_left_untouched_elsewhere(
         self, agent: Agent, workspace: Path
     ):
-        """Command, env keys, URL and headers carry no expansion (§9.2)."""
+        """Command, env keys, URL and headers carry no expansion (§9.2).
+
+        The configured ``Host`` is gone by this point: the client generates that
+        one itself, so it never reaches the server that gets built.
+        """
         created: list[dict[str, MCPServer]] = []
         conversation = conversation_with(
             "full-package",
@@ -321,6 +343,44 @@ class TestFailureBoundaries:
             conversation._ensure_plugins_loaded()
 
         assert conversation.agent.mcp_config == {}
+        conversation.close()
+
+    def test_a_disabled_mcp_component_still_yields_skills(
+        self, agent: Agent, workspace: Path
+    ):
+        """An ``mcp.json`` targeting another version disables MCP, not the plugin."""
+        created: list[dict[str, MCPServer]] = []
+        conversation = conversation_with(
+            "mcp-version-mismatch",
+            agent,
+            workspace,
+            mcp_tool_provider=RecordingMCPToolProvider(created),
+        )
+
+        conversation._ensure_agent_ready()
+
+        assert conversation.agent.agent_context is not None
+        assert [s.name for s in conversation.agent.agent_context.skills] == [
+            "still-here"
+        ]
+        assert conversation.agent.mcp_config == {}
+        conversation.close()
+
+    def test_components_outside_the_fixed_locations_never_reach_the_agent(
+        self, agent: Agent, workspace: Path
+    ):
+        """The Claude Code layout at the root contributes nothing here."""
+        conversation = conversation_with("wrong-locations", agent, workspace)
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation.register_plugin_agents"
+        ) as register:
+            conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        assert [s.name for s in conversation.agent.agent_context.skills] == ["only"]
+        assert conversation.agent.mcp_config == {}
+        register.assert_not_called()
         conversation.close()
 
     def test_non_fatal_manifest_violations_still_configure_the_agent(

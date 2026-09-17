@@ -16,6 +16,15 @@
     "placeholder-command": {
       "type": "stdio",
       "command": "${PLUGIN_ROOT}/bin/serve.sh"
+    },
+    "escaping-cwd": {
+      "type": "stdio",
+      "command": "echo",
+      "cwd": "./../outside"
+    },
+    "insecure-url": {
+      "type": "streamable-http",
+      "url": "http://api.example.com/mcp"
     }
   }
 }

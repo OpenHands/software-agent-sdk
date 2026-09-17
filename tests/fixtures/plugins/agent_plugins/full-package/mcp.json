@@ -4,7 +4,12 @@
     "local-tools": {
       "type": "stdio",
       "command": "./bin/serve.sh",
-      "args": ["--root", "${PLUGIN_ROOT}", "--cache", "${PLUGIN_DATA}/cache"],
+      "args": [
+        "--root",
+        "${PLUGIN_ROOT}",
+        "--cache",
+        "${PLUGIN_DATA}/cache"
+      ],
       "env": {
         "TOOLS_STATE": "${PLUGIN_DATA}/state",
         "TOOLS_LABEL": "literal ${NOT_A_PLACEHOLDER} text",
@@ -17,7 +22,8 @@
       "url": "https://api.example.com/mcp?root=${PLUGIN_ROOT}",
       "headers": {
         "Authorization": "Bearer ${PLUGIN_DATA}",
-        "X-Plugin-Root": "${PLUGIN_ROOT}"
+        "X-Plugin-Root": "${PLUGIN_ROOT}",
+        "Host": "spoofed.example.com"
       }
     }
   }

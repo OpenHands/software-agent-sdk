@@ -5,21 +5,60 @@ Every test here loads a checked-in package from
 :meth:`Plugin.load` entry point -- no manifests built inline, no monkeypatched
 format registry, no network.
 
-The six items are the loading sequence a conformant client implements
-(https://agent-plugins.org/client-implementers, Appendix A of the spec):
+The loading sequence (https://agent-plugins.org/client-implementers), which is
+the six-item shape the issue asks for:
 
-Item 1  Establish the filesystem-resolved plugin root
-        -> ``TestRootEstablishment``
-Item 2  Select the locally supported ``$schema``; never retrieve one
-        -> ``TestSchemaSelection``
-Item 3  Reject fatal violations; report and ignore the non-fatal ones
-        -> ``TestManifestRejection``
-Item 4  Discover each supported component type from its fixed location
-        -> ``TestFixedLocations``, ``TestPlaceholderExpansion``
-Item 5  Apply each component's failure boundary
-        -> ``TestFailureBoundaries``
-Item 6  Apply implemented extension namespaces, ignore all others
-        -> ``TestClientExtensions``
+1. Establish the filesystem-resolved plugin root -> ``TestRootEstablishment``
+2. Select local rules from ``$schema``, never fetch -> ``TestSchemaSelection``
+3. Reject fatal violations, report and ignore the non-fatal ones
+   -> ``TestManifestRejection``
+4. Discover each supported component type from its fixed location
+   -> ``TestFixedLocations``, ``TestPlaceholderExpansion``, ``TestStdioDefaults``
+5. Apply each component's failure boundary -> ``TestFailureBoundaries``
+6. Apply implemented extension namespaces, ignore the rest
+   -> ``TestClientExtensions``
+
+The same tests against the published checklist
+(https://agent-plugins.org/client-implementers/conformance), item by item:
+
+Plugin loader
+  directory load + package boundary ........ ``TestRootEstablishment``
+  local ``$schema`` selection, no retrieval  ``TestSchemaSelection``
+  closed schema, required ``$schema``/``name``
+                                             ``TestManifestRejection`` (+ the
+                                             field-level cases in
+                                             ``test_agent_plugins_format.py``)
+  report and ignore unknown fields ......... ``TestManifestRejection``
+  ignore non-object ``extensions`` and
+  unimplemented namespaces ................. ``TestManifestRejection``,
+                                             ``TestClientExtensions``
+  reject other fatal violations first ...... ``TestManifestRejection``
+
+Discovery and isolation
+  fixed locations only ..................... ``TestFixedLocations``
+  missing locations are valid absence ...... ``TestFixedLocations``
+  isolate component types, skills, entries   ``TestFailureBoundaries``
+  ignore unsupported component types ....... ``TestFixedLocations``
+
+MCP support
+  at least one transport (we do both) ...... ``TestFixedLocations``
+  connect with the declared transport ...... ``TestFixedLocations``
+  validate the document and each entry ..... ``TestVersioning``,
+                                             ``TestFailureBoundaries``
+  commands as single executable tokens ..... ``TestStdioDefaults``
+  ``PLUGIN_ROOT`` + dedicated ``PLUGIN_DATA``
+                                             ``TestPlaceholderExpansion``
+  expand only the two, only in the three
+  fields ................................... ``TestPlaceholderExpansion``
+  cwd containment, URL/header rules ........ ``TestFailureBoundaries``,
+                                             ``TestPlaceholderExpansion``
+  continue after an entry fails ............ ``TestFailureBoundaries``
+
+Versioning
+  matching versions in the two documents ... ``TestVersioning``
+  never reassign a schema identifier ....... ``TestVersioning``
+  older-version targeting is a local policy  ``TestSchemaSelection`` (we
+                                             support exactly 1.0.0)
 """
 
 import socket
@@ -29,6 +68,11 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.plugin import AgentPluginsFormat, Plugin, detect_format
+from openhands.sdk.plugin.format.agent_plugins import (
+    _MANIFEST_SCHEMA_FILE,
+    MANIFEST_SCHEMA_URL,
+    _load_schema,
+)
 from openhands.sdk.plugin.format.agent_plugins_mcp import get_plugin_data_dir
 
 
@@ -236,13 +280,33 @@ class TestFixedLocations:
         assert plugin.commands == []
         assert plugin.hooks is None
 
-    def test_the_claude_code_locations_are_not_searched(self):
-        """Fixed means fixed: ``.mcp.json`` and ``hooks/`` at the root are not ours."""
+    def test_only_the_fixed_locations_are_searched(self):
+        """``wrong-locations`` ships the Claude Code layout at the root.
+
+        ``.mcp.json``, ``hooks/``, ``commands/`` and ``agents/`` there are not
+        this format's locations, so none of them may be loaded (§6.1).
+        """
+        plugin = Plugin.load(fixture("wrong-locations"))
+
+        assert [skill.name for skill in plugin.skills] == ["only"]
+        assert plugin.mcp_config == {}
+        assert plugin.hooks is None
+        assert plugin.commands == []
+        assert plugin.agents == []
+
+    def test_an_unsupported_component_type_is_ignored(self):
+        """§11.3 rule 1: ``lsp/`` is not a v1 component type, and not an error."""
+        plugin = Plugin.load(fixture("wrong-locations"))
+
+        assert (Path(plugin.path) / "lsp").is_dir()
+        assert [skill.name for skill in plugin.skills] == ["only"]
+
+    def test_the_declared_transport_is_the_one_carried(self):
+        """§7.2.1: the entry's transport is what the client connects with."""
         plugin = Plugin.load(fixture("full-package"))
 
-        assert not (Path(plugin.path) / ".mcp.json").exists()
-        assert not (Path(plugin.path) / "hooks").exists()
-        assert not (Path(plugin.path) / "commands").exists()
+        assert plugin.mcp_config["local-tools"].transport == "stdio"
+        assert plugin.mcp_config["remote-api"].transport == "streamable-http"
 
 
 class TestPlaceholderExpansion:
@@ -301,6 +365,23 @@ class TestPlaceholderExpansion:
             "X-Plugin-Root": "${PLUGIN_ROOT}",
         }
 
+    def test_a_client_generated_header_is_dropped(self, caplog):
+        """§7.2.1: a configured ``Host`` loses to the one the client sends."""
+        plugin = Plugin.load(fixture("full-package"))
+
+        assert "Host" not in headers_of(plugin, "remote-api")
+        assert "Host" in caplog.text
+
+    def test_each_package_gets_its_own_plugin_data(self, plugin_data_root: Path):
+        """§9.1: "dedicated" means per plugin, and outside the package."""
+        full = get_plugin_data_dir(fixture("full-package"), data_root=plugin_data_root)
+        partial = get_plugin_data_dir(
+            fixture("partial-failures"), data_root=plugin_data_root
+        )
+
+        assert full != partial
+        assert not full.is_relative_to(fixture("full-package"))
+
     def test_other_placeholder_like_text_stays_literal(self):
         assert (
             env_of(Plugin.load(fixture("full-package")), "local-tools")["TOOLS_LABEL"]
@@ -318,17 +399,24 @@ class TestFailureBoundaries:
         assert "broken" in caplog.text
 
     @pytest.mark.parametrize(
-        "server", ["legacy-sse", "escaping-command", "placeholder-command"]
+        "server",
+        [
+            "legacy-sse",  # unsupported transport
+            "escaping-command",  # command outside the plugin root
+            "placeholder-command",  # a command is never expanded, so never legal
+            "escaping-cwd",  # working directory outside the root it is written for
+            "insecure-url",  # plain http to a remote host
+        ],
     )
     def test_one_bad_mcp_entry_does_not_take_its_siblings(self, server: str):
-        """Unsupported transport, escaping command, unexpandable command (§7.2.2)."""
+        """§7.2.2 rule 4: each entry is validated, and skipped, on its own."""
         plugin = Plugin.load(fixture("partial-failures"))
 
         assert server not in plugin.mcp_config
         assert set(plugin.mcp_config) == {"good-server"}
 
     def test_a_bad_mcp_entry_does_not_take_another_component_type(self):
-        """Skills and agents load beside three skipped MCP entries."""
+        """Skills and agents load beside five skipped MCP entries."""
         plugin = Plugin.load(fixture("partial-failures"))
 
         assert [skill.name for skill in plugin.skills] == ["good"]
@@ -338,6 +426,38 @@ class TestFailureBoundaries:
         plugin = Plugin.load(fixture("partial-failures"))
 
         assert [agent.name for agent in plugin.agents] == ["partial-failures-helper"]
+
+
+class TestStdioDefaults:
+    """§7.2.1's defaults, on an entry that declares neither."""
+
+    def test_a_bare_command_stays_a_bare_token(self):
+        """It goes to the platform executable search, unresolved and unexpanded."""
+        plugin = Plugin.load(fixture("partial-failures"))
+
+        assert plugin.mcp_config["good-server"].command == "echo"
+
+    def test_the_plugin_root_is_the_default_working_directory(self):
+        plugin = Plugin.load(fixture("partial-failures"))
+
+        assert cwd_of(plugin, "good-server") == str(fixture("partial-failures"))
+
+
+class TestVersioning:
+    """The checklist's versioning section."""
+
+    def test_an_mcp_json_targeting_another_version_disables_mcp_only(self):
+        """§7.2.2 rule 2: the document is invalid, so MCP is off, not the plugin."""
+        plugin = Plugin.load(fixture("mcp-version-mismatch"))
+
+        assert plugin.mcp_config == {}
+        assert [skill.name for skill in plugin.skills] == ["still-here"]
+
+    def test_the_vendored_schema_keeps_its_published_identity(self):
+        """A canonical identifier is never reassigned to different contents."""
+        schema = _load_schema(_MANIFEST_SCHEMA_FILE)
+
+        assert schema["$id"] == MANIFEST_SCHEMA_URL
 
 
 class TestClientExtensions:
