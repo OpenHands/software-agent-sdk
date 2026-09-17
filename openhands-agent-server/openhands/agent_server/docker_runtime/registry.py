@@ -75,7 +75,6 @@ class DockerConversationRegistry(ConversationRegistry):
         self._lock = asyncio.Lock()
 
     def configure_service(self, service: ConversationService) -> None:
-        service.sync_external_catalog = True
         service.runtime_cipher_resolver = self.resolve_persisted_cipher
 
     def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
