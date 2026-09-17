@@ -141,8 +141,9 @@ def test_openhands_resolves_default_exec_tools(
 def test_openhands_profile_tools_selection_is_passed_through(
     llm_store: LLMProfileStore,
 ) -> None:
-    """An explicit profile ``tools`` list is authoritative: used exactly as
-    given ([] = deliberately bare), independent of ``enable_sub_agents``."""
+    """An explicit profile ``tools`` list is stored as given ([] = deliberately
+    bare); ``enable_sub_agents`` still adds the sub-agent tool set to the built
+    agent, so choosing tools never silently disables delegation."""
     picked = OpenHandsAgentProfile(
         name="picked",
         llm_profile_ref="default",
@@ -158,7 +159,10 @@ def test_openhands_profile_tools_selection_is_passed_through(
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.tools == [Tool(name="terminal")]
-    assert [t.name for t in settings.create_agent().tools] == ["terminal"]
+    assert [t.name for t in settings.create_agent().tools] == [
+        "terminal",
+        "task_tool_set",
+    ]
 
     bare = OpenHandsAgentProfile(name="bare", llm_profile_ref="default", tools=[])
     settings = resolve_agent_profile(

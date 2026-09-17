@@ -2638,3 +2638,33 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
     assert "api_key" not in captured
     assert "base_url" not in captured
     assert "is_subscription" not in captured
+
+
+@pytest.mark.parametrize(
+    ("tools", "expected"),
+    [
+        (None, ["terminal", "file_editor", "task_tracker", "task_tool_set"]),
+        ([], ["task_tool_set"]),
+        ([Tool(name="glob")], ["glob", "task_tool_set"]),
+        ([Tool(name="task_tool_set")], ["task_tool_set"]),
+    ],
+)
+def test_enable_sub_agents_applies_to_an_explicit_tools_list(tools, expected):
+    """The toggle is the single owner of delegation: picking tools must not
+    silently drop the sub-agent tool set."""
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("k"), usage_id="test"),
+        tools=tools,
+        enable_sub_agents=True,
+    )
+
+    assert [tool.name for tool in settings.create_agent().tools] == expected
+
+
+def test_sub_agent_tool_stays_out_when_the_toggle_is_off():
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("k"), usage_id="test"),
+        tools=[Tool(name="glob")],
+    )
+
+    assert [tool.name for tool in settings.create_agent().tools] == ["glob"]

@@ -1398,15 +1398,16 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.defaults import default_tool_specs
+        from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME, default_tool_specs
 
-        # Single defaulting point: None = the canonical default set (honoring
-        # enable_sub_agents); [] stays an explicitly bare agent.
-        tools = (
-            self.tools
-            if self.tools is not None
-            else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
-        )
+        # Single defaulting point: None = the canonical default set; [] stays an
+        # explicitly bare agent. enable_sub_agents owns the sub-agent tool set in
+        # both cases, so choosing tools never silently disables delegation.
+        tools = list(self.tools) if self.tools is not None else default_tool_specs()
+        if self.enable_sub_agents and all(
+            tool.name != SUB_AGENT_TOOL_NAME for tool in tools
+        ):
+            tools.append(Tool(name=SUB_AGENT_TOOL_NAME))
 
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:
