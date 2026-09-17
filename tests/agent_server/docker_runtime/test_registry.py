@@ -91,8 +91,16 @@ async def test_docker_catalog_lists_legacy_local_and_isolated_conversations(
     runtime.configure_service(service)
     async with service:
         page = await service.search_conversations()
+        legacy_events = await service.get_event_service(legacy_id)
+        docker_events = await service.get_event_service(docker_id)
 
     assert {item.id for item in page.items} == {legacy_id, docker_id}
+    assert legacy_events is not None
+    assert legacy_events.cipher is not None
+    assert legacy_events.cipher.secret_key == runtime.provisioning.cipher.secret_key
+    assert docker_events is not None
+    assert docker_events.cipher is not None
+    assert docker_events.cipher.secret_key == identity.cipher.secret_key
     assert (
         runtime.resolve_persisted_cipher(legacy_id).secret_key
         == runtime.provisioning.cipher.secret_key

@@ -2450,7 +2450,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=agent,
-            cipher=self.cipher,
+            cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
