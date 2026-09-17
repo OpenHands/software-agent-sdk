@@ -203,19 +203,25 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise HTTPException(404, "Conversation not found")
 
+    if not await registry.begin_delete(conversation_id):
+        raise HTTPException(409, "Conversation deletion is already in progress")
+
     # Stopping the container closes its conversation service. The outer server
     # owns the bind-mounted state and removes it after Docker has unmounted it;
     # asking the inner server to remove the mount root leaves that root in a
     # partially deleted state.
-    await registry.stop(conversation_id)
-    registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
-    await asyncio.to_thread(
-        safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
-    )
-    await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
-    await get_conversation_service(request).refresh_persisted_conversation(
-        conversation_id
-    )
+    try:
+        await registry.stop(conversation_id)
+        registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        await asyncio.to_thread(
+            safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
+        )
+        await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
+    finally:
+        await registry.finish_delete(conversation_id)
     return Response(status_code=200)
 
 
