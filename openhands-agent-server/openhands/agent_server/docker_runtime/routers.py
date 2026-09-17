@@ -245,6 +245,10 @@ async def proxy_conversation(
         raise HTTPException(501, "This operation is unavailable in Docker runtime mode")
     registry = get_registry(request)
     container = await _container(registry, conversation_id)
+    upstream_path = f"/api/conversations/{conversation_id}"
+    if tail:
+        upstream_path = f"{upstream_path}/{tail}"
+    upstream_path = _upstream_path(request, upstream_path)
     if tail == "secrets" and request.method == "POST":
         try:
             update = UpdateSecretsRequest.model_validate_json(await request.body())
@@ -265,18 +269,14 @@ async def proxy_conversation(
         response = await proxy_http(
             request,
             container,
-            upstream_path=_upstream_path(
-                request, f"/api/conversations/{conversation_id}/{tail}"
-            ),
+            upstream_path=upstream_path,
             body=json.dumps(body).encode(),
         )
     else:
         response = await proxy_http(
             request,
             container,
-            upstream_path=_upstream_path(
-                request, f"/api/conversations/{conversation_id}/{tail}"
-            ),
+            upstream_path=upstream_path,
         )
     if request.method not in {"GET", "HEAD", "OPTIONS"} and response.status_code < 400:
         await get_conversation_service(request).refresh_persisted_conversation(

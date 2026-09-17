@@ -98,6 +98,41 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
         assert client.get(path).status_code != 422
 
 
+def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch):
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    app = FastAPI()
+    app.state.conversation_registry = DockerConversationRegistry(config)
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    conversation_id = uuid4()
+    captured = {}
+
+    async def container(*_args):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def proxy(*_args, **kwargs):
+        captured.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.routers._container", container
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.routers.proxy_http", proxy
+    )
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/conversations/{conversation_id}", json={"title": "Updated"}
+        )
+
+    assert response.status_code == 200
+    assert captured["upstream_path"] == f"/api/conversations/{conversation_id}"
+
+
 def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
     tmp_path, monkeypatch
 ):
