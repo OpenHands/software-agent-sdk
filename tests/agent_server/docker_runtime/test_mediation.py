@@ -149,8 +149,9 @@ async def test_profile_launch_scopes_secrets_and_stamps_provenance(
     finished = await _finish(prepared)
     assert finished.agent_profile_id is None
     assert set(finished.secrets) == {"ALLOWED"}
-    assert finished.agent.llm.api_key is not None
-    assert finished.agent.llm.api_key.get_secret_value() == "model-key"
+    api_key = finished.agent.llm.api_key
+    assert isinstance(api_key, SecretStr)
+    assert api_key.get_secret_value() == "model-key"
 
 
 @pytest.mark.asyncio
