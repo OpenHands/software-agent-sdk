@@ -56,6 +56,14 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
     ]
     assert getattr(matched[0], "endpoint").__name__ == "proxy_conversation_root"
 
+    scope["method"] = "GET"
+    matched = [
+        route
+        for route in app.routes
+        if hasattr(route, "matches") and route.matches(scope)[0] is Match.FULL
+    ]
+    assert getattr(matched[0], "endpoint").__name__ == "get_conversation"
+
     session_scope = {
         "type": "websocket",
         "path": f"/sockets/session/{uuid4()}",

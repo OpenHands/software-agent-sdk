@@ -219,7 +219,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
 
 @docker_conversation_router.api_route(
     "/{conversation_id}",
-    methods=["GET", "POST", "PUT", "PATCH", "OPTIONS", "HEAD"],
+    methods=["POST", "PUT", "PATCH", "OPTIONS"],
 )
 async def proxy_conversation_root(
     conversation_id: UUID, request: Request
