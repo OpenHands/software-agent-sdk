@@ -431,12 +431,12 @@ def _build_acp_settings(
         "acp_args": list(profile.acp_args) if profile.acp_args else [],
         "mcp_config": mcp_config,
     }
-    base_context = None if base is None else base.agent_context
     if base is not None and base.agent_kind == "acp":
+        base_context = base.agent_context
         context = (
-            base_context.model_copy(update=context_fields)
-            if base_context is not None
-            else AgentContext(**context_fields)
+            AgentContext(**context_fields)
+            if base_context is None
+            else base_context.model_copy(update=context_fields)
         )
         return base.model_copy(update={**fields, "agent_context": context})
     return validate_agent_settings(
@@ -662,6 +662,8 @@ class _FixedLLMLoader:
         return self.llm
 
 
+# The inline profile a deprecated ``agent_settings`` launch becomes. Its LLM
+# "reference" resolves against a one-entry loader holding the payload's own LLM.
 _AGENT_SETTINGS_PROFILE_NAME = "agent_settings"
 
 
