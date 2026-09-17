@@ -704,7 +704,6 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
-    sync_external_catalog: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1108,34 +1107,31 @@ class ConversationService:
             record.cached_info = None
             record.state_signature = signature
 
-    async def _reconcile_active_records(
-        self, conversation_id: UUID | None = None
-    ) -> None:
-        """Discover externally persisted records and injected live services."""
+    async def refresh_persisted_conversation(self, conversation_id: UUID) -> None:
+        """Refresh one catalog record changed by an external runtime."""
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
-        if self.sync_external_catalog:
-            disk_records = await asyncio.to_thread(
-                self._load_catalog_sync, conversation_id
-            )
-            stale_ids = (
-                {conversation_id}
-                if conversation_id is not None
-                else set(self._conversation_records)
-            ) - set(disk_records)
-            for record_id in stale_ids:
-                event_service = event_services.get(record_id)
-                if event_service is None or not event_service.is_open():
-                    self._conversation_records.pop(record_id, None)
-            for record_id, record in disk_records.items():
-                event_service = event_services.get(record_id)
-                if event_service is not None and event_service.is_open():
-                    continue
-                existing = self._conversation_records.setdefault(record_id, record)
-                if existing.stored != record.stored:
-                    existing.stored = record.stored
-                    existing.cached_info = None
+        disk_records = await asyncio.to_thread(self._load_catalog_sync, conversation_id)
+        if conversation_id not in disk_records:
+            event_service = event_services.get(conversation_id)
+            if event_service is None or not event_service.is_open():
+                self._conversation_records.pop(conversation_id, None)
+            return
+        record = disk_records[conversation_id]
+        event_service = event_services.get(conversation_id)
+        if event_service is not None and event_service.is_open():
+            return
+        existing = self._conversation_records.setdefault(conversation_id, record)
+        if existing.stored != record.stored:
+            existing.stored = record.stored
+            existing.cached_info = None
+
+    async def _reconcile_active_records(self) -> None:
+        """Add injected live services to the in-memory catalog."""
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
         for conversation_id, event_service in event_services.items():
             if conversation_id in self._conversation_records:
                 continue
@@ -1270,8 +1266,6 @@ class ConversationService:
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        if self.sync_external_catalog:
-            await self._reconcile_active_records(conversation_id)
         record = self._conversation_records.get(conversation_id)
         if record is None:
             event_service = self._event_services.get(conversation_id)
@@ -2047,8 +2041,6 @@ class ConversationService:
         """Open append-only event history without acquiring a runtime lease."""
         if self._event_services is None:
             raise ValueError("inactive_service")
-        if self.sync_external_catalog:
-            await self._reconcile_active_records(conversation_id)
         record = self._conversation_records.get(conversation_id)
         if record is None:
             return None
@@ -2439,7 +2431,6 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
-            sync_external_catalog=False,
         )
 
     async def _start_event_service(

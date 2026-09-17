@@ -120,6 +120,7 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
     registry = DockerConversationRegistry(config)
     registry.stop = stop
     app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         response = client.post(
@@ -133,6 +134,9 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
             == 204
         )
     assert stopped == [conversation_id]
+    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
+        conversation_id
+    )
 
 
 def test_runtime_info_marks_legacy_local_conversation_non_resumable(
@@ -230,12 +234,16 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
 
     app = FastAPI()
     app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
         response = client.delete(f"/api/conversations/{conversation_id}")
 
     assert response.status_code == 200
     registry.stop.assert_awaited_once_with(conversation_id)
+    app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
+        conversation_id
+    )
     assert not conversation_dir.exists()
     assert not runtime_dir.exists()
 
@@ -309,7 +317,10 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
             "query_string": b"",
             "headers": [(b"content-type", b"application/json")],
             "app": SimpleNamespace(
-                state=SimpleNamespace(conversation_registry=registry)
+                state=SimpleNamespace(
+                    conversation_registry=registry,
+                    conversation_service=AsyncMock(),
+                )
             ),
         },
         receive,
@@ -320,3 +331,6 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
     assert set(forwarded.secrets) == {"ALLOWED"}
     assert forwarded.secrets["ALLOWED"].get_value() == "resolved-ALLOWED"
     assert looked_up == ["http://outer/api/settings/secrets/ALLOWED"]
+    request.app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
+        conversation_id
+    )
