@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.plugin import AgentPluginsFormat, ClaudeCodePluginFormat, Plugin
-from openhands.sdk.plugin.format import base
 from openhands.sdk.plugin.format.agent_plugins import (
     EXTENSION_NAMESPACE,
     MANIFEST_SCHEMA_URL,
 )
+from openhands.sdk.skills import utils as skills_utils
 
 
 SKILL = "---\nname: {name}\ndescription: A skill\n---\nBody\n"
@@ -99,8 +99,10 @@ def test_escaping_skill_directory_is_not_listed(plugin_dir, outside, monkeypatch
     (plugin_dir / "skills").mkdir()
     (plugin_dir / "skills" / "evil").symlink_to(outside / "evil")
     listed: list[Path] = []
-    real = base.find_skill_md
-    monkeypatch.setattr(base, "find_skill_md", lambda d: listed.append(d) or real(d))
+    real = skills_utils.find_skill_md
+    monkeypatch.setattr(
+        skills_utils, "find_skill_md", lambda d: listed.append(d) or real(d)
+    )
 
     assert ClaudeCodePluginFormat().load_skills(plugin_dir) == []
     assert plugin_dir / "skills" / "evil" not in listed

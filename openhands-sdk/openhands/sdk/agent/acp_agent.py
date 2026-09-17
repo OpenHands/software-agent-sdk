@@ -4391,7 +4391,7 @@ class ACPAgent(AgentBase):
 
         Args:
             model: Provider-specific model id to switch to (e.g.
-                ``"sonnet"`` or ``"gpt-5.5"``).
+                ``"sonnet"`` or ``"gpt-5.6"``).
 
         Raises:
             ValueError: If ``model`` is empty or whitespace-only, if the
