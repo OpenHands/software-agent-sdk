@@ -789,7 +789,7 @@ def test_start_conversation_accepts_acp_agent_settings(
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
         agent = validate_agent_settings(request.agent_settings).create_agent()
-        assert agent.kind == "ACPAgent"
+        assert isinstance(agent, ACPAgent)
         assert agent.acp_command == ["echo", "settings"]
         assert agent.acp_args == ["--verbose"]
         assert agent.acp_model == "acp-test-model"
