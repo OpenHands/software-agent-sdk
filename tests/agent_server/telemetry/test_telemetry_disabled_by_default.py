@@ -135,7 +135,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
         DiagnosticEventFactory,
         build_runtime_properties,
     )
-    from openhands.sdk.security.confirmation_policy import NeverConfirm
     from openhands.sdk.workspace import LocalWorkspace
 
     # 1. Construct the service while telemetry is still the pre-init NoOp — the
@@ -182,7 +181,6 @@ async def test_conversation_service_reads_the_live_sink_not_a_captured_one(
     stored = StoredConversation(
         id=uuid4(),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
-        confirmation_policy=NeverConfirm(),
         initial_message=None,
         metrics=None,
     )
