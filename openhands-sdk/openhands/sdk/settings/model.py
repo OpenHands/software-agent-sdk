@@ -1398,9 +1398,18 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.defaults import resolve_tool_specs
+        from openhands.sdk.tool.defaults import (
+            SUB_AGENT_TOOL_NAME,
+            resolve_tool_specs,
+        )
 
-        tools = resolve_tool_specs(self.tools, enable_sub_agents=self.enable_sub_agents)
+        # Legacy switches of this settings model: the tools they add are
+        # otherwise selected in ``tools``.
+        tools = resolve_tool_specs(self.tools)
+        if self.enable_sub_agents and all(
+            tool.name != SUB_AGENT_TOOL_NAME for tool in tools
+        ):
+            tools = [*tools, Tool(name=SUB_AGENT_TOOL_NAME)]
 
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:

@@ -151,7 +151,7 @@ class SwitchLLMExecutor(ToolExecutor):
 class SwitchLLMTool(ToolDefinition[SwitchLLMAction, SwitchLLMObservation]):
     """Tool for switching a conversation to a saved LLM profile."""
 
-    user_selectable: ClassVar[bool] = False
+    user_selectable: ClassVar[bool] = True
 
     @classmethod
     def create(

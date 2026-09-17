@@ -9,7 +9,7 @@ See epic #3713 for the resolution model.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
@@ -31,9 +31,14 @@ from openhands.sdk.settings.model import (
     VerificationSettings,
 )
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    DEFAULT_EXEC_TOOL_NAMES,
+    SUB_AGENT_TOOL_NAME,
+)
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 2
+AGENT_PROFILE_SCHEMA_VERSION = 3
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -197,18 +202,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default_factory=ProfileVerificationSettings,
         description="Critic/verification policy (secret-free; no critic_api_key).",
     )
-    enable_sub_agents: bool = Field(
-        default=False,
-        description="Enable sub-agent delegation via TaskToolSet.",
-    )
-    enable_switch_llm_tool: bool = Field(
-        default=True,
-        description=(
-            "Enable the built-in switch_llm tool for switching between saved "
-            "LLM profiles. Defaults True to match the global agent settings "
-            "default (AgentSettingsConfig.enable_switch_llm_tool)."
-        ),
-    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
@@ -364,8 +357,51 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def fold_sub_agents_into_tools(
+    tools: Sequence[dict[str, Any] | Tool] | None,
+    *,
+    enable_sub_agents: bool,
+) -> list[Tool] | None:
+    """Express a legacy ``enable_sub_agents`` switch as a ``tools`` selection."""
+    if not enable_sub_agents:
+        return None if tools is None else [_as_tool(tool) for tool in tools]
+    # "The standard set plus delegation" is not expressible without the switch,
+    # so an unset list has to be pinned. Browser is part of that set because it
+    # resolves to nothing where the runtime cannot run it.
+    entries = (
+        [_as_tool(tool) for tool in tools]
+        if tools is not None
+        else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
+    )
+    if all(entry.name != SUB_AGENT_TOOL_NAME for entry in entries):
+        entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
+    return entries
+
+
+def _as_tool(tool: dict[str, Any] | Tool) -> Tool:
+    return tool if isinstance(tool, Tool) else Tool.model_validate(tool)
+
+
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    migrated = dict(payload)
+    sub_agents = migrated.pop("enable_sub_agents", False) is True
+    # Dropped rather than folded: it defaulted on, so honouring it would pin a
+    # list on nearly every profile.
+    migrated.pop("enable_switch_llm_tool", None)
+    if sub_agents and migrated.get("agent_kind", "openhands") == "openhands":
+        stored = migrated.get("tools")
+        migrated["tools"] = fold_sub_agents_into_tools(
+            stored if isinstance(stored, list) else None,
+            enable_sub_agents=True,
+        )
+    migrated["schema_version"] = 3
+    return migrated
+
+
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 

@@ -33,28 +33,24 @@ themselves on the settings launch path.
 """
 
 SUB_AGENT_TOOL_NAME = "task_tool_set"
-"""Name of the sub-agent delegation tool set, gated on ``enable_sub_agents``."""
+"""Name of the sub-agent delegation tool set, selected like any other tool."""
 
 
 def resolve_tool_specs(
     tools: Sequence[Tool] | None,
     *,
-    enable_sub_agents: bool = False,
     enable_browser: bool = False,
 ) -> list[Tool]:
     """Resolve an agent's ``tools`` setting into the specs it is built with.
 
-    ``None`` is the standard exec set, plus browser when ``enable_browser`` and
-    the sub-agent tool set when ``enable_sub_agents``; a list (``[]`` included)
-    is used as given.
+    ``None`` is the standard exec set, plus browser when ``enable_browser``; a
+    list (``[]`` included) is used as given.
     """
     if tools is not None:
         return list(tools)
     resolved = [Tool(name=name) for name in DEFAULT_EXEC_TOOL_NAMES]
     if enable_browser:
         resolved.append(Tool(name=BROWSER_TOOL_NAME))
-    if enable_sub_agents:
-        resolved.append(Tool(name=SUB_AGENT_TOOL_NAME))
     return resolved
 
 
@@ -65,10 +61,15 @@ def default_tool_specs(
 ) -> list[Tool]:
     """Default tool specs for an OpenHands agent whose settings carry no tools.
 
+    ``enable_sub_agents`` is retained for the legacy ``agent_settings`` path,
+    where the switch still exists; agent profiles select the sub-agent tool set
+    in ``tools`` instead.
+
     Deterministic: the same inputs yield the same specs on every runtime.
     Browser is off by default (see :data:`BROWSER_TOOL_NAME` — the serving
     layer enables it where it can actually run).
     """
-    return resolve_tool_specs(
-        None, enable_sub_agents=enable_sub_agents, enable_browser=enable_browser
-    )
+    specs = resolve_tool_specs(None, enable_browser=enable_browser)
+    if enable_sub_agents:
+        specs.append(Tool(name=SUB_AGENT_TOOL_NAME))
+    return specs

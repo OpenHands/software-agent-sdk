@@ -252,7 +252,6 @@ def _build_openhands_settings(
         "mcp_config": mcp_config,
         "tools": resolve_tool_specs(
             profile.tools,
-            enable_sub_agents=profile.enable_sub_agents,
             enable_browser=browser_available,
         ),
         "agent_context": AgentContext(
@@ -263,8 +262,10 @@ def _build_openhands_settings(
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
-        "enable_sub_agents": profile.enable_sub_agents,
-        "enable_switch_llm_tool": profile.enable_switch_llm_tool,
+        # Pinned off so the settings defaults cannot re-add a tool the
+        # profile's ``tools`` did not ask for.
+        "enable_sub_agents": False,
+        "enable_switch_llm_tool": False,
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)

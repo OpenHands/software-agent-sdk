@@ -728,8 +728,17 @@ def test_seed_preserves_openhands_fields(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    assert prof["enable_sub_agents"] is True
-    assert prof["enable_switch_llm_tool"] is False
+    # The retired switches are said as a tool selection now: delegation was on,
+    # so the seed pins the list it was launching with.
+    assert [tool["name"] for tool in prof["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "task_tool_set",
+    ]
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
     # The seed disables nothing — the default profile launches with all
@@ -993,7 +1002,6 @@ def test_materialize_evaluates_a_draft_without_saving_it(
         "agent_kind": "openhands",
         "llm_profile_ref": "base-llm",
         "tools": [{"name": "glob"}],
-        "enable_switch_llm_tool": False,
     }
 
     with (
