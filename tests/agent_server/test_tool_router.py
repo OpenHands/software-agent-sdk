@@ -50,11 +50,12 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
         "grep",
         "workflow_tool_set",
         "ask_oracle",
+        "task_tool_set",
+        "SwitchLLMTool",
     } <= selectable
     assert (
         not {
             "task",
-            "task_tool_set",
             "workflow",
             "planning_file_editor",
             "edit",

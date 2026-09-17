@@ -215,7 +215,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         )
     """
 
-    user_selectable: ClassVar[bool] = False
+    user_selectable: ClassVar[bool] = True
 
     @classmethod
     def create(

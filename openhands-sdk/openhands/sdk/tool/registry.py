@@ -222,7 +222,14 @@ def seal_tool_catalog() -> None:
 
 
 def list_tool_catalog() -> list[ToolCatalogEntry]:
-    """List the tools this process offers for configuring an agent."""
+    """List the tools this process offers for configuring an agent.
+
+    Includes the built-ins a user may select: they are resolved by class name
+    rather than through the registry, but a profile stores them in ``tools``
+    like any other pick.
+    """
+    from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
+
     with _LOCK:
         names = [
             name for name in _REG if _CATALOG_NAMES is None or name in _CATALOG_NAMES
@@ -230,7 +237,7 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         tool_classes = dict(_TOOL_CLASSES)
         usability_checkers = dict(_USABILITY_REG)
 
-    return [
+    entries = [
         ToolCatalogEntry(
             name=name,
             user_selectable=tool_classes[name].user_selectable,
@@ -238,6 +245,13 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         )
         for name in names
     ]
+    listed = {entry.name for entry in entries}
+    entries.extend(
+        ToolCatalogEntry(name=class_name, user_selectable=True, usable=True)
+        for class_name, tool_class in BUILT_IN_TOOL_CLASSES.items()
+        if tool_class.user_selectable and class_name not in listed
+    )
+    return entries
 
 
 def get_tool_module_qualnames() -> dict[str, str]:

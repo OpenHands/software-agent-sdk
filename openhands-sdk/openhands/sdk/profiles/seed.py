@@ -14,6 +14,7 @@ from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
     build_profile_verification,
+    fold_sub_agents_into_tools,
 )
 
 
@@ -63,8 +64,12 @@ def build_seed_profile(
         name=name,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
-        # Verbatim: preserves explicit toolsets; None stays "server default".
-        tools=agent_settings.tools,
+        # Verbatim, except that a legacy ``enable_sub_agents`` switch has to be
+        # said as a tool selection now (see fold_sub_agents_into_tools).
+        tools=fold_sub_agents_into_tools(
+            agent_settings.tools,
+            enable_sub_agents=agent_settings.enable_sub_agents,
+        ),
         # Deny-list defaults to [] — the seeded default profile launches with all
         # discovered skills, matching the "all skills by default" model. No names
         # are frozen, so nothing can dangle at launch (the freeze-by-name seed
@@ -73,8 +78,6 @@ def build_seed_profile(
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),
-        enable_sub_agents=agent_settings.enable_sub_agents,
-        enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
     )

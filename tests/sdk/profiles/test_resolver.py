@@ -72,7 +72,6 @@ def test_openhands_resolves_to_settings_with_injected_llm(
         llm_profile_ref="default",
         agent="CodeActAgent",
         system_message_suffix="be terse",
-        enable_sub_agents=True,
         tool_concurrency_limit=3,
         mcp_server_refs=["fetch"],
     )
@@ -86,7 +85,6 @@ def test_openhands_resolves_to_settings_with_injected_llm(
 
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.agent == "CodeActAgent"
-    assert settings.enable_sub_agents is True
     assert settings.tool_concurrency_limit == 3
     assert settings.agent_context is not None
     assert settings.agent_context.system_message_suffix == "be terse"
@@ -98,11 +96,11 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     assert list(settings.mcp_config.keys()) == ["fetch"]
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
+    # Delegation is a tool the profile selects, not a switch on the side.
     assert [t.name for t in agent.tools] == [
         "terminal",
         "file_editor",
         "task_tracker",
-        "task_tool_set",
     ]
 
 
@@ -119,7 +117,6 @@ def test_openhands_resolves_default_exec_tools(
     """A profile with no explicit ``tools`` resolves to the standard exec set
     (#3967), plus browser only where the caller's runtime can run it."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
-    assert profile.enable_sub_agents is False
     assert profile.tools is None
 
     settings = resolve_agent_profile(
@@ -143,7 +140,6 @@ def test_openhands_profile_tools_selection_is_used_as_given(
         name="picked",
         llm_profile_ref="default",
         tools=[Tool(name="terminal", params={"username": "dev"})],
-        enable_sub_agents=True,
     )
     settings = resolve_agent_profile(
         picked,
@@ -224,44 +220,6 @@ def test_missing_llm_ref_raises_profile_not_found(
             available_skills=None,
             cipher=None,
         )
-
-
-# --------------------------------------------------------------------------- #
-# enable_switch_llm_tool (#3856)
-# --------------------------------------------------------------------------- #
-
-
-def test_enable_switch_llm_tool_defaults_true_threads_through(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=None,
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    # Defaults True to match the global agent settings default.
-    assert settings.enable_switch_llm_tool is True
-
-
-def test_enable_switch_llm_tool_false_threads_through(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", enable_switch_llm_tool=False
-    )
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=None,
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.enable_switch_llm_tool is False
 
 
 # --------------------------------------------------------------------------- #
