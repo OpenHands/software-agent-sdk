@@ -695,6 +695,38 @@ class TestPluginData:
 
         assert not (data_root / "example").is_relative_to(plugin_dir.resolve())
 
+    def test_defaults_to_the_user_data_directory(
+        self, plugin_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        default = tmp_path / "default-data"
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.format.agent_plugins_mcp.DEFAULT_PLUGIN_DATA_DIR",
+            default,
+        )
+        write_mcp(
+            plugin_dir,
+            {
+                "$schema": MCP_SCHEMA,
+                "mcpServers": {"s": {"type": "stdio", "command": "echo"}},
+            },
+        )
+
+        AgentPluginsFormat().load_mcp_config(plugin_dir)
+
+        assert list(default.iterdir()) == [get_plugin_data_dir(plugin_dir)]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges")
+    def test_keyed_by_the_resolved_root(
+        self, plugin_dir: Path, tmp_path: Path, data_root: Path
+    ):
+        """Another path to the same plugin must reach the same data."""
+        link = tmp_path / "link"
+        link.symlink_to(plugin_dir, target_is_directory=True)
+
+        assert get_plugin_data_dir(link, data_root=data_root) == get_plugin_data_dir(
+            plugin_dir, data_root=data_root
+        )
+
     def test_default_location_is_not_scanned_for_plugins(self):
         """A data directory under a scanned root loads as a plugin of its own.
 
