@@ -10,7 +10,6 @@ overview and the recipe to add a new format.
 
 from __future__ import annotations
 
-import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -96,7 +95,7 @@ class PluginFormat(ABC):
         to support Claude Code plugins which may use different naming conventions.
         """
         skills_dir = plugin_dir / "skills"
-        if os.path.lexists(skills_dir):
+        if skills_dir.exists(follow_symlinks=False):
             if not resolves_within(skills_dir, plugin_dir):
                 return []
             if not skills_dir.is_dir():

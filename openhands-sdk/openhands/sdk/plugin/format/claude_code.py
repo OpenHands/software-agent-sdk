@@ -76,8 +76,8 @@ class ClaudeCodePluginFormat(PluginFormat):
 
         for manifest_dir in PLUGIN_MANIFEST_DIRS:
             candidate = plugin_dir / manifest_dir / PLUGIN_MANIFEST_FILE
-            # is_symlink(): a dangling link must be rejected, not skipped.
-            if candidate.exists() or candidate.is_symlink():
+            # follow_symlinks=False: a dangling link must be rejected, not skipped.
+            if candidate.exists(follow_symlinks=False):
                 manifest_path = candidate
                 break
 
