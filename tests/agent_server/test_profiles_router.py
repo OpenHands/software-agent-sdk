@@ -1,12 +1,17 @@
 """Tests for profiles_router endpoints."""
 
+import asyncio
+import json
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal
 from unittest.mock import patch
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
+from litellm.exceptions import APIConnectionError, RateLimitError, Timeout
 from pydantic import SecretStr
 
 from openhands.agent_server import profiles_router as profiles_router_module
@@ -1854,26 +1859,123 @@ def test_validate_profile_auth_error_returns_error(client):
     assert body["error"]["type"] == "LLMAuthenticationError"
 
 
-def test_validate_profile_rate_limit_does_not_block(client):
-    """POST /api/profiles/{name}/validate returns valid=True on rate limit."""
-    from openhands.sdk.llm.exceptions import LLMRateLimitError
-
-    with (
-        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
-        patch(
-            "openhands.sdk.llm.llm.LLM.acompletion",
-            side_effect=LLMRateLimitError("Rate limit exceeded"),
-        ),
-    ):
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+@pytest.mark.parametrize("chained", [False, True])
+@pytest.mark.parametrize(
+    ("error_code", "valid"),
+    [
+        ("budget_exceeded", False),
+        ("insufficient_quota", False),
+        ("usage_limit_reached", False),
+        ("rate_limit_exceeded", True),
+    ],
+)
+def test_validate_profile_rate_limits(client, api_mode, chained, error_code, valid):
+    """Exercise provider errors through the real SDK retry and mapping layers."""
+    api_key = "sk-proj-abc123defGHIjklMNOpqrsTUVwxyz1234567890"
+    message = f"Provider rejected key {api_key}"
+    error_body = json.dumps({"error": {"type": error_code, "message": message}})
+    error = RateLimitError(
+        message=message if chained else error_body,
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    if chained:
+        error.__context__ = ValueError(error_body)
+    transport_name = (
+        "litellm_aresponses" if api_mode == "responses" else "litellm_acompletion"
+    )
+    with patch(
+        f"openhands.sdk.llm.llm.{transport_name}", side_effect=error
+    ) as transport:
         response = client.post(
             "/api/profiles/rate-limited/validate",
-            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+            json={
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_mode": api_mode,
+                    "api_key": api_key,
+                    "num_retries": 5,
+                    "retry_min_wait": 0,
+                    "retry_max_wait": 0,
+                    "timeout": 123,
+                }
+            },
         )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["valid"] is True
-    assert body["error"] is None
+    assert body["valid"] is valid
+    if valid:
+        assert body["error"] is None
+    else:
+        assert body["error"]["type"] == "LLMRateLimitError"
+        assert "Provider rejected key" in body["error"]["message"]
+        assert api_key not in body["error"]["message"]
+    assert 1 <= transport.call_count <= 2
+    assert 0 < transport.call_args.kwargs["timeout"] <= 10
+
+
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+@pytest.mark.parametrize(
+    ("error_type", "valid"),
+    [(RateLimitError, True), (APIConnectionError, False), (Timeout, True)],
+)
+async def test_validate_profile_does_not_wait_for_runtime_retries(
+    client, api_mode: Literal["chat", "responses"], error_type, valid
+):
+    llm = LLM(model="gpt-4o", api_mode=api_mode, api_key="sk-test", timeout=None)
+    original_config = llm.model_dump()
+    transport_name = (
+        "litellm_aresponses" if api_mode == "responses" else "litellm_acompletion"
+    )
+    with patch(
+        f"openhands.sdk.llm.llm.{transport_name}",
+        side_effect=error_type(
+            message="Temporarily unavailable", llm_provider="openai", model="gpt-4o"
+        ),
+    ) as transport:
+        result = await asyncio.wait_for(
+            profiles_router_module.validate_profile(
+                request=Request({"type": "http", "app": client.app}),
+                name="runtime-policy",
+                body=profiles_router_module.ValidateProfileRequest(llm=llm),
+            ),
+            timeout=3,
+        )
+
+    assert result.valid is valid
+    assert 1 <= transport.call_count <= 2
+    assert 0 < transport.call_args.kwargs["timeout"] <= 10
+    assert llm.model_dump() == original_config
+
+
+async def test_validate_profile_bounds_total_provider_wait(client):
+    cancelled = asyncio.Event()
+
+    async def stalled_provider(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=stalled_provider
+    ):
+        response = await asyncio.wait_for(
+            profiles_router_module.validate_profile(
+                request=Request({"type": "http", "app": client.app}),
+                name="stalled-provider",
+                body=profiles_router_module.ValidateProfileRequest(
+                    llm=LLM(model="gpt-4o", api_key="sk-test", timeout=None)
+                ),
+            ),
+            timeout=12,
+        )
+
+    assert response.valid is True
+    assert response.error is None
+    assert cancelled.is_set()
 
 
 def test_validate_profile_service_unavailable_blocks(client):
@@ -2049,6 +2151,50 @@ def test_validate_profile_subscription_restores_credentials(client):
     assert body["error"] is None
     assert captured["is_subscription"] is True
     assert captured["api_key"] == "fake-access-token"
+
+
+def test_validate_profile_redacts_subscription_quota_error(client, caplog):
+    access_token = "eyJhbGciOiJSUzI1NiJ9.synthetic-payload.synthetic-signature"
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token=access_token,
+        refresh_token="synthetic-refresh-token",
+        expires_at=int(time.time() * 1000) + 3_600_000,
+    )
+    with (
+        caplog.at_level("INFO", logger=profiles_router_module.__name__),
+        patch(
+            "openhands.sdk.llm.auth.credentials.CredentialStore.get",
+            return_value=credentials,
+        ),
+        patch(
+            "openhands.sdk.llm.llm.litellm_aresponses",
+            side_effect=RateLimitError(
+                message=f"usage_limit_reached: Request failed with key {access_token}",
+                llm_provider="openai",
+                model="gpt-5.5",
+            ),
+        ) as transport,
+    ):
+        response = client.post(
+            "/api/profiles/subscription-quota/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-5.5",
+                    "auth_type": "subscription",
+                    "subscription_vendor": "openai",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["error"]["type"] == "LLMRateLimitError"
+    assert "quota" in body["error"]["message"].lower()
+    assert transport.call_args.kwargs["api_key"] == access_token
+    assert access_token not in response.text
+    assert access_token not in caplog.text
 
 
 def test_validate_profile_subscription_missing_credentials(client):
