@@ -17,8 +17,13 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.models import (
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
+)
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import execute_command, sanitized_env
 
 
@@ -71,9 +76,39 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def configure_service(self, service: ConversationService) -> None:
         service.sync_external_catalog = True
-        service.runtime_cipher_resolver = (
-            lambda conversation_id: self.provisioning.load(conversation_id).cipher
+        service.runtime_cipher_resolver = self.resolve_persisted_cipher
+
+    def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
+        """Resolve persisted state without weakening per-runtime isolation.
+
+        Conversations created before Docker mode have no provisioning identity and
+        were encrypted with the host key. A present but invalid identity still
+        raises rather than falling back to that key.
+        """
+        identity = self.provisioning.load_optional(conversation_id)
+        return identity.cipher if identity is not None else self.provisioning.cipher
+
+    def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
+        identity = self.provisioning.load_optional(conversation_id)
+        if identity is None:
+            return ConversationRuntimeInfo(
+                runtime_status=ConversationRuntimeStatus.MISSING,
+                can_resume=False,
+            )
+        return ConversationRuntimeInfo(
+            runtime_status=(
+                ConversationRuntimeStatus.AVAILABLE
+                if self.get(conversation_id)
+                else ConversationRuntimeStatus.STARTING
+                if self.is_starting(conversation_id)
+                else ConversationRuntimeStatus.MISSING
+            ),
+            can_resume=True,
         )
+
+    @property
+    def serves_persisted_event_reads(self) -> bool:
+        return True
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
@@ -82,7 +117,12 @@ class DockerConversationRegistry(ConversationRegistry):
         from openhands.agent_server.docker_runtime.routers import (
             docker_conversation_router,
         )
+        from openhands.agent_server.event_router import event_read_router
 
+        # Persisted event history is safe to read from the outer catalog for
+        # both Docker-backed and historical host-local conversations. Writes
+        # continue through the runtime proxy below.
+        router.include_router(event_read_router)
         router.include_router(docker_conversation_router)
 
     @property

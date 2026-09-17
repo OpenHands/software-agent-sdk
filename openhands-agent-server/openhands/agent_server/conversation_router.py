@@ -19,6 +19,7 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
 )
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
     InvalidParentConversation,
@@ -89,9 +90,21 @@ START_CONVERSATION_EXAMPLES = [
 # Read methods
 
 
+def _with_runtime_info(
+    request: Request, conversation: ConversationInfo
+) -> ConversationInfo:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if not isinstance(registry, ConversationRegistry):
+        return conversation
+    return conversation.model_copy(
+        update={"runtime_info": registry.runtime_info(conversation.id)}
+    )
+
+
 @conversation_catalog_router.get("/search", include_in_schema=False)
 @conversation_router.get("/search")
 async def search_conversations(
+    request: Request,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
@@ -127,6 +140,9 @@ async def search_conversations(
                 ]
             }
         )
+    page = page.model_copy(
+        update={"items": [_with_runtime_info(request, item) for item in page.items]}
+    )
     return page
 
 
@@ -149,6 +165,7 @@ async def count_conversations(
 )
 async def get_conversation(
     conversation_id: UUID,
+    request: Request,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
@@ -158,30 +175,36 @@ async def get_conversation(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
-    return conversation
+    return _with_runtime_info(request, conversation)
 
 
 @conversation_router.get("/{conversation_id}/runtime")
 async def get_local_conversation_runtime(
     conversation_id: UUID,
+    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationRuntimeInfo:
     """Inspect the always-available in-process runtime."""
     if await conversation_service.get_conversation(conversation_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if isinstance(registry, ConversationRegistry):
+        return registry.runtime_info(conversation_id)
     return ConversationRuntimeInfo(
-        runtime_status=ConversationRuntimeStatus.AVAILABLE,
-        can_resume=True,
+        runtime_status=ConversationRuntimeStatus.AVAILABLE, can_resume=True
     )
 
 
 @conversation_router.post("/{conversation_id}/runtime/reprovision")
 async def reprovision_local_conversation_runtime(
     conversation_id: UUID,
+    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationRuntimeInfo:
     """Return local runtime state; local mode has no infrastructure to provision."""
-    return await get_local_conversation_runtime(conversation_id, conversation_service)
+    return await get_local_conversation_runtime(
+        conversation_id, request, conversation_service
+    )
 
 
 @conversation_router.get(
@@ -207,6 +230,7 @@ async def get_conversation_agent_final_response(
 
 @conversation_router.get("")
 async def batch_get_conversations(
+    request: Request,
     ids: Annotated[list[UUID], Query()],
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
@@ -215,6 +239,10 @@ async def batch_get_conversations(
     any missing item"""
     assert len(ids) < 100
     conversations = await conversation_service.batch_get_conversations(ids)
+    conversations = [
+        _with_runtime_info(request, conversation) if conversation is not None else None
+        for conversation in conversations
+    ]
     if not include_skills:
         return [
             trim_conversation_response_skills(c) if c is not None else None

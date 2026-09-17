@@ -147,18 +147,9 @@ async def runtime_info(
     conversation_id: UUID, request: Request
 ) -> ConversationRuntimeInfo:
     registry = get_registry(request)
-    if not registry.provisioning.manifest_path(conversation_id).is_file():
+    if not registry.conversation_dir(conversation_id).joinpath("meta.json").is_file():
         raise HTTPException(404, "Conversation not found")
-    return ConversationRuntimeInfo(
-        runtime_status=(
-            ConversationRuntimeStatus.AVAILABLE
-            if registry.get(conversation_id)
-            else ConversationRuntimeStatus.STARTING
-            if registry.is_starting(conversation_id)
-            else ConversationRuntimeStatus.MISSING
-        ),
-        can_resume=True,
-    )
+    return registry.runtime_info(conversation_id)
 
 
 @docker_conversation_router.post("/{conversation_id}/runtime/credentials")
