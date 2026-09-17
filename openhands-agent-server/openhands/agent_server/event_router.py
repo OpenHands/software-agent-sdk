@@ -76,7 +76,9 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
 
 
 @event_read_router.get(
-    "/search", responses={404: {"description": "Conversation not found"}}
+    "/search",
+    response_model=None,
+    responses={404: {"description": "Conversation not found"}},
 )
 async def search_conversation_events(
     request: Request,
@@ -116,14 +118,14 @@ async def search_conversation_events(
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
     event_service: EventService | None = Depends(get_event_service),
-) -> JSONResponse:
+) -> Response:
     """Search / List local events"""
 
     if event_service is None:
         proxied = await _proxy_event_read(request, conversation_id)
         if proxied is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
-        return proxied  # type: ignore[return-value]
+        return proxied
 
     # Normalize timezone-aware datetimes to server timezone
     normalized_gte = (
@@ -158,7 +160,9 @@ async def search_conversation_events(
 
 
 @event_read_router.get(
-    "/count", responses={404: {"description": "Conversation not found"}}
+    "/count",
+    response_model=int,
+    responses={404: {"description": "Conversation not found"}},
 )
 async def count_conversation_events(
     request: Request,
@@ -186,13 +190,13 @@ async def count_conversation_events(
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
     event_service: EventService | None = Depends(get_event_service),
-) -> int:
+) -> int | Response:
     """Count local events matching the given filters"""
     if event_service is None:
         proxied = await _proxy_event_read(request, conversation_id)
         if proxied is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
-        return proxied  # type: ignore[return-value]
+        return proxied
     # Normalize timezone-aware datetimes to server timezone
     normalized_gte = (
         normalize_datetime_to_server_timezone(timestamp__gte)
@@ -211,40 +215,42 @@ async def count_conversation_events(
 
 
 @event_read_router.get(
-    "/{event_id}", responses={404: {"description": "Item not found"}}
+    "/{event_id}",
+    response_model=Event,
+    responses={404: {"description": "Item not found"}},
 )
 async def get_conversation_event(
     request: Request,
     conversation_id: UUID,
     event_id: str,
     event_service: EventService | None = Depends(get_event_service),
-) -> Event:
+) -> Event | Response:
     """Get a local event given an id"""
     if event_service is None:
         proxied = await _proxy_event_read(request, conversation_id)
         if proxied is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
-        return proxied  # type: ignore[return-value]
+        return proxied
     event = await event_service.get_event(event_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return event
 
 
-@event_read_router.get("")
+@event_read_router.get("", response_model=list[Event | None])
 async def batch_get_conversation_events(
     request: Request,
     conversation_id: UUID,
     event_ids: list[str],
     event_service: EventService | None = Depends(get_event_service),
-) -> list[Event | None]:
+) -> list[Event | None] | Response:
     """Get a batch of local events given their ids, returning null for any
     missing item."""
     if event_service is None:
         proxied = await _proxy_event_read(request, conversation_id)
         if proxied is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND)
-        return proxied  # type: ignore[return-value]
+        return proxied
     events = await event_service.batch_get_events(event_ids)
     return events
 

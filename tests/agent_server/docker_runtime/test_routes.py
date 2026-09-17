@@ -200,7 +200,9 @@ def test_live_event_history_is_read_from_the_conversation_container(
     )
     app = FastAPI()
     app.state.conversation_registry = registry
-    app.state.conversation_service = SimpleNamespace()
+    app.state.conversation_service = SimpleNamespace(
+        get_event_service=AsyncMock(return_value=None)
+    )
     app.include_router(event_read_router, prefix="/api")
 
     with TestClient(app) as client:
@@ -215,6 +217,37 @@ def test_live_event_history_is_read_from_the_conversation_container(
             f"/api/conversations/{conversation_id}/events/search?limit=50"
         )
     }
+
+
+def test_stopped_event_history_is_read_without_starting_a_container(
+    tmp_path, monkeypatch
+):
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    registry.get_or_create = AsyncMock()
+    event_service = SimpleNamespace(
+        search_events=AsyncMock(return_value={"items": [], "next_page_id": None})
+    )
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = SimpleNamespace(
+        get_event_service=AsyncMock(return_value=event_service)
+    )
+    app.include_router(event_read_router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/conversations/{conversation_id}/events/search?limit=50"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_page_id": None}
+    registry.get_or_create.assert_not_awaited()
 
 
 def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkeypatch):

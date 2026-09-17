@@ -94,13 +94,13 @@ async def get_event_service(
     request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> EventService | None:
-    registry = getattr(request.app.state, "conversation_registry", None)
-    if isinstance(registry, ConversationRegistry) and registry.should_proxy_event_read(
-        conversation_id
-    ):
-        return None
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
+        registry = getattr(request.app.state, "conversation_registry", None)
+        if isinstance(
+            registry, ConversationRegistry
+        ) and registry.should_proxy_event_read(conversation_id):
+            return None
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Conversation not found: {conversation_id}",
