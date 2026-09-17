@@ -113,7 +113,12 @@ class DockerConversationRegistry(ConversationRegistry):
         from openhands.agent_server.docker_runtime.routers import (
             docker_conversation_router,
         )
+        from openhands.agent_server.event_router import event_read_router
 
+        # Persisted event history is safe to read from the outer catalog for
+        # both Docker-backed and historical host-local conversations. Writes
+        # continue through the runtime proxy below.
+        router.include_router(event_read_router)
         router.include_router(docker_conversation_router)
 
     @property

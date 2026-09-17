@@ -39,6 +39,7 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
     assert "/sockets/session/{conversation_id}" in paths
     assert "/sockets/bash-events" in paths
     assert "/api/conversations/{conversation_id}/{tail:path}" in paths
+    assert "/api/conversations/{conversation_id}/events/search" in paths
     assert "/api/conversations/{conversation_id}" in paths
     assert "/api/host/bash/execute_bash_command" not in paths
     assert "/api/bash/execute_bash_command" in paths
@@ -63,6 +64,19 @@ def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
         if hasattr(route, "matches") and route.matches(scope)[0] is Match.FULL
     ]
     assert getattr(matched[0], "endpoint").__name__ == "get_conversation"
+
+    event_scope = {
+        "type": "http",
+        "path": f"/api/conversations/{uuid4()}/events/search",
+        "root_path": "",
+        "method": "GET",
+    }
+    matched = [
+        route
+        for route in app.routes
+        if hasattr(route, "matches") and route.matches(event_scope)[0] is Match.FULL
+    ]
+    assert getattr(matched[0], "endpoint").__name__ == "search_conversation_events"
 
     session_scope = {
         "type": "websocket",
