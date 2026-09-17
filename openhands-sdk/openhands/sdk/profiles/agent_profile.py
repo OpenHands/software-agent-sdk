@@ -169,8 +169,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
         description=(
             "Tool selection for the resolved agent. None (the default) = the "
             "server's standard tool set; [] = an explicitly bare agent; a "
-            "non-empty list is used as given. enable_sub_agents adds the "
-            "sub-agent tool set in every case."
+            "non-empty list is used exactly as given."
         ),
     )
 
