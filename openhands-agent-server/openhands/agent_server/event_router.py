@@ -5,6 +5,7 @@ Local Event router for OpenHands SDK.
 import logging
 from datetime import datetime
 from typing import Annotated, Any, cast
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -13,8 +14,10 @@ from fastapi import (
     Query,
     status,
 )
-from starlette.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -34,6 +37,13 @@ event_write_router = APIRouter(
     prefix="/conversations/{conversation_id}/events", tags=["Events"]
 )
 logger = logging.getLogger(__name__)
+
+
+async def _proxy_event_read(request: Request, conversation_id: UUID) -> Response | None:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if isinstance(registry, ConversationRegistry):
+        return await registry.proxy_event_read(conversation_id, request)
+    return None
 
 
 # Read methods
@@ -69,6 +79,8 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
     "/search", responses={404: {"description": "Conversation not found"}}
 )
 async def search_conversation_events(
+    request: Request,
+    conversation_id: UUID,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
@@ -103,9 +115,15 @@ async def search_conversation_events(
         datetime | None,
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService | None = Depends(get_event_service),
 ) -> JSONResponse:
     """Search / List local events"""
+
+    if event_service is None:
+        proxied = await _proxy_event_read(request, conversation_id)
+        if proxied is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        return proxied  # type: ignore[return-value]
 
     # Normalize timezone-aware datetimes to server timezone
     normalized_gte = (
@@ -143,6 +161,8 @@ async def search_conversation_events(
     "/count", responses={404: {"description": "Conversation not found"}}
 )
 async def count_conversation_events(
+    request: Request,
+    conversation_id: UUID,
     kind: Annotated[
         str | None,
         Query(
@@ -165,9 +185,14 @@ async def count_conversation_events(
         datetime | None,
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService | None = Depends(get_event_service),
 ) -> int:
     """Count local events matching the given filters"""
+    if event_service is None:
+        proxied = await _proxy_event_read(request, conversation_id)
+        if proxied is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        return proxied  # type: ignore[return-value]
     # Normalize timezone-aware datetimes to server timezone
     normalized_gte = (
         normalize_datetime_to_server_timezone(timestamp__gte)
@@ -189,10 +214,17 @@ async def count_conversation_events(
     "/{event_id}", responses={404: {"description": "Item not found"}}
 )
 async def get_conversation_event(
+    request: Request,
+    conversation_id: UUID,
     event_id: str,
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService | None = Depends(get_event_service),
 ) -> Event:
     """Get a local event given an id"""
+    if event_service is None:
+        proxied = await _proxy_event_read(request, conversation_id)
+        if proxied is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        return proxied  # type: ignore[return-value]
     event = await event_service.get_event(event_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -201,11 +233,18 @@ async def get_conversation_event(
 
 @event_read_router.get("")
 async def batch_get_conversation_events(
+    request: Request,
+    conversation_id: UUID,
     event_ids: list[str],
-    event_service: EventService = Depends(get_event_service),
+    event_service: EventService | None = Depends(get_event_service),
 ) -> list[Event | None]:
     """Get a batch of local events given their ids, returning null for any
     missing item."""
+    if event_service is None:
+        proxied = await _proxy_event_read(request, conversation_id)
+        if proxied is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND)
+        return proxied  # type: ignore[return-value]
     events = await event_service.batch_get_events(event_ids)
     return events
 

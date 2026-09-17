@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter
+from starlette.requests import Request
+from starlette.responses import Response
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.models import (
@@ -33,6 +35,15 @@ class ConversationRegistry:
             runtime_status=ConversationRuntimeStatus.AVAILABLE,
             can_resume=True,
         )
+
+    async def proxy_event_read(
+        self, _conversation_id: UUID, _request: Request
+    ) -> Response | None:
+        """Proxy event history when the runtime owns the live event service."""
+        return None
+
+    def should_proxy_event_read(self, _conversation_id: UUID) -> bool:
+        return False
 
     async def start(self) -> None:
         """Start resources owned by this registry."""

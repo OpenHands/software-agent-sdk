@@ -5,6 +5,7 @@ from fastapi.security import APIKeyCookie, APIKeyHeader
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 
@@ -90,8 +91,14 @@ async def get_bash_event_service(request: Request) -> BashEventService:
 
 async def get_event_service(
     conversation_id: UUID,
+    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> EventService:
+) -> EventService | None:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if isinstance(registry, ConversationRegistry) and registry.should_proxy_event_read(
+        conversation_id
+    ):
+        return None
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise HTTPException(

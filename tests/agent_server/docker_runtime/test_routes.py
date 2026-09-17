@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
@@ -19,6 +19,7 @@ from openhands.agent_server.docker_runtime.routers import (
     docker_conversation_router,
     proxy_conversation,
 )
+from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
@@ -172,6 +173,47 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
         "runtime_status": "missing",
         "can_resume": True,
         "runtime_error": None,
+    }
+
+
+def test_live_event_history_is_read_from_the_conversation_container(
+    tmp_path, monkeypatch
+):
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    registry.get_or_create = AsyncMock(
+        return_value=SimpleNamespace(host="http://inner", api_key="inner-key")
+    )
+    forwarded = {}
+
+    async def proxy(_request, _container, *, upstream_path):
+        forwarded["upstream_path"] = upstream_path
+        return JSONResponse({"items": [], "next_page_id": None})
+
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.proxy_http", proxy
+    )
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = SimpleNamespace()
+    app.include_router(event_read_router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/conversations/{conversation_id}/events/search?limit=50"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_page_id": None}
+    assert forwarded == {
+        "upstream_path": (
+            f"/api/conversations/{conversation_id}/events/search?limit=50"
+        )
     }
 
 
