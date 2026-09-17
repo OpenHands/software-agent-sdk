@@ -9,6 +9,7 @@ The tests automatically detect which terminal types are available on the system
 and run the parametrized tests for each one.
 """
 
+import logging
 import os
 import subprocess
 import tempfile
@@ -115,6 +116,24 @@ def test_basic_command(terminal_type):
     assert session.prev_status == TerminalCommandStatus.COMPLETED
 
     session.close()
+
+
+def test_subprocess_terminal_debug_logs_omit_command_and_output(caplog):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type="subprocess")
+    session.initialize()
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    secret = "ghp_" + "d" * 36
+
+    try:
+        observation = session.execute(TerminalAction(command=f"printf '{secret}\\n'"))
+    finally:
+        session.close()
+
+    assert secret in observation.text
+    assert "Wrote to subprocess PTY" in caplog.text
+    assert "Read from subprocess PTY" in caplog.text
+    assert secret not in caplog.text
 
 
 @parametrize_terminal_types

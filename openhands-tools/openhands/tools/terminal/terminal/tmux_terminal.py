@@ -1,17 +1,23 @@
 """Tmux-based terminal backend implementation."""
 
+import logging
 import time
 import uuid
+from collections.abc import Mapping
 
 import libtmux
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
+from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
     TMUX_SOCKET_NAME,
+)
+from openhands.tools.terminal.env import (
+    build_terminal_env,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
@@ -19,6 +25,48 @@ from openhands.tools.terminal.terminal.interface import parse_ctrl_key
 
 
 logger = get_logger(__name__)
+
+
+class _SecretRedactFilter(logging.Filter):
+    """Redact API key literals from libtmux log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg and isinstance(record.msg, str):
+            record.msg = redact_api_key_literals(record.msg)
+        if record.args:
+            if isinstance(record.args, Mapping):
+                record.args = {
+                    k: redact_api_key_literals(v) if isinstance(v, str) else v
+                    for k, v in record.args.items()
+                }
+            elif isinstance(record.args, tuple):
+                record.args = tuple(
+                    redact_api_key_literals(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+        tmux_cmd = getattr(record, "tmux_cmd", None)
+        if tmux_cmd and isinstance(tmux_cmd, str):
+            record.tmux_cmd = redact_api_key_literals(tmux_cmd)
+        return True
+
+
+def _install_libtmux_redaction_filter() -> None:
+    logger_names = [
+        "libtmux",
+        *(
+            name
+            for name, candidate in logging.Logger.manager.loggerDict.items()
+            if name.startswith("libtmux.") and isinstance(candidate, logging.Logger)
+        ),
+    ]
+    for logger_name in logger_names:
+        libtmux_logger = logging.getLogger(logger_name)
+        if not any(
+            isinstance(log_filter, _SecretRedactFilter)
+            for log_filter in libtmux_logger.filters
+        ):
+            libtmux_logger.addFilter(_SecretRedactFilter())
+
 
 # Map normalized special key names to tmux key names.
 _TMUX_SPECIALS: dict[str, str] = {
@@ -57,16 +105,19 @@ class TmuxTerminal(TerminalInterface):
         self,
         work_dir: str,
         username: str | None = None,
+        env: Mapping[str, str] | None = None,
     ):
         super().__init__(work_dir, username)
+        _install_libtmux_redaction_filter()
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
+        self._env = normalize_terminal_env(env)
 
     def initialize(self) -> None:
         """Initialize the tmux terminal session."""
         if self._initialized:
             return
 
-        env = sanitized_env()
+        env = build_terminal_env(self._env)
         # Disable interactive pagers (git, man, systemctl, ...) so commands that
         # auto-launch `less` on a TTY don't capture the pane and wedge the session.
         env.setdefault("GIT_PAGER", "cat")

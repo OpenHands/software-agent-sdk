@@ -95,6 +95,12 @@ class _SpyState:
     def __init__(self, events):
         self.events = events
 
+    def active_branch(self, limit=None):
+        # A linear conversation's active branch is the whole log; ``limit`` takes
+        # the tail. Mirrored via the spy slice so the "only the last N events are
+        # touched" assertions still hold.
+        return list(self.events[-limit:] if limit is not None else self.events)
+
 
 def test_is_stuck_uses_only_recent_event_window():
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
@@ -369,8 +375,8 @@ def test_repeating_action_observation_stuck():
     assert stuck_detector.is_stuck() is True
 
 
-def test_repeating_action_error_stuck():
-    """Test detection of repeating action-error cycles."""
+def test_repeating_action_error_nudges_before_stuck():
+    """Reaching the threshold nudges once; a further repeat is a hard stuck."""
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
@@ -416,16 +422,28 @@ def test_repeating_action_error_stuck():
         state.events.append(action)
         state.events.append(error)
 
-    # Should not stuck with 2 identical action-error pairs
+    # 2 pairs: not stuck, no nudge yet
     assert stuck_detector.is_stuck() is False
+    assert stuck_detector.get_action_error_nudge() is None
 
-    # Add 1 more identical action-error pair to trigger stuck detection
+    # 3rd pair reaches the threshold: nudge, not yet stuck
     action, error = create_action_and_error(2)
     state.events.append(action)
     state.events.append(error)
 
-    # Should be stuck with 3 identical action-error pairs
+    assert stuck_detector.is_stuck() is False
+    nudge = stuck_detector.get_action_error_nudge()
+    assert nudge is not None
+    assert "terminal" in nudge
+    assert "Command 'invalid_command' not found" in nudge
+
+    # 4th pair despite the nudge: hard stuck
+    action, error = create_action_and_error(3)
+    state.events.append(action)
+    state.events.append(error)
+
     assert stuck_detector.is_stuck() is True
+    assert stuck_detector.get_action_error_nudge() is None
 
 
 def test_agent_monologue_stuck():

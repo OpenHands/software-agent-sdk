@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -10,6 +11,7 @@ import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 import pytest
@@ -169,6 +171,108 @@ def test_download_file_query_param_missing_path(client):
 
 
 # =============================================================================
+# Create Directory Tests - POST /api/file/create_directory
+# =============================================================================
+
+
+def test_create_directory_success(client, tmp_path):
+    """Test successful directory creation."""
+    target_path = tmp_path / "new_directory"
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert target_path.is_dir()
+
+
+def test_create_directory_creates_missing_parents(client, tmp_path):
+    """Test that intermediate directories are created."""
+    target_path = tmp_path / "parent" / "child" / "grandchild"
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 200
+    assert target_path.is_dir()
+
+
+def test_create_directory_existing_directory_succeeds(client, tmp_path):
+    """Test that creating an existing directory is idempotent."""
+    target_path = tmp_path / "already_here"
+    target_path.mkdir()
+    (target_path / "keep.txt").write_text("untouched")
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+    assert (target_path / "keep.txt").read_text() == "untouched"
+
+
+def test_create_directory_relative_path_fails(client):
+    """Test that creating with a relative path returns 400."""
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": "relative/path/dir"},
+    )
+
+    assert response.status_code == 400
+    assert "must be absolute" in response.json()["detail"]
+
+
+def test_create_directory_existing_file_fails(client, tmp_path):
+    """Test that creating over an existing file returns 400, not 500."""
+    target_path = tmp_path / "a_file.txt"
+    target_path.write_text("do not clobber me")
+
+    response = client.post(
+        "/api/file/create_directory",
+        params={"path": str(target_path)},
+    )
+
+    assert response.status_code == 400
+    assert "not a directory" in response.json()["detail"].lower()
+    assert target_path.read_text() == "do not clobber me"
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="root bypasses directory write permissions",
+)
+def test_create_directory_permission_denied(client, tmp_path):
+    """Test that an unwritable parent returns 403."""
+    parent = tmp_path / "readonly"
+    parent.mkdir()
+    parent.chmod(0o500)
+    try:
+        response = client.post(
+            "/api/file/create_directory",
+            params={"path": str(parent / "child")},
+        )
+
+        assert response.status_code == 403
+        assert "permission denied" in response.json()["detail"].lower()
+    finally:
+        parent.chmod(0o700)
+
+
+def test_create_directory_missing_path(client):
+    """Test that creating without a path parameter returns 422."""
+    response = client.post("/api/file/create_directory")
+
+    assert response.status_code == 422
+
+
+# =============================================================================
 # Edge Case Tests
 # =============================================================================
 
@@ -274,6 +378,95 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
         )
 
     assert not (conversations_path / f"{conversation_id.hex}.zip").exists()
+
+
+def test_download_trajectory_redacts_llm_and_condenser_secrets(
+    client, monkeypatch, tmp_path
+):
+    """A downloaded trajectory must never carry LLM/condenser API keys.
+
+    Covers both plaintext keys (no ``OH_SECRET_KEY`` configured) and encrypted
+    Fernet blobs (cipher configured) — neither belongs in a shareable archive.
+    """
+    conversations_path = tmp_path / "conversations"
+    conversation_id = uuid4()
+    conversation_dir = conversations_path / conversation_id.hex
+    events_dir = conversation_dir / "events"
+    events_dir.mkdir(parents=True)
+
+    plaintext_key = "sk-plaintext-main-0123456789"
+    condenser_key = "sk-plaintext-condenser-987654321"
+    encrypted_blob = "gAAAAABencrypted_condenser_blob_value"
+    encrypted_custom_secret = "gAAAAABencrypted_custom_registry_secret"
+
+    # meta.json: plaintext main key + encrypted condenser key
+    meta = {
+        "id": conversation_id.hex,
+        "agent": {
+            "llm": {"model": "gpt-4o", "api_key": plaintext_key},
+            "condenser": {"llm": {"model": "gpt-4o-mini", "api_key": encrypted_blob}},
+        },
+    }
+    (conversation_dir / "meta.json").write_text(json.dumps(meta))
+
+    # base_state.json mirrors the agent config with a plaintext condenser key,
+    # plus a cipher-encrypted custom secret whose field name ("value") is not
+    # in the LLM secret-field list.
+    base_state = {
+        "agent": {
+            "llm": {"model": "gpt-4o", "api_key": plaintext_key},
+            "condenser": {"llm": {"model": "gpt-4o-mini", "api_key": condenser_key}},
+        },
+        "secret_registry": {
+            "secret_sources": {
+                "MY_TOKEN": {"kind": "StaticSecret", "value": encrypted_custom_secret}
+            }
+        },
+    }
+    (conversation_dir / "base_state.json").write_text(json.dumps(base_state))
+
+    # A full_state event (JSONL) embedding the whole agent, plaintext keys
+    event = {
+        "kind": "ConversationStateUpdateEvent",
+        "key": "full_state",
+        "value": {
+            "agent": {
+                "llm": {"model": "gpt-4o", "api_key": plaintext_key},
+                "condenser": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": condenser_key}
+                },
+            }
+        },
+    }
+    (events_dir / "event-00000.json").write_text(json.dumps(event))
+
+    monkeypatch.setattr(
+        "openhands.agent_server.file_router.get_default_config",
+        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
+    )
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+    assert response.status_code == 200
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        blob = b"\n".join(archive.read(name) for name in archive.namelist())
+
+    # No secret material of any kind survives into the archive.
+    for secret in (
+        plaintext_key,
+        condenser_key,
+        encrypted_blob,
+        encrypted_custom_secret,
+    ):
+        assert secret.encode() not in blob
+
+    # The redaction marker is present where keys used to be, and non-secret
+    # content (model names) is preserved.
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        meta_out = json.loads(archive.read(f"{conversation_id.hex}/meta.json"))
+    assert meta_out["agent"]["llm"]["api_key"] == "**********"
+    assert meta_out["agent"]["condenser"]["llm"]["api_key"] == "**********"
+    assert meta_out["agent"]["llm"]["model"] == "gpt-4o"
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):
@@ -779,6 +972,213 @@ def test_git_delta_new_repo_has_no_base_commit_header(client, tmp_path):
     assert "x-archive-base-commit" not in resp.headers
 
 
+def _repo_with_remote(root: Path, remote_url: str, branch: str = "feature-x") -> str:
+    """Init a repo with one commit, an ``origin`` remote, and a named branch.
+
+    Returns the HEAD commit sha.
+    """
+    root.mkdir()
+    _git(["init"], root)
+    _git(["remote", "add", "origin", remote_url], root)
+    (root / "a.txt").write_text("original\n", encoding="utf-8")
+    _git(["add", "-A"], root)
+    _git(["commit", "-m", "init"], root)
+    _git(["checkout", "-b", branch], root)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_git_delta_response_includes_repo_metadata_headers(client, tmp_path):
+    head_sha = _repo_with_remote(
+        tmp_path / "repo", "https://github.com/example/repo.git"
+    )
+    (tmp_path / "repo" / "a.txt").write_text("changed\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "git-delta"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-repo-remote"] == quote(
+        "https://github.com/example/repo.git", safe=""
+    )
+    assert resp.headers["x-archive-branch"] == "feature-x"
+    assert resp.headers["x-archive-head-commit"] == head_sha
+
+
+def test_tar_gz_response_includes_repo_metadata_headers(client, tmp_path):
+    # The new repo-identity headers make a tar.gz snapshot self-describing too,
+    # even though it carries no base_commit/base_ref.
+    head_sha = _repo_with_remote(
+        tmp_path / "repo", "https://github.com/example/repo.git"
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-repo-remote"] == quote(
+        "https://github.com/example/repo.git", safe=""
+    )
+    assert resp.headers["x-archive-branch"] == "feature-x"
+    assert resp.headers["x-archive-head-commit"] == head_sha
+    assert "x-archive-base-commit" not in resp.headers
+
+
+def test_archive_redacts_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://user:ghp_secrettoken@github.com/example/repo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("https://****@github.com/example/repo.git", safe="")
+
+
+def test_archive_redacts_mixed_case_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "HTTPS://user:ghp_secrettoken@github.com/example/repo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("HTTPS://****@github.com/example/repo.git", safe="")
+
+
+def test_archive_redacts_remote_query_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://github.com/example/repo.git?access_token=SECRET&depth=1",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = unquote(resp.headers["x-archive-repo-remote"])
+    assert "SECRET" not in remote
+    assert "access_token=%3Credacted%3E" in remote
+    assert "depth=1" in remote
+
+
+def test_archive_literal_percent_is_encoded(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://github.com/example/feature%2Frepo.git",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "%252F" in resp.headers["x-archive-repo-remote"]
+
+
+def test_archive_redacts_multiline_remote_credentials_in_header(client, tmp_path):
+    _repo_with_remote(
+        tmp_path / "repo",
+        "https://user:ghp_secrettoken@github.com/example/repo.git\nextra",
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "ghp_secrettoken" not in remote
+    assert remote == quote("https://****@github.com/example/repo.git\nextra", safe="")
+
+
+def test_archive_detached_head_reports_detached_branch(client, tmp_path):
+    head_sha = _repo_with_remote(
+        tmp_path / "repo", "https://github.com/example/repo.git"
+    )
+    # Detach HEAD at the commit (SWE-bench-style pinned checkout).
+    _git(["checkout", head_sha], tmp_path / "repo")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(tmp_path / "repo"), "format": "tar.gz"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-branch"] == "DETACHED"
+    assert resp.headers["x-archive-head-commit"] == head_sha
+
+
+def test_archive_non_git_directory_has_no_repo_metadata_headers(client, workspace):
+    resp = client.get(
+        "/api/file/archive", params={"path": str(workspace), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "x-archive-repo-remote" not in resp.headers
+    assert "x-archive-branch" not in resp.headers
+    assert "x-archive-head-commit" not in resp.headers
+
+
+def test_archive_remote_with_embedded_control_char_is_percent_encoded(client, tmp_path):
+    # A remote URL is free-form text (unlike a ref name), so it can carry a
+    # literal control character straight into what becomes a header value.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["config", "remote.origin.url", "https://example.com/repo\nline-two"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    remote = resp.headers["x-archive-repo-remote"]
+    assert "\n" not in remote
+    assert remote == quote("https://example.com/repo\nline-two", safe="")
+
+
+def test_archive_non_ascii_branch_is_percent_encoded_not_dropped(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init"], repo)
+    _git(["commit", "--allow-empty", "-m", "init"], repo)
+    _git(["checkout", "-b", "café-branch"], repo)
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(repo), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-branch"] == quote("café-branch", safe="")
+
+
 # =============================================================================
 # Archive Tests - format=tar.gz (full-workspace archive)
 # =============================================================================
@@ -1026,6 +1426,7 @@ def test_git_delta_auto_descends_to_single_repo_under_base(client, tmp_path):
 
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("text/x-patch")
+    assert unquote(resp.headers["x-archive-repo-root"]) == str(repo)
     assert "app.py" in resp.content.decode("utf-8")
 
 

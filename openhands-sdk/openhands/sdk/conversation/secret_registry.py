@@ -1,8 +1,13 @@
 """Secrets manager for handling sensitive data in conversations."""
 
-from collections.abc import Collection, Mapping
+import re
+import time
+from collections.abc import Callable, Collection, Mapping
+from enum import Enum
+from threading import RLock
+from typing import Any, Final
 
-from pydantic import Field, PrivateAttr, SecretStr
+from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
@@ -10,6 +15,95 @@ from openhands.sdk.utils.models import OpenHandsModel
 
 
 logger = get_logger(__name__)
+
+# Back-off before retrying a failed source; a failed lookup masks nothing anyway.
+FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
+
+
+def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
+    """Recursively mask every ``str`` reachable from ``value``."""
+    match value:
+        case Enum():
+            # A str-subclass enum is a str, but masking it would downgrade the
+            # member to a plain str and break the field's serialization. Its
+            # vocabulary is fixed, so it can never hold a secret anyway.
+            return value
+        case str():
+            return mask(value)
+        case BaseModel():
+            return _mask_model(value, mask)
+        case list():
+            return [_mask_value(item, mask) for item in value]
+        case tuple():
+            items = [_mask_value(item, mask) for item in value]
+            # Rebuild a NamedTuple through its own constructor; tuple(items)
+            # would downgrade it the same way masking an Enum member does.
+            return type(value)(*items) if hasattr(value, "_fields") else tuple(items)
+        case set() | frozenset():
+            return type(value)(_mask_value(item, mask) for item in value)
+        case dict():
+            return {key: _mask_value(item, mask) for key, item in value.items()}
+        case _:
+            return value
+
+
+def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) -> ModelT:
+    """Rebuild ``model`` with every nested string masked.
+
+    ``model_copy`` is used rather than a validate round-trip so private
+    attributes survive and no field is re-coerced.
+    """
+    updates = {
+        name: _mask_value(getattr(model, name), mask)
+        for name in type(model).model_fields
+    }
+    return model.model_copy(update=updates)
+
+
+class StreamOutputMask:
+    """Masks text that arrives in pieces.
+
+    A per-chunk masker cannot see a secret split across chunk boundaries, so
+    this holds back the shortest suffix that could still grow into one: the
+    longest registered value minus one character.
+    """
+
+    def __init__(self, pattern: re.Pattern[str] | None, max_len: int) -> None:
+        self._pattern = pattern
+        self._max_len = max_len
+        self._held = ""
+
+    def feed(self, text: str) -> str:
+        """Return the masked text that is safe to release now."""
+        pattern = self._pattern
+        if pattern is None:
+            return text
+        self._held += text
+        return self._release(pattern, max(len(self._held) - self._max_len + 1, 0))
+
+    def flush(self) -> str:
+        """Return what is still held back; no more input is coming."""
+        pattern = self._pattern
+        if pattern is None:
+            return ""
+        return self._release(pattern, len(self._held))
+
+    def _release(self, pattern: re.Pattern[str], cut: int) -> str:
+        out: list[str] = []
+        pos = 0
+        end = cut
+        for match in pattern.finditer(self._held):
+            # A match starting before the cut is already maximal: the cut
+            # leaves max_len-1 characters of lookahead behind it.
+            if match.start() >= cut:
+                break
+            out.append(self._held[pos : match.start()])
+            out.append("<secret-hidden>")
+            pos = match.end()
+            end = max(end, match.end())
+        out.append(self._held[pos:end])
+        self._held = self._held[end:]
+        return "".join(out)
 
 
 class SecretRegistry(OpenHandsModel):
@@ -32,6 +126,13 @@ class SecretRegistry(OpenHandsModel):
 
     secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
+    _exported_values_lock: RLock = PrivateAttr(default_factory=RLock)
+    _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
+
+    def track_exported_values(self, values: Mapping[str, str]) -> None:
+        """Track values for output masking."""
+        with self._exported_values_lock:
+            self._exported_values.update({k: v for k, v in values.items() if v})
 
     def update_secrets(
         self,
@@ -84,8 +185,7 @@ class SecretRegistry(OpenHandsModel):
                 value = source.get_value()
                 if value:
                     env_vars[key] = value
-                    # Track successfully exported values for masking
-                    self._exported_values[key] = value
+                    self.track_exported_values({key: value})
             except Exception as e:
                 logger.error(f"Failed to retrieve secret for key '{key}': {e}")
                 continue
@@ -131,8 +231,10 @@ class SecretRegistry(OpenHandsModel):
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
-        This method uses both the current exported values and attempts to get
-        fresh values from callables to ensure comprehensive masking.
+        Masks the last resolved value of every registered secret, not only the
+        exported ones: a value can reach the output without the command ever
+        referencing its name (e.g. a token in a git remote URL). Cached values
+        are not re-resolved, so a rotated secret masks its previous value.
 
         Args:
             text: The text to mask secrets in
@@ -143,13 +245,55 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        masked_text = text
+        # Resolve uncached sources, backing off on failure: get_value() may do
+        # blocking network I/O and masking runs per output and per ACP chunk.
+        now = time.monotonic()
+        for key in list(self.secret_sources):
+            if key in self._exported_values:
+                continue
+            failed_at = self._failed_lookups.get(key)
+            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+                continue
+            if not self.get_secret_value(key):
+                self._failed_lookups[key] = now
 
-        # First, mask using currently exported values (always available)
-        for value in self._exported_values.values():
-            masked_text = masked_text.replace(value, "<secret-hidden>")
+        masked_text = text
+        with self._exported_values_lock:
+            exported_values = tuple(self._exported_values.values())
+        for value in exported_values:
+            if value:
+                masked_text = masked_text.replace(value, "<secret-hidden>")
 
         return masked_text
+
+    def compile_stream_mask(self) -> StreamOutputMask:
+        """Return a streaming masker over the values resolved *so far*.
+
+        For hot paths that cannot afford :meth:`mask_secrets_in_output`, which
+        resolves uncached sources first — ``get_value()`` may block on network
+        I/O, and on the sync agent path that runs under the state lock. Masks
+        less in exchange: use it for progress, not for the durable record.
+        """
+        with self._exported_values_lock:
+            values = {value for value in self._exported_values.values() if value}
+        if not values:
+            return StreamOutputMask(None, 0)
+        # Longest first so an overlapping shorter value cannot mask half of a
+        # longer one and leave the rest in cleartext.
+        pattern = re.compile(
+            "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
+        )
+        return StreamOutputMask(pattern, max(len(v) for v in values))
+
+    def mask_secrets_in_model[ModelT: BaseModel](self, model: ModelT) -> ModelT:
+        """Return ``model`` with secret values masked in every nested string.
+
+        Masking one known text field is not enough for tool output:
+        ``Observation.to_llm_content`` is overridable, and several tools build
+        what the model sees out of their own fields rather than ``content``.
+        Walking the whole model is what keeps tool #14 covered by default.
+        """
+        return _mask_model(model, self.mask_secrets_in_output)
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
         """Get secret information (name and description) for prompt inclusion.
@@ -193,8 +337,7 @@ class SecretRegistry(OpenHandsModel):
         try:
             value = source.get_value()
             if value:
-                # Track retrieved value for output masking
-                self._exported_values[name] = value
+                self.track_exported_values({name: value})
             return value
         except (OSError, TimeoutError) as e:
             # Network/IO errors - likely transient, log and return None

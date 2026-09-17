@@ -174,7 +174,7 @@ def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> 
 # larger string. The userinfo portion excludes ``/``, ``@``, and whitespace so
 # the match stops at the first credential boundary and never spans a path
 # segment or another token.
-_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)[^/@\s]+@")
+_EMBEDDED_URL_CREDENTIALS_RE = re.compile(r"(https?://)[^/@\s]+@", re.IGNORECASE)
 
 
 def redact_url_credentials_in_text(text: str) -> str:
@@ -302,16 +302,18 @@ def redact_text_secrets(text: str) -> str:
     text = re.sub(r"api_key='[^']*'", "api_key='<redacted>'", text)
     text = re.sub(r'api_key="[^"]*"', 'api_key="<redacted>"', text)
 
-    # Dict entries with sensitive key names
+    # Dict entries with sensitive key names (case-insensitive, like is_secret_key)
     text = re.sub(
         r"('[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*':\s*')[^']*(')",
         r"\g<1><redacted>\2",
         text,
+        flags=re.IGNORECASE,
     )
     text = re.sub(
         r'("[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*":\s*")[^"]*(")',
         r"\g<1><redacted>\2",
         text,
+        flags=re.IGNORECASE,
     )
 
     # URL query params
@@ -355,7 +357,7 @@ _API_KEY_LITERAL_RE = re.compile(
     r"|tgp_v1_[A-Za-z0-9_-]{20,}"  # Together AI
     r"|ghp_[A-Za-z0-9]{20,}"  # GitHub PAT (classic)
     r"|github_pat_[A-Za-z0-9_]{20,}"  # GitHub PAT (fine-grained)
-    r"|sk-oh-[A-Za-z0-9]{20,}"  # OpenHands session tokens
+    r"|sk-oh-[A-Za-z0-9_-]{10,}"  # OpenHands API keys
     r"|ctx7sk-[A-Za-z0-9_-]{10,}"  # Context7 MCP keys
     r"|cla_[A-Za-z0-9_-]{20,}"  # Claude.ai MCP tokens
     r"|sntryu_[A-Za-z0-9]{10,}"  # Sentry tokens

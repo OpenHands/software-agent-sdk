@@ -1,10 +1,20 @@
 """``resolve_agent_profile()`` — the join point between profiles and execution.
 
-A profile carries *references* (``llm_profile_ref`` / ``mcp_server_refs``) and is
-secret-free at rest; an :data:`~openhands.sdk.settings.model.AgentSettingsConfig`
-embeds the resolved ``llm`` / ``mcp_config``. This module resolves the former into
-the latter so ``create_agent`` / ``apply_agent_settings_diff`` /
+A profile carries *references* (``llm_profile_ref`` / ``mcp_server_refs``) plus a
+``disabled_skills`` deny-list, and is secret-free at rest; an
+:data:`~openhands.sdk.settings.model.AgentSettingsConfig` embeds the resolved
+``llm`` / ``mcp_config`` / skills. This module resolves the former into the
+latter so ``create_agent`` / ``apply_agent_settings_diff`` /
 ``validate_agent_settings`` stay unchanged. See epic #3713.
+
+Skills are *not* modeled like MCP servers. ``mcp_server_refs`` is a safe
+allow-list because ``mcp_config`` is a complete, persisted, user-authored map.
+The skill catalog is discovered from many incomplete, drifting sources
+(user/public/org/project/marketplace), so an allow-list of names would dangle
+whenever the authoring catalog differs from the launch catalog. Instead the
+caller passes the discovered catalog (``load_all_skills``) and the resolver keeps
+all of it except the names in ``disabled_skills`` — a deny-list that can never
+dangle (#4017).
 
 Resource-specific secret channels:
 
@@ -18,14 +28,14 @@ Resource-specific secret channels:
 
 from __future__ import annotations
 
-import copy
 import shlex
+from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
-from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -37,15 +47,12 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.utils.pydantic_secrets import (
-    REDACTED_SECRET_VALUE,
-    decrypt_str_with_cipher_or_keep,
-)
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.llm.llm_profile_store import LLMProfileLoader
     from openhands.sdk.utils.cipher import Cipher
 
 
@@ -91,8 +98,22 @@ class AgentProfileDiagnostics(BaseModel):
 
     # MCP composition (both variants).
     mcp_server_refs: list[str] | None = None
-    resolved_mcp_servers: list[str] = Field(default_factory=list)
+    resolved_mcp_config_keys: list[str] = Field(default_factory=list)
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
+
+    # Skill selection (OpenHands only). ``disabled_skills`` is a deny-list over
+    # the discovered catalog, so — unlike ``mcp_server_refs`` — it can never
+    # dangle: a disabled name absent from the catalog is a harmless no-op.
+    # ``resolved_skills`` is what would actually reach the agent (catalog minus
+    # disabled).
+    disabled_skills: list[str] = Field(default_factory=list)
+    resolved_skills: list[str] = Field(default_factory=list)
+
+    # Secret scope (both variants). ``None`` = every secret the conversation is
+    # started with; a list = only those names, with nothing added back.
+    # No dangling report: this is an
+    # allow-list over what a launch supplies, so an unmatched name is a no-op.
+    secret_refs: list[str] | None = None
 
     # ACP provider credential channels the editor/materialize checks (ACP only).
     # These are NOT jointly required: authentication needs the API key *or* one
@@ -107,71 +128,73 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_settings: dict[str, Any] | None = None
 
 
-def _server_names(mcp_config: MCPConfig | None) -> list[str]:
-    return list(mcp_config.mcpServers.keys()) if mcp_config is not None else []
+def _server_names(mcp_config: dict[str, MCPServer]) -> list[str]:
+    return list(mcp_config)
+
+
+def _partition_refs(
+    refs: list[str], available: Container[str]
+) -> tuple[list[str], list[str]]:
+    """Split ``refs`` into ``(resolved, dangling)`` by membership in ``available``.
+
+    Order-preserving and de-duplicated: a name repeated in ``refs`` is kept once,
+    in first position. Shared by the MCP and skill filters so both partition
+    identically — in particular both collapse duplicate refs, which the ACP skill
+    path needs (``AgentContext`` rejects duplicate skill names).
+    """
+    seen: set[str] = set()
+    resolved: list[str] = []
+    dangling: list[str] = []
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        (resolved if ref in available else dangling).append(ref)
+    return resolved, dangling
 
 
 def _compute_mcp_filter(
-    mcp_config: MCPConfig | None,
+    mcp_config: dict[str, MCPServer],
     refs: list[str] | None,
-) -> tuple[MCPConfig | None, list[str], list[str]]:
+) -> tuple[dict[str, MCPServer], list[str], list[str]]:
     """Resolve ``mcp_server_refs`` against the user's ``mcp_config``.
 
     ``None`` → passthrough (all servers); a non-null list filters to the named
-    keys. Returns ``(filtered_config, resolved_names, dangling_names)``; an empty
-    filter result becomes ``None`` (the ``[] = none`` profile semantics).
+    keys. Returns ``(filtered_servers, resolved_names, dangling_names)``.
     """
     if refs is None:
         return mcp_config, _server_names(mcp_config), []
-    available = mcp_config.mcpServers if mcp_config is not None else {}
-    resolved = [r for r in refs if r in available]
-    dangling = [r for r in refs if r not in available]
-    refs_set = set(refs)
-    filtered = {k: v for k, v in available.items() if k in refs_set}
-    filtered_config = MCPConfig(mcpServers=filtered) if filtered else None
-    return filtered_config, resolved, dangling
+    resolved, dangling = _partition_refs(refs, mcp_config)
+    return {k: mcp_config[k] for k in resolved}, resolved, dangling
 
 
-def _decrypt_skill_mcp_tools(skills: list[Skill], cipher: Cipher | None) -> list[Skill]:
-    """Decrypt ``skills[].mcp_tools`` env/headers ciphertext using ``cipher``.
+def _apply_disabled_skills(
+    available_skills: list[Skill] | None,
+    disabled: list[str],
+) -> list[Skill]:
+    """Filter the discovered skill catalog by the profile's deny-list.
 
-    ``Skill.mcp_tools`` has a masking serializer but no symmetric validator, so a
-    profile loaded with a cipher returns these values as ciphertext; the resolver
-    holds the cipher and decrypts them (see ``AgentProfileStore.load``). No-op
-    without a cipher or for skills with no ``mcp_tools``.
+    Skills are discovered from many incomplete, drifting sources, so selection
+    is by *exclusion*, not by an allow-list of names (which would dangle when the
+    catalog a profile was authored against differs from the one resolved at
+    launch — the #4017 root cause). A disabled name absent from the catalog is a
+    harmless no-op.
+
+    The catalog is de-duplicated by name (last occurrence wins, matching
+    ``load_all_skills``'s later-source-overrides precedence) so a caller passing a
+    colliding catalog — the app-server's "fuller catalog" merges multiple sources
+    whose names can collide — cannot trip ``AgentContext``'s duplicate-name
+    validator. So this can never raise.
+
+    ``available_skills is None`` (discovery skipped or failed) → no skills, the
+    caller having surfaced its own signal. ``disabled == []`` → the whole
+    (de-duplicated) catalog.
     """
-    if cipher is None:
-        return skills
-    out: list[Skill] = []
-    for skill in skills:
-        tools = skill.mcp_tools
-        if not tools:
-            out.append(skill)
-            continue
-        decrypted = _decrypt_mcp_dict(tools, cipher)
-        out.append(skill.model_copy(update={"mcp_tools": decrypted}))
-    return out
-
-
-def _decrypt_mcp_dict(config: dict[str, Any], cipher: Cipher) -> dict[str, Any]:
-    """Decrypt every ``mcpServers.*.env`` / ``.headers`` string value in place
-    on a deep copy, leaving non-token (legacy plaintext) values unchanged."""
-    config = copy.deepcopy(config)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return config
-    for server in servers.values():
-        if not isinstance(server, dict):
-            continue
-        for key in ("env", "headers"):
-            mapping = server.get(key)
-            if not isinstance(mapping, dict):
-                continue
-            server[key] = {
-                k: decrypt_str_with_cipher_or_keep(cipher, v, description="MCP secret")
-                for k, v in mapping.items()
-            }
-    return config
+    if not available_skills:
+        return []
+    by_name = {s.name: s for s in available_skills}
+    denied = set(disabled)
+    return [s for s in by_name.values() if s.name not in denied]
 
 
 def _api_key_set(llm: LLM) -> bool:
@@ -204,24 +227,38 @@ def _acp_credential_channels(
 def _build_openhands_settings(
     profile: OpenHandsAgentProfile,
     llm: LLM,
-    mcp_config: MCPConfig | None,
-    cipher: Cipher | None,
+    mcp_config: dict[str, MCPServer],
+    filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
-    """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM."""
-    skills = _decrypt_skill_mcp_tools(profile.skills, cipher)
+    """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
+
+    ``filtered_skills`` (the discovered catalog minus ``disabled_skills``) is the
+    sole user/public skill source (profiles no longer embed skills).
+    ``load_project_skills=True`` lets ``LocalConversation`` lazily load
+    repo-scoped project skills, which can't be resolved here (no workspace yet);
+    ``disabled_skills`` is carried onto the context so that lazy load applies the
+    same deny-list. ``load_user_skills`` / ``load_public_skills`` stay False on
+    purpose: user/public skills already arrive via ``filtered_skills``, so
+    enabling the flags would double-load them.
+    """
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "openhands",
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
+        # Tri-state passthrough; create_agent materializes None.
+        "tools": profile.tools,
         "agent_context": AgentContext(
-            skills=skills,
+            skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
+            load_project_skills=True,
+            disabled_skills=profile.disabled_skills,
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
         "enable_sub_agents": profile.enable_sub_agents,
+        "enable_switch_llm_tool": profile.enable_switch_llm_tool,
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
@@ -229,19 +266,22 @@ def _build_openhands_settings(
 
 def _build_acp_settings(
     profile: ACPAgentProfile,
-    mcp_config: MCPConfig | None,
+    mcp_config: dict[str, MCPServer],
+    managed_skills: list[Skill],
 ) -> AgentSettingsConfig:
     """Compose the resolved ``ACPAgentSettings`` from a profile.
 
-    The profile stores ``acp_command`` as a single shell string; the settings
-    field is a token list, so a non-empty command is split with :func:`shlex.split`.
-    No credential is set — provider creds ride ``state.secret_registry`` (#3720).
+    ``acp_command`` is stored as a shell string and split into the settings'
+    token list. No credential is set — provider creds ride
+    ``state.secret_registry``.
 
-    Enforces the launch invariant that ``resolve_acp_command`` checks at
-    ``create_agent`` time: a ``custom`` server has no default command, so one
-    must be supplied. Surfacing it here keeps the resolved settings actually
-    executable (and the dry-run verdict honest) instead of deferring the failure
-    to conversation start.
+    ``load_project_skills`` stays ``False``: an ACP CLI reads ``AGENTS.md`` /
+    ``CLAUDE.md`` and its own project skills from the session cwd, so loading
+    them here would duplicate that content in the prompt (#4019).
+    ``managed_skills`` is what the *deployment* chose to inject — empty when the
+    ACP CLI can reach its own host configuration, non-empty in a container where
+    it cannot. ``current_datetime=None`` matches ACP's no-timestamp convention.
+    A ``custom`` server has no default command, so one must be supplied.
     """
     command = shlex.split(profile.acp_command) if profile.acp_command else []
     if profile.acp_server == "custom" and not command:
@@ -249,6 +289,9 @@ def _build_acp_settings(
             "acp_command is required when acp_server='custom' — there is no "
             "default launch command to fall back to"
         )
+    agent_context = AgentContext(
+        skills=managed_skills, current_datetime=None, load_project_skills=False
+    )
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "acp",
@@ -256,9 +299,11 @@ def _build_acp_settings(
         "acp_model": profile.acp_model,
         "acp_session_mode": profile.acp_session_mode,
         "acp_prompt_timeout": profile.acp_prompt_timeout,
+        "acp_startup_timeout": profile.acp_startup_timeout,
         "acp_command": command,
         "acp_args": list(profile.acp_args) if profile.acp_args else [],
         "mcp_config": mcp_config,
+        "agent_context": agent_context,
     }
     return validate_agent_settings(payload)
 
@@ -266,16 +311,23 @@ def _build_acp_settings(
 def resolve_agent_profile(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
-    llm_store: LLMProfileStore,
-    mcp_config: MCPConfig | None,
+    llm_store: LLMProfileLoader,
+    mcp_config: dict[str, MCPServer],
+    available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
 
-    ``mcp_config`` is the user's globally-configured MCP servers, already
-    decrypted by the caller (the agent-server runs ``decrypt_mcp_config_secrets``
-    before calling). ``cipher`` decrypts the referenced LLM profile and any
-    ``skills[].mcp_tools`` ciphertext.
+    ``mcp_config`` is the user's globally-configured MCP server map, already
+    decrypted by the caller (the agent-server runs settings decryption
+    before calling). ``available_skills`` is the server-discovered skill catalog
+    (the agent-server caller passes the result of ``load_all_skills``); an
+    OpenHands profile keeps all of it except the names in ``disabled_skills``,
+    and an ACP profile keeps all of it (it has no deny-list). ``None`` means the
+    caller injected no catalog — discovery was not run, failed, or, for ACP, the
+    deployment leaves skill sourcing to the CLI. Unlike the ``mcp_server_refs``
+    allow-list, the ``disabled_skills`` deny-list can never dangle, so this
+    never raises for skills. ``cipher`` decrypts the referenced LLM profile.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
@@ -286,29 +338,39 @@ def resolve_agent_profile(
         raise DanglingMcpServerRef(dangling)
 
     if isinstance(profile, OpenHandsAgentProfile):
+        filtered_skills = _apply_disabled_skills(
+            available_skills, profile.disabled_skills
+        )
         try:
             llm = llm_store.load(profile.llm_profile_ref, cipher=cipher)
         except FileNotFoundError as e:
             raise ProfileNotFound(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             ) from e
-        return _build_openhands_settings(profile, llm, filtered_mcp, cipher)
+        return _build_openhands_settings(profile, llm, filtered_mcp, filtered_skills)
 
-    return _build_acp_settings(profile, filtered_mcp)
+    return _build_acp_settings(
+        profile, filtered_mcp, _apply_disabled_skills(available_skills, [])
+    )
 
 
 def resolve_agent_profile_dry_run(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
-    llm_store: LLMProfileStore,
-    mcp_config: MCPConfig | None,
+    llm_store: LLMProfileLoader,
+    mcp_config: dict[str, MCPServer],
+    available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentProfileDiagnostics:
     """Compute :class:`AgentProfileDiagnostics` without raising or side effects.
 
     Mirrors :func:`resolve_agent_profile`'s composition but records dangling LLM /
     MCP refs as diagnostics instead of raising, so the editor / ``/materialize``
-    (#3719) can show a faithful set/missing report with secrets redacted.
+    (#3719) can show a faithful set/missing report with secrets redacted. Skills
+    use a deny-list (``disabled_skills``) that can't dangle, so there is no skill
+    error to report — ``resolved_skills`` is just the catalog minus the disabled
+    names. ``available_skills=None`` (discovery skipped or failed) means no
+    user/public skills resolve.
     """
     filtered_mcp, resolved, dangling = _compute_mcp_filter(
         mcp_config, profile.mcp_server_refs
@@ -316,13 +378,27 @@ def resolve_agent_profile_dry_run(
     diagnostics = AgentProfileDiagnostics(
         agent_kind=profile.agent_kind,
         mcp_server_refs=profile.mcp_server_refs,
-        resolved_mcp_servers=resolved,
+        resolved_mcp_config_keys=resolved,
         dangling_mcp_server_refs=dangling,
+        secret_refs=profile.secret_refs,
     )
     if dangling:
         diagnostics.errors.append(
             "MCP server(s) not configured: " + ", ".join(dangling)
         )
+
+    # Skill selection report. Deny-list semantics: the catalog minus disabled
+    # names, never dangling. An ACP profile has no deny-list of its own — its
+    # catalog is whatever the deployment injects (empty unless the caller passes
+    # one), and never includes project skills (#4019).
+    if isinstance(profile, OpenHandsAgentProfile):
+        filtered_skills = _apply_disabled_skills(
+            available_skills, profile.disabled_skills
+        )
+        diagnostics.disabled_skills = profile.disabled_skills
+    else:
+        filtered_skills = _apply_disabled_skills(available_skills, [])
+    diagnostics.resolved_skills = [s.name for s in filtered_skills]
 
     llm: LLM | None = None
     if isinstance(profile, OpenHandsAgentProfile):
@@ -365,9 +441,11 @@ def resolve_agent_profile_dry_run(
                     raise RuntimeError(
                         "OpenHands profile marked valid without a resolved LLM"
                     )
-                settings = _build_openhands_settings(profile, llm, filtered_mcp, cipher)
+                settings = _build_openhands_settings(
+                    profile, llm, filtered_mcp, filtered_skills
+                )
             else:
-                settings = _build_acp_settings(profile, filtered_mcp)
+                settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)
             # No expose context => secrets redacted (mcp env/headers, llm api_key).
             diagnostics.resolved_settings = settings.model_dump(mode="json")
         except Exception as e:

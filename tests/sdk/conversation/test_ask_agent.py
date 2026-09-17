@@ -154,6 +154,43 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_llm_refreshes_after_switch_llm(mock_completion, tmp_path, agent):
+    """switch_llm() invalidates the cached ask-agent-llm so /btw follows the switch.
+
+    Regression test for #3943: after switching profiles, a second ask_agent()
+    must clone a fresh ask-agent-llm from the new agent LLM rather than reuse
+    the one cached from the previous profile.
+    """
+    mock_completion.return_value = create_mock_llm_response("answer")
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # First /btw caches an ask-agent-llm cloned from profile A.
+    conv.ask_agent("profile A?")
+    assert conv.llm_registry.get("ask-agent-llm").model == agent.llm.model
+
+    # Switch the conversation to a distinguishable profile B.
+    profile_b = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="profile-b",
+    )
+    conv.switch_llm(profile_b)
+
+    # The stale ask-agent-llm must be gone, not silently reused.
+    with pytest.raises(KeyError):
+        conv.llm_registry.get("ask-agent-llm")
+
+    # Second /btw re-clones from profile B.
+    conv.ask_agent("profile B?")
+    assert conv.llm_registry.get("ask-agent-llm").model == "gpt-4o"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_path):
     """ask_agent creates LLM with parameters copied from original agent's LLM."""
     mock_completion.return_value = create_mock_llm_response("Test response")
@@ -185,6 +222,83 @@ def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_pat
     # Verify the specific custom values are copied
     assert ask_agent_llm.native_tool_calling is False
     assert ask_agent_llm.caching_prompt is False
+
+
+def create_mock_model_response(content: str) -> ModelResponse:
+    """A raw litellm ModelResponse, as returned by ``LLM._transport_call``."""
+    return ModelResponse(
+        id="test-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o-mini",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path):
+    """Regression test (sibling of PR #3901): a ``stream=True`` agent LLM must
+    still answer ask_agent even though the path passes no ``on_token`` callback.
+    Patching ``_transport_call`` keeps the real streaming guard in
+    ``completion()`` live, so the bug reproduces without the fix.
+    """
+    mock_transport.return_value = create_mock_model_response("4")
+
+    streaming_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        stream=True,
+    )
+    agent = Agent(llm=streaming_llm, tools=[])
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    result = conv.ask_agent("What is 2+2?")
+
+    assert result == "4"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on the dedicated ask-agent LLM; agent LLM untouched.
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    assert streaming_llm.stream is True
+    assert conv.llm_registry.get("ask-agent-llm").stream is False
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_during_in_flight_llm_call(mock_transport, tmp_path, agent):
+    """Regression test for #5082: while the agent LLM has a call in flight its
+    telemetry holds the open span, which cannot be deep-copied.
+    """
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    answers = []
+
+    def transport(llm, *args, **kwargs):
+        if llm.usage_id != "ask-agent-llm":
+            answers.append(conv.ask_agent("How's the progress?"))
+        return create_mock_model_response("answer")
+
+    mock_transport.side_effect = transport
+    agent.llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert answers == ["answer"]
+    assert conv.llm_registry.get("ask-agent-llm").telemetry is not agent.llm.telemetry
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
@@ -348,6 +462,67 @@ def test_ask_agent_with_existing_events_and_tool_calls(
 # ---------------------------------------------------------------------------
 # Exception handling tests
 # ---------------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_filters_incomplete_parallel_tool_calls(
+    mock_completion, tmp_path, agent
+):
+    mock_completion.return_value = create_mock_llm_response("One tool completed.")
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],
+        )
+    )
+
+    conv.state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="Inspect two files")]
+            ),
+        )
+    )
+    for call_id in ("call_complete", "call_pending"):
+        conv.state.events.append(
+            ActionEvent(
+                source="agent",
+                thought=[],
+                action=MockAction(command=f"cat {call_id}"),
+                tool_name="terminal",
+                tool_call_id=call_id,
+                tool_call=MessageToolCall(
+                    id=call_id,
+                    name="terminal",
+                    arguments=json.dumps({"command": f"cat {call_id}"}),
+                    origin="completion",
+                ),
+                llm_response_id="parallel_response",
+            )
+        )
+    conv.state.events.append(
+        ObservationEvent(
+            source="environment",
+            observation=MockObservation(result="done"),
+            action_id="action_complete",
+            tool_name="terminal",
+            tool_call_id="call_complete",
+        )
+    )
+
+    assert conv.ask_agent("What completed?") == "One tool completed."
+
+    messages = mock_completion.call_args.kwargs["messages"]
+    tool_calls = [call for message in messages for call in (message.tool_calls or [])]
+    assert tool_calls == []
+    assert [message for message in messages if message.role == "tool"] == []
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")

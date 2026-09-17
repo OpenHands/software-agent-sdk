@@ -104,6 +104,28 @@ def test_llm_registry_list_usage_ids():
         assert len(usage_ids) == 2
 
 
+def test_llm_registry_remove_method():
+    """remove() drops a registered usage id and is a no-op when absent."""
+
+    registry = LLMRegistry()
+
+    mock_llm = Mock(spec=LLM)
+    mock_llm.usage_id = "service1"
+
+    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
+        mock_registry_event.return_value = Mock()
+        registry.add(mock_llm)
+
+    assert "service1" in registry.list_usage_ids()
+
+    registry.remove("service1")
+    assert "service1" not in registry.list_usage_ids()
+
+    # Removing an unknown id is a no-op, not an error.
+    registry.remove("service1")
+    registry.remove("never-registered")
+
+
 def test_llm_registry_add_method():
     """Test the new add() method for LLMRegistry."""
     registry = LLMRegistry()

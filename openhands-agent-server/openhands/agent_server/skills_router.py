@@ -28,6 +28,7 @@ from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     SkillFetchError,
+    SkillInfo,
     SkillValidationError,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
@@ -104,8 +105,8 @@ class SkillsRequest(BaseModel):
         default_factory=list,
         description=(
             "Marketplace registrations for plugin-based skill loading. Registrations "
-            "with auto_load=True or a list of plugin names replace legacy public "
-            "skills."
+            "with auto_load=True or a list of plugin names add their skills to the "
+            "public skills."
         ),
     )
 
@@ -116,30 +117,9 @@ class SkillsRequest(BaseModel):
         default=None,
         description="Organization/user skill repositories to load concurrently",
     )
-    org_config: OrgConfig | None = Field(
-        default=None,
-        deprecated=True,
-        description=(
-            "Deprecated since v1.28.0 and scheduled for removal in v1.33.0. "
-            "Single organization skills configuration; prefer org_configs."
-        ),
-    )
     sandbox_config: SandboxConfig | None = Field(
         default=None, description="Sandbox skills configuration"
     )
-
-
-class SkillInfo(BaseModel):
-    """Skill information returned by the API."""
-
-    name: str
-    type: Literal["repo", "knowledge", "agentskills"]
-    content: str
-    triggers: list[str] = Field(default_factory=list)
-    source: str | None = None
-    description: str | None = None
-    is_agentskills_format: bool = False
-    disable_model_invocation: bool = False
 
 
 class SkillsResponse(BaseModel):
@@ -300,13 +280,9 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
             for url in request.sandbox_config.exposed_urls
         ]
 
-    # Prefer the list form; fall back to the deprecated single org_config so
-    # older app-servers keep working.
     org_repos: list[tuple[str, str]] = []
     if request.org_configs:
         org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
-    elif "org_config" in request.model_fields_set and request.org_config:
-        org_repos = [(request.org_config.org_repo_url, request.org_config.org_name)]
 
     config = getattr(http_request.app.state, "config", None)
     server_registrations = config.registered_marketplaces if config is not None else []
@@ -328,20 +304,7 @@ def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
         registered_marketplaces=registered_marketplaces,
     )
 
-    # Convert Skill objects to SkillInfo for response
-    skills_info = [
-        SkillInfo(
-            name=info.name,
-            type=info.type,
-            content=info.content,
-            triggers=info.triggers,
-            source=info.source,
-            description=info.description,
-            is_agentskills_format=info.is_agentskills_format,
-            disable_model_invocation=info.disable_model_invocation,
-        )
-        for info in (skill.to_skill_info() for skill in result.skills)
-    ]
+    skills_info = [skill.to_skill_info() for skill in result.skills]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)
 

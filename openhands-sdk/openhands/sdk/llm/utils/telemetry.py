@@ -12,6 +12,7 @@ from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.utils import CostPerToken, ModelResponse, Usage
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
@@ -49,6 +50,8 @@ class Telemetry(BaseModel):
         default=None
     )
     _stats_update_callback: Callable[[], None] | None = PrivateAttr(default=None)
+    _span_cm: Any = PrivateAttr(default=None)
+    _span: Any = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", arbitrary_types_allowed=True
@@ -78,11 +81,13 @@ class Telemetry(BaseModel):
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = telemetry_ctx or {}
+        self._open_span()
 
     def on_response(
         self,
         resp: ModelResponse | ResponsesAPIResponse,
         raw_resp: ModelResponse | None = None,
+        provider_info: LLMProvider | None = None,
     ) -> Metrics:
         """
         Side-effects:
@@ -95,7 +100,7 @@ class Telemetry(BaseModel):
         self.metrics.add_response_latency(self._last_latency, response_id)
 
         # 2) cost
-        cost = self._compute_cost(resp)
+        cost = self._compute_cost(resp, provider_info=provider_info)
         # Intentionally skip logging zero-cost (0.0) responses; only record
         # positive cost
         if cost:
@@ -113,7 +118,11 @@ class Telemetry(BaseModel):
         if self.log_enabled:
             self.log_llm_call(resp, cost, raw_resp=raw_resp)
 
-        # 5) notify about stats update
+        # 5) authoritative cost + cache buckets onto the span, before it closes
+        self._annotate_span(cost, usage)
+        self._close_span()
+
+        # 6) notify about stats update
         if self._stats_update_callback is not None:
             try:
                 self._stats_update_callback()
@@ -126,6 +135,7 @@ class Telemetry(BaseModel):
         # Best-effort logging for failed requests (so we can debug malformed
         # request payloads, e.g. orphaned Responses reasoning items).
         self._last_latency = time.time() - (self._req_start or time.time())
+        self._close_span(_err)
 
         if not self.log_enabled:
             return
@@ -215,16 +225,7 @@ class Telemetry(BaseModel):
             or 0
         )
 
-        cache_read = 0
-        p_details = getattr(usage, "prompt_tokens_details", None) or getattr(
-            usage, "input_tokens_details", None
-        )
-        if p_details is not None:
-            cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
-
-        # Kimi-K2-thinking populate usage.cached_tokens field
-        if not cache_read and hasattr(usage, "cached_tokens"):
-            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+        cache_read, cache_write = self._cache_buckets(usage)
 
         reasoning_tokens = 0
         c_details = getattr(usage, "completion_tokens_details", None) or getattr(
@@ -232,9 +233,6 @@ class Telemetry(BaseModel):
         )
         if c_details is not None:
             reasoning_tokens = int(getattr(c_details, "reasoning_tokens", 0) or 0)
-
-        # Chat-specific: litellm may set a hidden cache write field
-        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
 
         self.metrics.add_token_usage(
             prompt_tokens=prompt_tokens,
@@ -246,7 +244,87 @@ class Telemetry(BaseModel):
             response_id=response_id,
         )
 
-    def _compute_cost(self, resp: ModelResponse | ResponsesAPIResponse) -> float | None:
+    @staticmethod
+    def _cache_buckets(usage: Usage | ResponseAPIUsage) -> tuple[int, int]:
+        """Return ``(cache_read, cache_write)`` for either usage shape.
+
+        Single source of truth for both ``metrics`` and the span, so the trace
+        and the app's cost cannot disagree about the buckets.
+        """
+        if isinstance(usage, Usage):
+            details = usage.prompt_tokens_details
+            if details is None:
+                return 0, 0
+            cache_write = (
+                details.cache_creation_tokens
+                if "cache_creation_tokens" in details.model_fields_set
+                else 0
+            )
+            return int(details.cached_tokens or 0), int(cache_write or 0)
+
+        details = usage.input_tokens_details
+        cache_read = details.cached_tokens if details is not None else 0
+        return int(cache_read or 0), 0
+
+    # ---------- Observability span ----------
+    # These bracket one LLM call: ``on_request`` -> transport -> ``on_response``
+    # all run inside a single retry attempt, so the span is current while
+    # litellm executes and still open when the cost is known.
+    def _open_span(self) -> None:
+        self._close_span()  # a retry re-enters on_request; never leak the old one
+        try:
+            # Imported lazily: openhands.sdk.observability pulls in
+            # openhands.sdk.event, which imports this module.
+            from openhands.sdk.observability.laminar import llm_call_span
+
+            cm = llm_call_span(f"llm.{self.model_name}")
+            self._span = cm.__enter__()
+            self._span_cm = cm
+        except Exception:
+            logger.debug("Failed to open LLM span", exc_info=True)
+            self._span = self._span_cm = None
+
+    def _annotate_span(
+        self, cost: float | None, usage: Usage | ResponseAPIUsage | None
+    ) -> None:
+        span = self._span
+        if span is None:
+            return
+        try:
+            if cost:
+                # Authoritative: _compute_cost prefers the proxy's
+                # x-litellm-response-cost header, which is already cache-aware
+                # and priced by the real backend rather than by a name lookup.
+                span.set_attribute("gen_ai.usage.cost", float(cost))
+            if usage is not None:
+                cache_read, cache_write = self._cache_buckets(usage)
+                # Emitted unconditionally: lmnr only reports these when
+                # prompt_tokens_details is populated, which not every provider
+                # shape does.
+                span.set_attribute("gen_ai.usage.cache_read_input_tokens", cache_read)
+                span.set_attribute(
+                    "gen_ai.usage.cache_creation_input_tokens", cache_write
+                )
+        except Exception:
+            logger.debug("Failed to annotate LLM span", exc_info=True)
+
+    def _close_span(self, err: BaseException | None = None) -> None:
+        cm, self._span_cm, self._span = self._span_cm, None, None
+        if cm is None:
+            return
+        try:
+            if err is not None:
+                cm.__exit__(type(err), err, err.__traceback__)
+            else:
+                cm.__exit__(None, None, None)
+        except Exception:
+            logger.debug("Failed to close LLM span", exc_info=True)
+
+    def _compute_cost(
+        self,
+        resp: ModelResponse | ResponsesAPIResponse,
+        provider_info: LLMProvider | None = None,
+    ) -> float | None:
         """Try provider header → litellm direct. Return None on failure."""
         extra_kwargs = {}
         if (
@@ -270,13 +348,13 @@ class Telemetry(BaseModel):
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
 
-        model = litellm_call_kwargs(self.model_name, None)["model"]
-        if "/" in model:
-            provider, bare = model.split("/", 1)
-            extra_kwargs["model"] = bare
-            extra_kwargs["custom_llm_provider"] = provider
-        else:
-            extra_kwargs["model"] = model
+        if provider_info is None:
+            call_kwargs = litellm_call_kwargs(self.model_name, None)
+            provider_info = LLMProvider.from_model(
+                model=call_kwargs["model"],
+                api_base=call_kwargs["api_base"],
+            )
+        extra_kwargs.update(provider_info.as_litellm_call_kwargs())
         try:
             return float(
                 litellm_completion_cost(completion_response=resp, **extra_kwargs)

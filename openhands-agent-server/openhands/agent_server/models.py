@@ -3,19 +3,18 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any, TypeAlias
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk import LLM
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
+    ConversationConfig as ConversationConfig,
     SendMessageRequest as SendMessageRequest,
-    StartACPConversationRequest as StartACPConversationRequest,
     StartConversationRequest as StartConversationRequest,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -44,6 +43,31 @@ from openhands.sdk.utils.models import (
     OpenHandsModel,
 )
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+class ConversationRuntimeStatus(StrEnum):
+    """Availability of the runtime that executes a conversation."""
+
+    AVAILABLE = "available"
+    STARTING = "starting"
+    MISSING = "missing"
+    OWNERSHIP_LOST = "ownership_lost"
+    ERROR = "error"
+
+
+class ConversationRuntimeError(BaseModel):
+    """Structured details for the latest runtime lifecycle failure."""
+
+    code: str
+    message: str
+
+
+class ConversationRuntimeInfo(BaseModel):
+    """Runtime availability and recovery information for a conversation."""
+
+    runtime_status: ConversationRuntimeStatus
+    can_resume: bool
+    runtime_error: ConversationRuntimeError | None = None
 
 
 class ServerErrorEvent(Event):
@@ -75,15 +99,18 @@ class EventSortOrder(StrEnum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(StartConversationRequest):
+class StoredConversation(ConversationConfig):
     """Stored details about a conversation.
 
-    Extends StartConversationRequest with server-assigned fields.
+    Extends :class:`ConversationConfig` (the agent-less shared config) with
+    server-assigned fields. It deliberately does NOT carry the ``agent``: the
+    single source of truth for the agent / runtime state is
+    ``ConversationState`` persisted to ``base_state.json``. Because
+    ``StoredConversation`` is not a ``StartConversationRequest``, the agent
+    cannot silently re-appear in ``meta.json``.
     """
 
-    # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
-    # the persistence payload so it does not re-appear in meta.json.
-    agent_profile_id: UUID | None = Field(default=None, exclude=True)
+    required_runtime_credential_bindings: set[str] = Field(default_factory=set)
 
     id: OpenHandsUUID
     title: str | None = Field(
@@ -92,6 +119,21 @@ class StoredConversation(StartConversationRequest):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    forked_from_conversation_id: OpenHandsUUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation this one was forked from. ``None`` for "
+            "conversations created directly (not via fork)."
+        ),
+    )
+    forked_from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "The ``from_event_id`` branch point this conversation was forked at. "
+            "``None`` for conversations not created via fork, or for "
+            "whole-conversation forks (no branch slice)."
+        ),
+    )
     launched_agent_profile: LaunchedAgentProfile | None = Field(
         default=None,
         description=(
@@ -166,6 +208,15 @@ class _ConversationInfoBase(BaseModel):
             "hook-blocked checks are skipped (legacy conversations)."
         ),
     )
+    leaf_event_id: str | None = Field(
+        default=None,
+        description=(
+            "HEAD of the conversation tree: the parent of the next appended "
+            "event. ``None`` means an empty tree (or, for pre-feature "
+            "conversations, the linear tail). Moving it via ``navigate`` "
+            "re-roots the active branch the agent runs on."
+        ),
+    )
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
         description="Conversation statistics for tracking LLM metrics",
@@ -194,6 +245,37 @@ class _ConversationInfoBase(BaseModel):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    # Plain ``UUID`` (not ``OpenHandsUUID``) so it JSON-serializes dashed, exactly
+    # like the ``id`` field above — clients must be able to correlate the two.
+    forked_from_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation this one was forked from. ``None`` for "
+            "conversations created directly (not via fork)."
+        ),
+    )
+    forked_from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "Event ID this conversation was forked at. ``None`` for non-forked "
+            "conversations or whole-conversation forks."
+        ),
+    )
+    parent_conversation_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID of the conversation that owns this one. ``None`` for top-level "
+            "conversations."
+        ),
+    )
+    sub_conversation_ids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "IDs of conversations naming this one as their parent. Derived from "
+            "the server catalog; empty on webhook payloads. Name mirrors the "
+            "Cloud API field."
+        ),
+    )
 
     tags: ConversationTags = Field(
         default_factory=dict,
@@ -336,18 +418,6 @@ def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInf
     return info.model_copy(update={"agent": trimmed_agent})
 
 
-# Deprecated compatibility aliases for the old ACP-specific response names.
-# Keep runtime assignment aliases so existing imports still resolve to the
-# canonical Pydantic models; PEP 695 ``type`` aliases would not preserve that.
-ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
-ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
-
-
-class ConversationResponse(BaseModel):
-    conversation_id: str
-    state: ConversationExecutionStatus
-
-
 class ConfirmationResponseRequest(BaseModel):
     """Payload to accept or reject a pending action."""
 
@@ -468,23 +538,27 @@ class ForkConversationRequest(BaseModel):
             "If false, metrics are copied from the source."
         ),
     )
-
-
-class GenerateTitleRequest(BaseModel):
-    """Payload to generate a title for a conversation."""
-
-    max_length: int = Field(
-        default=50, ge=1, le=200, description="Maximum length of the generated title"
-    )
-    llm: LLM | None = Field(
-        default=None, description="Optional LLM to use for title generation"
+    from_event_id: str | None = Field(
+        default=None,
+        description=(
+            "If set, fork only the branch up to and including this event and "
+            "set the fork's HEAD there. If null (default), copy the whole "
+            "conversation."
+        ),
     )
 
 
-class GenerateTitleResponse(BaseModel):
-    """Response containing the generated conversation title."""
+class NavigateConversationRequest(BaseModel):
+    """Payload to move a conversation's HEAD to an existing event."""
 
-    title: str = Field(description="The generated title for the conversation")
+    event_id: str | None = Field(
+        default=None,
+        description=(
+            "Event to make the new HEAD, re-rooting the active branch the agent "
+            "runs on. All branches stay on disk; this creates no new "
+            "conversation. ``None`` selects the empty tree."
+        ),
+    )
 
 
 class AskAgentRequest(BaseModel):

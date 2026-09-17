@@ -1,7 +1,7 @@
 """Deferred-init router for warm-pool agent servers.
 
 When ``Config.deferred_init`` is True the server starts in *dormant* mode:
-stateless services (VSCode, desktop, tool preload) come up as usual, but
+stateless services (VSCode, tool preload) come up as usual, but
 the conversation, event, and bash routers return 503 until ``POST /api/init``
 delivers the runtime configuration. This is intended for warm-pool
 deployments where pods are pre-warmed before a user is matched and the
@@ -22,10 +22,20 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.bash_service import BashEventService
-from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.config import Config, TelemetrySpec, WebhookSpec
+from openhands.agent_server.conversation_registry import (
+    ConversationRegistry,
+    create_conversation_registry,
+)
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.server_details_router import mark_initialization_complete
+from openhands.agent_server.telemetry import (
+    build_telemetry_sink,
+    emit_server_started,
+    shutdown_telemetry_sink,
+)
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability import maybe_init_laminar
 
 
 logger = get_logger(__name__)
@@ -86,6 +96,13 @@ class InitRequest(BaseModel):
             "inside the mounted user workspace."
         ),
     )
+    conversation_worktree_root: Path | None = Field(
+        default=None,
+        description=(
+            "Root directory for conversation git worktrees. Override this to "
+            "point at the mounted user workspace."
+        ),
+    )
     webhooks: list[WebhookSpec] | None = Field(
         default=None,
         description="Per-user webhooks (e.g. for streaming events back).",
@@ -113,6 +130,14 @@ class InitRequest(BaseModel):
             "start. Useful for credentials consumed by tools (e.g. GITHUB_TOKEN). "
             "These are applied with ``os.environ.update``; existing values are "
             "overwritten."
+        ),
+    )
+    telemetry: TelemetrySpec | None = Field(
+        default=None,
+        description=(
+            "Product-analytics policy for this pod. Without this, a warm-pool "
+            "pod keeps whatever mode it booted with (normally 'disabled'), so "
+            "a deployment that expects telemetry must supply it here."
         ),
     )
 
@@ -150,6 +175,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         updates["conversations_path"] = req.conversations_path
     if req.bash_events_dir is not None:
         updates["bash_events_dir"] = req.bash_events_dir
+    if req.conversation_worktree_root is not None:
+        updates["conversation_worktree_root"] = req.conversation_worktree_root
     if req.webhooks is not None:
         updates["webhooks"] = req.webhooks
     if req.web_url is not None:
@@ -158,6 +185,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
         updates["allow_cors_origins"] = req.allow_cors_origins
     if req.max_concurrent_runs is not None:
         updates["max_concurrent_runs"] = req.max_concurrent_runs
+    if req.telemetry is not None:
+        updates["telemetry"] = req.telemetry
     return base.model_copy(update=updates)
 
 
@@ -176,6 +205,7 @@ class InitService:
         self._error: str | None = None
         self._lock = asyncio.Lock()
         self._entered_service: ConversationService | None = None
+        self._entered_conversation_registry: ConversationRegistry | None = None
         self._entered_bash_service: BashEventService | None = None
 
     @property
@@ -202,6 +232,15 @@ class InitService:
                 # tools pick up credentials.
                 for key, value in req.env.items():
                     os.environ[key] = value
+            maybe_init_laminar()
+
+            # Must precede get_instance(), which captures the sink. The
+            # matching emit_server_started() is deferred until the ``ready``
+            # transition below: emitting here would produce a server_started
+            # for an init that later fails and rolls back to dormant, leaving
+            # an unpaired start and letting a retry emit a second one.
+            await shutdown_telemetry_sink()
+            self._app.state.telemetry_sink = await build_telemetry_sink(new_config)
 
             # Reset the module-level singleton so other call sites that go
             # through ``get_default_conversation_service`` see the new
@@ -210,6 +249,8 @@ class InitService:
 
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
+            conversation_registry = create_conversation_registry(new_config)
+            conversation_registry.configure_service(service)
 
             bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
             await bash_svc.__aenter__()
@@ -217,8 +258,11 @@ class InitService:
 
             await service.__aenter__()
             self._entered_service = service
+            await conversation_registry.start()
+            self._entered_conversation_registry = conversation_registry
             self._app.state.config = new_config
             self._app.state.conversation_service = service
+            self._app.state.conversation_registry = conversation_registry
             self._app.state.bash_event_service = bash_svc
 
             # Re-derive root_path from the merged config so Doc URLS are valid
@@ -229,6 +273,9 @@ class InitService:
 
             mark_initialization_complete()
             self._state = "ready"
+            # Emitted only now that init has actually succeeded, so a failed
+            # attempt never produces a start and a retry cannot double-emit.
+            emit_server_started()
             logger.info("deferred_init: server transitioned to ready")
             return self.snapshot()
         except Exception as exc:  # pragma: no cover - logged + re-raised
@@ -247,6 +294,9 @@ class InitService:
         that were never initialized don't need any cleanup.
         """
         if self._entered_service is not None:
+            if self._entered_conversation_registry is not None:
+                await self._entered_conversation_registry.shutdown()
+                self._entered_conversation_registry = None
             await self._entered_service.__aexit__(None, None, None)
             self._entered_service = None
         if self._entered_bash_service is not None:

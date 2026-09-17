@@ -175,3 +175,23 @@ def test_callback_receives_correct_new_value(state):
     assert len(callback_calls) == 1
     assert callback_calls[0].key == "max_iterations"
     assert callback_calls[0].value == 100
+
+
+def test_leaf_event_id_persists_but_does_not_broadcast(state):
+    """leaf_event_id autosaves but is not broadcast as a state-update event.
+
+    It changes on every appended event; broadcasting it would ~double the agent
+    server's persisted event log. The value still round-trips via base_state.json.
+    """
+    callback_calls = []
+    state.set_on_state_change(lambda event: callback_calls.append(event))
+
+    with state:
+        state.leaf_event_id = "evt-123"  # high-frequency field: no broadcast
+        state.execution_status = ConversationExecutionStatus.RUNNING  # broadcasts
+
+    keys = [c.key for c in callback_calls]
+    assert "leaf_event_id" not in keys
+    assert keys == ["execution_status"]
+    # The value is still applied (and would persist to base_state.json).
+    assert state.leaf_event_id == "evt-123"

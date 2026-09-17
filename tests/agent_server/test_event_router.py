@@ -394,6 +394,7 @@ class TestSearchEventsEndpoint:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
     async def test_search_events_with_timezone_aware_datetime(
         self, client, sample_conversation_id, mock_event_service
     ):

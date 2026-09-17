@@ -10,13 +10,17 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
+)
+from openhands.tools.terminal.env import (
+    build_terminal_env,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
@@ -70,6 +74,7 @@ class WindowsTerminal(TerminalInterface):
         work_dir: str,
         username: str | None = None,
         shell_path: str = "powershell.exe",
+        env: Mapping[str, str] | None = None,
     ):
         super().__init__(work_dir, username)
         self.process = None
@@ -77,6 +82,7 @@ class WindowsTerminal(TerminalInterface):
         self.output_lock = threading.Lock()
         self.reader_thread = None
         self.shell_path = shell_path
+        self._env = normalize_terminal_env(env)
         self._command_running_event = threading.Event()
         self._stop_reader = threading.Event()
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -96,7 +102,7 @@ class WindowsTerminal(TerminalInterface):
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-        env = sanitized_env()
+        env = build_terminal_env(self._env)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
 
@@ -229,8 +235,14 @@ class WindowsTerminal(TerminalInterface):
         else:
             command = text
 
-        if enter and not command.endswith("\n"):
-            command += "\n"
+        if enter:
+            if "\n" in stripped_text or "\r" in stripped_text:
+                # PowerShell holds a multiline statement at the ">>" continuation
+                # prompt until a blank line is received, so multiline input needs a
+                # trailing empty line to execute.
+                command += "\n\n"
+            elif not command.endswith("\n"):
+                command += "\n"
         self._write_to_stdin(command)
 
     def _metadata_suffix(self) -> str:

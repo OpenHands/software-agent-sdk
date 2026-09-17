@@ -9,7 +9,8 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import IO, Annotated, Literal
+from typing import IO, Annotated, Any, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import (
@@ -24,12 +25,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from openhands.agent_server._secret_redaction import redacted_file_bytes
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
+    get_git_repository_metadata,
     get_valid_ref,
     run_git_command,
     validate_git_repository,
@@ -60,6 +63,18 @@ class HomeResponse(BaseModel):
 
 logger = get_logger(__name__)
 file_router = APIRouter(prefix="/file", tags=["Files"])
+file_discovery_router = APIRouter(prefix="/file", tags=["Files"])
+_FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "content": {
+            # Existing routes advertised this media type. Runtime aliases discard it.
+            "application/json": {"schema": {}},
+            "application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}
+            },
+        }
+    }
+}
 
 
 async def _upload_file(path: str, file: UploadFile) -> Success:
@@ -137,12 +152,23 @@ async def _download_file(path: str) -> FileResponse:
 
 
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
-    """Create a zip archive for source_dir using only Python stdlib APIs."""
+    """Create a zip archive for source_dir using only Python stdlib APIs.
+
+    Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
+    are redacted on the way into the archive so a downloaded trajectory never
+    leaks API keys — see ``redacted_file_bytes``.
+    """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
-                archive.write(path, path.relative_to(source_dir.parent))
+                arcname = str(path.relative_to(source_dir.parent))
+                if path.is_file():
+                    redacted = redacted_file_bytes(path)
+                    if redacted is not None:
+                        archive.writestr(arcname, redacted)
+                        continue
+                archive.write(path, arcname)
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
@@ -321,6 +347,11 @@ def _head_is_detached(root: Path) -> bool:
     except GitCommandError:
         return False
     return branch.strip() == "HEAD"
+
+
+def _header_safe(value: str) -> str:
+    """Percent-encode a header value."""
+    return quote(value, safe="")
 
 
 def _create_git_delta(
@@ -636,12 +667,60 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.get("/download")
+@file_router.get(
+    "/download", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
 ) -> FileResponse:
     """Download a file from the workspace using query parameter (preferred method)."""
     return await _download_file(path)
+
+
+@file_router.post("/create_directory")
+async def create_directory(
+    path: Annotated[str, Query(description="Absolute directory path to create")],
+) -> Success:
+    """Create a directory in the workspace, including any missing parents.
+
+    Idempotent: an existing directory succeeds and its contents are left
+    untouched. Creating over an existing file, or under a path whose parent is
+    a file, is a client error (400) rather than a server fault.
+    """
+    update_last_execution_time()
+    logger.info(f"Creating directory: {path}")
+
+    target_path = Path(path)
+    if not target_path.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+
+    try:
+        await asyncio.to_thread(lambda: target_path.mkdir(parents=True, exist_ok=True))
+    except (FileExistsError, NotADirectoryError):
+        # mkdir(exist_ok=True) still raises when the final component exists as a
+        # non-directory; NotADirectoryError covers a parent component being a
+        # file. Both are the caller's path being wrong, not a server fault.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path exists and is not a directory",
+        )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create directory: {str(e)}",
+        )
+
+    logger.info(f"Created directory {target_path}")
+    return Success()
 
 
 def _list_home_favorites(
@@ -692,7 +771,7 @@ def _list_root_locations() -> list[FileBrowserEntry]:
     return [FileBrowserEntry(label="/", path="/")]
 
 
-@file_router.get("/home")
+@file_discovery_router.get("/home")
 async def get_home_directory(
     include_hidden: Annotated[
         bool,
@@ -715,7 +794,7 @@ async def get_home_directory(
     )
 
 
-@file_router.get("/search_subdirs")
+@file_discovery_router.get("/search_subdirs")
 async def search_subdirs(
     path: Annotated[
         str,
@@ -727,7 +806,7 @@ async def search_subdirs(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     include_hidden: Annotated[
         bool,
@@ -745,8 +824,6 @@ async def search_subdirs(
     the ``next_page_id`` returned by the previous page (the lowercase name of
     the first item to include on the next page).
     """
-    assert limit > 0
-    assert limit <= 100
 
     target = Path(path)
     if not target.is_absolute():
@@ -802,7 +879,11 @@ async def search_subdirs(
     return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
 
-@file_router.get("/download-trajectory/{conversation_id}")
+@file_router.get(
+    "/download-trajectory/{conversation_id}",
+    responses=_FILE_DOWNLOAD_RESPONSES,
+    response_class=FileResponse,
+)
 async def download_trajectory(
     conversation_id: UUID,
 ) -> FileResponse:
@@ -826,7 +907,9 @@ async def download_trajectory(
     )
 
 
-@file_router.get("/archive")
+@file_router.get(
+    "/archive", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def archive_directory(
     path: Annotated[
         str, Query(description="Absolute path of the directory to archive")
@@ -972,13 +1055,24 @@ async def archive_directory(
             detail=f"Failed to archive directory: {str(e)}",
         )
 
-    headers: dict[str, str] | None = None
+    # Repo identity (remote / branch / HEAD) applies to both formats so a
+    # tar.gz snapshot is self-describing too; base_commit/base_ref are
+    # git-delta-only (they describe the patch's replay base).
+    headers: dict[str, str] = {}
+    if (repo_root / ".git").exists():
+        repo_metadata = await asyncio.to_thread(get_git_repository_metadata, repo_root)
+        for key, header in (
+            ("repo_remote", "X-Archive-Repo-Remote"),
+            ("branch", "X-Archive-Branch"),
+            ("head_commit", "X-Archive-Head-Commit"),
+        ):
+            if value := repo_metadata.get(key):
+                headers[header] = _header_safe(value)
+        headers["X-Archive-Repo-Root"] = _header_safe(str(repo_root))
     if base_commit:
         # Make a git-delta self-describing so consumers can replay the patch.
-        headers = {
-            "X-Archive-Base-Commit": base_commit,
-            "X-Archive-Base-Ref": base_ref or "auto",
-        }
+        headers["X-Archive-Base-Commit"] = base_commit
+        headers["X-Archive-Base-Ref"] = base_ref or "auto"
 
     return FileResponse(
         path=output_path,

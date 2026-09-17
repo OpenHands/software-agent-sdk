@@ -1,8 +1,12 @@
 """Utility functions for MCP integration."""
 
+import copy
+import json
 import re
+import threading
+from collections import OrderedDict
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 
 if TYPE_CHECKING:
@@ -18,6 +22,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.security import risk
 from openhands.sdk.skills.utils import expand_variable_references
 from openhands.sdk.tool import (
     Action,
@@ -26,7 +31,8 @@ from openhands.sdk.tool import (
     ToolDefinition,
     ToolExecutor,
 )
-from openhands.sdk.tool.schema import Schema
+from openhands.sdk.tool.schema import Schema, _process_schema_node
+from openhands.sdk.tool.tool import _prioritize_schema_fields
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -66,12 +72,38 @@ class MCPToolExecutor(ToolExecutor):
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
-        """Execute the MCP tool call using the already-connected client."""
+        """Execute the MCP tool call using the already-connected client.
+
+        If the client's session has been lost (e.g., due to a transient
+        server error such as HTTP 503), attempt to reconnect once before
+        failing. This prevents a single transient error from permanently
+        disabling all MCP tools for the remainder of the conversation.
+        """
         if not self.client.is_connected():
-            raise RuntimeError(
-                f"MCP client not connected for tool '{self.tool_name}'. "
-                "The connection may have been closed or failed to establish."
+            if self.client._closed:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        "The client has been closed and cannot be reconnected."
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
+            logger.info(
+                f"MCP client not connected for tool '{self.tool_name}'; "
+                "attempting reconnection before failing."
             )
+            try:
+                await self.client.connect()
+            except Exception as exc:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        f"Reconnection attempt failed: {exc}"
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
         try:
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
@@ -166,7 +198,12 @@ class MCPToolExecutor(ToolExecutor):
         self.client.sync_close()
 
 
-_mcp_dynamic_action_type: dict[str, type[Schema]] = {}
+_MCP_ACTION_TYPE_CACHE_MAX: Final[int] = 512
+# LRU-bounded: keyed by (name, schema), so a tool whose schema keeps changing
+# no longer grows this cache without limit. Guarded by a lock since MCP tool
+# calls can validate concurrently through the parallel tool executor.
+_mcp_dynamic_action_type: OrderedDict[tuple[str, str], type[Schema]] = OrderedDict()
+_mcp_dynamic_action_type_lock = threading.Lock()
 
 
 def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
@@ -184,15 +221,22 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     to openai tool schema.
     """
 
-    # Tool.name should be unique, so we can cache the created types.
-    mcp_action_type = _mcp_dynamic_action_type.get(action_type.name)
-    if mcp_action_type:
-        return mcp_action_type
+    cache_key = (
+        action_type.name,
+        json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
+    )
+    with _mcp_dynamic_action_type_lock:
+        mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
+        if mcp_action_type:
+            _mcp_dynamic_action_type.move_to_end(cache_key)
+            return mcp_action_type
 
-    model_name = f"MCP{to_camel_case(action_type.name)}Action"
-    mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
-    _mcp_dynamic_action_type[action_type.name] = mcp_action_type
-    return mcp_action_type
+        model_name = f"MCP{to_camel_case(action_type.name)}Action"
+        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
+        _mcp_dynamic_action_type[cache_key] = mcp_action_type
+        if len(_mcp_dynamic_action_type) > _MCP_ACTION_TYPE_CACHE_MAX:
+            _mcp_dynamic_action_type.popitem(last=False)
+        return mcp_action_type
 
 
 class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
@@ -258,9 +302,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         Raises:
             ValidationError: If the arguments do not conform to the tool schema.
         """
-        # Drop None-valued keys before validation to avoid type errors
-        # on optional fields
-        prefiltered_args = {k: v for k, v in (arguments or {}).items() if v is not None}
+        tool_arguments, structured_output = self._split_response_arguments(arguments)
+        prefiltered_args = {
+            key: value for key, value in tool_arguments.items() if value is not None
+        }
         # Validate against the dynamically created action type (from MCP schema)
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
@@ -270,8 +315,14 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys()) | set(
             DiscriminatedUnionMixin.model_computed_fields.keys()
         )
-        sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
-        return MCPToolAction(data=sanitized)
+        sanitized = validated.model_dump(
+            by_alias=True,  # Use MCP arg names (e.g. "kind"), not internal fields.
+            exclude_none=True,
+            exclude=exclude_fields,
+        )
+        action = MCPToolAction(data=sanitized)
+        action._structured_output = structured_output
+        return action
 
     @classmethod
     def create(
@@ -322,6 +373,62 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             else None,
         )
 
+    def _get_tool_schema(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,  # noqa: ARG002
+    ) -> dict[str, Any]:
+        """Build the LLM-facing schema from the raw MCP inputSchema.
+
+        The parent implementation round-trips through a dynamically created
+        Pydantic model whose ``py_type()`` maps ``"type": "object"`` to
+        ``dict[str, Any]``, losing nested ``properties`` and ``required``
+        fields.  For MCP tools the authoritative schema is already provided
+        by the MCP server, so we start from a deep copy of it and inject
+        OpenHands-specific fields (``security_risk``, ``summary``) directly.
+
+        See: https://github.com/OpenHands/software-agent-sdk/issues/3955
+        """
+        schema = copy.deepcopy(self.mcp_tool.inputSchema)
+        # Resolve any $ref / anyOf nodes (unlikely in raw MCP schemas but
+        # keeps the contract consistent with the parent implementation).
+        schema = _process_schema_node(schema, schema.get("$defs", {}))
+
+        schema.setdefault("properties", {})
+
+        # Inject security_risk when applicable (same guard as parent).
+        add_security_risk_prediction = add_security_risk_prediction and (
+            self.annotations is None or (not self.annotations.readOnlyHint)
+        )
+        if add_security_risk_prediction:
+            schema["properties"]["security_risk"] = {
+                "type": "string",
+                "description": (
+                    "The LLM's assessment of the safety risk of this action."
+                ),
+                "enum": [e.value for e in risk.SecurityRisk],
+            }
+
+        # Inject summary unless the MCP tool already declares one.
+        if "summary" not in schema["properties"]:
+            schema["properties"]["summary"] = {
+                "type": "string",
+                "description": (
+                    "A concise summary (approximately 10 words) "
+                    "describing what this specific action does. "
+                    "Focus on the key operation and target. "
+                    "Example: 'List all Python files in current "
+                    "directory'"
+                ),
+            }
+
+        schema = self._merge_response_schema(schema)
+        _prioritize_schema_fields(
+            schema=schema,
+            priority=("security_risk", "summary"),
+        )
+        return schema
+
     def to_openai_tool(
         self,
         add_security_risk_prediction: bool = False,
@@ -329,10 +436,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     ) -> ChatCompletionToolParam:
         """Convert a Tool to an OpenAI tool.
 
-        For MCP, we dynamically create the action_type (type: Schema)
-        from the MCP tool input schema, and pass it to the parent method.
-        It will use the .model_fields from this pydantic model to
-        generate the OpenAI-compatible tool schema.
+        Schema generation is handled by :meth:`_get_tool_schema`, which
+        builds the LLM-facing schema directly from the raw MCP
+        ``inputSchema`` to preserve nested object structure.  The dynamic
+        Pydantic model is still used for runtime validation in
+        :meth:`__call__` / :meth:`action_from_arguments`.
 
         Args:
             add_security_risk_prediction: Whether to add a `security_risk` field
@@ -346,10 +454,8 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             )
 
         assert self.name == self.mcp_tool.name
-        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_openai_tool(
             add_security_risk_prediction=add_security_risk_prediction,
-            action_type=mcp_action_type,
         )
 
     def to_responses_tool(
@@ -359,10 +465,9 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     ) -> FunctionToolParam:
         """Convert a Tool to a Responses API function tool.
 
-        For MCP, we dynamically create the action_type (type: Schema)
-        from the MCP tool input schema, and pass it to the parent method.
-        It will use the .model_fields from this pydantic model to
-        generate the Responses-compatible tool schema.
+        Schema generation is handled by :meth:`_get_tool_schema`, which
+        builds the LLM-facing schema directly from the raw MCP
+        ``inputSchema`` to preserve nested object structure.
 
         Args:
             add_security_risk_prediction: Whether to add a `security_risk` field
@@ -376,8 +481,6 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             )
 
         assert self.name == self.mcp_tool.name
-        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_responses_tool(
             add_security_risk_prediction=add_security_risk_prediction,
-            action_type=mcp_action_type,
         )

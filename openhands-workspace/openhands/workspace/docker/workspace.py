@@ -87,8 +87,12 @@ class DockerWorkspace(RemoteWorkspace):
         description="Port to bind the container to. If None, finds available port.",
     )
     forward_env: list[str] = Field(
-        default_factory=lambda: ["DEBUG"],
-        description="Environment variables to forward to the container.",
+        default_factory=lambda: ["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"],
+        description=(
+            "Environment variables to forward to the container. The session "
+            "API key variables are forwarded so the sandboxed agent server can "
+            "authenticate network-bound requests when it binds 0.0.0.0."
+        ),
     )
     volumes: list[str] = Field(
         default_factory=list,
@@ -102,7 +106,7 @@ class DockerWorkspace(RemoteWorkspace):
     )
     extra_ports: bool = Field(
         default=False,
-        description="Whether to expose additional ports (VSCode, VNC).",
+        description="Whether to expose the additional VSCode port.",
     )
     enable_gpu: bool = Field(
         default=False,
@@ -192,10 +196,6 @@ class DockerWorkspace(RemoteWorkspace):
                 raise RuntimeError(
                     f"Port {self.host_port + 1} is not available for VSCode"
                 )
-            if not check_port_available(self.host_port + 2):
-                raise RuntimeError(
-                    f"Port {self.host_port + 2} is not available for VNC"
-                )
 
         # Ensure docker is available
         docker_ver = execute_command(["docker", "version"]).returncode
@@ -220,8 +220,6 @@ class DockerWorkspace(RemoteWorkspace):
             ports += [
                 "-p",
                 f"{self.host_port + 1}:8001",  # VSCode
-                "-p",
-                f"{self.host_port + 2}:8002",  # Desktop VNC
             ]
         flags += ports
 

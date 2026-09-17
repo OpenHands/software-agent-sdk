@@ -332,6 +332,7 @@ class TestTaskManager:
         conv = manager._get_conversation(
             description="quiz",
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             max_iteration_per_run=500,
             conversation_id=conversation_id,
@@ -349,6 +350,7 @@ class TestTaskManager:
             description=None,
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             conversation_id=conversation_id,
         )
@@ -368,6 +370,7 @@ class TestTaskManager:
             description="test",
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
         )
@@ -387,12 +390,139 @@ class TestTaskManager:
                 description=None,
                 max_iteration_per_run=500,
                 task_id=task_id,
+                subagent_type="default",
                 conversation_id=conversation_id,
                 worker_agent=agent,
             )
             sub_keys.append(conv.get_llm_call_context().prompt_cache_key)
 
         assert sub_keys == [parent_key, parent_key]
+
+    def test_marks_conversation_as_delegate_with_linking_metadata(self, tmp_path):
+        """A sub-agent conversation must be built inside a detached trace,
+        tagged with the originating task_id/subagent_type (software-agent-sdk#4365).
+        Exercises the real `detached_delegate_context`, not a mock of it."""
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = None
+            lam._observability_enabled = True
+            try:
+                manager._get_conversation(
+                    description="test",
+                    max_iteration_per_run=500,
+                    task_id=task_id,
+                    subagent_type="general-purpose",
+                    conversation_id=conversation_id,
+                    worker_agent=agent,
+                )
+            finally:
+                lam._observability_enabled = False
+
+        mock_start_root_span.assert_called_once()
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["tags"] == ["delegate"]
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task_id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+        }
+
+    def test_resume_task_marks_conversation_as_delegate(self, tmp_path):
+        """Resuming a task must also build a detached, delegate-tagged trace."""
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        manager._evict_task(task)
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = None
+            lam._observability_enabled = True
+            try:
+                manager._resume_task(resume=task.id, subagent_type="general-purpose")
+            finally:
+                lam._observability_enabled = False
+
+        mock_start_root_span.assert_called_once()
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["tags"] == ["delegate"]
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task.id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+        }
+
+    def test_delegate_metadata_includes_parent_span_link(self, tmp_path):
+        """When a parent span is active, its trace_id/span_id/tool_call_id must
+        be merged into the delegate's observability metadata."""
+        from types import SimpleNamespace
+
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        parent_ctx = SimpleNamespace(
+            trace_id="11111111-1111-1111-1111-111111111111",
+            span_id="22222222-2222-2222-2222-222222222222",
+            metadata={"tool_call_id": "call_abc123"},
+        )
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = parent_ctx
+            lam._observability_enabled = True
+            try:
+                manager._get_conversation(
+                    description="test",
+                    max_iteration_per_run=500,
+                    task_id=task_id,
+                    subagent_type="general-purpose",
+                    conversation_id=conversation_id,
+                    worker_agent=agent,
+                )
+            finally:
+                lam._observability_enabled = False
+
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task_id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+            "delegate.parent_trace_id": str(parent_ctx.trace_id),
+            "delegate.parent_span_id": str(parent_ctx.span_id),
+            "tool_call_id": "call_abc123",
+        }
 
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
@@ -858,6 +988,7 @@ class TestTaskManagerHooks:
             description="test",
             max_iteration_per_run=100,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
             hook_config=hook_config,
@@ -879,6 +1010,7 @@ class TestTaskManagerHooks:
             description="test",
             max_iteration_per_run=100,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
         )
@@ -958,6 +1090,7 @@ class TestTaskManagerPersistence:
             description=None,
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             conversation_id=conversation_id,
         )

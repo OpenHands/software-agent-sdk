@@ -5,6 +5,7 @@ import traceback
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -20,22 +21,30 @@ from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
-from openhands.agent_server.conversation_router import conversation_router
+from openhands.agent_server.conversation_registry import (
+    create_conversation_registry,
+)
+from openhands.agent_server.conversation_router import (
+    conversation_catalog_router,
+    conversation_router,
+)
 from openhands.agent_server.conversation_service import (
+    CredentialBindingActivationRequired,
     get_default_conversation_service,
+)
+from openhands.agent_server.credential_binding import (
+    router as credential_binding_router,
 )
 from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.desktop_router import desktop_router
-from openhands.agent_server.desktop_service import get_desktop_service
-from openhands.agent_server.event_router import event_router
-from openhands.agent_server.file_router import file_router
+from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.init_router import (
@@ -52,6 +61,9 @@ from openhands.agent_server.openai.router import (
 )
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
+from openhands.agent_server.provider_connections_router import (
+    provider_connections_router,
+)
 from openhands.agent_server.server_details_router import (
     get_server_info,
     mark_initialization_complete,
@@ -59,12 +71,28 @@ from openhands.agent_server.server_details_router import (
 )
 from openhands.agent_server.settings_router import settings_router
 from openhands.agent_server.skills_router import skills_router
-from openhands.agent_server.sockets import sockets_router
+from openhands.agent_server.sub_agents_router import sub_agents_router
+from openhands.agent_server.telemetry import (
+    build_telemetry_sink,
+    emit_server_started,
+    emit_server_stopped,
+    get_event_factory,
+    get_telemetry_sink,
+    shutdown_telemetry_sink,
+)
+from openhands.agent_server.telemetry.factory import (
+    DISTINCT_ID_HEADER,
+    distinct_id_from_header,
+)
+from openhands.agent_server.telemetry.models import (
+    EventName,
+    RequestFailedProperties,
+)
+from openhands.agent_server.telemetry.sanitizer import normalize_exception
 from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
-from openhands.agent_server.workspace_router import workspace_router
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.utils.redact import sanitize_dict
@@ -132,8 +160,18 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         config: Config = api.state.config
         deferred = config.deferred_init
+        conversation_registry = getattr(
+            api.state, "conversation_registry", None
+        ) or create_conversation_registry(config)
+        api.state.conversation_registry = conversation_registry
+
+        # Deferred pods boot with telemetry disabled and are rebuilt by
+        # InitService, so they emit `server_started` there instead.
+        api.state.telemetry_sink = await build_telemetry_sink(config)
+        if not deferred:
+            emit_server_started()
+
         vscode_service = get_vscode_service()
-        desktop_service = get_desktop_service()
         tool_preload_service = get_tool_preload_service()
 
         # Define async functions for starting each service
@@ -149,18 +187,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("VSCode service is disabled")
 
-        async def start_desktop_service():
-            if desktop_service is not None:
-                desktop_started = await desktop_service.start()
-                if desktop_started:
-                    logger.info("Desktop service started successfully")
-                else:
-                    logger.warning(
-                        "Desktop service failed to start, continuing without desktop"
-                    )
-            else:
-                logger.info("Desktop service is disabled")
-
         async def start_tool_preload_service():
             if tool_preload_service is not None:
                 tool_preload_started = await tool_preload_service.start()
@@ -174,7 +200,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # Start all services concurrently
         results = await asyncio.gather(
             start_vscode_service(),
-            start_desktop_service(),
             start_tool_preload_service(),
             return_exceptions=True,
         )
@@ -197,17 +222,12 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 if vscode_service is not None:
                     await vscode_service.stop()
 
-            async def stop_desktop_service():
-                if desktop_service is not None:
-                    await desktop_service.stop()
-
             async def stop_tool_preload_service():
                 if tool_preload_service is not None:
                     await tool_preload_service.stop()
 
             await asyncio.gather(
                 stop_vscode_service(),
-                stop_desktop_service(),
                 stop_tool_preload_service(),
                 return_exceptions=True,
             )
@@ -238,6 +258,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         bash_svc = get_default_bash_event_service()
         api.state.bash_event_service = bash_svc
 
+        conversation_registry.configure_service(service)
+        # Runtime cleanup must precede external-catalog recovery so stale
+        # runtime owners cannot lose their expired leases to the outer service.
+        await conversation_registry.start()
+
         async with service:
             api.state.conversation_service = service
 
@@ -257,6 +282,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 yield
             finally:
+                await conversation_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -264,10 +290,65 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
                 await stop_stateless_services()
     finally:
+        # Outer finally so a startup failure cannot leak the drain task, and
+        # after `async with service` so terminal events are still accepted.
+        emit_server_stopped()
+        await shutdown_telemetry_sink()
+
         if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
             tmux_tmpdir
         ):
             os.environ.pop("TMUX_TMPDIR", None)
+
+
+def _emit_request_failed(request: Request, exc: Exception, error_id: str) -> None:
+    """Report an unhandled 5xx as a sanitized diagnostic event.
+
+    Sends the *route template* (``/api/conversations/{conversation_id}``)
+    rather than ``request.url.path``, which embeds real identifiers. Fully
+    defensive: an error in the telemetry path must not replace the 500 the
+    caller is already getting with a different failure.
+    """
+    try:
+        sink = get_telemetry_sink()
+        if not sink.enabled:
+            return
+
+        factory = get_event_factory()
+        if factory is None:
+            return
+
+        route = request.scope.get("route")
+        route_template = getattr(route, "path", None)
+        if not isinstance(route_template, str) or not route_template:
+            # Unmatched route: reporting the raw path could leak identifiers.
+            route_template = "/unmatched"
+
+        method = request.method.upper()
+        if method not in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+            return
+
+        fingerprint = normalize_exception(exc)
+        # Attribute to the frontend's analytics identity when it supplied one;
+        # request-scoped activity has no conversation user_id otherwise.
+        distinct_id = distinct_id_from_header(request.headers.get(DISTINCT_ID_HEADER))
+        sink.emit(
+            factory.build(
+                EventName.REQUEST_FAILED,
+                RequestFailedProperties(
+                    route_template=route_template,
+                    method=method,  # type: ignore[arg-type]
+                    status_code=500,
+                    error_class=fingerprint.error_class,
+                    error_category=fingerprint.error_category,
+                    error_fingerprint=fingerprint.error_fingerprint,
+                    error_id=error_id,
+                ),
+                user_id=distinct_id,
+            )
+        )
+    except Exception:
+        logger.debug("Could not emit request_failed telemetry", exc_info=True)
 
 
 def _get_root_path(config: Config) -> str:
@@ -286,6 +367,7 @@ def _create_fastapi_instance(config: Config) -> FastAPI:
     """
     return FastAPI(
         title="OpenHands Agent Server",
+        version=version("openhands-agent-server"),
         description=(
             "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
         ),
@@ -316,6 +398,7 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
 
 def _add_api_routes(app: FastAPI) -> None:
     """Add all API routes to the FastAPI application."""
+    conversation_registry = app.state.conversation_registry
     app.include_router(server_details_router)
 
     # The /api/init endpoint bypasses both the session-key auth and the
@@ -340,18 +423,25 @@ def _add_api_routes(app: FastAPI) -> None:
     ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
-    api_router.include_router(event_router)
+    api_router.include_router(file_discovery_router)
+    # Collection routes must precede runtime catch-alls such as
+    # ``/conversations/{conversation_id}``.
+    api_router.include_router(conversation_catalog_router)
+    conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
+    api_router.include_router(credential_binding_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
     api_router.include_router(file_router)
     api_router.include_router(vscode_router)
-    api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
+    api_router.include_router(sub_agents_router)
     api_router.include_router(plugins_router)
+    api_router.include_router(canvas_extensions_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(provider_connections_router)
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
@@ -360,8 +450,6 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    app.include_router(api_router)
-
     app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
 
     # Workspace static-file routes get their own auth group that accepts
@@ -372,10 +460,11 @@ def _add_api_routes(app: FastAPI) -> None:
     workspace_api_router = APIRouter(
         prefix="/api", dependencies=[Depends(check_workspace_session)]
     )
-    workspace_api_router.include_router(workspace_router)
+    workspace_api_router.include_router(conversation_registry.workspace_router)
     app.include_router(workspace_api_router)
+    app.include_router(api_router)
 
-    app.include_router(sockets_router)
+    app.include_router(conversation_registry.sockets_router)
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:
@@ -446,6 +535,19 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
 
+    @api.exception_handler(CredentialBindingActivationRequired)
+    async def _credential_binding_activation_required_handler(
+        _request: Request,
+        exc: CredentialBindingActivationRequired,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "retryable": True,
+            },
+        )
+
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(
         request: Request, exc: RequestValidationError
@@ -515,6 +617,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 error_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
+            _emit_request_failed(request, exc, error_id)
             return JSONResponse(status_code=500, content=content)
 
         # Logs full stack trace for any unhandled error that FastAPI would
@@ -526,6 +629,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
             error_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
+        _emit_request_failed(request, exc, error_id)
         return JSONResponse(status_code=500, content=content)
 
     @api.exception_handler(HTTPException)
@@ -588,6 +692,7 @@ def create_app(config: Config | None = None) -> FastAPI:
         config = get_default_config()
     app = _create_fastapi_instance(config)
     app.state.config = config
+    app.state.conversation_registry = create_conversation_registry(config)
 
     _add_api_routes(app)
     _setup_static_files(app, config)

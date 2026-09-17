@@ -5,6 +5,7 @@ This script guards the versioned persisted-settings surfaces that are already
 loaded through explicit migration entry points today:
 
 - ``validate_agent_settings(...)``
+- ``validate_agent_profile(...)``
 - ``ConversationSettings.from_persisted(...)``
 - ``PersistedSettings.from_persisted(...)``
 
@@ -41,6 +42,7 @@ from openhands.agent_server.persistence import (
     PERSISTED_SETTINGS_SCHEMA_VERSION,
     PersistedSettings,
 )
+from openhands.sdk.profiles import AGENT_PROFILE_SCHEMA_VERSION, validate_agent_profile
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -55,6 +57,7 @@ _FIXTURE_DIR_RE = re.compile(r"v(?P<version>[1-9][0-9]*)$")
 _FIXTURE_EXPECTED_KEY = "__expected__"
 _FIXTURE_SURFACE_PREFIXES = {
     "agent_settings": "agent_settings",
+    "agent_profile": "agent_profile",
     "conversation_settings": "conversation_settings",
     "persisted_settings": "persisted_settings",
 }
@@ -92,6 +95,11 @@ try:
     from openhands.sdk import Tool
 except Exception:
     from openhands.sdk.tool import Tool
+
+try:
+    from openhands.sdk.profiles import OpenHandsAgentProfile
+except Exception:
+    OpenHandsAgentProfile = None
 
 import openhands.sdk.settings as settings_mod
 
@@ -138,6 +146,13 @@ emit(
     "agent_settings/populated",
     _dump(agent_populated, context={"expose_secrets": "plaintext"}),
 )
+
+if OpenHandsAgentProfile is not None:
+    agent_profile = OpenHandsAgentProfile(
+        name="baseline-agent-profile",
+        llm_profile_ref="baseline-profile",
+    )
+    emit("agent_profile/default", _dump(agent_profile))
 
 ACPAgentSettingsCls = getattr(settings_mod, "ACPAgentSettings", None)
 if ACPAgentSettingsCls is not None:
@@ -239,6 +254,17 @@ SURFACES: dict[str, SurfaceConfig] = {
             "_AGENT_SETTINGS_MIGRATIONS."
         ),
         dump_context={"expose_secrets": "plaintext"},
+    ),
+    "agent_profile": SurfaceConfig(
+        key="agent_profile",
+        display_name="AgentProfile",
+        current_version=AGENT_PROFILE_SCHEMA_VERSION,
+        loader=validate_agent_profile,
+        migration_guidance=(
+            "If this persisted shape changed intentionally, bump "
+            "AGENT_PROFILE_SCHEMA_VERSION and add a migration in "
+            "_AGENT_PROFILE_MIGRATIONS."
+        ),
     ),
     "conversation_settings": SurfaceConfig(
         key="conversation_settings",
@@ -516,12 +542,56 @@ def _assert_expected_paths(
             )
 
 
+def _find_unpreserved_path(
+    expected: Any,
+    actual: Any,
+    *,
+    path: str = "",
+) -> str | None:
+    """Return the first historical path missing or changed in ``actual``.
+
+    New mapping keys are compatible, but every value already emitted under the
+    current schema version must survive a load/dump round-trip unchanged.
+    """
+    if isinstance(expected, Mapping):
+        if not isinstance(actual, Mapping):
+            return path
+        for key, expected_value in expected.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key not in actual:
+                return child_path
+            changed_path = _find_unpreserved_path(
+                expected_value,
+                actual[key],
+                path=child_path,
+            )
+            if changed_path is not None:
+                return changed_path
+        return None
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(expected) != len(actual):
+            return path
+        for index, expected_value in enumerate(expected):
+            changed_path = _find_unpreserved_path(
+                expected_value,
+                actual[index],
+                path=f"{path}[{index}]",
+            )
+            if changed_path is not None:
+                return changed_path
+        return None
+    if expected != actual:
+        return path
+    return None
+
+
 def _validate_single_payload(
     *,
     payload: Mapping[str, Any],
     surface: SurfaceConfig,
     origin: str,
     expected_paths: Mapping[str, Any] | None = None,
+    require_same_version_preservation: bool = False,
 ) -> None:
     raw_payload = _copy_payload(payload)
     raw_version = raw_payload.get("schema_version")
@@ -547,6 +617,20 @@ def _validate_single_payload(
         raise PersistedSettingsCompatError(
             f"{surface.display_name} payload from {origin} round-tripped with "
             f"schema_version {roundtrip_version}, expected {surface.current_version}."
+        )
+    unpreserved_path = None
+    if (
+        require_same_version_preservation
+        and type(raw_version) is int
+        and raw_version == surface.current_version
+    ):
+        unpreserved_path = _find_unpreserved_path(raw_payload, roundtrip)
+    if unpreserved_path is not None:
+        raise PersistedSettingsCompatError(
+            f"{surface.display_name} payload from {origin} did not preserve persisted "
+            f"field {unpreserved_path!r} without advancing schema_version "
+            f"{raw_version}. "
+            f"{surface.migration_guidance}"
         )
     if expected_paths:
         _assert_expected_paths(
@@ -678,6 +762,7 @@ def validate_baseline_payload_cases(
             payload=case.payload,
             surface=surface,
             origin=f"{case.source} ({case.key})",
+            require_same_version_preservation=True,
         )
 
 

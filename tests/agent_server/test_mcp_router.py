@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import time
+from collections.abc import Generator
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +15,17 @@ from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.mcp_router import (
+    _OAUTH_PROBE_JOB_TTL_SECONDS,
+    MCPTestRequest,
+    _BrowserCoordinatedOAuth,
+    _MCPOAuthProbeJob,
+    _oauth_probe_jobs,
+    _oauth_probe_jobs_lock,
+    _register_oauth_job,
+)
+from openhands.agent_server.persistence import reset_stores
+from openhands.sdk.mcp.config import MCPServer, to_fastmcp_mcp_config
 
 # Reuse the real FastMCP-based test-server helper from the SDK tests; spinning
 # up a real subprocess MCP server inside a unit test is unreliable across CI
@@ -24,9 +39,12 @@ from tests.sdk.mcp.test_create_mcp_tool import (  # noqa: E402
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client() -> Generator[TestClient]:
+    reset_stores()
     config = Config(session_api_keys=[])  # Disable authentication.
-    return TestClient(create_app(config), raise_server_exceptions=False)
+    with TestClient(create_app(config), raise_server_exceptions=False) as test_client:
+        yield test_client
+    reset_stores()
 
 
 @pytest.fixture
@@ -86,7 +104,7 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
         json={
             "name": "happy-server",
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -101,15 +119,14 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
     assert body.get("tool_result") is None
 
 
-def test_mcp_test_shttp_alias_is_accepted(
+def test_mcp_test_http_transport_is_accepted(
     client: TestClient, http_mcp_server: MCPTestServer
 ):
-    """The OpenHands-specific 'shttp' transport alias should map to http."""
     response = client.post(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "shttp",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -140,7 +157,7 @@ def test_mcp_test_stdio_success(client: TestClient):
         json={
             "name": "stdio-happy",
             "server": {
-                "type": "stdio",
+                "transport": "stdio",
                 "command": sys.executable,
                 "args": ["-c", script],
             },
@@ -172,7 +189,7 @@ def test_mcp_test_tool_call_reports_in_band_failure_payload(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{slack_like_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -195,7 +212,7 @@ def test_mcp_test_tool_call_handler_error_sets_is_error(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{slack_like_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -218,7 +235,7 @@ def test_mcp_test_tool_call_unknown_tool_reported_without_invocation(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -262,7 +279,7 @@ def test_mcp_test_decrypts_encrypted_env_values_before_spawn():
         json={
             "name": "env-echo",
             "server": {
-                "type": "stdio",
+                "transport": "stdio",
                 "command": sys.executable,
                 "args": ["-c", script],
                 "env": {
@@ -282,6 +299,70 @@ def test_mcp_test_decrypts_encrypted_env_values_before_spawn():
     assert seen_env == {"bot_token": "xoxb-real-token", "team_id": "T0123"}
 
 
+def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    cipher = config.cipher
+    assert cipher is not None
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    seen_configs: list[dict[str, MCPServer]] = []
+
+    class FakeClient:
+        def __init__(self):
+            self.tools: list[object] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_create_mcp_tools(
+        config: dict[str, MCPServer],
+        timeout=30.0,
+        *,
+        mcp_oauth_token_storage=None,
+    ):
+        seen_configs.append(config)
+        return FakeClient()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        fake_create_mcp_tools,
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "linear",
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {
+                    "strategy": "bearer",
+                    "value": cipher.encrypt(SecretStr("lin-real-token")),
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert [to_fastmcp_mcp_config(config) for config in seen_configs] == [
+        {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "transport": "http",
+                    "auth": "lin-real-token",
+                }
+            }
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Failure paths -- all should return HTTP 200 with ok=False
 # ---------------------------------------------------------------------------
@@ -294,7 +375,7 @@ def test_mcp_test_stdio_failure_returns_structured_error(client: TestClient):
         json={
             "name": "broken",
             "server": {
-                "type": "stdio",
+                "transport": "stdio",
                 "command": "/this/path/does/not/exist/definitely-not-a-binary",
                 "args": [],
             },
@@ -316,7 +397,7 @@ def test_mcp_test_remote_unreachable(client: TestClient):
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{free_port}/mcp",
             },
             "timeout": 3.0,
@@ -337,7 +418,7 @@ def test_mcp_test_remote_unreachable(client: TestClient):
 def test_mcp_test_rejects_empty_command(client: TestClient):
     response = client.post(
         "/api/mcp/test",
-        json={"server": {"type": "stdio", "command": ""}},
+        json={"server": {"transport": "stdio", "command": ""}},
     )
     assert response.status_code == 422
 
@@ -345,7 +426,7 @@ def test_mcp_test_rejects_empty_command(client: TestClient):
 def test_mcp_test_rejects_unknown_transport(client: TestClient):
     response = client.post(
         "/api/mcp/test",
-        json={"server": {"type": "websocket", "url": "ws://example.com"}},
+        json={"server": {"transport": "websocket", "url": "ws://example.com"}},
     )
     assert response.status_code == 422
 
@@ -355,31 +436,427 @@ def test_mcp_test_clamps_timeout_range(client: TestClient):
     response = client.post(
         "/api/mcp/test",
         json={
-            "server": {"type": "stdio", "command": "true"},
+            "server": {"transport": "stdio", "command": "true"},
             "timeout": 0,
         },
     )
     assert response.status_code == 422
 
 
-def test_mcp_test_bearer_token_in_auth_header(
+def test_mcp_test_bearer_token_in_auth_field(
     client: TestClient, http_mcp_server: MCPTestServer
 ):
-    """Providing api_key should not break the connect (request must succeed)."""
+    """Providing bearer-token auth should not break the connect."""
     response = client.post(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
-                "api_key": "test-token-123",
+                "auth": {"strategy": "bearer", "value": "test-token-123"},
             },
             "timeout": 10.0,
         },
     )
 
     # FastMCP's HTTP server doesn't enforce auth in this fixture, so the
-    # request should still succeed; this guards against the api_key wiring
+    # request should still succeed; this guards against the auth-field wiring
     # itself blowing up (e.g. malformed headers crashing the transport).
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# OAuth auth field
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_test_accepts_oauth_auth_credential(
+    client: TestClient, http_mcp_server: MCPTestServer
+):
+    """The OAuth auth credential should be accepted and forwarded to fastmcp.
+
+    We can't complete a real OAuth handshake in a unit test, but we can verify
+    the field is accepted at the schema layer and doesn't crash the request
+    handler.  The local FastMCP test server doesn't require OAuth, so fastmcp
+    will simply ignore the ``auth`` value and connect normally.
+    """
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+                "auth": {"strategy": "oauth2"},
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    # The server doesn't enforce OAuth, so the connection should succeed.
+    # (If fastmcp attempted a real OAuth flow it would fail because there's
+    # no OAuth metadata on the test server — but fastmcp only starts the
+    # flow when the server returns 401/403, which our test server won't.)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert set(body["tools"]) == {"echo", "add"}
+
+
+def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
+    """The FastMCP auth field is mutually exclusive with Authorization headers."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://example.com/mcp",
+                "auth": {"strategy": "bearer", "value": "some-token"},
+                "headers": {"Authorization": "Bearer other-token"},
+            },
+            "timeout": 5.0,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_mcp_test_rejects_oauth_auth_with_auth_header(client: TestClient):
+    """OAuth auth is mutually exclusive with a top-level Authorization header."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://example.com/mcp",
+                "auth": {"strategy": "oauth2"},
+                "headers": {"Authorization": "Bearer some-token"},
+            },
+            "timeout": 5.0,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_mcp_test_accepts_explicit_oauth_authentication(
+    client: TestClient, http_mcp_server: MCPTestServer
+):
+    """Structured OAuth metadata should round-trip through the test endpoint."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert set(body["tools"]) == {"echo", "add"}
+
+
+def test_mcp_test_returns_encrypted_oauth_state_from_probe(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    calls: list[object | None] = []
+
+    class FakeClient:
+        def __init__(self):
+            self.tools: list[object] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_create_mcp_tools(
+        config,
+        timeout=30.0,
+        *,
+        mcp_oauth_token_storage=None,
+    ):
+        calls.append(mcp_oauth_token_storage)
+        assert mcp_oauth_token_storage is not None
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/tokens",
+                value={
+                    "access_token": "oauth-access-token",
+                    "refresh_token": "oauth-refresh-token",
+                },
+                collection="mcp-oauth-token",
+            )
+        )
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/client_info",
+                value={
+                    "redirect_uris": ["http://127.0.0.1:64801/callback"],
+                    "client_id": "superhuman-client",
+                    "client_secret": "superhuman-client-secret",
+                },
+                collection="mcp-oauth-client-info",
+            )
+        )
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/token_expiry",
+                value={"expires_at": 12345.0},
+                collection="mcp-oauth-token-expiry",
+            )
+        )
+        return FakeClient()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        fake_create_mcp_tools,
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert len(calls) == 1
+    assert "server" not in body
+    oauth_state = body["oauth_state"]
+    oauth_value = oauth_state["tokens"]
+    assert oauth_value["access_token"].startswith("gAAAA")
+    assert oauth_value["refresh_token"].startswith("gAAAA")
+    assert oauth_value["access_token"] != "oauth-access-token"
+    assert oauth_state["client_info"]["client_id"] == "superhuman-client"
+    assert oauth_state["client_info"]["client_secret"].startswith("gAAAA")
+    assert oauth_state["token_expires_at"] == 12345.0
+
+
+def test_mcp_oauth_start_returns_authorization_url_and_final_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    class FakeOAuth:
+        def __init__(self, job):
+            self.job = job
+
+        async def redirect_handler(self, authorization_url: str) -> None:
+            self.job.set_authorization_url(authorization_url)
+
+    def fake_oauth_from_authentication(authentication, *, oauth_token_storage, job):
+        assert authentication.client_id == "notion-client"
+        assert authentication.client_secret.get_secret_value() == "notion-secret"
+        return FakeOAuth(job)
+
+    class FakeClient:
+        def __init__(self):
+            self.tools = [SimpleNamespace(name="notion_lookup")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_create_mcp_tools(
+        config,
+        timeout=30.0,
+        *,
+        mcp_oauth_token_storage=None,
+        mcp_oauth_factory=None,
+    ):
+        assert mcp_oauth_token_storage is not None
+        assert mcp_oauth_factory is not None
+        server_name, server = next(iter(config.items()))
+        oauth = mcp_oauth_factory(
+            server_name,
+            server,
+            server.auth,
+            mcp_oauth_token_storage,
+        )
+        asyncio.run(
+            oauth.redirect_handler(
+                "https://oauth.example.com/authorize?state=test-state"
+            )
+        )
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/tokens",
+                value={"access_token": "oauth-access-token"},
+                collection="mcp-oauth-token",
+            )
+        )
+        return FakeClient()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router._oauth_auth_from_authentication",
+        fake_oauth_from_authentication,
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        fake_create_mcp_tools,
+    )
+
+    response = client.post(
+        "/api/mcp/oauth/start",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "client_secret_post",
+                        "client_id": "notion-client",
+                        "client_secret": "notion-secret",
+                    },
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    start_body = response.json()
+    assert start_body["ok"] is True
+    assert start_body["authorization_url"].startswith("https://oauth.example.com/")
+
+    status_body = None
+    for _ in range(20):
+        status_response = client.get(f"/api/mcp/oauth/status/{start_body['job_id']}")
+        assert status_response.status_code == 200, status_response.text
+        status_body = status_response.json()
+        if status_body["status"] == "succeeded":
+            break
+        time.sleep(0.05)
+
+    assert status_body is not None
+    assert status_body["ok"] is True
+    assert status_body["status"] == "succeeded"
+    assert status_body["tools"] == ["notion_lookup"]
+    access_token = status_body["oauth_state"]["tokens"]["access_token"]
+    assert access_token.startswith("gAAAA")
+    assert access_token != "oauth-access-token"
+
+
+def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Return FastMCP's result untouched; re-wrapping it broke mcp 2.x."""
+    job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    oauth = _BrowserCoordinatedOAuth(
+        job=job,
+        mcp_url="https://mcp.example.com/mcp",
+        callback_port=64801,
+    )
+
+    sentinel = object()
+    seen: list[bool] = []
+
+    async def fake_base_callback_handler(self):
+        # The URL must be published before the base blocks on the callback,
+        # otherwise the frontend never learns where to send the browser.
+        seen.append(job.callback_ready.is_set())
+        return sentinel
+
+    monkeypatch.setattr(
+        "fastmcp.client.auth.oauth.OAuth.callback_handler",
+        fake_base_callback_handler,
+    )
+
+    result = asyncio.run(oauth.callback_handler())
+
+    assert result is sentinel
+    assert seen == [True]
+    assert job.callback_url == "http://localhost:64801/callback"
+
+
+def test_mcp_oauth_callback_rejects_unknown_job(client: TestClient):
+    response = client.post(
+        "/api/mcp/oauth/callback/not-a-job",
+        json={"callback_url": "http://127.0.0.1:12345/callback?code=x&state=y"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_register_oauth_job_sweeps_expired_jobs():
+    old_job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    old_job.created_at -= _OAUTH_PROBE_JOB_TTL_SECONDS + 1
+    new_job = _MCPOAuthProbeJob(
+        request=MCPTestRequest.model_validate(
+            {"server": {"transport": "http", "url": "https://mcp.example.com/mcp"}}
+        ),
+        cipher=None,
+    )
+    try:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
+            _oauth_probe_jobs[old_job.id] = old_job
+        _register_oauth_job(new_job)
+
+        with _oauth_probe_jobs_lock:
+            assert old_job.id not in _oauth_probe_jobs
+            assert new_job.id in _oauth_probe_jobs
+    finally:
+        with _oauth_probe_jobs_lock:
+            _oauth_probe_jobs.clear()
+
+
+def test_mcp_test_rejects_legacy_top_level_oauth_authentication(client: TestClient):
+    """OAuth metadata now belongs inside the OAuth auth credential."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://example.com/mcp",
+                "authentication": {
+                    "type": "oauth",
+                    "client_auth_method": "none",
+                },
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 422

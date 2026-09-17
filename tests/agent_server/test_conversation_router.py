@@ -14,7 +14,6 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -205,10 +204,9 @@ def test_search_conversations_limit_validation(client, mock_conversation_service
         response = client.get("/api/conversations/search", params={"limit": 0})
         assert response.status_code == 422
 
-        # Test limit too high - endpoint has FastAPI validation (lte=100) and assertion
-        # The assertion in the endpoint will cause an AssertionError to be raised
-        with pytest.raises(AssertionError):
-            response = client.get("/api/conversations/search", params={"limit": 101})
+        # Test limit too high - rejected by FastAPI validation (le=100)
+        response = client.get("/api/conversations/search", params={"limit": 101})
+        assert response.status_code == 422
 
         # Test valid limit
         mock_conversation_service.search_conversations.return_value = ConversationPage(
@@ -676,7 +674,7 @@ def test_start_conversation_agent_settings_uses_sdk_default_tools(
 
 def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
     now = utc_now()
-    acp_info = ACPConversationInfo(
+    acp_info = ConversationInfo(
         id=uuid4(),
         agent=ACPAgent(acp_command=["echo", "test"]),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
@@ -713,7 +711,7 @@ def test_start_conversation_accepts_acp_agent_settings(
     client, mock_conversation_service
 ):
     now = utc_now()
-    acp_info = ACPConversationInfo(
+    acp_info = ConversationInfo(
         id=uuid4(),
         agent=ACPAgent(acp_command=["echo", "settings"]),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
@@ -2561,6 +2559,106 @@ def test_fork_conversation_duplicate_id_returns_409(
         client.app.dependency_overrides.clear()
 
 
+def test_fork_conversation_from_event_id_passed_through(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """fork with from_event_id forwards the branch point to the service."""
+    mock_conversation_service.fork_conversation.return_value = sample_conversation_info
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"from_event_id": "evt-123"},
+        )
+
+        assert response.status_code == 201
+        _, kwargs = mock_conversation_service.fork_conversation.call_args
+        assert kwargs["from_event_id"] == "evt-123"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_unknown_from_event_id_returns_404(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """fork with an unknown from_event_id surfaces as a 404."""
+    mock_conversation_service.fork_conversation.side_effect = ValueError(
+        "Unknown from_event_id: evt-missing"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"from_event_id": "evt-missing"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_navigate_conversation_success(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """navigate returns the updated conversation info and forwards event_id."""
+    mock_conversation_service.navigate_conversation.return_value = (
+        sample_conversation_info
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+        _, kwargs = mock_conversation_service.navigate_conversation.call_args
+        assert kwargs["event_id"] == "evt-42"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("failure_mode", ["missing_conversation", "unknown_event"])
+def test_navigate_conversation_returns_404(
+    client, mock_conversation_service, sample_conversation_id, failure_mode
+):
+    """navigate returns 404 for a missing conversation or an unknown event."""
+    if failure_mode == "missing_conversation":
+        mock_conversation_service.navigate_conversation.return_value = None
+    else:
+        mock_conversation_service.navigate_conversation.side_effect = ValueError(
+            "Unknown event_id: evt-missing"
+        )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_client_tool_registration_error_returns_422(
     client, mock_conversation_service
 ):
@@ -2595,3 +2693,15 @@ def test_start_conversation_client_tool_registration_error_returns_422(
         assert "collides with an existing non-client tool" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("method,suffix", [("get", ""), ("post", "/reprovision")])
+def test_runtime_requires_existing_conversation(
+    client, mock_conversation_service, method, suffix
+):
+    mock_conversation_service.get_conversation.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
+    assert response.status_code == 404

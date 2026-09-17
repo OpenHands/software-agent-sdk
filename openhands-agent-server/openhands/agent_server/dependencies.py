@@ -70,7 +70,15 @@ def get_conversation_service(request: Request) -> ConversationService:
     return service
 
 
-def get_bash_event_service(request: Request) -> BashEventService:
+async def get_bash_event_service(request: Request) -> BashEventService:
+    if "runtime_conversation_id" in request.path_params:
+        event_service: EventService = request.state.runtime_event_service
+        if event_service.bash_event_service is None:
+            event_service.bash_event_service = BashEventService(
+                bash_events_dir=event_service.conversation_dir / "bash_events",
+                default_cwd=event_service.get_conversation().workspace.working_dir,
+            )
+        return event_service.bash_event_service
     service = getattr(request.app.state, "bash_event_service", None)
     if service is None:
         raise HTTPException(

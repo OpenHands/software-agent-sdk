@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
     decrypt_str_with_cipher_or_keep,
@@ -243,9 +243,18 @@ def test_validate_secret_with_cipher_decrypts(mock_info, cipher):
     assert result.get_secret_value() == "sk-test-123"
 
 
-def test_validate_secret_with_cipher_invalid_data_returns_none(mock_info, cipher):
-    """Invalid encrypted data with cipher returns None (graceful failure)."""
+def test_validate_secret_with_cipher_plaintext_returns_secretstr(mock_info, cipher):
+    """Non-token plaintext with cipher is treated as legacy/plaintext input."""
     result = validate_secret("not-encrypted-data", mock_info({"cipher": cipher}))
+    assert isinstance(result, SecretStr)
+    assert result.get_secret_value() == "not-encrypted-data"
+
+
+def test_validate_secret_with_cipher_malformed_fernet_returns_none(mock_info, cipher):
+    """Malformed Fernet-looking data with cipher returns None gracefully."""
+    result = validate_secret(
+        f"{FERNET_TOKEN_PREFIX}not-a-valid-token", mock_info({"cipher": cipher})
+    )
     assert result is None
 
 

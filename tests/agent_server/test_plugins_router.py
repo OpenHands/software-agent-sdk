@@ -107,6 +107,52 @@ def test_refresh_returns_updated_plugin(client: TestClient, tmp_path: Path):
     assert refreshed.json()["plugin"]["name"] == "demo-plugin"
 
 
+def test_installed_plugin_carries_bundled_skills(client: TestClient, tmp_path: Path):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    commands = src / "commands"
+    commands.mkdir()
+    (commands / "greet.md").write_text("---\ndescription: Say hello\n---\nHello!")
+    client.post("/plugins/install", json={"source": str(src)})
+
+    listed = client.get("/plugins/installed")
+
+    assert listed.status_code == 200
+    assert listed.json()["plugins"][0]["skills"] == [
+        {"name": "demo-plugin:greet", "description": "Say hello"}
+    ]
+
+
+def test_installed_plugin_lists_files_excluding_git_internals(
+    client: TestClient, tmp_path: Path
+):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    (src / "README.md").write_text("# Demo")
+    (src / ".git").mkdir()
+    (src / ".git" / "config").write_text("[core]")
+    client.post("/plugins/install", json={"source": str(src)})
+
+    got = client.get("/plugins/installed/demo-plugin")
+
+    assert got.status_code == 200
+    assert got.json()["files"] == [".plugin/plugin.json", "README.md"]
+
+
+def test_corrupt_installed_plugin_degrades_to_metadata_only(
+    client: TestClient, tmp_path: Path
+):
+    src = _make_installable_plugin(tmp_path / "src", "demo-plugin")
+    install = client.post("/plugins/install", json={"source": str(src)})
+    manifest = Path(install.json()["install_path"]) / ".plugin" / "plugin.json"
+    manifest.write_text("{not json")
+
+    got = client.get("/plugins/installed/demo-plugin")
+
+    assert got.status_code == 200
+    assert got.json()["name"] == "demo-plugin"
+    assert got.json()["skills"] is None
+    assert got.json()["files"] is None
+
+
 def test_list_available_returns_plugin_summaries(
     client: TestClient, tmp_path: Path, monkeypatch
 ):
@@ -130,6 +176,9 @@ def test_list_available_returns_plugin_summaries(
                 "name": "available-plugin",
                 "version": "1.0.0",
                 "description": "available-plugin",
+                "path": plugin.path,
+                "skills": [],
+                "files": [".plugin/plugin.json"],
             }
         ]
     }
