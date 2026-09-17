@@ -1825,6 +1825,11 @@ class LocalConversation(BaseConversation):
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
 
+        A new user message is not confirmation. If the conversation is
+        ``WAITING_FOR_CONFIRMATION``, pending actions are rejected as
+        superseded. Confirm with ``run()`` and no new message, or deny
+        with ``reject_pending_actions()``.
+
         Args:
             message: Either a string (which will be converted to a user message)
                     or a Message object
@@ -1854,6 +1859,17 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
+            elif (
+                self._state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            ):
+                # New chat text is not an approval gesture. Confirm by calling
+                # run() with no new message; deny via reject_pending_actions().
+                logger.info(
+                    "User message arrived while awaiting "
+                    "confirmation; rejecting the pending action"
+                )
+                self.reject_pending_actions("Superseded by a new user message")
 
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
@@ -1923,6 +1939,8 @@ class LocalConversation(BaseConversation):
         In confirmation mode:
         - First call: creates actions but doesn't execute them, stops and waits
         - Second call: executes pending actions (implicit confirmation)
+        - ``send_message`` while waiting rejects pending actions as superseded;
+          only ``run()`` without a new message is an approval
 
         In normal mode:
         - Creates and executes actions immediately
