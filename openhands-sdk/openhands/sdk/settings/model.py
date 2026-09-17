@@ -1275,9 +1275,9 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Tools available to the agent. None (the default) resolves to the "
-            "standard exec set (see openhands.sdk.tool.defaults), plus the "
-            "sub-agent tool set when enable_sub_agents is set; [] is an "
-            "explicitly bare agent; a non-empty list is used exactly as given. "
+            "standard exec set (see openhands.sdk.tool.defaults); [] is an "
+            "explicitly bare agent; a non-empty list is used as given. "
+            "enable_sub_agents adds the sub-agent tool set in every case. "
             "Environment-dependent tools (browser) are injected by the serving "
             "layer, not the default."
         ),
@@ -1398,15 +1398,9 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.defaults import default_tool_specs
+        from openhands.sdk.tool.defaults import resolve_tool_specs
 
-        # Single defaulting point: None = the canonical default set (honoring
-        # enable_sub_agents); [] stays an explicitly bare agent.
-        tools = (
-            self.tools
-            if self.tools is not None
-            else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
-        )
+        tools = resolve_tool_specs(self.tools, enable_sub_agents=self.enable_sub_agents)
 
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:

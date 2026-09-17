@@ -96,26 +96,28 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     # MCP filtered to the referenced key.
     assert settings.mcp_config != {}
     assert list(settings.mcp_config.keys()) == ["fetch"]
-    # The profile's tools default (None) rides through so create_agent is the
-    # single defaulting point (#3967 / #3978); the built agent carries the
-    # standard exec set plus the sub-agent tool set (enable_sub_agents=True).
-    assert settings.tools is None
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
-    agent_tool_names = [t.name for t in agent.tools]
-    assert {"terminal", "file_editor", "task_tracker"} <= set(agent_tool_names)
-    assert "task_tool_set" in agent_tool_names
+    assert [t.name for t in agent.tools] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "task_tool_set",
+    ]
 
 
+@pytest.mark.parametrize(
+    ("browser_available", "expected"),
+    [
+        (False, ["terminal", "file_editor", "task_tracker"]),
+        (True, ["terminal", "file_editor", "task_tracker", "browser_tool_set"]),
+    ],
+)
 def test_openhands_resolves_default_exec_tools(
-    llm_store: LLMProfileStore,
+    llm_store: LLMProfileStore, browser_available: bool, expected: list[str]
 ) -> None:
-    """A profile with no explicit ``tools`` resolves to ``tools=None``, and
-    ``create_agent`` attaches the standard exec set (#3967) — otherwise the
-    agent has only the Finish/Think built-ins and no way to run shell commands
-    or edit files. The sub-agent tool set stays out when ``enable_sub_agents``
-    is False (default); browser is a serving-layer injection, never part of
-    the deterministic default (see tests/sdk/tool/test_defaults.py)."""
+    """A profile with no explicit ``tools`` resolves to the standard exec set
+    (#3967), plus browser only where the caller's runtime can run it."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.enable_sub_agents is False
     assert profile.tools is None
@@ -126,27 +128,21 @@ def test_openhands_resolves_default_exec_tools(
         mcp_config={},
         available_skills=None,
         cipher=None,
+        browser_available=browser_available,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools is None
-    # The built agent carries the exec tools, not just the built-ins.
-    agent = settings.create_agent()
-    assert [t.name for t in agent.tools] == [
-        "terminal",
-        "file_editor",
-        "task_tracker",
-    ]
+    assert [t.name for t in settings.create_agent().tools] == expected
 
 
-def test_openhands_profile_tools_selection_is_passed_through(
+def test_openhands_profile_tools_selection_is_used_as_given(
     llm_store: LLMProfileStore,
 ) -> None:
-    """An explicit profile ``tools`` list is authoritative: used exactly as
-    given ([] = deliberately bare), independent of ``enable_sub_agents``."""
+    """An explicit profile ``tools`` list is used as given ([] = deliberately
+    bare) and never gets the browser."""
     picked = OpenHandsAgentProfile(
         name="picked",
         llm_profile_ref="default",
-        tools=[Tool(name="terminal")],
+        tools=[Tool(name="terminal", params={"username": "dev"})],
         enable_sub_agents=True,
     )
     settings = resolve_agent_profile(
@@ -155,10 +151,12 @@ def test_openhands_profile_tools_selection_is_passed_through(
         mcp_config={},
         available_skills=None,
         cipher=None,
+        browser_available=True,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools == [Tool(name="terminal")]
-    assert [t.name for t in settings.create_agent().tools] == ["terminal"]
+    assert settings.create_agent().tools == [
+        Tool(name="terminal", params={"username": "dev"})
+    ]
 
     bare = OpenHandsAgentProfile(name="bare", llm_profile_ref="default", tools=[])
     settings = resolve_agent_profile(
@@ -167,9 +165,9 @@ def test_openhands_profile_tools_selection_is_passed_through(
         mcp_config={},
         available_skills=None,
         cipher=None,
+        browser_available=True,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools == []
     assert settings.create_agent().tools == []
 
 
@@ -774,6 +772,39 @@ def test_dry_run_verdict_matches_real_resolve(
             available_skills=None,
             cipher=None,
         )
+
+
+@pytest.mark.parametrize("browser_available", [True, False])
+@pytest.mark.parametrize("tools", [None, [], [Tool(name="glob")]])
+def test_dry_run_tools_match_the_launched_agent(
+    llm_store: LLMProfileStore,
+    browser_available: bool,
+    tools: list[Tool] | None,
+) -> None:
+    """``resolved_settings.tools`` is what the launch actually builds — the
+    whole point of the preview (#4958)."""
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", tools=tools)
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+        browser_available=browser_available,
+    )
+    agent = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+        browser_available=browser_available,
+    ).create_agent()
+
+    assert diag.resolved_settings is not None
+    assert [t["name"] for t in diag.resolved_settings["tools"]] == [
+        t.name for t in agent.tools
+    ]
 
 
 def test_dry_run_acp_reports_credential_channels_by_role(

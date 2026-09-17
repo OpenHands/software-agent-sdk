@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 from pydantic import Field
 
@@ -141,6 +141,8 @@ class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
     Use ``WorkflowTool`` when you need to inject a custom executor
     (e.g., in tests or extensions).
     """
+
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

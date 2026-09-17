@@ -8,7 +8,9 @@ from openhands.sdk.tool.defaults import (
     DEFAULT_EXEC_TOOL_NAMES,
     SUB_AGENT_TOOL_NAME,
     default_tool_specs,
+    resolve_tool_specs,
 )
+from openhands.sdk.tool.spec import Tool
 
 
 def _names(**kwargs) -> list[str]:
@@ -35,6 +37,20 @@ def test_explicit_browser_appends_before_sub_agents() -> None:
         BROWSER_TOOL_NAME,
         SUB_AGENT_TOOL_NAME,
     ]
+
+
+def test_resolve_unset_tools_is_the_default_set() -> None:
+    assert [t.name for t in resolve_tool_specs(None, enable_browser=True)] == [
+        *DEFAULT_EXEC_TOOL_NAMES,
+        BROWSER_TOOL_NAME,
+    ]
+
+
+def test_resolve_configured_tools_is_used_as_given() -> None:
+    """An explicit list is authoritative — browser is never added on top."""
+    assert resolve_tool_specs([], enable_browser=True) == []
+    spec = Tool(name="terminal", params={"username": "dev"})
+    assert resolve_tool_specs([spec], enable_browser=True) == [spec]
 
 
 def test_is_tool_usable_contract(monkeypatch: pytest.MonkeyPatch) -> None:

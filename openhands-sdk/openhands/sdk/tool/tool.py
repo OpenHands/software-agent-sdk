@@ -383,6 +383,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # Automatic tool naming - set by __init_subclass__
     name: ClassVar[str] = ""
 
+    user_selectable: ClassVar[bool] = True
+    """Whether a user may pick this tool when configuring an agent's toolset."""
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)

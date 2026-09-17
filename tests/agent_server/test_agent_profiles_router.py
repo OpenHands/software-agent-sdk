@@ -944,7 +944,7 @@ def test_materialize_reports_disabled_and_resolved_skills(
     )
 
     with patch(
-        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        "openhands.agent_server.profile_launch.discover_profile_skills",
         return_value=[
             Skill(name="alpha", content="x"),
             Skill(name="beta", content="y"),
@@ -958,6 +958,98 @@ def test_materialize_reports_disabled_and_resolved_skills(
     assert body["disabled_skills"] == ["beta", "not-in-catalog"]
     assert body["resolved_skills"] == ["alpha"]
     assert body["resolved_settings"] is not None
+
+
+_BROWSER_PROBE = "openhands.agent_server.profile_launch.is_tool_usable"
+_DISCOVER = "openhands.agent_server.profile_launch.discover_profile_skills"
+
+
+def test_materialize_reports_the_tools_a_launch_would_build(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    with (
+        patch(_BROWSER_PROBE, return_value=True),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        body = client_with_llm_store.post("/api/agent-profiles/p/materialize").json()
+
+    assert [t["name"] for t in body["resolved_settings"]["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+    ]
+
+
+def test_materialize_evaluates_a_draft_without_saving_it(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {
+        "name": "ignored",
+        "agent_kind": "openhands",
+        "llm_profile_ref": "base-llm",
+        "tools": [{"name": "glob"}],
+        "enable_switch_llm_tool": False,
+    }
+
+    with (
+        patch(_BROWSER_PROBE, return_value=True),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        response = client_with_llm_store.post(
+            "/api/agent-profiles/draft/materialize", json={"profile": draft}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert [t["name"] for t in body["resolved_settings"]["tools"]] == ["glob"]
+    assert store.list() == []
+
+
+def test_materialize_draft_takes_precedence_over_the_stored_profile(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    with (
+        patch(_DISCOVER, return_value=[]),
+        patch(_BROWSER_PROBE, return_value=False),
+    ):
+        drafted = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize",
+            json={"profile": {"name": "p", "llm_profile_ref": "base-llm", "tools": []}},
+        ).json()
+        stored = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={}
+        ).json()
+
+    assert drafted["resolved_settings"]["tools"] == []
+    assert [t["name"] for t in stored["resolved_settings"]["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+    ]
+
+
+def test_materialize_invalid_draft_returns_422(client_with_llm_store):
+    response = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize",
+        json={
+            "profile": {
+                "name": "p",
+                "llm_profile_ref": "base-llm",
+                "tools": "terminal",
+            }
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_materialize_unknown_name_returns_404(client_with_llm_store):

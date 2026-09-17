@@ -95,6 +95,7 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.tool import seal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
@@ -170,6 +171,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         api.state.telemetry_sink = await build_telemetry_sink(config)
         if not deferred:
             emit_server_started()
+
+        # Every tool this deployment offers is registered by now (presets at
+        # import, plus any ``--import-modules``). Later registrations belong to
+        # one conversation and vanish on restart, so they stay out of the catalog.
+        seal_tool_catalog()
 
         vscode_service = get_vscode_service()
         tool_preload_service = get_tool_preload_service()

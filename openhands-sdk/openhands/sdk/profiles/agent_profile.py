@@ -162,15 +162,15 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default="CodeActAgent",
         description="Agent class to build.",
     )
-    # Same tri-state as the resolved settings' ``tools``: passed through
-    # verbatim by the resolver, so ``create_agent`` is the single defaulting
-    # point (#3978). Secret-free by construction (``Tool`` is name + params).
+    # Same tri-state as the settings' ``tools``, resolved by
+    # ``resolve_tool_specs``. Secret-free by construction (name + params).
     tools: list[Tool] | None = Field(
         default=None,
         description=(
             "Tool selection for the resolved agent. None (the default) = the "
             "server's standard tool set; [] = an explicitly bare agent; a "
-            "non-empty list is used exactly as given."
+            "non-empty list is used as given. enable_sub_agents adds the "
+            "sub-agent tool set in every case."
         ),
     )
 
