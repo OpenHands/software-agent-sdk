@@ -1,4 +1,12 @@
 export { AgentProfilesClient } from './client/agent-profiles-client';
+export {
+  ConversationEventStream,
+  buildConversationEventStreamUrl,
+} from './client/conversation-event-stream';
+export type {
+  ConversationEventStreamOptions,
+  ConversationEventStreamState,
+} from './client/conversation-event-stream';
 export { ServerClient } from './client/server-client';
 export { BashClient } from './client/bash-client';
 export { ConversationClient } from './client/conversation-client';

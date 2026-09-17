@@ -549,3 +549,41 @@ MIT
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Browser conversation event streams
+
+`ConversationEventStream` from `@openhands/typescript-client/clients` owns the
+Agent Server event socket transport. Use it when an application already manages
+conversation state and needs raw event frames and connection lifecycle callbacks.
+It authenticates with the first frame, preserves replay parameters, reconnects
+with exponential backoff and jitter when enabled, and aborts stalled handshakes
+after 10 seconds. It does not retain message history.
+
+```typescript
+import {
+  ConversationEventStream,
+  buildConversationEventStreamUrl,
+} from '@openhands/typescript-client/clients';
+
+const stream = new ConversationEventStream({
+  url: buildConversationEventStreamUrl(agentServerUrl, conversationId),
+  sessionApiKey,
+  queryParams: { resend_mode: 'all' },
+  reconnect: { enabled: true },
+  onMessage: (frame) => handleEvent(JSON.parse(frame.data)),
+  onStateChange: (state) => renderConnectionState(state),
+});
+stream.start();
+// When the stream is open:
+stream.send(JSON.stringify({ role: 'user', content: [{ type: 'text', text: 'Hello' }], run: true }));
+// When the owner is disposed:
+stream.stop();
+```
+
+`updateOptions` refreshes callbacks and credentials without reconnecting; new
+credentials take effect on the next handshake. `reconnect()` replaces the active
+socket and resets the retry budget. `send()` throws while disconnected, allowing
+the application to use `ConversationClient.sendEvent` as a REST fallback.
+The client requires a Web-standard global `WebSocket` only when started and has
+no Node-specific imports. Pass credentials through `sessionApiKey`; credentials
+in the socket URL or query parameters are rejected.
