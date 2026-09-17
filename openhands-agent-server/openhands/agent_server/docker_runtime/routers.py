@@ -12,6 +12,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.docker_runtime.mediation import (
     materialize_secrets,
     prepare_start,
@@ -137,6 +138,10 @@ async def start_conversation(
     if response.is_error:
         await registry.stop(conversation_id)
         content = {"detail": "Conversation runtime rejected the request"}
+    else:
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
     return JSONResponse(content=content, status_code=response.status_code)
 
 
@@ -170,6 +175,9 @@ async def release_runtime(conversation_id: UUID, request: Request) -> Response:
         raise HTTPException(404, "Conversation not found")
     try:
         await registry.stop(conversation_id)
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
     except Exception as exc:
         logger.exception("Could not release conversation runtime %s", conversation_id)
         raise HTTPException(502, "Could not release conversation runtime") from exc
@@ -195,16 +203,25 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise HTTPException(404, "Conversation not found")
 
+    if not await registry.begin_delete(conversation_id):
+        raise HTTPException(409, "Conversation deletion is already in progress")
+
     # Stopping the container closes its conversation service. The outer server
     # owns the bind-mounted state and removes it after Docker has unmounted it;
     # asking the inner server to remove the mount root leaves that root in a
     # partially deleted state.
-    await registry.stop(conversation_id)
-    registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
-    await asyncio.to_thread(
-        safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
-    )
-    await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
+    try:
+        await registry.stop(conversation_id)
+        registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        await asyncio.to_thread(
+            safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
+        )
+        await asyncio.to_thread(safe_rmtree, registry.conversation_dir(conversation_id))
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
+    finally:
+        await registry.finish_delete(conversation_id)
     return Response(status_code=200)
 
 
@@ -234,6 +251,7 @@ async def proxy_conversation(
         raise HTTPException(501, "This operation is unavailable in Docker runtime mode")
     registry = get_registry(request)
     container = await _container(registry, conversation_id)
+    upstream_path = _upstream_path(request, request.url.path)
     if tail == "secrets" and request.method == "POST":
         try:
             update = UpdateSecretsRequest.model_validate_json(await request.body())
@@ -251,21 +269,23 @@ async def proxy_conversation(
         body = UpdateSecretsRequest(secrets=materialized).model_dump(
             mode="json", context={"expose_secrets": "plaintext"}
         )
-        return await proxy_http(
+        response = await proxy_http(
             request,
             container,
-            upstream_path=_upstream_path(
-                request, f"/api/conversations/{conversation_id}/{tail}"
-            ),
+            upstream_path=upstream_path,
             body=json.dumps(body).encode(),
         )
-    return await proxy_http(
-        request,
-        container,
-        upstream_path=_upstream_path(
-            request, f"/api/conversations/{conversation_id}/{tail}"
-        ),
-    )
+    else:
+        response = await proxy_http(
+            request,
+            container,
+            upstream_path=upstream_path,
+        )
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and response.status_code < 400:
+        await get_conversation_service(request).refresh_persisted_conversation(
+            conversation_id
+        )
+    return response
 
 
 docker_workspace_router = APIRouter(prefix="/conversations", tags=["Docker Workspace"])
@@ -311,11 +331,16 @@ async def _proxy_socket(
         return
     query = strip_auth_query("?" + websocket.url.query).lstrip("?")
     path = f"/sockets/{socket_name}/{conversation_id}"
-    await bridge_websocket(
-        websocket,
-        container,
-        upstream_path=f"{path}?{query}" if query else path,
-    )
+    try:
+        await bridge_websocket(
+            websocket,
+            container,
+            upstream_path=f"{path}?{query}" if query else path,
+        )
+    finally:
+        await websocket.app.state.conversation_service.refresh_persisted_conversation(
+            conversation_id
+        )
 
 
 @docker_sockets_router.websocket("/events/{conversation_id}")

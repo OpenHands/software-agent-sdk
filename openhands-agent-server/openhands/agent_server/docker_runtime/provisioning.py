@@ -143,6 +143,14 @@ class RuntimeProvisioningStore:
             else:
                 if not workspace_path.is_absolute():
                     raise ValueError("Conversation workspace must be absolute")
+                if workspace_path.is_symlink():
+                    raise ValueError("Conversation workspace must be a real directory")
+                try:
+                    workspace_path.mkdir(parents=True, mode=0o700, exist_ok=True)
+                except OSError as exc:
+                    raise ValueError(
+                        "Conversation workspace must be a real directory"
+                    ) from exc
                 if workspace_path.is_symlink() or not workspace_path.is_dir():
                     raise ValueError("Conversation workspace must be a real directory")
                 workspace_path = workspace_path.resolve()
