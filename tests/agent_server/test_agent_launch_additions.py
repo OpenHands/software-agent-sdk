@@ -9,11 +9,13 @@ from pydantic import ValidationError
 from openhands.agent_server.conversation_service import (
     ConversationService,
     _append_system_message_suffix,
+    _merge_launch_skills,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import LaunchedAgentProfile, StoredConversation
 from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
     StartConversationRequest,
@@ -22,6 +24,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.skills import Skill
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -167,3 +170,64 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     assert [tool.name for tool in restored_agent.tools] == ["canvas_ui_client"]
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.client_tools == [_CANVAS_UI]
+
+
+def _skill(name: str) -> Skill:
+    return Skill(name=name, content=f"# {name}")
+
+
+def _skill_names(agent: AgentBase) -> list[str]:
+    context = agent.agent_context
+    assert context is not None
+    return sorted(skill.name for skill in context.skills)
+
+
+def _agent_with(skills: list[Skill], disabled: list[str] | None = None) -> Agent:
+    return Agent(
+        llm=LLM(model="gpt-4o", api_key="k", usage_id="agent"),
+        tools=[],
+        agent_context=AgentContext(skills=skills, disabled_skills=disabled or []),
+    )
+
+
+class TestMergeLaunchSkills:
+    """Deployment-supplied skills for clients that ship their own catalog.
+
+    An ``agent_profile_id`` launch sends no ``agent_settings``, so a client whose
+    skills are bundled rather than server-discovered has no other channel
+    (software-agent-sdk#3979).
+    """
+
+    def test_adds_skills_the_resolved_agent_lacks(self):
+        merged = _merge_launch_skills(
+            _agent_with([_skill("github")]), [_skill("docker")]
+        )
+        assert _skill_names(merged) == ["docker", "github"]
+
+    def test_the_resolved_agent_wins_a_name_collision(self):
+        # Its skills came from the profile and the server's own sources — the
+        # more authoritative view — and AgentContext rejects duplicate names.
+        agent = _agent_with([_skill("github")])
+        merged = _merge_launch_skills(agent, [_skill("github")])
+        assert _skill_names(merged) == ["github"]
+
+    def test_the_profile_deny_list_still_wins(self):
+        # An addition must not turn back on what the profile turned off.
+        merged = _merge_launch_skills(
+            _agent_with([], disabled=["docker"]),
+            [_skill("docker"), _skill("code-review")],
+        )
+        assert _skill_names(merged) == ["code-review"]
+
+    def test_no_additions_leaves_the_agent_untouched(self):
+        agent = _agent_with([_skill("github")])
+        assert _merge_launch_skills(agent, []) is agent
+
+    def test_an_agent_without_a_context_still_receives_them(self):
+        agent = Agent(llm=LLM(model="gpt-4o", api_key="k", usage_id="agent"), tools=[])
+        merged = _merge_launch_skills(agent, [_skill("docker")])
+        assert _skill_names(merged) == ["docker"]
+
+    def test_the_field_defaults_to_none(self):
+        # Every existing caller must keep sending no skills at all.
+        assert AgentLaunchAdditions().skills is None
