@@ -12,8 +12,6 @@ MCP configuration are separate documents with separate schemas and separate
 failure boundaries.
 """
 
-from __future__ import annotations
-
 import ipaddress
 import json
 import re
@@ -27,10 +25,11 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from pydantic import SecretStr, ValidationError
 
+from openhands.sdk.extensions.fetch import get_cache_path
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.plugin.format.agent_plugins import _load_schema
-from openhands.sdk.utils.path import resolves_within
+from openhands.sdk.plugin.format.base import _load_schema
+from openhands.sdk.utils.path import get_user_persistence_dir, resolves_within
 
 
 logger = get_logger(__name__)
@@ -77,12 +76,28 @@ _TOKEN_CHARS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: Parent of the ``PLUGIN_DATA`` directories (§9.1). Outside ``plugins/``, whose
+#: every child is loaded as a plugin.
+DEFAULT_PLUGIN_DATA_DIR = get_user_persistence_dir() / "plugin-data"
+
+
 class MCPConfigError(ValueError):
     """An ``mcp.json`` document, or one server entry in it, is invalid.
 
     Never fatal to the plugin: the caller turns it into a disabled MCP component
     or a skipped server entry, per §7.2.2.
     """
+
+
+def get_plugin_data_dir(plugin_root: Path, *, data_root: Path | None = None) -> Path:
+    """Return a plugin's ``PLUGIN_DATA`` directory, without creating it.
+
+    Keyed by resolved root, not name: roots are stable across updates, and a
+    same-named plugin elsewhere must not share the data.
+    """
+    return get_cache_path(
+        plugin_root.resolve().as_posix(), data_root or DEFAULT_PLUGIN_DATA_DIR
+    )
 
 
 def load_mcp_servers(

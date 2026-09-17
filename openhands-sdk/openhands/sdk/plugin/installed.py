@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from openhands.sdk.extensions.fetch import get_cache_path
 from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
@@ -23,34 +22,10 @@ InstalledPluginInfo = InstallationInfo
 
 DEFAULT_INSTALLED_PLUGINS_DIR = get_user_persistence_dir() / "plugins" / "installed"
 
-#: Parent of the per-plugin ``PLUGIN_DATA`` directories (Agent Plugins §9.1).
-#: Deliberately outside ``plugins/``: an update replaces the installed tree, and
-#: everything under ``plugins/`` is scanned for ambient plugins, so a data
-#: directory there would be discovered and loaded as a plugin of its own.
-DEFAULT_PLUGIN_DATA_DIR = get_user_persistence_dir() / "plugin-data"
-
 
 def get_installed_plugins_dir() -> Path:
     """Get the default directory for installed plugins."""
     return DEFAULT_INSTALLED_PLUGINS_DIR
-
-
-def get_plugin_data_dir(plugin_root: Path, *, data_root: Path | None = None) -> Path:
-    """Get the persistent data directory for one plugin instance (``PLUGIN_DATA``).
-
-    Keyed by the resolved plugin root, the same way the fetch cache keys a
-    source. Every plugin root is already stable across updates -- installed
-    plugins live at ``installed/<name>``, fetched ones at a path hashed from
-    their source, project ones at fixed repo paths -- so the data survives an
-    update. Keying by name alone would let a project plugin that borrows an
-    installed plugin's name share, and plant files in, its data directory.
-
-    The directory is not created here; the caller creates it before launching a
-    plugin subprocess.
-    """
-    return get_cache_path(
-        plugin_root.resolve().as_posix(), data_root or DEFAULT_PLUGIN_DATA_DIR
-    )
 
 
 # ---------------------------------------------------------------------------

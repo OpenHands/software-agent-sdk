@@ -1700,7 +1700,7 @@ class TestAgentPluginsMCPExpansion:
         self, tmp_path: Path, basic_agent, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.setattr(
-            "openhands.sdk.plugin.installed.DEFAULT_PLUGIN_DATA_DIR",
+            "openhands.sdk.plugin.format.agent_plugins_mcp.DEFAULT_PLUGIN_DATA_DIR",
             tmp_path / "plugin-data",
         )
         plugin_dir = tmp_path / "plugin"
@@ -1757,7 +1757,7 @@ class TestAgentPluginsMCPExpansion:
         """load_plugin() expands twice -- the runtime servers and the merged
         config -- and both must leave an Agent Plugins package literal."""
         monkeypatch.setattr(
-            "openhands.sdk.plugin.installed.DEFAULT_PLUGIN_DATA_DIR",
+            "openhands.sdk.plugin.format.agent_plugins_mcp.DEFAULT_PLUGIN_DATA_DIR",
             tmp_path / "plugin-data",
         )
         monkeypatch.setenv("LEAKED", "from-environment")

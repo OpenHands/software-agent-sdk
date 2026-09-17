@@ -8,7 +8,6 @@ See the ``openhands.sdk.plugin.format`` package docstring for the design.
 """
 
 import json
-from functools import cache
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
@@ -18,8 +17,13 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.plugin.format.agent_plugins_mcp import (
+    get_plugin_data_dir,
+    load_mcp_servers,
+)
 from openhands.sdk.plugin.format.base import (
     PluginFormat,
+    _load_schema,
     _read_command_definitions,
     _read_hooks_config,
 )
@@ -40,7 +44,6 @@ MANIFEST_FILE: Final[str] = "plugin.json"
 #: components (§8.2).
 EXTENSION_NAMESPACE: Final[str] = "dev.openhands"
 
-_SCHEMAS_DIR: Final[Path] = Path(__file__).parent / "schemas"
 
 #: The only manifest ``$schema`` we support, and its vendored file. Agent
 #: Plugins also publishes an ``mcp.schema.json``, but that one belongs to the
@@ -50,12 +53,6 @@ MANIFEST_SCHEMA_URL: Final[str] = (
     "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 )
 _MANIFEST_SCHEMA_FILE: Final[str] = "plugin-1.0.0.schema.json"
-
-
-@cache
-def _load_schema(filename: str) -> dict[str, Any]:
-    """Read a vendored schema. Cached; never fetched over the network."""
-    return json.loads((_SCHEMAS_DIR / filename).read_text(encoding="utf-8"))
 
 
 class AgentPluginsFormat(PluginFormat):
@@ -177,11 +174,6 @@ class AgentPluginsFormat(PluginFormat):
         defines exactly two placeholders and forbids every other kind, so there
         is nothing left to expand once per-conversation secrets arrive.
         """
-        # Imported lazily: the loader reads its schema from this module, and
-        # installed.py reaches plugin.py, which imports this package.
-        from openhands.sdk.plugin.format.agent_plugins_mcp import load_mcp_servers
-        from openhands.sdk.plugin.installed import get_plugin_data_dir
-
         plugin_root = plugin_dir.resolve()
         return load_mcp_servers(
             plugin_dir,

@@ -21,7 +21,7 @@ from openhands.sdk.plugin import (
     get_plugin_data_dir,
 )
 from openhands.sdk.plugin.discovery import USER_PLUGINS_DIRS, load_user_plugins
-from openhands.sdk.plugin.installed import DEFAULT_PLUGIN_DATA_DIR
+from openhands.sdk.plugin.format.agent_plugins_mcp import DEFAULT_PLUGIN_DATA_DIR
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.skills.utils import expand_mcp_servers
@@ -790,7 +790,8 @@ def test_load_plugins_does_not_expand_package_servers(
 ):
     """The public loader expands secrets too; package servers must skip it."""
     monkeypatch.setattr(
-        "openhands.sdk.plugin.installed.DEFAULT_PLUGIN_DATA_DIR", tmp_path / "data"
+        "openhands.sdk.plugin.format.agent_plugins_mcp.DEFAULT_PLUGIN_DATA_DIR",
+        tmp_path / "data",
     )
     monkeypatch.setenv("LEAKED", "from-environment")
     write_mcp(

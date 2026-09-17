@@ -27,13 +27,13 @@ from openhands.sdk.plugin.format import (
     PluginFormat,
     detect_format,
 )
+from openhands.sdk.plugin.format.agent_plugins_mcp import get_plugin_data_dir
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
     disable_plugin,
     enable_plugin,
     get_installed_plugin,
     get_installed_plugins_dir,
-    get_plugin_data_dir,
     install_plugin,
     list_installed_plugins,
     load_installed_plugins,
