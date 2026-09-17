@@ -15,6 +15,10 @@ from weakref import WeakValueDictionary
 import httpx
 from pydantic import BaseModel
 
+from openhands.agent_server.agent_launch import (
+    launch_runtime,
+    prepare_launch_request,
+)
 from openhands.agent_server.config import ACPSkillSourcing, Config, WebhookSpec
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -37,7 +41,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.telemetry import (
     ConversationTelemetryContext,
     DiagnosticEventFactory,
@@ -72,14 +75,12 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
 
@@ -132,22 +133,6 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
     suffix = f"{existing_suffix}\n\n{addition}" if existing_suffix else addition
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
     return agent.model_copy(update={"agent_context": updated_context})
-
-
-def _with_load_memory(agent: AgentBase) -> AgentBase:
-    """Stamp the global persistent-memory preference onto an agent.
-
-    ``load_memory`` is a user-level setting, not part of any agent, profile or
-    client payload, so it is applied here regardless of how the agent reached
-    the request.
-    """
-    # current_datetime stays suppressed on a synthesized context: a null
-    # agent_context means "no prompt context", and ACPAgent._render_suffix
-    # relies on that to keep a <CURRENT_DATETIME> block out of the prompt.
-    context = agent.agent_context or AgentContext(current_datetime=None)
-    return agent.model_copy(
-        update={"agent_context": context.model_copy(update={"load_memory": True})}
-    )
 
 
 def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
@@ -308,159 +293,6 @@ class InvalidParentConversation(ValueError):
 
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
-
-
-def _apply_acp_skill_sourcing(
-    agent: "AgentBase", sourcing: ACPSkillSourcing
-) -> "AgentBase":
-    """Strip OpenHands-managed skills from an ACP agent under ``native`` sourcing.
-
-    A host-local ACP CLI reads the user's own skills from its home directory, so
-    a second, OpenHands-managed set injected into its prompt is at best noise —
-    and the catalog listing tells it to call ``invoke_skill``, a tool no ACP
-    agent has. Container runtimes set ``openhands_managed`` because that home
-    configuration is absent there. Project skills are excluded either way, by
-    ``ACPAgent`` itself (#4019).
-
-    A caller that sends ``agent`` / ``agent_settings`` puts its own skills on the
-    context, so the strip happens here rather than at profile resolution.
-    """
-    if sourcing != "native" or not isinstance(agent, ACPAgent):
-        return agent
-    context = agent.agent_context
-    if context is None:
-        return agent
-    if not (
-        context.skills
-        or context.load_user_skills
-        or context.load_public_skills
-        or context.registered_marketplaces
-    ):
-        return agent
-    return agent.model_copy(
-        update={
-            "agent_context": context.model_copy(
-                update={
-                    "skills": [],
-                    "load_user_skills": False,
-                    "load_public_skills": False,
-                    "registered_marketplaces": [],
-                }
-            )
-        }
-    )
-
-
-def _resolve_agent_from_profile(
-    profile_id: "UUID",
-    cipher: "Cipher | None",
-    mcp_config: "dict[str, MCPServer]",
-    acp_skill_sourcing: ACPSkillSourcing = "native",
-) -> "tuple[AgentBase, LaunchedAgentProfile, set[str] | None]":
-    """Load and resolve an agent profile by id, returning the built agent + provenance.
-
-    The third element is the profile's secret allow-list (``None`` = unrestricted)
-    — strictly ``secret_refs``, with nothing added back. It is returned rather
-    than applied here because the secrets ride the start request, not the agent.
-
-    Runs synchronously (call via ``asyncio.to_thread`` from async context).
-
-    Args:
-        mcp_config: Global MCP servers already loaded by the caller using the
-            server's cipher.  Passed explicitly so this free function never
-            touches the settings-store singleton (which may not have been
-            initialised with the correct cipher yet).
-        acp_skill_sourcing: This deployment's ACP skill policy
-            (``Config.acp_skill_sourcing``).  Decides whether an ACP profile is
-            resolved with the server's managed skill catalog or with none.
-
-    Raises:
-        ProfileNotFound: No stored profile has ``profile_id``.
-        DanglingMcpServerRef: A referenced MCP server is absent from the global config.
-        ValueError: Profile load or settings validation failure.
-    """
-    from openhands.agent_server.persistence.store import (
-        get_agent_profile_store,
-        get_llm_profile_store,
-    )
-    from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
-    from openhands.sdk.settings.model import OpenHandsAgentSettings
-
-    store = get_agent_profile_store()
-    profile_name = store.name_for_id(profile_id)
-    if profile_name is None:
-        raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
-
-    try:
-        profile = store.load(profile_name)
-    except FileNotFoundError:
-        raise ProfileNotFound(
-            f"Agent profile '{profile_name}' (id={profile_id}) not found"
-        )
-    except ValueError as exc:
-        raise ValueError(
-            f"Failed to load agent profile '{profile_name}': {exc}"
-        ) from exc
-
-    # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
-    # deny-list. An ACP profile gets it only where the CLI cannot reach the user's
-    # own configuration (``openhands_managed``); under ``native`` it sources its
-    # own skills and OpenHands injects none (#4019). A genuine discovery failure
-    # fails the launch loudly rather than silently producing a zero-skill agent.
-    available_skills = None
-    wants_skills = profile.agent_kind == "openhands" or (
-        acp_skill_sourcing == "openhands_managed"
-    )
-    if wants_skills:
-        try:
-            available_skills = discover_profile_skills()
-        except Exception as exc:
-            raise ValueError(
-                f"Skill discovery failed for profile '{profile_name}': {exc}"
-            ) from exc
-
-    llm_store = get_llm_profile_store()
-    try:
-        settings_config = resolve_agent_profile(
-            profile,
-            llm_store=llm_store,
-            mcp_config=mcp_config,
-            available_skills=available_skills,
-            cipher=cipher,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
-
-    if isinstance(settings_config, OpenHandsAgentSettings):
-        # Force streaming so this launch path wires on_token: a client can't set
-        # llm.stream on a profile's referenced LLM ahead of time. Safe at this
-        # layer (not the SDK resolver) because this server wires the token
-        # callback whenever any llm.stream is set; a headless resolver caller
-        # that never wires on_token is covered by LLM's graceful degradation.
-        settings_config = settings_config.model_copy(
-            update={"llm": settings_config.llm.model_copy(update={"stream": True})}
-        )
-
-    agent = settings_config.create_agent()
-    # Browser is deliberately absent from the deterministic SDK default
-    # (environment-dependent); this server knows its runtime, so it injects
-    # browser when usable. An explicit profile.tools list is authoritative.
-    if (
-        profile.agent_kind == "openhands"
-        and profile.tools is None
-        and is_tool_usable(BROWSER_TOOL_NAME)
-    ):
-        agent = agent.model_copy(
-            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
-        )
-
-    launched = LaunchedAgentProfile(
-        agent_profile_id=profile.id,
-        revision=profile.revision,
-        secret_refs=profile.secret_refs,
-    )
-    allowed_secrets = None if profile.secret_refs is None else set(profile.secret_refs)
-    return agent, launched, allowed_secrets
 
 
 def _compose_conversation_info(
@@ -1647,9 +1479,9 @@ class ConversationService:
                     f"to a different workspace"
                 )
 
-        # Profile resolution and the load_memory stamp must happen before
-        # _prepare_request_workspace (which asserts request.agent is not None)
-        # and before model_dump so the resolved agent is captured in request_data.
+        # Resolution must happen before _prepare_request_workspace (which
+        # asserts request.agent is not None) and before model_dump so the
+        # resolved agent is captured in request_data.
         runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
         launched_agent_profile = (
             LaunchedAgentProfile.model_validate_json(runtime_profile)
@@ -1678,61 +1510,17 @@ class ConversationService:
             )
             settings = PersistedSettings()
 
-        # ``ACPAgentSettings.agent_context`` is nullable, hence the guard.
-        stored_context = settings.agent_settings.agent_context
-        load_memory = bool(stored_context and stored_context.load_memory)
-
-        if request.agent_profile_id is not None:
-            mcp_config = settings.agent_settings.mcp_config
-            (
-                resolved_agent,
-                launched_agent_profile,
-                allowed_secrets,
-            ) = await asyncio.to_thread(
-                _resolve_agent_from_profile,
-                request.agent_profile_id,
-                self.cipher,
-                mcp_config,
-                acp_skill_sourcing=self.acp_skill_sourcing,
-            )
-            updates: dict[str, Any] = {"agent": resolved_agent}
-            # Enforced here, not client-side: a caller that sends more secrets
-            # than the profile allows must not widen the agent's scope.
-            if allowed_secrets is not None:
-                updates["secrets"] = {
-                    name: value
-                    for name, value in request.secrets.items()
-                    if name in allowed_secrets
-                }
-            request = request.model_copy(update=updates)
-
-        # Applied unconditionally: a serialized agent always carries
-        # ``load_memory`` (model_dump emits defaults), so there is no way to
-        # tell a deliberate ``false`` from an echoed one. Opting a single
-        # conversation out needs a tri-state field; tracked separately.
-        if load_memory and request.agent is not None:
-            request = request.model_copy(
-                update={"agent": _with_load_memory(request.agent)}
-            )
-
-        request = request.model_copy(
-            update={
-                "agent": _apply_acp_skill_sourcing(
-                    request.agent, self.acp_skill_sourcing
-                )
-            }
+        request, plan = await asyncio.to_thread(
+            prepare_launch_request,
+            request,
+            cipher=self.cipher,
+            settings=settings,
+            runtime=launch_runtime(
+                settings, acp_skill_sourcing=self.acp_skill_sourcing
+            ),
         )
-
-        additions = request.agent_launch_additions
-        suffix = (
-            additions.system_message_suffix_append.strip()
-            if additions and additions.system_message_suffix_append
-            else ""
-        )
-        if suffix:
-            request = request.model_copy(
-                update={"agent": _append_system_message_suffix(request.agent, suffix)}
-            )
+        if plan.launched_profile is not None:
+            launched_agent_profile = plan.launched_profile
 
         request = _prepare_request_workspace(
             request, conversation_id, self.conversation_worktree_root
@@ -1819,7 +1607,12 @@ class ConversationService:
         request_data = request.model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent_profile_id", "agent_launch_additions"},
+            exclude={
+                "agent_profile_id",
+                "agent_profile",
+                "agent_settings",
+                "agent_launch_additions",
+            },
         )
 
         # The agent is persisted to base_state.json (not meta.json), so it must

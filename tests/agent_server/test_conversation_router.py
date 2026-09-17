@@ -34,8 +34,10 @@ from openhands.sdk.marketplace.registry import (
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles import AgentLaunchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from openhands.sdk.settings.model import validate_agent_settings
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -644,9 +646,12 @@ def test_start_conversation_accepts_openhands_agent_settings(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert request.agent.kind == "Agent"
-        assert request.agent.llm.model == "settings-model"
-        assert "agent_settings" not in request.model_dump(mode="json")
+        # The agent is built by the launch pipeline, not at the request edge.
+        assert request.agent is None
+        assert request.agent_settings is not None
+        assert request.agent_settings["llm"]["model"] == "settings-model"
+        dumped = request.model_dump(mode="json")
+        assert dumped["agent_settings"]["llm"]["model"] == "settings-model"
     finally:
         client.app.dependency_overrides.clear()
 
@@ -698,8 +703,9 @@ def test_start_conversation_agent_settings_uses_sdk_default_tools(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert "SwitchLLMTool" in request.agent.include_default_tools
-        assert {tool.name for tool in request.agent.tools} == {
+        agent = validate_agent_settings(request.agent_settings).create_agent()
+        assert "SwitchLLMTool" in agent.include_default_tools
+        assert {tool.name for tool in agent.tools} == {
             "terminal",
             "file_editor",
             "task_tracker",
@@ -782,12 +788,13 @@ def test_start_conversation_accepts_acp_agent_settings(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert request.agent.kind == "ACPAgent"
-        assert request.agent.acp_command == ["echo", "settings"]
-        assert request.agent.acp_args == ["--verbose"]
-        assert request.agent.acp_model == "acp-test-model"
-        assert request.agent.acp_session_mode == "bypassPermissions"
-        assert request.agent.acp_prompt_timeout == 123.0
+        agent = validate_agent_settings(request.agent_settings).create_agent()
+        assert agent.kind == "ACPAgent"
+        assert agent.acp_command == ["echo", "settings"]
+        assert agent.acp_args == ["--verbose"]
+        assert agent.acp_model == "acp-test-model"
+        assert agent.acp_session_mode == "bypassPermissions"
+        assert agent.acp_prompt_timeout == 123.0
 
     finally:
         client.app.dependency_overrides.clear()
@@ -796,8 +803,9 @@ def test_start_conversation_accepts_acp_agent_settings(
 @pytest.mark.parametrize(
     "agent_settings",
     [
-        {"agent_kind": "invalid"},
         "not-a-settings-object",
+        ["agent_kind"],
+        7,
     ],
 )
 def test_start_conversation_rejects_invalid_agent_settings(
@@ -818,6 +826,34 @@ def test_start_conversation_rejects_invalid_agent_settings(
 
         assert response.status_code == 422
         mock_conversation_service.start_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_defers_agent_settings_validation(
+    client, mock_conversation_service
+):
+    """A well-formed payload the launch cannot resolve is a 422 from the service."""
+    mock_conversation_service.start_conversation.side_effect = AgentLaunchError(
+        "Invalid agent_settings: unknown agent_kind"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {"agent_kind": "invalid"},
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "invalid_agent_launch"
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.agent_settings == {"agent_kind": "invalid"}
     finally:
         client.app.dependency_overrides.clear()
 
