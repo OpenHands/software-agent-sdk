@@ -1,3 +1,4 @@
+import type { MockedFunction } from 'vitest';
 import { CloudClient, pollForToken } from '../clients';
 
 const originalFetch = global.fetch;
@@ -10,18 +11,18 @@ function jsonResponse(body: unknown): Response {
 }
 
 function requestHeadersForCall(callIndex = 0): Headers {
-  const mockFetch = global.fetch as jest.MockedFunction<typeof fetch>;
+  const mockFetch = global.fetch as MockedFunction<typeof fetch>;
   return new Headers(mockFetch.mock.calls[callIndex]?.[1]?.headers);
 }
 
 describe('device flow request metadata', () => {
   afterEach(() => {
     global.fetch = originalFetch;
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('CloudClient forwards additional headers when starting authorization', async () => {
-    global.fetch = jest.fn().mockResolvedValue(
+    global.fetch = vi.fn().mockResolvedValue(
       jsonResponse({
         device_code: 'device-code',
         user_code: 'user-code',
@@ -49,7 +50,7 @@ describe('device flow request metadata', () => {
   });
 
   it('forwards additional headers while polling for a token', async () => {
-    global.fetch = jest
+    global.fetch = vi
       .fn()
       .mockResolvedValue(
         jsonResponse({ access_token: 'token', token_type: 'Bearer' })
