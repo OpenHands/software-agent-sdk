@@ -14,6 +14,9 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.docker_runtime.mediation import (
+    container_browser_available,
+    container_launch_runtime,
+    finish_start,
     materialize_secrets,
     prepare_start,
     serialize_start,
@@ -34,7 +37,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.logger import get_logger
-from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
+from openhands.sdk.profiles import AgentLaunchError, ProfileNotFound
 
 
 logger = get_logger(__name__)
@@ -101,13 +104,27 @@ async def start_conversation(
 
     registry = get_registry(request)
     try:
-        prepared, launched = await prepare_start(body, registry.config)
+        prepared = await prepare_start(body, registry.config)
         identity = registry.provisioning.create(conversation_id, host_workspace)
-        if launched is not None and identity.launched_agent_profile is None:
-            identity = identity.model_copy(update={"launched_agent_profile": launched})
+    except ProfileNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except AgentLaunchError as exc:
+        raise HTTPException(422, exc.to_detail()) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    try:
+        if prepared.launched is not None and identity.launched_agent_profile is None:
+            identity = identity.model_copy(
+                update={"launched_agent_profile": prepared.launched}
+            )
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
-        payload = serialize_start(prepared, identity)
+        runtime = container_launch_runtime(
+            prepared.settings,
+            browser_available=await container_browser_available(container),
+        )
+        payload = serialize_start(await finish_start(prepared, runtime), identity)
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
@@ -115,15 +132,9 @@ async def start_conversation(
                 headers={"X-Session-API-Key": container.api_key},
                 json=payload,
             )
-    except ProfileNotFound as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except DanglingMcpServerRef as exc:
-        raise HTTPException(
-            422,
-            {"message": str(exc), "dangling_mcp_server_refs": exc.missing},
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    except AgentLaunchError as exc:
+        await registry.stop(conversation_id)
+        raise HTTPException(422, exc.to_detail()) from exc
     except httpx.HTTPError as exc:
         await registry.stop(conversation_id)
         raise HTTPException(

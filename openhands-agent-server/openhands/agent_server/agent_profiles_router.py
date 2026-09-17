@@ -22,6 +22,7 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     store_errors,
 )
+from openhands.agent_server.agent_launch import launch_runtime
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -506,39 +507,42 @@ async def materialize_agent_profile(
             detail=f"Agent profile '{name}' not found",
         )
 
-    # Still needed here (unlike the profile load above): resolve_agent_profile_
-    # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
+    # Still needed here (unlike the profile load above): the launch decrypts the
+    # *referenced LLM profile's* own secret.
     cipher = get_cipher(request)
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    mcp_config = settings.agent_settings.mcp_config
+    # The same runtime a launch on this server would use, so the preview cannot
+    # disagree with it. A Docker-runtime deployment launches in a container,
+    # which sources its skills from the server (#4019).
+    runtime = launch_runtime(
+        settings,
+        acp_skill_sourcing=(
+            "openhands_managed"
+            if config.conversation_runtime == "docker"
+            else config.acp_skill_sourcing
+        ),
+    )
 
-    # Discover skills off the event loop so the dry-run can report which skills
-    # (catalog minus ``disabled_skills``) resolve. Mirrors the launch rule in
-    # ``conversation_service._resolve_agent_from_profile`` so the preview matches
-    # a real launch: an ACP profile is only given a catalog where the CLI cannot
-    # read the user's own configuration (#4019). A discovery failure must not 500
-    # the preview: pass ``available_skills=None`` and surface the failure as its
-    # own diagnostic below.
+    # Discover skills off the event loop. A discovery failure must not 500 the
+    # preview: pass ``available_skills=None`` and surface it as its own
+    # diagnostic below.
     discovery_error: str | None = None
     available_skills = None
-    if profile.agent_kind == "openhands" or (
-        config.acp_skill_sourcing == "openhands_managed"
-    ):
+    if runtime.uses_skill_catalog(profile.agent_kind):
         try:
             available_skills = await asyncio.to_thread(discover_profile_skills)
         except Exception as exc:
-            available_skills = None
             discovery_error = str(exc)
             logger.warning("Skill discovery failed during materialize: %s", exc)
 
-    llm_store = get_llm_profile_store()
     diagnostics = resolve_agent_profile_dry_run(
         profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
+        llm_store=get_llm_profile_store(),
+        mcp_config=settings.agent_settings.mcp_config,
         available_skills=available_skills,
         cipher=cipher,
+        runtime=runtime,
     )
     if discovery_error is not None:
         diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")
