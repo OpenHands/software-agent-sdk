@@ -7,10 +7,15 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
 )
+from openhands.agent_server.models import StartConversationRequest
+from openhands.sdk import LLM, Agent
+from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def registry(tmp_path, monkeypatch) -> DockerConversationRegistry:
@@ -42,6 +47,71 @@ def test_missing_container_is_already_stopped(monkeypatch):
     )
 
     missing.stop()
+
+
+@pytest.mark.asyncio
+async def test_docker_catalog_lists_legacy_local_and_isolated_conversations(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversations_dir = runtime.config.conversations_path
+
+    async def persist(conversation_id, cipher, workspace_name):
+        workspace = tmp_path / workspace_name
+        workspace.mkdir()
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(
+                llm=LLM(
+                    model="gpt-4o",
+                    usage_id="test-llm",
+                    api_key=SecretStr(f"secret-{workspace_name}"),
+                ),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=str(workspace)),
+            confirmation_policy=NeverConfirm(),
+        )
+        async with ConversationService(
+            conversations_dir=conversations_dir, cipher=cipher
+        ) as service:
+            await service.start_conversation(request)
+
+    legacy_id = uuid4()
+    await persist(legacy_id, runtime.provisioning.cipher, "legacy-workspace")
+
+    docker_id = uuid4()
+    identity = runtime.provisioning.create(docker_id)
+    await persist(docker_id, identity.cipher, "docker-workspace")
+
+    service = ConversationService(
+        conversations_dir=conversations_dir,
+        cipher=runtime.provisioning.cipher,
+    )
+    runtime.configure_service(service)
+    async with service:
+        page = await service.search_conversations()
+
+    assert {item.id for item in page.items} == {legacy_id, docker_id}
+    assert (
+        runtime.resolve_persisted_cipher(legacy_id).secret_key
+        == runtime.provisioning.cipher.secret_key
+    )
+    assert (
+        runtime.resolve_persisted_cipher(docker_id).secret_key
+        == identity.cipher.secret_key
+    )
+
+
+def test_present_invalid_identity_does_not_fall_back_to_host_cipher(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    runtime.provisioning.manifest_path(conversation_id).write_text("not-json")
+
+    with pytest.raises(ValueError):
+        runtime.resolve_persisted_cipher(conversation_id)
 
 
 @pytest.mark.asyncio

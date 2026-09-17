@@ -120,6 +120,47 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
     assert stopped == [conversation_id]
 
 
+def test_runtime_info_marks_legacy_local_conversation_non_resumable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    registry = DockerConversationRegistry(config)
+    legacy_id = uuid4()
+    legacy_dir = registry.conversation_dir(legacy_id)
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "meta.json").write_text("{}")
+
+    docker_id = uuid4()
+    registry.provisioning.create(docker_id)
+    docker_dir = registry.conversation_dir(docker_id)
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "meta.json").write_text("{}")
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.include_router(docker_conversation_router, prefix="/api")
+    with TestClient(app) as client:
+        legacy = client.get(f"/api/conversations/{legacy_id}/runtime")
+        docker = client.get(f"/api/conversations/{docker_id}/runtime")
+
+    assert legacy.status_code == 200
+    assert legacy.json() == {
+        "runtime_status": "missing",
+        "can_resume": False,
+        "runtime_error": None,
+    }
+    assert docker.status_code == 200
+    assert docker.json() == {
+        "runtime_status": "missing",
+        "can_resume": True,
+        "runtime_error": None,
+    }
+
+
 def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkeypatch):
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     config = Config(
