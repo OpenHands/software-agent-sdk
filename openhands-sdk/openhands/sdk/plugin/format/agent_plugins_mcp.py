@@ -29,6 +29,7 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.plugin.format.agent_plugins import _load_schema
 
 
 logger = get_logger(__name__)
@@ -330,20 +331,13 @@ def _validate_headers(headers: dict[str, str], url: str) -> dict[str, str]:
 
 
 @cache
-def _load_schema() -> dict[str, Any]:
-    """Read the vendored MCP schema. Cached; never fetched over the network."""
-    schemas_dir = Path(__file__).parent / "schemas"
-    return json.loads((schemas_dir / _MCP_SCHEMA_FILE).read_text(encoding="utf-8"))
-
-
-@cache
 def _top_level_schema() -> dict[str, Any]:
     """The vendored schema with per-server validation removed.
 
     Derived from the vendored document rather than restated, so the closed set of
     top-level fields and the ``$schema`` const stay single-sourced.
     """
-    schema = _load_schema()
+    schema = _load_schema(_MCP_SCHEMA_FILE)
     top_level = {key: value for key, value in schema.items() if key != "$defs"}
     top_level["properties"] = dict(
         top_level["properties"], mcpServers={"type": "object"}
@@ -355,5 +349,5 @@ def _top_level_schema() -> dict[str, Any]:
 def _server_validator() -> Draft202012Validator:
     """Validate one entry against the ``#/$defs/server`` the spec exposes."""
     return Draft202012Validator(
-        {"$ref": "#/$defs/server", "$defs": _load_schema()["$defs"]}
+        {"$ref": "#/$defs/server", "$defs": _load_schema(_MCP_SCHEMA_FILE)["$defs"]}
     )

@@ -18,7 +18,6 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.plugin.format.agent_plugins_mcp import MCP_FILE, load_mcp_servers
 from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _read_command_definitions,
@@ -173,17 +172,18 @@ class AgentPluginsFormat(PluginFormat):
         defines exactly two placeholders and forbids every other kind, so there
         is nothing left to expand once per-conversation secrets arrive.
         """
-        plugin_root = plugin_dir.resolve()
-        if not (plugin_root / MCP_FILE).is_file():
-            return {}
+        # Imported lazily: the loader reads its schema from this module, and
+        # installed.py reaches plugin.py, which imports this package.
+        from openhands.sdk.plugin.format.agent_plugins_mcp import load_mcp_servers
+        from openhands.sdk.plugin.installed import get_plugin_data_dir
 
-        # The manifest is re-read only to give the data directory a readable
-        # name; the plugin root is what keys it.
-        plugin_data = _plugin_data_dir(
-            self.load_manifest(plugin_dir).name, plugin_root, self._plugin_data_root
-        )
+        plugin_root = plugin_dir.resolve()
         return load_mcp_servers(
-            plugin_dir, plugin_root=plugin_root, plugin_data=plugin_data
+            plugin_dir,
+            plugin_root=plugin_root,
+            plugin_data=get_plugin_data_dir(
+                plugin_root, data_root=self._plugin_data_root
+            ),
         )
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
@@ -197,16 +197,6 @@ class AgentPluginsFormat(PluginFormat):
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from ``dev.openhands/commands/``."""
         return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE)
-
-
-def _plugin_data_dir(
-    plugin_name: str, plugin_root: Path, data_root: Path | None
-) -> Path:
-    # Imported lazily: installed.py reaches plugin.py, which imports this
-    # package, so a module-level import would close the cycle.
-    from openhands.sdk.plugin.installed import get_plugin_data_dir
-
-    return get_plugin_data_dir(plugin_name, plugin_root, data_root=data_root)
 
 
 def _extension_manifest_fields(
