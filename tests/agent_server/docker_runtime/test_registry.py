@@ -13,7 +13,7 @@ from openhands.agent_server.docker_runtime.registry import (
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import StartConversationRequest
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -76,6 +76,11 @@ async def test_docker_catalog_lists_legacy_local_and_isolated_conversations(
             conversations_dir=conversations_dir, cipher=cipher
         ) as service:
             await service.start_conversation(request)
+            events = await service.get_event_service(conversation_id)
+            assert events is not None
+            await events.send_message(
+                Message(role="user", content=[TextContent(text=workspace_name)])
+            )
 
     legacy_id = uuid4()
     await persist(legacy_id, runtime.provisioning.cipher, "legacy-workspace")
@@ -91,10 +96,14 @@ async def test_docker_catalog_lists_legacy_local_and_isolated_conversations(
     runtime.configure_service(service)
     async with service:
         page = await service.search_conversations()
+        persisted_events = await service.get_persisted_event_service(docker_id)
+        assert persisted_events is not None
+        persisted_page = await persisted_events.search_events(body="docker-workspace")
         legacy_events = await service.get_event_service(legacy_id)
         docker_events = await service.get_event_service(docker_id)
 
     assert {item.id for item in page.items} == {legacy_id, docker_id}
+    assert len(persisted_page.items) == 1
     assert legacy_events is not None
     assert legacy_events.cipher is not None
     assert legacy_events.cipher.secret_key == runtime.provisioning.cipher.secret_key

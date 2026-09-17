@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
@@ -176,50 +176,7 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
     }
 
 
-def test_live_event_history_is_read_from_the_conversation_container(
-    tmp_path, monkeypatch
-):
-    config = Config(
-        conversations_path=tmp_path / "conversations",
-        secret_key=SecretStr("outer-key"),
-    )
-    conversation_id = uuid4()
-    registry = DockerConversationRegistry(config)
-    registry.provisioning.create(conversation_id)
-    registry.get_or_create = AsyncMock(
-        return_value=SimpleNamespace(host="http://inner", api_key="inner-key")
-    )
-    forwarded = {}
-
-    async def proxy(_request, _container, *, upstream_path):
-        forwarded["upstream_path"] = upstream_path
-        return JSONResponse({"items": [], "next_page_id": None})
-
-    monkeypatch.setattr(
-        "openhands.agent_server.docker_runtime.registry.proxy_http", proxy
-    )
-    app = FastAPI()
-    app.state.conversation_registry = registry
-    app.state.conversation_service = SimpleNamespace(
-        get_event_service=AsyncMock(return_value=None)
-    )
-    app.include_router(event_read_router, prefix="/api")
-
-    with TestClient(app) as client:
-        response = client.get(
-            f"/api/conversations/{conversation_id}/events/search?limit=50"
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "next_page_id": None}
-    assert forwarded == {
-        "upstream_path": (
-            f"/api/conversations/{conversation_id}/events/search?limit=50"
-        )
-    }
-
-
-def test_stopped_event_history_is_read_without_starting_a_container(
+def test_docker_event_history_reads_persistence_without_starting_a_container(
     tmp_path, monkeypatch
 ):
     config = Config(
@@ -236,7 +193,8 @@ def test_stopped_event_history_is_read_without_starting_a_container(
     app = FastAPI()
     app.state.conversation_registry = registry
     app.state.conversation_service = SimpleNamespace(
-        get_event_service=AsyncMock(return_value=event_service)
+        get_persisted_event_service=AsyncMock(return_value=event_service),
+        get_event_service=AsyncMock(),
     )
     app.include_router(event_read_router, prefix="/api")
 
@@ -247,6 +205,10 @@ def test_stopped_event_history_is_read_without_starting_a_container(
 
     assert response.status_code == 200
     assert response.json() == {"items": [], "next_page_id": None}
+    app.state.conversation_service.get_persisted_event_service.assert_awaited_once_with(
+        conversation_id
+    )
+    app.state.conversation_service.get_event_service.assert_not_awaited()
     registry.get_or_create.assert_not_awaited()
 
 

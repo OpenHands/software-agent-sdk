@@ -2041,6 +2041,19 @@ class ConversationService:
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
 
+    async def get_persisted_event_service(
+        self, conversation_id: UUID
+    ) -> EventService | None:
+        """Open append-only event history without acquiring a runtime lease."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        if self.sync_external_catalog:
+            await self._reconcile_active_records(conversation_id)
+        record = self._conversation_records.get(conversation_id)
+        if record is None:
+            return None
+        return EventService.for_persisted_events(record.stored, self.conversations_dir)
+
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
     ) -> str | None:

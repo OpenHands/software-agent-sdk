@@ -14,14 +14,9 @@ from urllib.error import URLError
 from urllib.request import urlopen
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
-from starlette.requests import Request
-from starlette.responses import Response
-
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
-from openhands.agent_server.docker_runtime.proxy import proxy_http, strip_auth_query
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
@@ -111,28 +106,9 @@ class DockerConversationRegistry(ConversationRegistry):
             can_resume=True,
         )
 
-    async def proxy_event_read(
-        self, conversation_id: UUID, request: Request
-    ) -> Response | None:
-        if self.provisioning.load_optional(conversation_id) is None:
-            return None
-        try:
-            container = await self.get_or_create(conversation_id)
-        except Exception as exc:
-            logger.exception(
-                "Could not start conversation container %s", conversation_id
-            )
-            raise HTTPException(502, "Could not start conversation container") from exc
-        query = strip_auth_query("?" + request.url.query).lstrip("?")
-        path = request.url.path
-        return await proxy_http(
-            request,
-            container,
-            upstream_path=f"{path}?{query}" if query else path,
-        )
-
-    def should_proxy_event_read(self, conversation_id: UUID) -> bool:
-        return self.provisioning.load_optional(conversation_id) is not None
+    @property
+    def serves_persisted_event_reads(self) -> bool:
+        return True
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
