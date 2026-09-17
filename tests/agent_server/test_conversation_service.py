@@ -300,12 +300,10 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         confirmation_policy=NeverConfirm(),
         secrets_encrypted=True,
     )
-    assert (
-        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
-            "GITHUB_PERSONAL_ACCESS_TOKEN"
-        ]
-        == encrypted_mcp_token
-    )
+    # The payload rides the request untouched; the server decrypts it when it
+    # resolves the launch.
+    assert request.agent is None
+    assert request.agent_settings is not None
 
     captured: dict[str, Any] = {}
 
