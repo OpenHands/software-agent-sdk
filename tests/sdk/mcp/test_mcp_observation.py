@@ -24,7 +24,7 @@ def test_mcp_observation_with_list_json():
 
     # Create MCP tool result with the list JSON
     result = mcp.types.CallToolResult(
-        content=[mcp.types.TextContent(type="text", text=json_string)], isError=False
+        content=[mcp.types.TextContent(type="text", text=json_string)], is_error=False
     )
 
     # Create observation from the result
@@ -53,7 +53,7 @@ def test_mcp_observation_with_dict_json():
 
     # Create MCP tool result with the dict JSON
     result = mcp.types.CallToolResult(
-        content=[mcp.types.TextContent(type="text", text=json_string)], isError=False
+        content=[mcp.types.TextContent(type="text", text=json_string)], is_error=False
     )
 
     # Create observation from the result
@@ -82,7 +82,7 @@ def test_mcp_observation_with_string_json():
 
     # Create MCP tool result with the string JSON
     result = mcp.types.CallToolResult(
-        content=[mcp.types.TextContent(type="text", text=json_string)], isError=False
+        content=[mcp.types.TextContent(type="text", text=json_string)], is_error=False
     )
 
     # Create observation from the result
@@ -107,7 +107,7 @@ def test_mcp_observation_with_number_json():
 
     # Create MCP tool result with the number JSON
     result = mcp.types.CallToolResult(
-        content=[mcp.types.TextContent(type="text", text=json_string)], isError=False
+        content=[mcp.types.TextContent(type="text", text=json_string)], is_error=False
     )
 
     # Create observation from the result
@@ -131,7 +131,7 @@ def test_mcp_observation_with_invalid_json():
 
     # Create MCP tool result with invalid JSON
     result = mcp.types.CallToolResult(
-        content=[mcp.types.TextContent(type="text", text=invalid_json)], isError=False
+        content=[mcp.types.TextContent(type="text", text=invalid_json)], is_error=False
     )
 
     # Create observation from the result
