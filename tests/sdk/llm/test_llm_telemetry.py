@@ -195,6 +195,51 @@ class TestTelemetryTokenUsage:
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.cache_write_tokens == 30
 
+    def test_record_usage_cache_read_kimi_cached_tokens(self, basic_telemetry):
+        """Cache read via ``usage.cached_tokens`` (Kimi-K2 / DeepSeek style).
+
+        These providers put ``cached_tokens`` directly on the Usage object
+        instead of inside ``prompt_tokens_details``.
+        """
+        usage = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        assert usage.model_extra is not None
+        usage.model_extra["cached_tokens"] = 80
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_read_tokens == 80
+
+    def test_record_usage_cache_read_anthropic_private_attr(self, basic_telemetry):
+        """Cache read via ``_cache_read_input_tokens`` private attr.
+
+        litellm sets this during streaming for Anthropic responses where
+        ``prompt_tokens_details`` may be absent.
+        """
+        usage = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        usage._cache_read_input_tokens = 80
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_read_tokens == 80
+
+    def test_record_usage_cache_write_anthropic_private_attr(self, basic_telemetry):
+        """Cache write via ``_cache_creation_input_tokens`` private attr.
+
+        litellm sets this during streaming for Anthropic responses.
+        ``prompt_tokens_details.cache_creation_tokens`` is NOT in
+        ``model_fields_set`` in this case, so the private attr is the only
+        source of truth.
+        """
+        usage = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        usage._cache_creation_input_tokens = 200
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_write_tokens == 200
+
     def test_record_usage_missing_tokens(self, basic_telemetry):
         """Test token usage recording with missing token counts."""
         usage = Usage()  # Empty usage
