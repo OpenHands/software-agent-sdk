@@ -6,9 +6,9 @@ All heavy lifting is delegated to ``InstallationManager``.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
+from openhands.sdk.extensions.fetch import get_cache_path
 from openhands.sdk.extensions.installation import (
     InstallationInfo,
     InstallationInterface,
@@ -35,13 +35,11 @@ def get_installed_plugins_dir() -> Path:
     return DEFAULT_INSTALLED_PLUGINS_DIR
 
 
-def get_plugin_data_dir(
-    plugin_name: str, plugin_root: Path, *, data_root: Path | None = None
-) -> Path:
+def get_plugin_data_dir(plugin_root: Path, *, data_root: Path | None = None) -> Path:
     """Get the persistent data directory for one plugin instance (``PLUGIN_DATA``).
 
-    Keyed by the resolved plugin root, named ``<name>-<hash>`` like the fetch
-    cache. Every plugin root is already stable across updates -- installed
+    Keyed by the resolved plugin root, the same way the fetch cache keys a
+    source. Every plugin root is already stable across updates -- installed
     plugins live at ``installed/<name>``, fetched ones at a path hashed from
     their source, project ones at fixed repo paths -- so the data survives an
     update. Keying by name alone would let a project plugin that borrows an
@@ -50,8 +48,9 @@ def get_plugin_data_dir(
     The directory is not created here; the caller creates it before launching a
     plugin subprocess.
     """
-    root_hash = hashlib.sha256(str(plugin_root.resolve()).encode()).hexdigest()[:16]
-    return (data_root or DEFAULT_PLUGIN_DATA_DIR) / f"{plugin_name}-{root_hash}"
+    return get_cache_path(
+        plugin_root.resolve().as_posix(), data_root or DEFAULT_PLUGIN_DATA_DIR
+    )
 
 
 # ---------------------------------------------------------------------------
