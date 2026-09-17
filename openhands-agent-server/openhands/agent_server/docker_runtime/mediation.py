@@ -4,23 +4,29 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.conversation_service import (
-    _resolve_agent_from_profile,
-    _with_load_memory,
+from openhands.agent_server.agent_launch import (
+    LaunchSource,
+    apply_launch,
+    launch_runtime,
+    load_launch_source,
 )
+from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.provisioning import RuntimeIdentity
+from openhands.agent_server.docker_runtime.registry import ConversationContainer
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.profiles import AgentLaunchRuntime
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
-from openhands.sdk.settings.model import validate_agent_settings
+from openhands.sdk.tool import BROWSER_TOOL_NAME
 
 
 def materialize_secrets(
@@ -53,18 +59,46 @@ def _materialize_agent_context(agent: AgentBase) -> AgentBase:
     )
 
 
-async def prepare_start(
-    body: dict[str, Any], config: Config
-) -> tuple[StartConversationRequest, LaunchedAgentProfile | None]:
+def container_launch_runtime(
+    settings: PersistedSettings, *, browser_available: bool
+) -> AgentLaunchRuntime:
+    # A container has no host home configuration to read skills from.
+    return launch_runtime(
+        settings,
+        acp_skill_sourcing="openhands_managed",
+        browser_available=browser_available,
+    )
+
+
+async def container_browser_available(container: ConversationContainer) -> bool:
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{container.host}/server_info")
+    response.raise_for_status()
+    return BROWSER_TOOL_NAME in response.json().get("usable_tools", [])
+
+
+@dataclass(frozen=True, kw_only=True)
+class PreparedStart:
+    """A start request whose launch was checked before its container starts."""
+
+    request: StartConversationRequest
+    source: LaunchSource
+    settings: PersistedSettings
+    launched: LaunchedAgentProfile | None
+
+
+async def prepare_start(body: dict[str, Any], config: Config) -> PreparedStart:
+    """Load the launch source and check that it resolves.
+
+    Resolution runs without building the agent, so a dangling reference fails
+    before a container is started.
+    """
     body = {
         name: value
         for name, value in body.items()
         if value is not None or name not in {"agent", "agent_settings"}
     }
     context = {"cipher": config.cipher} if body.get("secrets_encrypted") else None
-    if body.get("agent_settings") is not None:
-        settings = validate_agent_settings(body["agent_settings"], context=context)
-        body = {**body, "agent": settings.create_agent(), "agent_settings": None}
     request = StartConversationRequest.model_validate(body, context=context)
 
     try:
@@ -72,41 +106,49 @@ async def prepare_start(
     except (OSError, PermissionError):
         settings = None
     settings = settings or PersistedSettings()
-    launched = None
-    if request.agent_profile_id is not None:
-        agent, launched, allowed = await asyncio.to_thread(
-            _resolve_agent_from_profile,
-            request.agent_profile_id,
-            config.cipher,
-            settings.agent_settings.mcp_config,
-            acp_skill_sourcing=config.acp_skill_sourcing,
-        )
-        secrets = request.secrets
-        if allowed is not None:
-            secrets = {
-                name: value for name, value in secrets.items() if name in allowed
-            }
-        request = request.model_copy(
-            update={"agent": agent, "agent_profile_id": None, "secrets": secrets}
-        )
-
-    context_settings = settings.agent_settings.agent_context
-    if context_settings is not None and context_settings.load_memory:
-        request = request.model_copy(update={"agent": _with_load_memory(request.agent)})
-    request = request.model_copy(
-        update={
-            "agent": await asyncio.to_thread(_materialize_agent_context, request.agent),
-            "secrets": await asyncio.to_thread(materialize_secrets, request.secrets),
-        }
+    runtime = container_launch_runtime(settings, browser_available=False)
+    source = await asyncio.to_thread(
+        load_launch_source,
+        request,
+        cipher=config.cipher,
+        settings=settings,
+        runtime=runtime,
     )
-    return request, launched
+    scoped, plan = await asyncio.to_thread(
+        apply_launch, request, source, runtime, build_agent=False
+    )
+    secrets = await asyncio.to_thread(materialize_secrets, scoped.secrets)
+    return PreparedStart(
+        request=request.model_copy(update={"secrets": secrets}),
+        source=source,
+        settings=settings,
+        launched=plan.launched_profile,
+    )
+
+
+async def finish_start(
+    prepared: PreparedStart, runtime: AgentLaunchRuntime
+) -> StartConversationRequest:
+    """Build the agent for the container's ``runtime``."""
+    request, _ = await asyncio.to_thread(
+        apply_launch, prepared.request, prepared.source, runtime
+    )
+    agent = await asyncio.to_thread(_materialize_agent_context, request.agent)
+    return request.model_copy(update={"agent": agent})
 
 
 def serialize_start(
     request: StartConversationRequest, identity: RuntimeIdentity
 ) -> dict[str, Any]:
     payload = request.model_dump(
-        mode="json", context={"cipher": identity.cipher}, exclude={"agent_profile_id"}
+        mode="json",
+        context={"cipher": identity.cipher},
+        exclude={
+            "agent_profile_id",
+            "agent_profile",
+            "agent_settings",
+            "agent_launch_additions",
+        },
     )
     payload["secrets_encrypted"] = True
     return payload

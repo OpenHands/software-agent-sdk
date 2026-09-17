@@ -15,17 +15,25 @@ from unittest.mock import patch
 import pytest
 
 from openhands.agent_server.config import ACPSkillSourcing, Config
-from openhands.agent_server.conversation_service import _apply_acp_skill_sourcing
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.agent import ACPAgent, AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
+from openhands.sdk.profiles import AgentLaunchRuntime, prepare_agent_launch
 from openhands.sdk.settings.model import validate_agent_settings
 from openhands.sdk.skills import Skill
 
 
 AGENTS_MD_BODY = "sentinel-agents-md-body"
 MANAGED_SKILL = "managed-catalog-skill"
+
+
+def _launch(agent: AgentBase, sourcing: ACPSkillSourcing) -> AgentBase:
+    plan = prepare_agent_launch(
+        agent, runtime=AgentLaunchRuntime(acp_skill_sourcing=sourcing)
+    )
+    assert plan.agent is not None
+    return plan.agent
 
 
 def _managed_skill() -> Skill:
@@ -102,7 +110,7 @@ def test_repo_context_never_reaches_the_acp_prompt(
     tmp_path: Path, sourcing: ACPSkillSourcing
 ) -> None:
     project = _workspace(tmp_path)
-    agent = _apply_acp_skill_sourcing(
+    agent = _launch(
         _acp_agent(skills=[_managed_skill()], load_project_skills=True), sourcing
     )
     suffix = _installed_suffix(agent, project)
@@ -112,7 +120,7 @@ def test_repo_context_never_reaches_the_acp_prompt(
 
 def test_native_sourcing_strips_managed_skills(tmp_path: Path) -> None:
     project = _workspace(tmp_path)
-    agent = _apply_acp_skill_sourcing(
+    agent = _launch(
         _acp_agent(skills=[_managed_skill()], load_project_skills=True), "native"
     )
     assert agent.agent_context is not None
@@ -122,7 +130,7 @@ def test_native_sourcing_strips_managed_skills(tmp_path: Path) -> None:
 
 def test_managed_sourcing_keeps_managed_skills(tmp_path: Path) -> None:
     project = _workspace(tmp_path)
-    agent = _apply_acp_skill_sourcing(
+    agent = _launch(
         _acp_agent(skills=[_managed_skill()], load_project_skills=True),
         "openhands_managed",
     )
@@ -134,7 +142,7 @@ def test_managed_sourcing_keeps_managed_skills(tmp_path: Path) -> None:
 def test_native_sourcing_clears_lazy_skill_sources() -> None:
     """Flags and marketplace registrations resolve to skills later, so a strip
     that only emptied ``skills`` would let them back in."""
-    agent = _apply_acp_skill_sourcing(
+    agent = _launch(
         _acp_agent(
             load_user_skills=True,
             load_public_skills=True,
@@ -159,9 +167,9 @@ def test_native_sourcing_leaves_a_non_acp_agent_alone() -> None:
         tools=[],
         agent_context=AgentContext(skills=[_managed_skill()]),
     )
-    assert _apply_acp_skill_sourcing(agent, "native") is agent
+    assert _launch(agent, "native") is agent
 
 
 def test_native_sourcing_is_a_no_op_without_skills() -> None:
     agent = _acp_agent()
-    assert _apply_acp_skill_sourcing(agent, "native") is agent
+    assert _launch(agent, "native") is agent

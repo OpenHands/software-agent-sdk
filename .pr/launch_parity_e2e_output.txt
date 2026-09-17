@@ -1,0 +1,22 @@
+legacy current_datetime sent 2020-01-01T00:00, launched with 2026-09-17T14:08:55.977969-04:00
+
+baseline: default (agent_profile_id)
+{
+  ],
+  },
+  ],
+  ],
+  ]
+}
+
+default-copy (agent_profile_id): MATCH
+
+inline (agent_profile): MATCH
+
+legacy (agent_settings): MATCH
+
+materialize (default): MATCH
+
+dangling refs -> HTTP 422 {"detail":{"code":"unresolved_profile_references","message":"LLM profile 'gone' not found; MCP server(s) not configured: nope","dangling_llm_profile_ref":"gone","dangling_mcp_server_refs":["nope"]}}
+
+RESULT: PASS

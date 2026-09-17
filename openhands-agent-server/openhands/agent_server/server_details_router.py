@@ -67,6 +67,7 @@ class ServerInfo(BaseModel):
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
+            "unified_agent_launch_v1",
         ]
     )
     max_foreground_terminal_timeout_seconds: float | None = Field(
