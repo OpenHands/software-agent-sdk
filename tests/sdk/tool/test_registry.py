@@ -7,7 +7,14 @@ from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
+from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
+from openhands.sdk.tool.registry import (
+    list_registered_tools,
+    list_tool_catalog,
+    list_usable_tools,
+    resolve_tool,
+    seal_tool_catalog,
+)
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolExecutor
@@ -89,6 +96,14 @@ class _UnavailableHelloTool(_SimpleHelloTool):
         return False
 
 
+class _InternalHelloTool(_SimpleHelloTool):
+    user_selectable = False
+
+
+def _catalog() -> dict[str, dict]:
+    return {entry.name: entry.model_dump() for entry in list_tool_catalog()}
+
+
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
@@ -152,3 +167,39 @@ def test_register_tool_type_uses_create_params():
     observation = tool(_HelloAction(name="Alice"))
     assert isinstance(observation, _HelloObservation)
     assert observation.message == "Howdy, Alice?"
+
+
+def test_catalog_reports_selectability_and_usability():
+    register_tool("catalog_plain", _SimpleHelloTool)
+    register_tool("catalog_internal", _InternalHelloTool)
+    register_tool("catalog_unusable", _UnavailableHelloTool)
+
+    catalog = _catalog()
+
+    assert catalog["catalog_plain"] == {
+        "name": "catalog_plain",
+        "user_selectable": True,
+        "usable": True,
+    }
+    assert catalog["catalog_internal"]["user_selectable"] is False
+    assert catalog["catalog_unusable"]["usable"] is False
+
+
+def test_sealed_catalog_ignores_later_registrations(monkeypatch):
+    """Tools a conversation registers vanish on restart, so a server seals the
+    catalog once its own tools are loaded."""
+    from openhands.sdk.tool import registry
+
+    register_tool("catalog_at_startup", _SimpleHelloTool)
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+    seal_tool_catalog()
+
+    register_tool("catalog_after_seal", _SimpleHelloTool)
+    register_client_tools(
+        [ClientToolSpec(name="catalog_client_tool", description="client side")]
+    )
+
+    assert "catalog_at_startup" in _catalog()
+    assert "catalog_after_seal" in list_registered_tools()
+    assert "catalog_after_seal" not in _catalog()
+    assert "catalog_client_tool" not in _catalog()

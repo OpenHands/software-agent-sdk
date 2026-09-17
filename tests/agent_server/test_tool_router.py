@@ -26,3 +26,41 @@ def test_builtin_agents_registered_on_tool_router_import():
         assert callable(factory.factory_func)
 
     _reset_registry_for_tests()
+
+
+def test_catalog_offers_the_stock_tools_a_profile_may_pick():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openhands.agent_server.tool_router import tool_router
+
+    app = FastAPI()
+    app.include_router(tool_router, prefix="/api")
+    response = TestClient(app).get("/api/tools/catalog")
+
+    assert response.status_code == 200
+    entries = {entry["name"]: entry for entry in response.json()["tools"]}
+    selectable = {name for name, entry in entries.items() if entry["user_selectable"]}
+    assert {
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "glob",
+        "grep",
+        "workflow_tool_set",
+        "ask_oracle",
+    } <= selectable
+    assert (
+        not {
+            "task",
+            "task_tool_set",
+            "workflow",
+            "planning_file_editor",
+            "edit",
+            "read_file",
+            "write_file",
+            "list_directory",
+        }
+        & selectable
+    )

@@ -35,9 +35,9 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import FileSecretsStore
+from openhands.agent_server.profile_launch import gather_profile_launch_inputs
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.telemetry import (
     ConversationTelemetryContext,
     DiagnosticEventFactory,
@@ -72,7 +72,6 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -402,22 +401,13 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    # OpenHands profiles get the discovered catalog minus their ``disabled_skills``
-    # deny-list. An ACP profile gets it only where the CLI cannot reach the user's
-    # own configuration (``openhands_managed``); under ``native`` it sources its
-    # own skills and OpenHands injects none (#4019). A genuine discovery failure
-    # fails the launch loudly rather than silently producing a zero-skill agent.
-    available_skills = None
-    wants_skills = profile.agent_kind == "openhands" or (
-        acp_skill_sourcing == "openhands_managed"
-    )
-    if wants_skills:
-        try:
-            available_skills = discover_profile_skills()
-        except Exception as exc:
-            raise ValueError(
-                f"Skill discovery failed for profile '{profile_name}': {exc}"
-            ) from exc
+    inputs = gather_profile_launch_inputs(profile, acp_skill_sourcing)
+    # Fail loudly rather than silently launching a zero-skill agent.
+    if inputs.skill_discovery_error is not None:
+        raise ValueError(
+            f"Skill discovery failed for profile '{profile_name}': "
+            f"{inputs.skill_discovery_error}"
+        ) from inputs.skill_discovery_error
 
     llm_store = get_llm_profile_store()
     try:
@@ -425,8 +415,9 @@ def _resolve_agent_from_profile(
             profile,
             llm_store=llm_store,
             mcp_config=mcp_config,
-            available_skills=available_skills,
+            available_skills=inputs.available_skills,
             cipher=cipher,
+            browser_available=inputs.browser_available,
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
@@ -442,17 +433,6 @@ def _resolve_agent_from_profile(
         )
 
     agent = settings_config.create_agent()
-    # Browser is deliberately absent from the deterministic SDK default
-    # (environment-dependent); this server knows its runtime, so it injects
-    # browser when usable. An explicit profile.tools list is authoritative.
-    if (
-        profile.agent_kind == "openhands"
-        and profile.tools is None
-        and is_tool_usable(BROWSER_TOOL_NAME)
-    ):
-        agent = agent.model_copy(
-            update={"tools": [*agent.tools, Tool(name=BROWSER_TOOL_NAME)]}
-        )
 
     launched = LaunchedAgentProfile(
         agent_profile_id=profile.id,

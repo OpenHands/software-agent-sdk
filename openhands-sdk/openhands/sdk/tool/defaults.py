@@ -11,6 +11,8 @@ that also registers the implementations; ``tests/cross`` asserts it stays in
 lockstep with these names.
 """
 
+from collections.abc import Sequence
+
 from openhands.sdk.tool.spec import Tool
 
 
@@ -25,14 +27,35 @@ BROWSER_TOOL_NAME = "browser_tool_set"
 """Name of the browser tool set.
 
 Not part of the deterministic default: browser is an environment-dependent
-capability, so the serving layer that knows its runtime injects it — the
-agent-server appends it on profile launches when ``is_tool_usable`` says the
-chromium stack is present, and the cloud conversation-builder does its own
-injection. Clients (canvas) add it themselves on the settings launch path.
+capability, so the serving layer that knows its runtime passes
+``enable_browser`` when the chromium stack is present. Clients (canvas) add it
+themselves on the settings launch path.
 """
 
 SUB_AGENT_TOOL_NAME = "task_tool_set"
 """Name of the sub-agent delegation tool set, gated on ``enable_sub_agents``."""
+
+
+def resolve_tool_specs(
+    tools: Sequence[Tool] | None,
+    *,
+    enable_sub_agents: bool = False,
+    enable_browser: bool = False,
+) -> list[Tool]:
+    """Resolve an agent's ``tools`` setting into the specs it is built with.
+
+    ``None`` is the standard exec set, plus browser when ``enable_browser`` and
+    the sub-agent tool set when ``enable_sub_agents``; a list (``[]`` included)
+    is used as given.
+    """
+    if tools is not None:
+        return list(tools)
+    resolved = [Tool(name=name) for name in DEFAULT_EXEC_TOOL_NAMES]
+    if enable_browser:
+        resolved.append(Tool(name=BROWSER_TOOL_NAME))
+    if enable_sub_agents:
+        resolved.append(Tool(name=SUB_AGENT_TOOL_NAME))
+    return resolved
 
 
 def default_tool_specs(
@@ -44,12 +67,8 @@ def default_tool_specs(
 
     Deterministic: the same inputs yield the same specs on every runtime.
     Browser is off by default (see :data:`BROWSER_TOOL_NAME` — the serving
-    layer injects it where it can actually run); pass ``enable_browser=True``
-    to include it explicitly.
+    layer enables it where it can actually run).
     """
-    names = list(DEFAULT_EXEC_TOOL_NAMES)
-    if enable_browser:
-        names.append(BROWSER_TOOL_NAME)
-    if enable_sub_agents:
-        names.append(SUB_AGENT_TOOL_NAME)
-    return [Tool(name=name) for name in names]
+    return resolve_tool_specs(
+        None, enable_sub_agents=enable_sub_agents, enable_browser=enable_browser
+    )

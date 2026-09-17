@@ -3,6 +3,8 @@ from collections.abc import Callable, Sequence
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolDefinition
@@ -32,6 +34,16 @@ _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
+_TOOL_CLASSES: dict[str, type[ToolDefinition]] = {}
+_CATALOG_NAMES: set[str] | None = None
+
+
+class ToolCatalogEntry(BaseModel):
+    """A registered tool as offered to clients configuring an agent."""
+
+    name: str
+    user_selectable: bool = True
+    usable: bool = True
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -129,12 +141,7 @@ def register_tool(
             ".executor, or (2) a ToolDefinition subclass with .create(**params)"
         )
 
-    # Track the module qualname for this tool
-    module_qualname = None
-    if isinstance(factory, type):
-        module_qualname = factory.__module__
-    elif isinstance(factory, ToolDefinition):
-        module_qualname = factory.__class__.__module__
+    tool_class = factory if isinstance(factory, type) else factory.__class__
 
     with _LOCK:
         # TODO: throw exception when registering duplicate name tools
@@ -142,8 +149,8 @@ def register_tool(
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
         _USABILITY_REG[name] = usability_checker
-        if module_qualname:
-            _MODULE_QUALNAMES[name] = module_qualname
+        _TOOL_CLASSES[name] = tool_class
+        _MODULE_QUALNAMES[name] = tool_class.__module__
 
 
 def resolve_tool(
@@ -199,6 +206,37 @@ def list_usable_tools() -> list[str]:
         name
         for name in tool_names
         if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
+    ]
+
+
+def seal_tool_catalog() -> None:
+    """Freeze the catalog to the tools registered so far.
+
+    A server calls this once it has finished loading its tools. Registrations
+    after it — a conversation's client tools or dynamically imported modules —
+    vanish on restart, so they are never offered for configuring an agent.
+    """
+    global _CATALOG_NAMES
+    with _LOCK:
+        _CATALOG_NAMES = set(_REG)
+
+
+def list_tool_catalog() -> list[ToolCatalogEntry]:
+    """List the tools this process offers for configuring an agent."""
+    with _LOCK:
+        names = [
+            name for name in _REG if _CATALOG_NAMES is None or name in _CATALOG_NAMES
+        ]
+        tool_classes = dict(_TOOL_CLASSES)
+        usability_checkers = dict(_USABILITY_REG)
+
+    return [
+        ToolCatalogEntry(
+            name=name,
+            user_selectable=tool_classes[name].user_selectable,
+            usable=_check_tool_usable(name, usability_checkers.get(name, lambda: True)),
+        )
+        for name in names
     ]
 
 

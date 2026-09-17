@@ -6,9 +6,10 @@ reference-bearing :class:`~openhands.sdk.profiles.AgentProfile` union and keeps 
 pointer-only — unlike the LLM ``/activate`` it must **not** write
 ``agent_settings`` (the creation-time-only contract).
 
-``POST /{name}/materialize`` performs a dry-run resolve of a profile's LLM and
-MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnostics`
-(never raises on dangling refs — those appear in the body).
+``POST /{name}/materialize`` performs a dry-run resolve of a stored profile, or
+of a draft body, and returns
+:class:`~openhands.sdk.profiles.AgentProfileDiagnostics` (never raises on
+dangling refs — those appear in the body).
 """
 
 import asyncio
@@ -28,8 +29,8 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
+from openhands.agent_server.profile_launch import gather_profile_launch_inputs
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
-from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -37,6 +38,7 @@ from openhands.sdk.llm.llm_profile_store import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
+    AgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
     ProfileLimitExceeded,
@@ -97,6 +99,16 @@ class ActivateAgentProfileResponse(BaseModel):
     # that agent_settings was untouched; materialize (#3717) is the path that
     # resolves a profile into settings.
     agent_settings_applied: bool = False
+
+
+class MaterializeAgentProfileRequest(BaseModel):
+    profile: AgentProfile | None = Field(
+        default=None,
+        description=(
+            "Draft profile to evaluate instead of the stored one. The path name "
+            "overrides the draft's name."
+        ),
+    )
 
 
 class RenameAgentProfileRequest(BaseModel):
@@ -508,23 +520,30 @@ async def activate_agent_profile(
     response_model=AgentProfileDiagnostics,
 )
 async def materialize_agent_profile(
-    request: Request, name: ProfileName
+    request: Request,
+    name: ProfileName,
+    body: MaterializeAgentProfileRequest | None = None,
 ) -> AgentProfileDiagnostics:
-    """Dry-run resolve a profile's LLM/MCP references; return a diagnostics report.
+    """Dry-run resolve a profile the way a launch would; return a diagnostics report.
 
-    Dangling LLM/MCP references are reported in the body (valid=False) rather
-    than raising — the only error status is 404 (unknown profile name).
-    resolved_settings is redacted (api_key_set booleans; no raw secrets).
+    Resolves the stored profile ``name``, or ``body.profile`` when given (so an
+    editor can preview before saving). Dangling LLM/MCP references are reported
+    in the body (valid=False) rather than raising — the only error statuses are
+    404 (unknown stored profile) and 422 (invalid draft). resolved_settings is
+    redacted (api_key_set booleans; no raw secrets).
     """
-    store = get_agent_profile_store()
-    try:
-        with store_errors():
-            profile = store.load(name)
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent profile '{name}' not found",
-        )
+    if body is not None and body.profile is not None:
+        profile = body.profile.model_copy(update={"name": name})
+    else:
+        store = get_agent_profile_store()
+        try:
+            with store_errors():
+                profile = store.load(name)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent profile '{name}' not found",
+            )
 
     # Still needed here (unlike the profile load above): resolve_agent_profile_
     # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
@@ -533,35 +552,29 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    # Discover skills off the event loop so the dry-run can report which skills
-    # (catalog minus ``disabled_skills``) resolve. Mirrors the launch rule in
-    # ``conversation_service._resolve_agent_from_profile`` so the preview matches
-    # a real launch: an ACP profile is only given a catalog where the CLI cannot
-    # read the user's own configuration (#4019). A discovery failure must not 500
-    # the preview: pass ``available_skills=None`` and surface the failure as its
-    # own diagnostic below.
-    discovery_error: str | None = None
-    available_skills = None
-    if profile.agent_kind == "openhands" or (
-        config.acp_skill_sourcing == "openhands_managed"
-    ):
-        try:
-            available_skills = await asyncio.to_thread(discover_profile_skills)
-        except Exception as exc:
-            available_skills = None
-            discovery_error = str(exc)
-            logger.warning("Skill discovery failed during materialize: %s", exc)
+    inputs = await asyncio.to_thread(
+        gather_profile_launch_inputs, profile, config.acp_skill_sourcing
+    )
+    if inputs.skill_discovery_error is not None:
+        logger.warning(
+            "Skill discovery failed during materialize: %s",
+            inputs.skill_discovery_error,
+        )
 
     llm_store = get_llm_profile_store()
     diagnostics = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
         mcp_config=mcp_config,
-        available_skills=available_skills,
+        available_skills=inputs.available_skills,
         cipher=cipher,
+        browser_available=inputs.browser_available,
     )
-    if discovery_error is not None:
-        diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")
+    # Reported rather than raised: a launch would fail on it, the preview must not.
+    if inputs.skill_discovery_error is not None:
+        diagnostics.errors.append(
+            f"Skill discovery failed: {inputs.skill_discovery_error}"
+        )
         diagnostics.valid = False
         diagnostics.resolved_settings = None
     return diagnostics
