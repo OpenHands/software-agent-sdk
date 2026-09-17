@@ -164,3 +164,38 @@ def test_remote_fork_passes_body_fields(mock_ws_cls: Mock) -> None:
     assert body["title"] == "Test Fork"
     assert body["tags"] == {"env": "prod"}
     assert body["reset_metrics"] is False
+
+
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_fork_passes_from_event_id(mock_ws_cls: Mock) -> None:
+    """fork(from_event_id=...) forwards the branch point in the request body."""
+    mock_ws_cls.return_value = Mock()
+    workspace, mock_client = _setup_workspace_with_mock_client()
+
+    conv = RemoteConversation(agent=_agent(), workspace=workspace)
+    conv.fork(from_event_id="evt-123")
+
+    fork_calls = [
+        c
+        for c in mock_client.request.call_args_list
+        if c[0][0] == "POST" and str(c[0][1]).endswith("/fork")
+    ]
+    assert len(fork_calls) == 1
+    assert fork_calls[0][1].get("json", {})["from_event_id"] == "evt-123"
+
+
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_fork_omits_from_event_id_when_none(mock_ws_cls: Mock) -> None:
+    """A whole-conversation fork must not send a from_event_id field."""
+    mock_ws_cls.return_value = Mock()
+    workspace, mock_client = _setup_workspace_with_mock_client()
+
+    conv = RemoteConversation(agent=_agent(), workspace=workspace)
+    conv.fork()
+
+    fork_calls = [
+        c
+        for c in mock_client.request.call_args_list
+        if c[0][0] == "POST" and str(c[0][1]).endswith("/fork")
+    ]
+    assert "from_event_id" not in fork_calls[0][1].get("json", {})

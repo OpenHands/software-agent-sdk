@@ -78,8 +78,9 @@ def test_get_git_diff_modified_file():
 
         assert isinstance(diff, GitDiff)
         assert diff.modified == modified_content
-        # For repos without remote, original is empty when comparing against empty tree
-        assert diff.original == ""
+        # Repos without a remote compare against HEAD, so the committed
+        # content is the original side of the diff.
+        assert diff.original == original_content
 
 
 def test_get_git_diff_deleted_file():
@@ -132,8 +133,9 @@ def test_get_git_diff_nested_path():
 
         assert isinstance(diff, GitDiff)
         assert diff.modified == modified_content
-        # For repos without remote, original is empty when comparing against empty tree
-        assert diff.original == ""
+        # Repos without a remote compare against HEAD, so the committed
+        # content is the original side of the diff.
+        assert diff.original == original_content
 
 
 def test_get_git_diff_no_repository():
@@ -206,15 +208,16 @@ def test_git_diff_model_properties():
         assert isinstance(diff.modified, str)
         assert isinstance(diff.original, str)
         assert diff.modified == modified_content
-        # For repos without remote, original is empty when comparing against empty tree
-        assert diff.original == ""
+        # Repos without a remote compare against HEAD, so the committed
+        # content is the original side of the diff.
+        assert diff.original == original_content
 
         # Test serialization
         diff_dict = diff.model_dump()
         assert "modified" in diff_dict
         assert "original" in diff_dict
         assert diff_dict["modified"] == modified_content
-        assert diff_dict["original"] == ""
+        assert diff_dict["original"] == original_content
 
 
 def test_git_diff_with_empty_file():
@@ -266,8 +269,9 @@ def test_git_diff_with_special_characters():
 
         assert isinstance(diff, GitDiff)
         assert diff.modified == modified_content
-        # For repos without remote, original is empty when comparing against empty tree
-        assert diff.original == ""
+        # Repos without a remote compare against HEAD, so the committed
+        # content is the original side of the diff.
+        assert diff.original == original_content
 
 
 def test_git_diff_large_file_error():
@@ -327,3 +331,28 @@ def test_get_git_diff_invalid_ref_raises():
 
         with pytest.raises(GitCommandError):
             run_in_directory(temp_dir, get_git_diff, "f.txt", ref="not-a-real-ref")
+
+
+def test_get_git_diff_committed_branch_change_diffs_against_fork_point():
+    """A change committed on a branch must diff against the branch's fork
+    point — matching the change list. Diffing against HEAD instead would
+    render the committed content as an empty diff (APP-2205)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange — repo on `main`, then a branch with a committed change.
+        run_bash_command("git init -b main", temp_dir)
+        run_bash_command("git config user.name 'Test User'", temp_dir)
+        run_bash_command("git config user.email 'test@example.com'", temp_dir)
+        target = Path(temp_dir) / "file.txt"
+        target.write_text("base")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'base'", temp_dir)
+        run_bash_command("git checkout -b openhands/conv1", temp_dir)
+        target.write_text("changed by agent")
+        run_bash_command("git commit -am 'agent work'", temp_dir)
+
+        # Act
+        diff = run_in_directory(temp_dir, get_git_diff, "file.txt")
+
+        # Assert — original is the fork-point (main) content.
+        assert diff.original == "base"
+        assert diff.modified == "changed by agent"

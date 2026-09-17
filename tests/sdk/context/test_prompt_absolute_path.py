@@ -12,23 +12,23 @@ from openhands.sdk.llm import LLM
 
 
 def test_render_template_with_relative_path():
-    """Test that render_template works with relative paths (existing behavior)."""
-    # Use the agent's default prompts directory
-    agent_prompts_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "../openhands-sdk/openhands/sdk/agent/prompts",
-    )
-    agent_prompts_dir = os.path.abspath(agent_prompts_dir)
+    """Test that render_template resolves a relative name against prompt_dir.
 
-    # system_prompt_planning.j2 is the surviving built-in Jinja template.
-    result = render_template(
-        prompt_dir=agent_prompts_dir,
-        template_name="system_prompt_planning.j2",
-    )
+    The built-in .j2 templates were ported into the prompt registry, so this uses a
+    throwaway template in a temp dir to exercise relative-path resolution.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        template_name = "relative_template.j2"
+        with open(os.path.join(tmp_dir, template_name), "w") as f:
+            f.write("Relative render of {{ subject }}.")
 
-    # Verify result is a non-empty string
-    assert isinstance(result, str)
-    assert len(result) > 0
+        result = render_template(
+            prompt_dir=tmp_dir,
+            template_name=template_name,
+            subject="a template",
+        )
+
+    assert result == "Relative render of a template."
 
 
 def test_render_template_with_absolute_path():

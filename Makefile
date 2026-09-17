@@ -86,13 +86,21 @@ build-server: check-uv-version
 	@$(ECHO) "$(GREEN)Build complete! Executable is in dist/agent-server/$(RESET)"
 
 test-server-schema: check-uv-version
-	set -euo pipefail;
-	# Generate OpenAPI JSON inline (no file left in repo)
-	uv run python -c 'import os,json; from openhands.agent_server.api import api; open("openapi.json","w").write(json.dumps(api.openapi(), indent=2))'
-	npx --yes @apidevtools/swagger-cli@^4 validate openapi.json
-	# Clean up temp schema
-	rm -f openapi.json
-	rm -rf .client
+	@set -euo pipefail; \
+		OPENAPI_TMP_DIR="$$(mktemp -d)"; \
+		trap 'rm -r "$$OPENAPI_TMP_DIR"' EXIT; \
+		OPENHANDS_SUPPRESS_BANNER=1 uv run python \
+			.github/scripts/export_agent_server_openapi.py \
+			--output "$$OPENAPI_TMP_DIR/openapi.json"; \
+		OPENHANDS_SUPPRESS_BANNER=1 uv run python \
+			.github/scripts/export_agent_server_openapi.py \
+			--output "$$OPENAPI_TMP_DIR/openapi-second.json"; \
+		cmp "$$OPENAPI_TMP_DIR/openapi.json" \
+			"$$OPENAPI_TMP_DIR/openapi-second.json"; \
+		uv run python .github/scripts/check_agent_server_openapi_quality.py \
+			--schema "$$OPENAPI_TMP_DIR/openapi.json"; \
+		npx --yes @apidevtools/swagger-cli@^4 validate \
+			"$$OPENAPI_TMP_DIR/openapi.json"
 
 
 .PHONY: set-package-version

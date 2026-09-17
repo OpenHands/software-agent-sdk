@@ -28,9 +28,9 @@ class MarketplaceRegistration(BaseModel):
     auto_load: bool | list[str] = Field(
         default=False,
         description=(
-            "Whether to load marketplace plugins at conversation start. Use True "
-            "for all plugins, False or [] for none, or a list of plugin names for "
-            "selective loading."
+            "Whether to load marketplace plugins and standalone skills at "
+            "conversation start. Use True for all, False or [] for none, or a "
+            "list of plugin/skill names for selective loading."
         ),
     )
 
@@ -38,6 +38,11 @@ class MarketplaceRegistration(BaseModel):
         if isinstance(self.auto_load, bool):
             return self.auto_load
         return plugin_name in self.auto_load
+
+    def auto_loads_skill(self, skill_name: str) -> bool:
+        if isinstance(self.auto_load, bool):
+            return self.auto_load
+        return skill_name in self.auto_load
 
     @field_validator("repo_path")
     @classmethod

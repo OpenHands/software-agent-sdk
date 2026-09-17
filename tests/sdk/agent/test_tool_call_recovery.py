@@ -235,12 +235,13 @@ def test_reasoning_only_response_injects_nudge():
     agent_msgs = [
         e for e in events if isinstance(e, MessageEvent) and e.source == "agent"
     ]
-    user_nudges = [
-        e for e in events if isinstance(e, MessageEvent) and e.source == "user"
+    corrective_nudges = [
+        e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
     assert len(agent_msgs) == 1
-    assert len(user_nudges) == 1
-    nudge_text = user_nudges[0].llm_message.content[0]
+    assert len(corrective_nudges) == 1
+    assert corrective_nudges[0].llm_message.role == "user"
+    nudge_text = corrective_nudges[0].llm_message.content[0]
     assert isinstance(nudge_text, TextContent)
     assert "function call" in nudge_text.text
 
@@ -262,10 +263,10 @@ def test_content_response_does_not_inject_nudge():
         )
         agent.step(conv, on_event=events.append)
 
-    user_nudges = [
-        e for e in events if isinstance(e, MessageEvent) and e.source == "user"
+    corrective_nudges = [
+        e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
-    assert len(user_nudges) == 0
+    assert len(corrective_nudges) == 0
 
 
 def test_completely_empty_response_injects_nudge():
@@ -285,7 +286,8 @@ def test_completely_empty_response_injects_nudge():
         )
         agent.step(conv, on_event=events.append)
 
-    user_nudges = [
-        e for e in events if isinstance(e, MessageEvent) and e.source == "user"
+    corrective_nudges = [
+        e for e in events if isinstance(e, MessageEvent) and e.source == "environment"
     ]
-    assert len(user_nudges) == 1
+    assert len(corrective_nudges) == 1
+    assert corrective_nudges[0].llm_message.role == "user"

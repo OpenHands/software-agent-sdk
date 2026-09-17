@@ -3,7 +3,6 @@ import shutil
 from typing import Any
 
 import pytest
-from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import StartConversationRequest
@@ -25,6 +24,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
@@ -56,6 +56,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert section_keys == [
         "general",
         "llm",
+        "agent_context",
         "condenser",
         "verification",
     ]
@@ -75,7 +76,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["agent"].default == "CodeActAgent"
     assert general_fields["agent"].prominence is SettingProminence.MAJOR
     assert general_fields["tools"].value_type == "array"
-    assert general_fields["tools"].default == []
+    # None = "server default toolset" (materialized by create_agent, #3978).
+    assert general_fields["tools"].default is None
     assert general_fields["tools"].prominence is SettingProminence.MAJOR
     assert general_fields["enable_sub_agents"].value_type == "boolean"
     assert general_fields["enable_sub_agents"].default is False
@@ -110,6 +112,16 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     # Excluded fields must not appear
     assert "llm.fallback_strategy" not in llm_fields
     assert "llm.retry_listener" not in llm_fields
+
+    # -- agent_context section (only annotated fields surface) --
+    assert sections["agent_context"].label == "Memory"
+    ac_fields = {f.key: f for f in sections["agent_context"].fields}
+    assert set(ac_fields) == {"agent_context.load_memory"}
+    load_memory = ac_fields["agent_context.load_memory"]
+    assert load_memory.label == "Persistent memory"
+    assert load_memory.value_type == "boolean"
+    assert load_memory.default is False
+    assert load_memory.prominence is SettingProminence.MAJOR
 
     # -- condenser section --
     condenser_fields = {f.key: f for f in sections["condenser"].fields}
@@ -167,6 +179,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
+        "acp_startup_timeout",
     }
     # Server picker + model are both critical — users pick server then
     # model. Raw command is a minor override for power users.
@@ -357,6 +370,11 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     assert ("condenser", "openhands") in by_keyvariant
     assert ("verification", "openhands") in by_keyvariant
 
+    # Memory section is OpenHands-only: the GUI matches sections by key and
+    # ignores variant, so tagging both variants would render the toggle twice.
+    assert ("agent_context", "openhands") in by_keyvariant
+    assert ("agent_context", "acp") not in by_keyvariant
+
     # ACP-variant sections.
     acp_section = by_keyvariant.get(("acp", "acp"))
     assert acp_section is not None
@@ -370,7 +388,15 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     server_field = next(f for f in acp_section.fields if f.key == "acp_server")
     assert server_field.prominence is SettingProminence.CRITICAL
     server_choices = {c.value for c in server_field.choices}
-    assert server_choices == {"claude-code", "codex", "gemini-cli", "custom"}
+    assert server_choices == {
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "kimi-code",
+        "pi",
+        "opencode",
+        "custom",
+    }
 
     command_field = next(f for f in acp_section.fields if f.key == "acp_command")
     assert command_field.prominence is SettingProminence.MINOR
@@ -505,6 +531,259 @@ def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
     assert settings.llm.base_url is None
 
 
+def test_validate_agent_settings_migrates_v5_modify_params() -> None:
+    """Persisted ``llm.modify_params`` (removed in v1.47.0) is dropped on load."""
+    settings = validate_agent_settings(
+        {
+            "schema_version": 5,
+            "agent_kind": "openhands",
+            "llm": {
+                "model": "gpt-4o",
+                "modify_params": True,
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.llm.model == "gpt-4o"
+    assert "modify_params" not in settings.llm.model_dump()
+
+
+def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 4,
+            "agent_kind": "openhands",
+            "mcp_config": {
+                "mcpServers": {
+                    "oauth-top-level": {
+                        "url": "https://mcp.oauth.example.com/mcp",
+                        "unknown_secret": "drop-me",
+                        "auth": "oauth",
+                        "authentication": {
+                            "type": "oauth",
+                            "client_auth_method": "none",
+                        },
+                        "oauth_credentials": {
+                            "mcp-oauth-token": {
+                                "https://mcp.oauth.example.com/mcp/tokens": {
+                                    "value": {
+                                        "access_token": "access-secret",
+                                        "refresh_token": "refresh-secret",
+                                    }
+                                }
+                            },
+                            "mcp-oauth-client-info": {
+                                "https://mcp.oauth.example.com/mcp/client_info": {
+                                    "value": {
+                                        "client_id": "client-id",
+                                        "client_secret": "client-secret",
+                                    }
+                                }
+                            },
+                            "mcp-oauth-token-expiry": {
+                                "https://mcp.oauth.example.com/mcp/token_expiry": {
+                                    "value": {"expires_at": 1234.5},
+                                    "expires_at": 9999.0,
+                                }
+                            },
+                        },
+                    },
+                    "oauth-auth-field": {
+                        "url": "https://mcp.auth.example.com/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "credentials": {
+                                "mcp-oauth-token": {
+                                    "https://mcp.auth.example.com/mcp/tokens": {
+                                        "value": {"access_token": "field-secret"}
+                                    }
+                                }
+                            },
+                        },
+                    },
+                    "fastmcp-fields": {
+                        "url": "https://mcp.fields.example.com/mcp",
+                        "type": "streamable-http",
+                        "description": "Fields server",
+                        "icon": "https://example.com/icon.png",
+                        "timeout": 10,
+                        "sse_read_timeout": 20,
+                        "keep_alive": True,
+                        "unknown_secret": "drop-me",
+                    },
+                    "bearer": {
+                        "url": "https://mcp.bearer.example.com/mcp",
+                        "auth": "bearer-secret",
+                    },
+                    "api-key": {
+                        "url": "https://mcp.api.example.com/mcp",
+                        "api_key": "api-secret",
+                    },
+                    "authorization": {
+                        "url": "https://mcp.header.example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer header-secret",
+                            "X-Other": "other",
+                        },
+                    },
+                    "sse": {
+                        "url": "https://mcp.linear.app/sse",
+                        "transport": "sse",
+                        "auth": {"strategy": "bearer", "value": "linear-secret"},
+                    },
+                }
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    servers = dump_mcp_config(settings.mcp_config)
+
+    assert servers["oauth-top-level"]["auth"] == {
+        "strategy": "oauth2",
+        "authentication": {"type": "oauth", "client_auth_method": "none"},
+        "state": {
+            "tokens": {
+                "access_token": "access-secret",
+                "refresh_token": "refresh-secret",
+            },
+            "client_info": {
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            "token_expires_at": 1234.5,
+        },
+    }
+    assert "oauth_credentials" not in servers["oauth-top-level"]
+    assert "authentication" not in servers["oauth-top-level"]
+    assert "unknown_secret" not in servers["oauth-top-level"]
+
+    assert servers["fastmcp-fields"] == {
+        "url": "https://mcp.fields.example.com/mcp",
+        "transport": "streamable-http",
+        "description": "Fields server",
+        "icon": "https://example.com/icon.png",
+        "timeout": 10.0,
+        "sse_read_timeout": 20.0,
+        "keep_alive": True,
+    }
+
+    assert servers["oauth-auth-field"]["auth"] == {
+        "strategy": "oauth2",
+        "state": {"tokens": {"access_token": "field-secret"}},
+    }
+    assert servers["bearer"]["auth"] == {
+        "strategy": "bearer",
+        "value": "bearer-secret",
+    }
+    assert servers["api-key"]["auth"] == {
+        "strategy": "api_key",
+        "value": "api-secret",
+    }
+    assert servers["authorization"]["auth"] == {
+        "strategy": "bearer",
+        "value": "header-secret",
+    }
+    assert servers["authorization"]["headers"] == {"X-Other": "other"}
+    assert "sse" not in servers
+    assert servers["shttp"] == {
+        "url": "https://mcp.linear.app/mcp",
+        "auth": {"strategy": "bearer", "value": "linear-secret"},
+    }
+
+
+def test_validate_agent_settings_migrates_mcp_type_to_transport() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 4,
+            "agent_kind": "openhands",
+            "mcp_config": {
+                "http": {
+                    "url": "https://mcp.example.com/mcp",
+                    "type": "streamable-http",
+                },
+                "shttp-alias": {
+                    "url": "https://mcp.alias.example.com/mcp",
+                    "type": "shttp",
+                },
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert dump_mcp_config(settings.mcp_config) == {
+        "http": {
+            "url": "https://mcp.example.com/mcp",
+            "transport": "streamable-http",
+        },
+        "shttp-alias": {
+            "url": "https://mcp.alias.example.com/mcp",
+            "transport": "http",
+        },
+    }
+
+
+def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentSettings.model_validate(
+            {
+                "mcp_config": {
+                    "server": {
+                        "url": "https://mcp.example.com/mcp",
+                        "unknown_secret": "not-a-datamodel-field",
+                    }
+                }
+            }
+        )
+
+
+def test_current_agent_settings_reject_legacy_mcp_wrapper_without_migration() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_settings(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "mcp_config": {
+                    "mcpServers": {"server": {"url": "https://mcp.example.com/mcp"}}
+                },
+            }
+        )
+
+
+def test_validate_agent_settings_mcp_linear_migration_does_not_duplicate() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 4,
+            "agent_kind": "openhands",
+            "mcp_config": {
+                "mcpServers": {
+                    "sse": {
+                        "url": "https://mcp.linear.app/sse",
+                        "transport": "sse",
+                        "auth": {"strategy": "bearer", "value": "old-secret"},
+                    },
+                    "shttp": {
+                        "url": "https://mcp.linear.app/mcp",
+                        "auth": {"strategy": "bearer", "value": "manual-secret"},
+                    },
+                }
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert dump_mcp_config(settings.mcp_config) == {
+        "shttp": {
+            "url": "https://mcp.linear.app/mcp",
+            "auth": {"strategy": "bearer", "value": "manual-secret"},
+        }
+    }
+
+
 def test_validate_agent_settings_rejects_newer_schema_version() -> None:
     with pytest.raises(
         ValueError,
@@ -512,6 +791,150 @@ def test_validate_agent_settings_rejects_newer_schema_version() -> None:
     ):
         validate_agent_settings(
             {"schema_version": AGENT_SETTINGS_SCHEMA_VERSION + 1, "llm": {"model": "m"}}
+        )
+
+
+def test_openhands_agent_settings_from_persisted_migrates_legacy_payloads() -> None:
+    v0 = OpenHandsAgentSettings.from_persisted({"llm": {"model": "v0-model"}})
+    assert isinstance(v0, OpenHandsAgentSettings)
+    assert v0.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert v0.agent_kind == "openhands"
+    assert v0.llm.model == "v0-model"
+
+    v1 = OpenHandsAgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {"model": "legacy-model"},
+        }
+    )
+    assert isinstance(v1, OpenHandsAgentSettings)
+    assert v1.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert v1.agent_kind == "openhands"
+    assert v1.llm.model == "legacy-model"
+
+    v2 = OpenHandsAgentSettings.from_persisted(
+        {
+            "schema_version": 2,
+            "agent_kind": "openhands",
+            "verification": {
+                "critic_enabled": True,
+                "confirmation_mode": True,
+                "security_analyzer": "llm",
+            },
+        }
+    )
+    assert isinstance(v2, OpenHandsAgentSettings)
+    assert v2.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert v2.verification.critic_enabled is True
+    verification = v2.verification.model_dump(mode="json")
+    assert "confirmation_mode" not in verification
+    assert "security_analyzer" not in verification
+
+
+def test_acp_agent_settings_from_persisted_returns_acp_subtype() -> None:
+    settings = ACPAgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "acp",
+            "acp_command": ["echo", "test"],
+            "acp_model": "claude-opus-4-6",
+        }
+    )
+
+    assert type(settings) is ACPAgentSettings
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.acp_command == ["echo", "test"]
+
+
+def test_openhands_agent_settings_from_persisted_rejects_current_llm_kind() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentSettings.from_persisted(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "llm",
+                "llm": {"model": "legacy-model"},
+            }
+        )
+
+
+def test_agent_settings_from_persisted_current_payload_matches_model_validate() -> None:
+    payload = OpenHandsAgentSettings(llm=LLM(model="current-model")).model_dump(
+        mode="json"
+    )
+    original_payload = json.loads(json.dumps(payload))
+
+    settings = OpenHandsAgentSettings.from_persisted(payload)
+
+    assert settings == OpenHandsAgentSettings.model_validate(payload)
+    assert payload == original_payload
+
+
+def test_agent_settings_from_persisted_preserves_validated_instance_secrets() -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="current-model", api_key=SecretStr("sk-test-key"))
+    )
+
+    restored = OpenHandsAgentSettings.from_persisted(settings)
+
+    assert restored is settings
+    assert isinstance(restored.llm.api_key, SecretStr)
+    assert restored.llm.api_key.get_secret_value() == "sk-test-key"
+
+
+def test_agent_settings_from_persisted_decrypts_mcp_secrets() -> None:
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-encryption-key")
+    settings = OpenHandsAgentSettings(
+        mcp_config=coerce_mcp_config(
+            {
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-test-token"},
+                    "headers": {"X-API-Token": "tok-test-token"},
+                }
+            }
+        )
+    )
+    persisted = settings.model_dump(mode="json", context={"cipher": cipher})
+
+    restored = OpenHandsAgentSettings.from_persisted(
+        persisted, context={"cipher": cipher}
+    )
+
+    restored_mcp = dump_mcp_config(restored.mcp_config)
+    assert restored_mcp["github"]["env"] == {"GITHUB_TOKEN": "ghp-test-token"}
+    assert restored_mcp["github"]["headers"] == {"X-API-Token": "tok-test-token"}
+
+
+def test_openhands_agent_settings_from_persisted_matches_union_validator() -> None:
+    payload = {
+        "schema_version": 1,
+        "agent_kind": "llm",
+        "llm": {"model": "legacy-model"},
+    }
+
+    from_persisted_settings = OpenHandsAgentSettings.from_persisted(payload)
+    union_settings = validate_agent_settings(payload)
+
+    # agent_context.current_datetime defaults to now(); exclude it so the
+    # comparison is not sensitive to the microseconds between validations.
+    volatile = {"agent_context": {"current_datetime"}}
+    assert from_persisted_settings.model_dump(
+        exclude=volatile
+    ) == union_settings.model_dump(exclude=volatile)
+
+
+def test_agent_settings_from_persisted_rejects_malformed_payload() -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentSettings.from_persisted(
+            {
+                "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                "agent_kind": "openhands",
+                "llm": "not-an-llm-settings-payload",
+            }
         )
 
 
@@ -545,6 +968,37 @@ def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
 def test_llm_create_agent_defaults_tool_concurrency_limit_to_one() -> None:
     agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
     assert agent.tool_concurrency_limit == 1
+
+
+def test_create_agent_defaults_tools_when_none() -> None:
+    """tools=None (the default) materializes the canonical exec set at
+    create_agent — the single defaulting point (#3967 / #3978). Deterministic:
+    browser is a serving-layer injection, never part of the default."""
+    settings = OpenHandsAgentSettings(llm=LLM(model="test-model"))
+    assert settings.tools is None
+    agent = settings.create_agent()
+    assert [t.name for t in agent.tools] == ["terminal", "file_editor", "task_tracker"]
+
+
+def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), enable_sub_agents=True
+    )
+    agent = settings.create_agent()
+    assert [t.name for t in agent.tools] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "task_tool_set",
+    ]
+
+
+def test_create_agent_empty_tools_stays_bare() -> None:
+    """tools=[] is an explicit choice: no default injection (persisted-payload
+    compatibility — [] predates the None default and keeps its old meaning)."""
+    settings = OpenHandsAgentSettings(llm=LLM(model="test-model"), tools=[])
+    agent = settings.create_agent()
+    assert agent.tools == []
 
 
 def test_tool_concurrency_limit_defaults_to_one_when_omitted_from_payload() -> None:
@@ -608,32 +1062,46 @@ def test_tool_concurrency_limit_invalid_values_rejected(raw: Any) -> None:
 
 def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
     settings = OpenHandsAgentSettings.model_validate(
-        {
-            "mcp_config": {
-                "mcpServers": {
-                    "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
-                }
-            }
-        }
+        {"mcp_config": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
     )
 
-    assert isinstance(settings.mcp_config, MCPConfig)
+    assert isinstance(settings.mcp_config["fetch"], MCPServer)
     assert settings.model_dump()["mcp_config"] == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"], "enabled": True}
     }
 
 
 def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
-    mcp_config = MCPConfig.model_validate(
-        {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
+    mcp_config = coerce_mcp_config(
+        {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     )
     settings = OpenHandsAgentSettings(mcp_config=mcp_config)
 
     agent = settings.create_agent()
 
-    assert agent.mcp_config == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert dump_mcp_config(agent.mcp_config) == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
+
+
+def test_disabled_mcp_server_survives_settings_round_trip() -> None:
+    """A switched-off server stays off, and keeps its config, across reloads."""
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "mcp_config": {
+                "fetch": {
+                    "command": "uvx",
+                    "args": ["mcp-server-fetch"],
+                    "enabled": False,
+                }
+            }
+        }
+    )
+
+    reloaded = OpenHandsAgentSettings.model_validate(settings.model_dump(mode="json"))
+
+    assert reloaded.mcp_config["fetch"].enabled is False
+    assert reloaded.mcp_config["fetch"].command == "uvx"
 
 
 def test_llm_create_agent_builds_condenser_when_enabled() -> None:
@@ -665,6 +1133,73 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     assert agent.condenser.llm.model == llm.model
     assert agent.condenser.llm.usage_id == "condenser"
     assert agent.condenser.llm.metrics is not agent_metrics
+
+
+def test_llm_summarizing_condenser_inherits_max_tokens_from_llm() -> None:
+    """When the condenser's ``max_tokens`` is left unset, it should inherit
+    the agent LLM's ``effective_max_input_tokens`` so that condensation can
+    be triggered by token count, not just event count. See #3746: a
+    configured ``max_input_tokens`` on the LLM had no effect on the
+    condenser, so long tool outputs could blow past the context window
+    without ever triggering summarization.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens == 65536
+
+
+def test_llm_summarizing_condenser_respects_explicit_max_tokens_over_llm() -> None:
+    """An explicitly configured condenser ``max_tokens`` must not be
+    overridden by the LLM's ``effective_max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=5000),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens == 5000
+
+
+def test_llm_summarizing_condenser_max_tokens_none_when_llm_has_no_limit() -> None:
+    """When neither the condenser nor the LLM has a token limit configured,
+    the condenser's ``max_tokens`` should remain ``None`` (event-count-only
+    condensation), matching pre-fix behavior for users who never set
+    ``max_input_tokens``.
+    """
+    llm = LLM(model="test-model", usage_id="agent")
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
+
+
+def test_llm_summarizing_condenser_explicit_none_max_tokens_remains_unset() -> None:
+    """An explicit ``max_tokens=None`` remains unset on the condenser configuration.
+
+    The active agent LLM's effective input limit still governs condensation at runtime.
+    """
+    llm = LLM(model="test-model", usage_id="agent", max_input_tokens=65536)
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=LLMSummarizingCondenserSettings(enabled=True, max_tokens=None),
+    )
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, LLMSummarizingCondenser)
+    assert agent.condenser.max_tokens is None
 
 
 def test_llm_summarizing_condenser_settings_match_condenser_fields() -> None:
@@ -882,7 +1417,8 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.44.0",
+        "--prefer-offline",
+        "@agentclientprotocol/claude-agent-acp@0.63.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
     # The authoritative provider key is carried onto the agent.
@@ -898,7 +1434,15 @@ def test_acp_create_agent_carries_provider_key() -> None:
     directly (not from settings) defaults to ``None``; and the key survives a
     serialization round-trip through the ``AgentBase`` discriminated union.
     """
-    for server in ("claude-code", "codex", "gemini-cli", "custom"):
+    for server in (
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "kimi-code",
+        "pi",
+        "opencode",
+        "custom",
+    ):
         kwargs: dict[str, Any] = {"acp_server": server}
         if server == "custom":
             kwargs["acp_command"] = ["my-acp"]
@@ -921,7 +1465,7 @@ def test_acp_resolve_command_for_known_servers(
     default stays the ``npx`` invocation.
     """
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server in ("claude-code", "codex", "gemini-cli"):
+    for server in ("claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode"):
         settings = ACPAgentSettings(acp_server=server)
         cmd = settings.resolve_acp_command()
         assert cmd, f"expected default command for {server}, got empty"
@@ -996,6 +1540,10 @@ def _which_returning(*available: str):
         ("codex", "codex-acp", ["codex-acp"]),
         # gemini's default carries a trailing ``--acp`` that must be preserved.
         ("gemini-cli", "gemini", ["gemini", "--acp"]),
+        ("pi", "pi-acp", ["pi-acp"]),
+        # opencode's trailing arg is an ``acp`` subcommand, preserved the same
+        # way as gemini's ``--acp`` flag.
+        ("opencode", "opencode", ["opencode", "acp"]),
     ],
 )
 def test_acp_resolve_command_rewrites_default_to_pinned_binary(
@@ -1018,7 +1566,12 @@ def test_acp_resolve_command_rewrites_explicit_npx_command(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     settings = ACPAgentSettings(
         acp_server="codex",
-        acp_command=["npx", "-y", "@zed-industries/codex-acp", "--verbose"],
+        acp_command=[
+            "npx",
+            "-y",
+            "@agentclientprotocol/codex-acp",
+            "--verbose",
+        ],
     )
     assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
 
@@ -1032,9 +1585,8 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     the reviewed binary in for the provider's package."""
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
-        "@zed-industries/codex-acp",
-        "@zed-industries/codex-acp@0.16.0",
-        "@zed-industries/codex-acp@0.11.1",
+        "@agentclientprotocol/codex-acp",
+        "@agentclientprotocol/codex-acp@1.10.0",
     ):
         settings = ACPAgentSettings(
             acp_server="codex",
@@ -1056,7 +1608,8 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp@0.16.0",
+        "--prefer-offline",
+        "@agentclientprotocol/codex-acp@1.10.0",
     ]
 
 
@@ -1094,12 +1647,12 @@ def test_acp_resolve_command_custom_server_never_rewritten(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp", "gemini"))
     settings = ACPAgentSettings(
         acp_server="custom",
-        acp_command=["npx", "-y", "@zed-industries/codex-acp"],
+        acp_command=["npx", "-y", "@agentclientprotocol/codex-acp"],
     )
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp",
+        "@agentclientprotocol/codex-acp",
     ]
 
 
@@ -1117,6 +1670,10 @@ def test_acp_resolve_command_queries_which_with_binary_name(
     ACPAgentSettings(acp_server="gemini-cli").resolve_acp_command()
     assert queried == ["gemini"]
 
+    queried.clear()
+    ACPAgentSettings(acp_server="kimi-code").resolve_acp_command()
+    assert queried == ["kimi"]
+
 
 def test_acp_create_agent_uses_pinned_binary_when_present(
     monkeypatch: pytest.MonkeyPatch,
@@ -1127,6 +1684,15 @@ def test_acp_create_agent_uses_pinned_binary_when_present(
     assert agent.acp_command == ["codex-acp"]
 
 
+def test_acp_create_agent_pinned_binary_preserves_subcommand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rewrite keeps trailing args (``acp`` subcommand) after the binary."""
+    monkeypatch.setattr(shutil, "which", _which_returning("kimi"))
+    agent = ACPAgentSettings(acp_server="kimi-code").create_agent()
+    assert agent.acp_command == ["kimi", "acp"]
+
+
 def test_acp_api_key_env_var_maps_known_servers() -> None:
     assert (
         ACPAgentSettings(acp_server="claude-code").api_key_env_var
@@ -1134,55 +1700,21 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     )
     assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
     assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
+    # Kimi has no env-var API key; the credential is config.toml.
+    assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var is None
+    # pi is multi-provider but reads a plain provider key out of the process
+    # env; ANTHROPIC_API_KEY is the channel the registry provisions for it.
+    assert ACPAgentSettings(acp_server="pi").api_key_env_var == "ANTHROPIC_API_KEY"
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
     )
 
 
-def test_acp_resolve_provider_env_from_llm_credentials() -> None:
-    # Deprecated (removed in 1.33.0 with the llm field): still functional for
-    # the deprecation window, but warns callers toward the secrets channel.
-    settings = ACPAgentSettings(
-        acp_server="gemini-cli",
-        llm=LLM(
-            model="gemini-2.5-pro",
-            api_key=SecretStr("sk-test-gemini"),
-            base_url="https://gemini-proxy.example.com",
-        ),
-    )
-
-    with pytest.warns(
-        DeprecationWarning, match=r"ACPAgentSettings\.resolve_provider_env"
-    ):
-        assert settings.resolve_provider_env() == {
-            "GEMINI_API_KEY": "sk-test-gemini",
-            "GEMINI_BASE_URL": "https://gemini-proxy.example.com",
-        }
-
-
-def test_acp_resolve_provider_env_custom_server_empty() -> None:
-    settings = ACPAgentSettings(
-        acp_server="custom",
-        acp_command=["custom-acp"],
-        llm=LLM(
-            model="custom-model",
-            api_key=SecretStr("sk-test"),
-            base_url="https://proxy.example.com",
-        ),
-    )
-
-    with pytest.warns(
-        DeprecationWarning, match=r"ACPAgentSettings\.resolve_provider_env"
-    ):
-        assert settings.resolve_provider_env() == {}
-
-
 def test_acp_create_agent_ignores_llm_credentials() -> None:
-    # llm.api_key/base_url are deprecated (llm is removed in 1.33.0) and no
-    # longer folded into agent_context.secrets: an LLM-profile base_url would
-    # leak into the subprocess and silently re-route its API calls (#3632).
-    # create_agent warns and ignores them; provider credentials ride the
-    # conversation secrets channel keyed by the provider's env var name.
+    # llm.api_key/base_url are never read: an LLM-profile base_url would leak
+    # into the subprocess and silently re-route its API calls (#3632). Provider
+    # credentials ride the conversation secrets channel keyed by the provider's
+    # env var name; the caller's secrets pass through untouched.
     context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
     settings = ACPAgentSettings(
         acp_server="codex",
@@ -1194,41 +1726,23 @@ def test_acp_create_agent_ignores_llm_credentials() -> None:
         agent_context=context,
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
-        agent = settings.create_agent()
+    agent = settings.create_agent()
 
     # The caller's secrets pass through untouched; no provider creds appear.
     assert agent.agent_context is not None
     assert dict(agent.agent_context.secrets or {}) == {"GITHUB_TOKEN": "ghp_test"}
 
 
-def test_acp_create_agent_credentials_warn_even_without_context() -> None:
+def test_acp_create_agent_ignores_credentials_without_context() -> None:
     # No caller agent_context: nothing is synthesized for the ignored creds —
-    # the context stays None and the deprecation warning is the only signal.
+    # the context stays None.
     settings = ACPAgentSettings(
         acp_server="claude-code",
         llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
-        agent = settings.create_agent()
+    agent = settings.create_agent()
 
-    assert agent.agent_context is None
-
-
-def test_acp_create_agent_without_llm_credentials_does_not_warn() -> None:
-    import warnings
-
-    settings = ACPAgentSettings(
-        acp_server="claude-code",
-        llm=LLM(model="claude-opus-4-6"),
-    )
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        agent = settings.create_agent()
-
-    assert not [w for w in caught if "ACPAgentSettings.llm" in str(w.message)]
     assert agent.agent_context is None
 
 
@@ -1335,15 +1849,13 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
+                "headers": {"X-API-Token": "tok-mcp-secret"},
             }
         }
     )
@@ -1354,9 +1866,9 @@ def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     assert "tok-mcp-secret" not in blob
 
     exposed = settings.model_dump(context={"expose_secrets": True})
-    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    leaky = exposed["mcp_config"]["leaky"]
     assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
-    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+    assert leaky["headers"]["X-API-Token"] == "tok-mcp-secret"
 
 
 def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
@@ -1369,19 +1881,17 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     """
     from openhands.sdk.utils.cipher import Cipher
 
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "github": {
-                    "command": "uvx",
-                    "args": ["mcp-server-github"],
-                    "env": {"GITHUB_TOKEN": "ghp-mcp-secret"},
-                },
-                "fetch": {
-                    "url": "https://example.com/mcp",
-                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
-                },
-            }
+            "github": {
+                "command": "uvx",
+                "args": ["mcp-server-github"],
+                "env": {"GITHUB_TOKEN": "ghp-mcp-secret"},
+            },
+            "fetch": {
+                "url": "https://example.com/mcp",
+                "headers": {"X-API-Token": "tok-mcp-secret"},
+            },
         }
     )
     settings = OpenHandsAgentSettings(mcp_config=mcp_config)
@@ -1389,15 +1899,26 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
 
     dumped = settings.model_dump(mode="json", context={"cipher": cipher})
 
-    servers = dumped["mcp_config"]["mcpServers"]
-    enc_token = servers["github"]["env"]["GITHUB_TOKEN"]
-    enc_auth = servers["fetch"]["headers"]["Authorization"]
+    servers = dumped["mcp_config"]
+    assert isinstance(servers, dict)
+    github = servers["github"]
+    fetch = servers["fetch"]
+    assert isinstance(github, dict)
+    assert isinstance(fetch, dict)
+    github_env = github["env"]
+    fetch_headers = fetch["headers"]
+    assert isinstance(github_env, dict)
+    assert isinstance(fetch_headers, dict)
+    enc_token = github_env["GITHUB_TOKEN"]
+    enc_auth = fetch_headers["X-API-Token"]
+    assert isinstance(enc_token, str)
+    assert isinstance(enc_auth, str)
 
     # Plaintext values must NOT appear on disk.
     serialized = json.dumps(dumped)
     assert "ghp-mcp-secret" not in serialized
     assert "tok-mcp-secret" not in serialized
-    assert "<redacted>" not in serialized
+    assert "**********" not in serialized
 
     # Values must be Fernet ciphertext (base64; starts with "gAAAA").
     assert enc_token.startswith("gAAAA")
@@ -1409,15 +1930,93 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
 
     # Round-trip: decrypt with the same cipher recovers the originals.
     restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
-    assert restored.mcp_config is not None
-    restored_dump = restored.mcp_config.model_dump(exclude_none=True)
-    assert (
-        restored_dump["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghp-mcp-secret"
+    restored_dump = dump_mcp_config(restored.mcp_config)
+    restored_github_env = restored_dump["github"]["env"]
+    restored_fetch_headers = restored_dump["fetch"]["headers"]
+    assert isinstance(restored_github_env, dict)
+    assert isinstance(restored_fetch_headers, dict)
+    assert restored_github_env["GITHUB_TOKEN"] == "ghp-mcp-secret"
+    assert restored_fetch_headers["X-API-Token"] == "tok-mcp-secret"
+
+
+def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
+    from openhands.sdk.utils.cipher import Cipher
+
+    mcp_config = coerce_mcp_config(
+        {
+            "linear": {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {"strategy": "bearer", "value": "lin-api-secret"},
+            },
+            "superhuman": {
+                "url": "https://mcp.mail.superhuman.com/mcp",
+                "auth": {"strategy": "oauth2"},
+            },
+        }
     )
-    assert (
-        restored_dump["mcpServers"]["fetch"]["headers"]["Authorization"]
-        == "Bearer tok-mcp-secret"
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+    servers = dumped["mcp_config"]
+
+    assert servers["linear"]["auth"]["strategy"] == "bearer"
+    assert servers["linear"]["auth"]["value"].startswith("gAAAA")
+    assert servers["linear"]["auth"]["value"] != "lin-api-secret"
+    assert servers["superhuman"]["auth"] == {"strategy": "oauth2"}
+
+    redacted = settings.model_dump(mode="json")
+    assert redacted["mcp_config"]["linear"]["auth"] == {
+        "strategy": "bearer",
+        "value": "**********",
+    }
+    assert redacted["mcp_config"]["superhuman"]["auth"] == {"strategy": "oauth2"}
+
+    restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    restored_servers = dump_mcp_config(restored.mcp_config)
+    assert restored_servers["linear"]["auth"] == {
+        "strategy": "bearer",
+        "value": "lin-api-secret",
+    }
+    assert restored_servers["superhuman"]["auth"] == {
+        "strategy": "oauth2",
+    }
+
+
+def test_openhands_agent_settings_create_agent_preserves_mcp_auth_model() -> None:
+    mcp_config = coerce_mcp_config(
+        {
+            "linear": {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": {"strategy": "bearer", "value": "lin-api-secret"},
+            },
+            "superhuman": {
+                "url": "https://mcp.mail.superhuman.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
+            },
+        }
     )
+
+    agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
+
+    servers = dump_mcp_config(agent.mcp_config)
+    assert servers["linear"]["auth"] == {
+        "strategy": "bearer",
+        "value": "lin-api-secret",
+    }
+    assert servers["superhuman"]["auth"] == {
+        "strategy": "oauth2",
+        "authentication": {
+            "type": "oauth",
+            "client_auth_method": "none",
+        },
+    }
 
 
 def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() -> None:
@@ -1431,13 +2030,11 @@ def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() 
     cipher = Cipher(secret_key="test-encryption-key")
     legacy_payload = {
         "mcp_config": {
-            "mcpServers": {
-                "github": {
-                    "command": "uvx",
-                    "args": ["mcp-server-github"],
-                    # plaintext, as the previous (pre-encryption) build wrote
-                    "env": {"GITHUB_TOKEN": "ghp-legacy-plaintext"},
-                }
+            "github": {
+                "command": "uvx",
+                "args": ["mcp-server-github"],
+                # plaintext, as the previous (pre-encryption) build wrote
+                "env": {"GITHUB_TOKEN": "ghp-legacy-plaintext"},
             }
         }
     }
@@ -1445,13 +2042,9 @@ def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() 
     restored = OpenHandsAgentSettings.model_validate(
         legacy_payload, context={"cipher": cipher}
     )
-    assert restored.mcp_config is not None
-    assert (
-        restored.mcp_config.model_dump(exclude_none=True)["mcpServers"]["github"][
-            "env"
-        ]["GITHUB_TOKEN"]
-        == "ghp-legacy-plaintext"
-    )
+    restored_env = dump_mcp_config(restored.mcp_config)["github"]["env"]
+    assert isinstance(restored_env, dict)
+    assert restored_env["GITHUB_TOKEN"] == "ghp-legacy-plaintext"
 
 
 def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() -> None:
@@ -1467,26 +2060,19 @@ def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() 
     from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
     settings = OpenHandsAgentSettings(
-        mcp_config=MCPConfig.model_validate(
+        mcp_config=coerce_mcp_config(
             {
-                "mcpServers": {
-                    "github": {
-                        "command": "uvx",
-                        "args": ["mcp-server-github"],
-                        "env": {"GITHUB_TOKEN": "ghp-secret"},
-                    }
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-secret"},
                 }
             }
         )
     )
     with pytest.raises(PydanticSerializationError) as exc_info:
         settings.model_dump(mode="json", context={"expose_secrets": "encrypted"})
-    cause: BaseException | None = exc_info.value
-    while cause is not None:
-        if isinstance(cause, MissingCipherError):
-            break
-        cause = cause.__cause__ or cause.__context__
-    assert isinstance(cause, MissingCipherError)
+    assert MissingCipherError.__name__ in str(exc_info.value)
 
 
 def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -> None:
@@ -1497,14 +2083,12 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
     from openhands.sdk.utils.cipher import Cipher
 
     settings = OpenHandsAgentSettings(
-        mcp_config=MCPConfig.model_validate(
+        mcp_config=coerce_mcp_config(
             {
-                "mcpServers": {
-                    "github": {
-                        "command": "uvx",
-                        "args": ["mcp-server-github"],
-                        "env": {"GITHUB_TOKEN": "ghp-secret"},
-                    }
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-secret"},
                 }
             }
         )
@@ -1515,41 +2099,36 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
         mode="json",
         context={"cipher": cipher, "expose_secrets": "plaintext"},
     )
-    assert (
-        dumped["mcp_config"]["mcpServers"]["github"]["env"]["GITHUB_TOKEN"]
-        == "ghp-secret"
-    )
+    assert dumped["mcp_config"]["github"]["env"]["GITHUB_TOKEN"] == "ghp-secret"
 
 
 def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # create_agent must hand the runtime real env/headers (the field serializer
     # redacts mcp_config for transit only).
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
             }
         }
     )
     agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
 
-    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+    env = dump_mcp_config(agent.mcp_config)["leaky"]["env"]
+    assert isinstance(env, dict)
+    assert env["API_KEY"] == "sk-mcp-secret"
 
 
 def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
+                "headers": {"X-API-Token": "tok-mcp-secret"},
             }
         }
     )
@@ -1560,34 +2139,38 @@ def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     assert "tok-mcp-secret" not in blob
 
     exposed = settings.model_dump(context={"expose_secrets": True})
-    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
-    assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
-    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+    leaky = exposed["mcp_config"]["leaky"]
+    env = leaky["env"]
+    headers = leaky["headers"]
+    assert isinstance(env, dict)
+    assert isinstance(headers, dict)
+    assert env["API_KEY"] == "sk-mcp-secret"
+    assert headers["X-API-Token"] == "tok-mcp-secret"
 
 
 def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # create_agent must hand the subprocess real env/headers (the field serializer
     # redacts mcp_config for transit/storage only).
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = coerce_mcp_config(
         {
-            "mcpServers": {
-                "leaky": {
-                    "command": "echo",
-                    "args": ["mcp"],
-                    "env": {"API_KEY": "sk-mcp-secret"},
-                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
-                }
+            "leaky": {
+                "command": "echo",
+                "args": ["mcp"],
+                "env": {"API_KEY": "sk-mcp-secret"},
+                "headers": {"X-API-Token": "tok-mcp-secret"},
             }
         }
     )
     agent = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config).create_agent()
 
     assert isinstance(agent, ACPAgent)
-    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
-    assert (
-        agent.mcp_config["mcpServers"]["leaky"]["headers"]["Authorization"]
-        == "Bearer tok-mcp-secret"
-    )
+    dumped = dump_mcp_config(agent.mcp_config)["leaky"]
+    env = dumped["env"]
+    headers = dumped["headers"]
+    assert isinstance(env, dict)
+    assert isinstance(headers, dict)
+    assert env["API_KEY"] == "sk-mcp-secret"
+    assert headers["X-API-Token"] == "tok-mcp-secret"
 
 
 # ---------------------------------------------------------------------------
@@ -1652,6 +2235,8 @@ def test_acp_settings_api_key_env_var_from_registry() -> None:
     )
     assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
     assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
+    # Kimi has no env-var API key; the credential is config.toml.
+    assert ACPAgentSettings(acp_server="kimi-code").api_key_env_var is None
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
     )
@@ -1666,6 +2251,7 @@ def test_acp_settings_base_url_env_var_from_registry() -> None:
     assert (
         ACPAgentSettings(acp_server="gemini-cli").base_url_env_var == "GEMINI_BASE_URL"
     )
+    assert ACPAgentSettings(acp_server="kimi-code").base_url_env_var == "KIMI_BASE_URL"
     assert (
         ACPAgentSettings(acp_server="custom", acp_command=["x"]).base_url_env_var
         is None
@@ -1675,14 +2261,36 @@ def test_acp_settings_base_url_env_var_from_registry() -> None:
 def test_acp_resolve_command_uses_registry_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from openhands.sdk.settings.acp_install_catalog import (
+        PI_ACP_VERSION,
+        PI_CODING_AGENT_VERSION,
+    )
     from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 
-    # No pinned binary on PATH → registry npx default is returned verbatim.
+    # No pinned binary on PATH → registry default is returned verbatim.
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    for server_key in ("claude-code", "codex", "gemini-cli"):
+    for server_key in (
+        "claude-code",
+        "codex",
+        "gemini-cli",
+        "kimi-code",
+        "pi",
+        "opencode",
+    ):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)
         assert settings.resolve_acp_command() == expected
+    # Pi is the only provider whose default installs two packages: the pi-acp
+    # adapter and the `pi` engine it spawns off PATH.
+    pi_settings = ACPAgentSettings(acp_server="pi")
+    assert pi_settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "--prefer-offline",
+        f"--package=pi-acp@{PI_ACP_VERSION}",
+        f"--package=@earendil-works/pi-coding-agent@{PI_CODING_AGENT_VERSION}",
+        "pi-acp",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1693,7 +2301,6 @@ def test_acp_resolve_command_uses_registry_defaults(
 def test_regular_agent_supports_all_capabilities() -> None:
     agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
     assert agent.supports_openhands_tools is True
-    assert agent.supports_openhands_mcp is True
     assert agent.supports_condenser is True
     assert agent.agent_kind == "openhands"
 
@@ -1703,7 +2310,6 @@ def test_acp_agent_reports_no_openhands_capabilities() -> None:
 
     agent = ACPAgent(acp_command=["x"])
     assert agent.supports_openhands_tools is False
-    assert agent.supports_openhands_mcp is False
     assert agent.supports_condenser is False
     assert agent.agent_kind == "acp"
 
@@ -1712,7 +2318,7 @@ def test_llm_subscription_fields_roundtrip() -> None:
     settings = validate_agent_settings(
         {
             "llm": {
-                "model": "gpt-5.2-codex",
+                "model": "gpt-5.6",
                 "auth_type": "subscription",
                 "subscription_vendor": "openai",
             }
@@ -1732,12 +2338,12 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
     original_llm = LLM(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm = LLM(model="openai/gpt-5.2-codex")
-    runtime_llm._is_subscription = True
+    runtime_llm = LLM(model="openai/gpt-5.6")
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm is original_llm
@@ -1758,8 +2364,8 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
 def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
-    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
@@ -1774,7 +2380,7 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 
     loaded = LLM.from_persisted(
         {
-            "model": "gpt-5.2-codex",
+            "model": "gpt-5.6",
             "auth_type": "subscription",
             "subscription_vendor": "openai",
             "schema_version": 1,
@@ -1788,16 +2394,16 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
     from openhands.sdk.llm.auth import openai
 
-    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
-    runtime_llm._is_subscription = True
+    runtime_llm = LLM(model="openai/gpt-5.6", auth_type="subscription")
+    runtime_llm.is_subscription = True
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         assert llm.auth_type == "subscription"
         assert llm.subscription_vendor == "openai"
-        assert llm.model == "gpt-5.2-codex"
+        assert llm.model == "gpt-5.6"
         return runtime_llm
 
-    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.6")
     monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
     monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
     monkeypatch.setattr(
@@ -1814,6 +2420,7 @@ def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
 
 def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
     import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
 
     class UnexpectedAuth:
         def __init__(self, *args, **kwargs):
@@ -1821,13 +2428,61 @@ def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) 
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
     runtime_llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    runtime_llm._is_subscription = True
+    runtime_llm.is_subscription = True
+    runtime_llm._subscription_credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
 
     assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+def test_llm_from_persisted_rebuilds_serialized_subscription_runtime(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+    from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+    monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
+    monkeypatch.setattr(
+        OpenAISubscriptionAuth,
+        "refresh_if_needed_sync",
+        lambda self: credentials,
+    )
+
+    source = OpenAISubscriptionAuth().create_llm(
+        model="gpt-5.6-sol",
+        credentials=credentials,
+    )
+    persisted = source.to_persisted()
+
+    assert persisted["is_subscription"] is True
+    assert "base_url" not in persisted
+
+    loaded = LLM.from_persisted(persisted)
+
+    assert loaded is not source
+    assert loaded.model == "openai/gpt-5.6-sol"
+    assert loaded.base_url == "https://chatgpt.com/backend-api/codex"
+    assert loaded.is_subscription is True
+    assert loaded.extra_headers is not None
+    assert loaded.extra_headers["originator"] == "codex_cli_rs"
+    assert loaded.extra_headers["OpenAI-Beta"] == "responses=experimental"
+    assert loaded._subscription_credentials is credentials
+    assert loaded._get_litellm_api_key_value() == "access-token"
 
 
 @pytest.mark.asyncio
@@ -1858,11 +2513,11 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
 
     api_key, extra_headers = await llm._aget_litellm_auth_values()
     assert api_key == "access-token"
@@ -1896,11 +2551,11 @@ def test_sync_subscription_api_key_uses_valid_runtime_credentials(
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
     )
-    llm._is_subscription = True
+    llm.is_subscription = True
     llm._subscription_credentials = credentials
 
     api_key, extra_headers = llm._get_litellm_auth_values()
@@ -1919,7 +2574,7 @@ def test_openai_subscription_create_llm_serializes_subscription_auth(
     monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
 
     llm = OpenAISubscriptionAuth().create_llm(
-        model="gpt-5.2-codex",
+        model="gpt-5.6-sol",
         credentials=OAuthCredentials(
             vendor="openai",
             access_token="access-token",
@@ -1967,7 +2622,7 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
 
     monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
     source = LLM(
-        model="gpt-5.2-codex",
+        model="gpt-5.6",
         auth_type="subscription",
         subscription_vendor="openai",
         usage_id="profile:test",
@@ -1982,3 +2637,4 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
     assert captured["timeout"] == 123
     assert "api_key" not in captured
     assert "base_url" not in captured
+    assert "is_subscription" not in captured

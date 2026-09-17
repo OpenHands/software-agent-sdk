@@ -8,6 +8,7 @@ for the Cloud API's settings/secrets endpoints.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, TypedDict
 
 from pydantic import (
@@ -30,6 +31,38 @@ from openhands.sdk.settings import (
     validate_agent_settings,
 )
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+
+
+class _SecretProbeCipher:
+    """Fake cipher that flags secret serialization without needing a real key.
+
+    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    serializer down the "encrypted" branch (see ``resolve_expose_mode``),
+    reusing the real serialization pipeline to detect secret-bearing fields
+    instead of hand-walking the model for ``SecretStr`` instances. That
+    matters for fields like ``AgentContext.secrets``, whose bare-string
+    entries are plain ``str`` at rest and only become secret-shaped inside
+    their own field serializer at dump time -- a value-type walk can't see
+    that, but reusing the pipeline does.
+    """
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+        return None
+
+    def encrypt(self, value: SecretStr) -> str:
+        if value.get_secret_value():
+            self.found = True
+        return ""
+
+
+def _contains_secret_value(model: BaseModel) -> bool:
+    """Check if serializing `model` would touch any secret-bearing field."""
+    probe = _SecretProbeCipher()
+    model.model_dump(mode="json", context={"cipher": probe})
+    return probe.found
 
 
 class SettingsUpdatePayload(TypedDict, total=False):
@@ -73,7 +106,7 @@ def _deep_merge(
       ``env`` / ``headers`` key) without round-tripping the whole map::
 
           {"agent_settings_diff":
-              {"mcp_config": {"mcpServers": {"svc": {"env": {"STALE_KEY": null}}}}}}
+              {"mcp_config": {"svc": {"env": {"STALE_KEY": null}}}}}
 
     - **At the top level** (a settings *field* like ``confirmation_mode``)
       a ``None`` is left as-is and flows to model
@@ -109,7 +142,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 2
+PERSISTED_SETTINGS_SCHEMA_VERSION = 3
 
 
 class PersistedSettings(BaseModel):
@@ -125,8 +158,15 @@ class PersistedSettings(BaseModel):
     The ``misc_settings`` field is an opaque dict the agent-server persists
     on behalf of the frontend. The agent-server never reads its contents and
     has no schema for it; clients are free to store any JSON-serializable
-    structure they need (e.g. app/UI preferences, analytics consent, git
-    identity used for in-conversation commits, etc.).
+    structure they need (e.g. app/UI preferences, git identity used for
+    in-conversation commits, etc.).
+
+    One namespace inside ``misc_settings`` is a documented exception to the
+    "never read" rule: ``misc_settings.telemetry`` holds ``consent``
+    (``granted``/``denied``/``unset``) and an optional ``managed`` flag. The
+    frontend still owns the value; the agent-server only reads it, to decide
+    whether product analytics may be delivered. Nothing else in the container
+    is interpreted.
     """
 
     schema_version: int = Field(
@@ -172,7 +212,23 @@ class PersistedSettings(BaseModel):
         )
         return bool(secret_value and secret_value.strip())
 
-    def update(self, payload: SettingsUpdatePayload) -> None:
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these settings contain any secret value anywhere.
+
+        Broader than ``llm_api_key_is_set``: walks the whole ``agent_settings``
+        tree (MCP server env/headers, ``critic_api_key``, provider creds,
+        ``agent_context.secrets``, ...) rather than checking a fixed field
+        list, so it stays correct as new secret-bearing fields are added.
+        """
+        return _contains_secret_value(self.agent_settings)
+
+    def update(
+        self,
+        payload: SettingsUpdatePayload,
+        *,
+        context: Mapping[str, object] | None = None,
+    ) -> None:
         """Apply a batch of changes from a nested dict.
 
         Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
@@ -215,7 +271,7 @@ class PersistedSettings(BaseModel):
             if isinstance(agent_update, dict):
                 try:
                     new_agent = apply_agent_settings_diff(
-                        self.agent_settings, agent_update
+                        self.agent_settings, agent_update, context=context
                     )
                 except Exception as e:
                     # Use 'from None' to break exception chain - the original
@@ -275,7 +331,12 @@ class PersistedSettings(BaseModel):
 
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
-        - **v2** (current): adds the opaque ``misc_settings`` container.
+        - **v2**: adds the opaque ``misc_settings`` container.
+        - **v3** (current): nested ``agent_settings`` advanced to schema v6
+          (dropped the removed ``llm.modify_params`` field). Nested payloads
+          are migrated through ``validate_agent_settings`` in
+          ``_normalize_inputs``; the top-level bump keeps the file schema in
+          step with the nested shape change.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -398,6 +459,11 @@ class Secrets(BaseModel):
     custom_secrets: dict[str, CustomSecret] = Field(default_factory=dict)
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these secrets contain any non-empty value."""
+        return _contains_secret_value(self)
 
     def get_env_vars(self) -> dict[str, str]:
         """Get secrets as environment variables dict.

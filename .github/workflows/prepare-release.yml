@@ -24,7 +24,7 @@ jobs:
                   echo "✅ Version format is valid: $INPUTS_VERSION"
 
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
@@ -54,6 +54,13 @@ jobs:
               run: |
                   echo "🔧 Setting version to $INPUTS_VERSION"
                   make set-package-version version="$INPUTS_VERSION"
+
+            - name: Set TypeScript client version
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
+              run: |
+                  npm --prefix clients/typescript version "$INPUTS_VERSION" \
+                    --no-git-tag-version --ignore-scripts
 
             - name: Commit version changes
               env:
@@ -98,14 +105,14 @@ jobs:
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
-                  - [ ] Evaluation on OpenHands Index
+                  - [ ] Security scan passes (tagged with `security-scan`)
                   - [ ] Confirm any `release-note-required` PRs are accurately called out in the final release notes
 
                   ### What happens on merge
                   When this PR is merged, the `create-release.yml` workflow will automatically:
                   1. Create a GitHub release with tag `v{version}` and auto-generated notes, plus an explicit preamble for merged `release-note-required` PRs
-                  2. Trigger `pypi-release.yml` to publish all packages to PyPI
-                  3. Trigger `version-bump-prs.yml` to create downstream version bump PRs
+                  2. Explicitly dispatch PyPI, npm, GitHub Packages, agent-server image, and binary publishers against tag `v{version}`
+                  3. Trigger `version-bump-prs.yml` after successful PyPI publication
                   """
                   )
                   PY
@@ -117,7 +124,8 @@ jobs:
                     --head "$BRANCH_NAME" \
                     --label "integration-test" \
                     --label "behavior-test" \
-                    --label "test-examples"
+                    --label "test-examples" \
+                    --label "security-scan"
 
                   rm pr_body.txt
                   echo "✅ Pull request created successfully!"
@@ -141,7 +149,7 @@ jobs:
 
             - name: Notify Slack
               if: steps.slack_token.outputs.available == 'true'
-              uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+              uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
               with:
                   method: chat.postMessage
                   token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -161,5 +169,5 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
                   echo "1. Review the PR and address any deprecation deadlines" >> $GITHUB_STEP_SUMMARY
-                  echo "2. Wait for integration, behavior, and example tests to pass" >> $GITHUB_STEP_SUMMARY
+                  echo "2. Wait for integration, behavior, example tests, and security scan to pass" >> $GITHUB_STEP_SUMMARY
                   echo "3. Merge the PR — a GitHub release and PyPI publish will happen automatically" >> $GITHUB_STEP_SUMMARY

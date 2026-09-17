@@ -127,7 +127,7 @@ class MarketplacePluginEntry(MarketplaceEntry):
     commands: str | list[str] | None = Field(default=None)
     agents: str | list[str] | None = Field(default=None)
     hooks: str | HooksConfigDict | None = Field(default=None)
-    mcp_servers: McpServersDict | None = Field(default=None, alias="mcpServers")
+    mcp_config: McpServersDict | None = Field(default=None, alias="mcpServers")
     lsp_servers: LspServersDict | None = Field(default=None, alias="lspServers")
 
     # Additional metadata fields

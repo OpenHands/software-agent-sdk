@@ -1,11 +1,11 @@
 ---
 name: Run Integration Tests
 run-name: >-
-    Run Integration Tests ${{ inputs.reason || github.event.label.name || 'scheduled' }}
+    Run Integration Tests ${{ inputs.reason || github.event.label.name || 'manual' }}
 
 on:
     # Use pull_request_target to access secrets even on fork PRs.
-    # Labeled PR runs are gated per job to integration-test and behavior-test.
+    # Labeled PR runs are gated per job to supported test labels.
     pull_request_target:
         types:
             - labeled
@@ -16,13 +16,19 @@ on:
                 required: true
                 default: ''
             test_type:
-                description: Select which tests to run (all, integration, behavior)
+                description: >-
+                    Select which tests to run (all, integration, behavior, condenser)
                 required: false
                 default: all
+            run_api_compliance:
+                description: Also run API compliance tests
+                required: false
+                default: false
+                type: boolean
             model_ids:
                 description: >-
-                    Comma-separated model IDs to test (resolved via OpenHands/evaluation).
-                    Example: gpt-5.5,glm-4.7. Defaults to a standard set.
+                    Comma-separated model IDs to test (resolved by the inline table).
+                    Example: gpt-5.5,claude-sonnet-4-6. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -44,41 +50,30 @@ on:
                     - gemini
                     - gpt5
                     - planning
-    schedule:
-        - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
-    # Default models for scheduled/label-triggered runs (resolved via OpenHands/evaluation)
-    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro
+    # Default models for label-triggered runs (resolved by the inline table below)
+    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro,claude-sonnet-4-6
+    DEFAULT_CONDENSER_MODEL_IDS: gpt-5.5,claude-sonnet-4-6
 
 jobs:
     setup-matrix:
         if: >-
             github.event_name != 'pull_request_target' ||
             github.event.label.name == 'integration-test' ||
-            github.event.label.name == 'behavior-test'
+            github.event.label.name == 'behavior-test' ||
+            github.event.label.name == 'condenser-test'
         runs-on: ubuntu-latest
         outputs:
             matrix: ${{ steps.resolve-models.outputs.matrix }}
             issue_number: ${{ steps.resolve-issue.outputs.issue_number }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}
-                  persist-credentials: false
-
-            - name: Checkout evaluation model config
-              uses: actions/checkout@v6
-              with:
-                  repository: OpenHands/evaluation
-                  ref: main
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PRIVATE }}
-                  path: .evaluation-model-config
-                  sparse-checkout: |
-                      eval-job/model-config
                   persist-credentials: false
 
             - name: Set up Python
@@ -90,11 +85,18 @@ jobs:
               id: resolve-models
               env:
                   MODEL_IDS_INPUT: ${{ github.event.inputs.model_ids || '' }}
+                  TEST_TYPE_INPUT: ${{ github.event.inputs.test_type || '' }}
+                  TRIGGER_LABEL: ${{ github.event.label.name || '' }}
                   DEFAULT_MODEL_IDS: ${{ env.DEFAULT_MODEL_IDS }}
+                  DEFAULT_CONDENSER_MODEL_IDS: ${{ env.DEFAULT_CONDENSER_MODEL_IDS }}
               run: |
-                  # Use input model_ids if provided, otherwise use defaults
+                  # Use input model_ids if provided, otherwise use suite defaults
                   if [ -z "$MODEL_IDS_INPUT" ]; then
-                    MODEL_IDS="$DEFAULT_MODEL_IDS"
+                    if [ "$TRIGGER_LABEL" = "condenser-test" ] || [ "$TEST_TYPE_INPUT" = "condenser" ]; then
+                      MODEL_IDS="$DEFAULT_CONDENSER_MODEL_IDS"
+                    else
+                      MODEL_IDS="$DEFAULT_MODEL_IDS"
+                    fi
                     echo "No model_ids specified, using defaults: $MODEL_IDS"
                   else
                     MODEL_IDS="$MODEL_IDS_INPUT"
@@ -103,21 +105,41 @@ jobs:
 
                   export MODEL_IDS
 
-                  # Resolve model configs using OpenHands/evaluation's model config.
-                  # Transform output to matrix format for integration tests.
+                  # Transform model configs to matrix format for integration tests.
                   MATRIX=$(python3 << 'EOF'
                   import json
                   import os
                   import sys
-                  sys.path.insert(0, '.evaluation-model-config/eval-job/model-config')
-                  from resolve_model_config import find_models_by_id
+                  # Inlined from OpenHands/evaluation (eval-job/model-config) so this
+                  # public workflow no longer clones the private eval repo. Only `model`
+                  # plus tuning params are needed here; api_key/base_url are injected from
+                  # env (LLM_API_KEY/LLM_BASE_URL) by tests/integration/base.py.
+                  MODELS = {
+                      "gpt-5.5": {"display_name": "GPT-5.5",
+                          "llm_config": {"model": "litellm_proxy/openai/gpt-5.5", "reasoning_effort": "high"}},
+                      "deepseek-v4-flash": {"display_name": "DeepSeek V4 Flash",
+                          "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"}},
+                      "minimax-m2.7": {"display_name": "MiniMax M2.7",
+                          "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.7", "temperature": 1.0, "top_p": 0.95}},
+                      "gemini-3.1-pro": {"display_name": "Gemini 3.1 Pro",
+                          "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview", "temperature": 0.0}},
+                      "claude-sonnet-4-6": {"display_name": "Claude Sonnet 4.6",
+                          "llm_config": {"model": "litellm_proxy/anthropic/claude-sonnet-4-6", "temperature": 0.0}},
+                      "kimi-k3": {"display_name": "Kimi K3",
+                          "llm_config": {"model": "litellm_proxy/moonshot/kimi-k3", "reasoning_effort": "high"}},
+                      "claude-opus-5": {"display_name": "Claude Opus 5",
+                          "llm_config": {"model": "litellm_proxy/anthropic/claude-opus-5", "reasoning_effort": "high"}},
+                  }
 
                   model_ids = os.environ["MODEL_IDS"].split(",")
                   model_ids = [m.strip() for m in model_ids if m.strip()]
 
-                  # find_models_by_id exits with code 1 and prints a helpful
-                  # message if any model ID cannot be resolved.
-                  resolved = find_models_by_id(model_ids)
+                  # Fail fast with a helpful message if any model ID is unknown.
+                  try:
+                      resolved = [MODELS[m] for m in model_ids]
+                  except KeyError as exc:
+                      print(f"Unknown model id {exc}; known ids: {', '.join(MODELS)}", file=sys.stderr)
+                      sys.exit(1)
 
                   matrix = []
                   for model_id, model in zip(model_ids, resolved):
@@ -166,7 +188,9 @@ jobs:
         if: >
             github.event_name == 'pull_request_target' && (
                 github.event.label.name == 'integration-test' ||
-                github.event.label.name == 'behavior-test'
+                github.event.label.name == 'behavior-test' ||
+                github.event.label.name == 'condenser-test' ||
+                github.event.label.name == 'api-compliance-test'
             )
         runs-on: ubuntu-latest
         permissions:
@@ -186,6 +210,20 @@ jobs:
                   unique: false
                   comment: |
                       Hi! I started running the behavior tests on your PR. You will receive a comment with the results shortly.
+            - name: Comment on PR (condenser tests via label)
+              if: github.event.label.name == 'condenser-test'
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
+              with:
+                  unique: false
+                  comment: |
+                      Hi! I started running the condenser tests on your PR. You will receive a comment with the results shortly.
+            - name: Comment on PR (API compliance tests via label)
+              if: github.event.label.name == 'api-compliance-test'
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
+              with:
+                  unique: false
+                  comment: |
+                      Hi! I started running the API compliance tests on your PR. You will receive a comment with the results shortly.
 
     # Post initial comment for workflow_dispatch (depends on setup-matrix for issue_number resolution)
     post-dispatch-comment:
@@ -194,6 +232,7 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             issues: write
+            pull-requests: write
         steps:
             - name: Comment on issue/PR (workflow_dispatch)
               env:
@@ -201,6 +240,7 @@ jobs:
                   ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
+                  RUN_API_COMPLIANCE: ${{ github.event.inputs.run_api_compliance || 'false' }}
                   REASON: ${{ github.event.inputs.reason }}
                   WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
@@ -208,33 +248,34 @@ jobs:
                   SANITIZED_REASON=$(printf '%s' "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   SANITIZED_MODEL_IDS=$(printf '%s' "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   COMMENT_BODY=$(cat <<EOF
-                  **Integration Tests Triggered**
+                  **Test Suites Triggered**
 
                   - **Reason:** $SANITIZED_REASON
                   - **Test type:** $TEST_TYPE
                   - **Models:** $SANITIZED_MODEL_IDS
+                  - **API compliance:** $RUN_API_COMPLIANCE
                   - **Workflow run:** $WORKFLOW_RUN_URL
 
                   Results will be posted here when complete.
                   EOF
                   )
-                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
+                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" \
+                    --repo "$GITHUB_REPOSITORY" --body-file -
 
     run-integration-tests:
-        # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
+        # Security: Only run when integration-related labels are present or via workflow_dispatch
         # This prevents automatic execution on fork PRs without maintainer approval
-        # Note: uses always() to run even when comment jobs are skipped (e.g., for scheduled runs)
-        # Schedule trigger only runs in the main repository, not in forks
+        # Note: uses always() to run even when comment jobs are skipped
         if: |
             always() && (
                 (
                     github.event_name == 'pull_request_target' && (
                         github.event.label.name == 'integration-test' ||
-                        github.event.label.name == 'behavior-test'
+                        github.event.label.name == 'behavior-test' ||
+                        github.event.label.name == 'condenser-test'
                     )
                 ) ||
-                github.event_name == 'workflow_dispatch' ||
-                (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
+                github.event_name == 'workflow_dispatch'
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-label-comment, post-dispatch-comment]
         runs-on: ubuntu-24.04
@@ -251,7 +292,7 @@ jobs:
                 job-config: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   # For pull_request_target: checkout fork PR code (requires explicit repository)
                   # For other events: fallback to current repository and ref
@@ -286,7 +327,10 @@ jobs:
                   TEST_TYPE_INPUT: ${{ github.event.inputs.test_type }}
               run: |
                   TEST_TYPE_ARGS=""
-                  if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
+                  if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "condenser-test" ]; then
+                    TEST_TYPE_ARGS="--test-type condenser"
+                    echo "condenser-test label detected; running condenser tests only."
+                  elif [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
                     TEST_TYPE_ARGS="--test-type behavior"
                     echo "behavior-test label detected; running behavior tests only."
                   elif [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "integration-test" ]; then
@@ -303,6 +347,10 @@ jobs:
                         TEST_TYPE_ARGS="--test-type integration"
                         echo "workflow_dispatch requested integration tests only."
                         ;;
+                      condenser)
+                        TEST_TYPE_ARGS="--test-type condenser"
+                        echo "workflow_dispatch requested condenser tests only."
+                        ;;
                       ""|all)
                         echo "workflow_dispatch requested full integration suite."
                         ;;
@@ -310,9 +358,6 @@ jobs:
                         echo "workflow_dispatch provided unknown test_type '$test_type'; defaulting to full suite."
                         ;;
                     esac
-                  elif [ "${{ github.event_name }}" = "schedule" ]; then
-                    TEST_TYPE_ARGS="--test-type integration"
-                    echo "Scheduled run; running integration tests only."
                   else
                     echo "Running full integration test suite."
                   fi
@@ -395,11 +440,11 @@ jobs:
                 (
                     github.event_name == 'pull_request_target' && (
                         github.event.label.name == 'integration-test' ||
-                        github.event.label.name == 'behavior-test'
+                        github.event.label.name == 'behavior-test' ||
+                        github.event.label.name == 'condenser-test'
                     )
                 ) ||
-                github.event_name == 'workflow_dispatch' ||
-                (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
+                github.event_name == 'workflow_dispatch'
             )
         runs-on: ubuntu-24.04
         permissions:
@@ -408,7 +453,7 @@ jobs:
             issues: write
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   # When using pull_request_target, explicitly checkout the PR branch
                   # This ensures we use the scripts from the actual PR code
@@ -485,25 +530,79 @@ jobs:
                   # Use GitHub CLI to create comment on the specified issue/PR
                   echo "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
 
-            - name: Read consolidated report for tracker issue
-              if: github.event_name == 'schedule'
-              id: read_report
-              run: |
-                  # Read and sanitize the report, then set as output
-                  REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
-                  echo "report<<EOF" >> $GITHUB_OUTPUT
-                  echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
-                  echo "EOF" >> $GITHUB_OUTPUT
-
-            - name: Comment with results on tracker issue
-              if: github.event_name == 'schedule'
-              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
+    run-api-compliance-tests:
+        if: >-
+            (github.event_name == 'pull_request_target' &&
+             github.event.label.name == 'api-compliance-test') ||
+            (github.event_name == 'workflow_dispatch' &&
+             inputs.run_api_compliance)
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
+        permissions:
+            contents: read
+            issues: write
+            pull-requests: write
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
               with:
-                  number: 2078
-                  unique: false
-                  comment: |
-                      **Trigger:** Nightly Scheduled Run
-                      **Commit:** ${{ github.sha }}
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  persist-credentials: false
 
-                      ${{ steps.read_report.outputs.report }}
+            - name: Install uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
 
+            - name: Install Python dependencies using uv
+              run: uv sync --frozen --group dev
+
+            - name: Run API compliance tests
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
+                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+              run: |
+                  uv run python tests/integration/api_compliance/run_compliance.py \
+                    --output-dir compliance-results
+
+            - name: Add report to workflow summary
+              if: always()
+              run: |
+                  REPORT=$(find compliance-results -name compliance_report.md -type f -print -quit)
+                  if [ -n "$REPORT" ]; then
+                    cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+                  fi
+
+            - name: Upload API compliance results
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: api-compliance-results
+                  path: compliance-results/
+                  retention-days: 30
+                  if-no-files-found: warn
+
+            - name: Post API compliance report
+              if: >-
+                  always() &&
+                  (github.event_name == 'pull_request_target' ||
+                   (github.event_name == 'workflow_dispatch' &&
+                    github.event.inputs.issue_number != ''))
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  EVENT_NAME: ${{ github.event_name }}
+                  ISSUE_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.issue_number }}
+              run: |
+                  REPORT=$(find compliance-results -name compliance_report.md -type f -print -quit)
+                  if [ -n "$REPORT" ]; then
+                    COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < "$REPORT")
+                    if [ "$EVENT_NAME" = "pull_request_target" ]; then
+                      printf '%s' "$COMMENT_BODY" | gh pr comment "$ISSUE_NUMBER" \
+                        --repo "$GITHUB_REPOSITORY" --body-file -
+                    else
+                      printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" \
+                        --repo "$GITHUB_REPOSITORY" --body-file -
+                    fi
+                  fi

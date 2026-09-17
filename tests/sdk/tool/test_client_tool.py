@@ -5,6 +5,9 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+from openhands.sdk.event import ActionEvent
+from openhands.sdk.llm import TextContent
+from openhands.sdk.llm.message import MessageToolCall
 from openhands.sdk.tool.client_tool import (
     ClientTool,
     ClientToolExecutor,
@@ -175,6 +178,77 @@ def test_client_tool_callable():
     obs = tool(action)
     assert isinstance(obs, ClientToolObservation)
     assert "dispatched" in obs.text.lower()
+
+
+def test_client_tool_kind_argument_action_event_roundtrip():
+    spec = ClientToolSpec(
+        name="symbol_lookup",
+        description="Lookup a symbol",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "description": "Symbol kind hint, such as Function or Method",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    tool = ClientTool.from_spec(spec)
+    action = tool.action_from_arguments({"name": "executeCommand", "kind": "Method"})
+    tool_call = MessageToolCall(
+        id="call_123",
+        name="symbol_lookup",
+        arguments='{"name":"executeCommand","kind":"Method"}',
+        origin="completion",
+    )
+    event = ActionEvent(
+        thought=[TextContent(text="Look up a symbol")],
+        action=action,
+        tool_name="symbol_lookup",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_456",
+    )
+
+    dumped = event.model_dump(mode="json")
+    restored = ActionEvent.model_validate(dumped)
+
+    assert restored.action is not None
+    restored_action_dump = restored.action.model_dump()
+    assert restored_action_dump["mcp_arg_kind"] == "Method"
+    assert restored.action.kind == "ClientAction_symbol_lookup"
+
+
+def test_client_tool_kind_argument_concrete_action_roundtrip():
+    spec = ClientToolSpec(
+        name="symbol_lookup",
+        description="Lookup a symbol",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "kind": {
+                    "type": "string",
+                    "description": "Symbol kind hint, such as Function or Method",
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    tool = ClientTool.from_spec(spec)
+    action_type = tool.action_type
+
+    action = action_type.model_validate({"name": "executeCommand", "kind": "Method"})
+    dumped = action.model_dump()
+    restored = action_type.model_validate(dumped)
+
+    assert dumped["mcp_arg_kind"] == "Method"
+    assert dumped["kind"] == action_type.__name__
+    assert restored.model_dump()["mcp_arg_kind"] == "Method"
+    assert restored.kind == action_type.__name__
 
 
 def test_create_classmethod():

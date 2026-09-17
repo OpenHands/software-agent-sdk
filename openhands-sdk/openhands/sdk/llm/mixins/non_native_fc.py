@@ -12,13 +12,15 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_fncall_messages_to_non_fncall_messages,
     convert_non_fncall_messages_to_fncall_messages,
 )
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import ModelFeatures
 
 
 class _HostSupports(Protocol):
     model: str
     disable_stop_word: bool | None
     native_tool_calling: bool
+
+    def _model_features(self) -> ModelFeatures: ...
 
 
 class NonNativeToolCallingMixin:
@@ -54,7 +56,7 @@ class NonNativeToolCallingMixin:
             add_in_context_learning_example=add_iclex,
             include_security_params=include_security_params,
         )
-        if get_features(self.model).supports_stop_words and not self.disable_stop_word:
+        if self._model_features().supports_stop_words and not self.disable_stop_word:
             kwargs = dict(kwargs)
             kwargs["stop"] = STOP_WORDS
 

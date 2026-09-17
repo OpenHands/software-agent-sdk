@@ -45,7 +45,7 @@ print()
 restored = OpenHandsAgentSettings.model_validate(payload)
 assert restored.condenser.enabled is True
 assert restored.condenser.max_size == 50
-assert len(restored.tools) == 2
+assert restored.tools is not None and len(restored.tools) == 2
 print("✓ Roundtrip deserialization successful — all fields preserved")
 print()
 

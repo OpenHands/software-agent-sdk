@@ -55,7 +55,7 @@ jobs:
             todo-count: ${{ steps.scan.outputs.todo-count }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   fetch-depth: 0 # Full history for better context
 
@@ -130,7 +130,7 @@ jobs:
             max-parallel: 1 # Process one TODO at a time to avoid conflicts
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   fetch-depth: 0
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}

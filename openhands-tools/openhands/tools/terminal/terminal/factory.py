@@ -3,6 +3,7 @@
 import platform
 import subprocess
 import warnings
+from collections.abc import Mapping
 from typing import Literal
 
 from openhands.sdk.logger import get_logger
@@ -77,6 +78,7 @@ def _create_windows_terminal(
     username: str | None,
     no_change_timeout_seconds: int | None,
     shell_path: str | None,
+    env: Mapping[str, str] | None,
 ) -> TerminalSession:
     from openhands.tools.terminal.terminal.windows_terminal import WindowsTerminal
 
@@ -84,7 +86,12 @@ def _create_windows_terminal(
     if resolved_shell_path is None:
         raise RuntimeError("PowerShell is not available on this system")
 
-    terminal = WindowsTerminal(work_dir, username, shell_path=resolved_shell_path)
+    terminal = WindowsTerminal(
+        work_dir,
+        username,
+        shell_path=resolved_shell_path,
+        env=env,
+    )
     return TerminalSession(terminal, no_change_timeout_seconds)
 
 
@@ -94,6 +101,7 @@ def create_terminal_session(
     no_change_timeout_seconds: int | None = None,
     terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
     shell_path: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> TerminalSession:
     """Create an appropriate terminal session based on system capabilities.
 
@@ -105,6 +113,7 @@ def create_terminal_session(
             or 'powershell'). If None, auto-detect based on system capabilities.
         shell_path: Path to the shell binary. On Unix this is used for the
             subprocess backend; on Windows it can point to a PowerShell binary.
+        env: Extra environment variables to add to the terminal session.
 
     Returns:
         TerminalSession instance
@@ -119,7 +128,7 @@ def create_terminal_session(
             from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
             logger.info("Using forced TmuxTerminal")
-            terminal = TmuxTerminal(work_dir, username)
+            terminal = TmuxTerminal(work_dir, username, env=env)
             return TerminalSession(terminal, no_change_timeout_seconds)
 
         if terminal_type == "powershell":
@@ -129,6 +138,7 @@ def create_terminal_session(
                 username,
                 no_change_timeout_seconds,
                 shell_path,
+                env,
             )
 
         if terminal_type == "subprocess":
@@ -143,13 +153,14 @@ def create_terminal_session(
                     username,
                     no_change_timeout_seconds,
                     shell_path,
+                    env,
                 )
             from openhands.tools.terminal.terminal.subprocess_terminal import (
                 SubprocessTerminal,
             )
 
             logger.info("Using forced SubprocessTerminal")
-            terminal = SubprocessTerminal(work_dir, username, shell_path)
+            terminal = SubprocessTerminal(work_dir, username, shell_path, env=env)
             return TerminalSession(terminal, no_change_timeout_seconds)
 
         raise ValueError(f"Unknown session type: {terminal_type}")
@@ -161,13 +172,14 @@ def create_terminal_session(
             username,
             no_change_timeout_seconds,
             shell_path,
+            env,
         )
 
     if _is_tmux_available():
         from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
         logger.info("Auto-detected: Using TmuxTerminal (tmux available)")
-        terminal = TmuxTerminal(work_dir, username)
+        terminal = TmuxTerminal(work_dir, username, env=env)
         return TerminalSession(terminal, no_change_timeout_seconds)
 
     from openhands.tools.terminal.terminal.subprocess_terminal import (
@@ -181,5 +193,5 @@ def create_terminal_session(
     )
     logger.warning(_tmux_warning)
     warnings.warn(_tmux_warning, stacklevel=2)
-    terminal = SubprocessTerminal(work_dir, username, shell_path)
+    terminal = SubprocessTerminal(work_dir, username, shell_path, env=env)
     return TerminalSession(terminal, no_change_timeout_seconds)

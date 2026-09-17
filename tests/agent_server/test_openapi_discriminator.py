@@ -9,12 +9,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
-from openhands.agent_server.models import (
-    ACPConversationInfo,
-    ACPConversationPage,
-    ConversationInfo,
-    ConversationPage,
-)
 
 
 @pytest.fixture
@@ -209,8 +203,3 @@ def test_conversation_contracts_use_unified_acp_capable_endpoint(client):
     assert "/api/conversations" in openapi_schema["paths"]
     # The deprecated /api/acp/conversations routes were removed in v1.27.0.
     assert "/api/acp/conversations" not in openapi_schema["paths"]
-
-
-def test_acp_conversation_response_names_are_type_aliases():
-    assert ACPConversationInfo is ConversationInfo
-    assert ACPConversationPage is ConversationPage

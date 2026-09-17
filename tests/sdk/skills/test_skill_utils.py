@@ -9,6 +9,7 @@ from openhands.sdk.context import (
     KeywordTrigger,
     Skill,
     SkillValidationError,
+    TaskTrigger,
     load_project_skills,
     load_skills_from_dir,
 )
@@ -91,6 +92,100 @@ def test_knowledge_agent():
     assert agent.match_trigger("no match here") is None
     assert isinstance(agent.trigger, KeywordTrigger)
     assert agent.trigger.keywords == ["testing", "pytest"]
+
+
+def _skill_with_keywords(*keywords: str, task: bool = False) -> Skill:
+    """Build a Skill whose (Keyword|Task)Trigger fires on the given keywords."""
+    trigger = (
+        TaskTrigger(triggers=list(keywords))
+        if task
+        else KeywordTrigger(keywords=list(keywords))
+    )
+    return Skill(name="s", content="c", source="s.md", trigger=trigger)
+
+
+# (keyword, message, expected) where expected is the matched keyword or None.
+# Regression coverage for #3643: substring matching fired ``git`` on ``github``
+# and ``issue`` on ``tissue``. Matching must be whole-token on alnum boundaries.
+_MATCH_CASES = [
+    # --- whole-word matches fire ---
+    pytest.param("git", "run git status", "git", id="word-in-middle"),
+    pytest.param("git", "git", "git", id="whole-message"),
+    pytest.param("git", "git status", "git", id="word-at-start"),
+    pytest.param("git", "use git", "git", id="word-at-end"),
+    pytest.param("git", "run git status twice, git", "git", id="repeated"),
+    # --- case-insensitive matching, original keyword returned ---
+    pytest.param("git", "GIT rocks", "git", id="uppercase-message"),
+    pytest.param("git", "use Git today", "git", id="titlecase-message"),
+    pytest.param("GIT", "run git status", "GIT", id="uppercase-keyword-preserved"),
+    pytest.param("GitHub", "open github now", "GitHub", id="mixedcase-keyword"),
+    # --- non-alnum boundaries fire ---
+    pytest.param("git", "git!", "git", id="trailing-bang"),
+    pytest.param("git", "git.", "git", id="trailing-dot"),
+    pytest.param("git", "(git)", "git", id="parenthesized"),
+    pytest.param("git", "git:status", "git", id="colon-after"),
+    pytest.param("git", "use-git-now", "git", id="hyphen-bounded"),
+    pytest.param("git", "my_git_repo", "git", id="underscore-is-a-boundary"),
+    pytest.param("git", "line1\ngit\nline2", "git", id="newline-bounded"),
+    pytest.param("git", "tab\tgit\tend", "git", id="tab-bounded"),
+    # --- alphanumeric adjacency blocks (the #3643 false positives) ---
+    pytest.param("git", "check out github.com", None, id="prefix-of-word"),
+    pytest.param("git", "the digit five", None, id="suffix-of-word"),
+    pytest.param("git", "a legitimate reason", None, id="inside-word"),
+    pytest.param("git", "git2 branch", None, id="trailing-digit"),
+    pytest.param("git", "2git branch", None, id="leading-digit"),
+    pytest.param("issue", "hand me a tissue", None, id="issue-in-tissue"),
+    # --- no match ---
+    pytest.param("git", "no match here", None, id="absent"),
+    pytest.param("git", "", None, id="empty-message"),
+    # --- slash-prefixed keywords (why alnum boundaries, not \\b) ---
+    pytest.param("/linear", "use /linear now", "/linear", id="slash-in-middle"),
+    pytest.param("/linear", "/linear", "/linear", id="slash-whole-message"),
+    pytest.param("/linear", "please /linear", "/linear", id="slash-at-end"),
+    pytest.param("/linear", "run a linearization", None, id="slash-vs-bareword"),
+    pytest.param("/linear", "src/linear.py", None, id="slash-after-alnum"),
+    # --- multi-word phrases match as a unit ---
+    pytest.param("pull request", "open a pull request", "pull request", id="phrase"),
+    pytest.param("pull request", "pull request!", "pull request", id="phrase-punct"),
+    pytest.param("pull request", "pullrequest", None, id="phrase-no-space"),
+    pytest.param("pull request", "pull requests", None, id="phrase-plural"),
+    # --- re.escape keeps regex metacharacters literal ---
+    pytest.param("c++", "write c++ code", "c++", id="metachar-plus"),
+    pytest.param("c++", "c++today", None, id="metachar-plus-adjacent"),
+    pytest.param("a.b", "call a.b now", "a.b", id="metachar-dot-literal"),
+    pytest.param("a.b", "call axb now", None, id="metachar-dot-not-wildcard"),
+]
+
+
+@pytest.mark.parametrize("task", [False, True], ids=["keyword", "task"])
+@pytest.mark.parametrize(("keyword", "message", "expected"), _MATCH_CASES)
+def test_match_trigger_whole_word(
+    keyword: str, message: str, expected: str | None, task: bool
+) -> None:
+    """match_trigger fires on whole tokens only, for both trigger types."""
+    skill = _skill_with_keywords(keyword, task=task)
+    assert skill.match_trigger(message) == expected
+
+
+def test_match_trigger_returns_first_matching_keyword_in_list_order() -> None:
+    """The first keyword (in list order) that matches wins, not the earliest
+    occurrence in the message."""
+    skill = _skill_with_keywords("alpha", "beta")
+    assert skill.match_trigger("beta then alpha") == "alpha"
+    assert skill.match_trigger("only beta here") == "beta"
+
+
+def test_match_trigger_empty_keyword_never_matches() -> None:
+    """An empty trigger keyword must not match everything."""
+    skill = _skill_with_keywords("")
+    assert skill.match_trigger("anything at all") is None
+    assert skill.match_trigger("") is None
+
+
+def test_match_trigger_no_trigger_returns_none() -> None:
+    """Skills without a KeywordTrigger/TaskTrigger never match."""
+    skill = Skill(name="s", content="c", source="s.md", trigger=None)
+    assert skill.match_trigger("git issue linear") is None
 
 
 def test_load_skills(temp_skills_dir):
@@ -551,10 +646,9 @@ type: repo
 version: 1.0.0
 agent: CodeActAgent
 mcp_tools:
-  mcpServers:
-    fetch:
-      command: uvx
-      args: ["mcp-server-fetch"]
+  fetch:
+    command: uvx
+    args: ["mcp-server-fetch"]
 ---
 
 # Default Tools
@@ -574,17 +668,9 @@ This is a repo skill that includes MCP tools.
     assert agent.trigger is None
     assert agent.mcp_tools is not None
 
-    # Verify the mcp_tools configuration is correctly loaded
-    from fastmcp.mcp_config import MCPConfig
-
-    assert isinstance(agent.mcp_tools, dict)
-    config = MCPConfig.model_validate(agent.mcp_tools)
-    assert "fetch" in config.mcpServers
-    fetch_server = config.mcpServers["fetch"]
-    assert hasattr(fetch_server, "command")
-    assert hasattr(fetch_server, "args")
-    assert getattr(fetch_server, "command") == "uvx"
-    assert getattr(fetch_server, "args") == ["mcp-server-fetch"]
+    fetch_server = agent.mcp_tools["fetch"]
+    assert fetch_server.command == "uvx"
+    assert fetch_server.args == ["mcp-server-fetch"]
 
 
 def test_repo_skill_with_mcp_tools_dict_format(tmp_path):
@@ -596,11 +682,9 @@ type: repo
 version: 1.0.0
 agent: CodeActAgent
 mcp_tools: {
-  "mcpServers": {
-    "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
-    }
+  "fetch": {
+    "command": "uvx",
+    "args": ["mcp-server-fetch"]
   }
 }
 ---
@@ -622,17 +706,9 @@ This is a repo skill that includes MCP tools in dict format.
     assert agent.trigger is None
     assert agent.mcp_tools is not None
 
-    # Verify the mcp_tools configuration is correctly loaded
-    from fastmcp.mcp_config import MCPConfig
-
-    assert isinstance(agent.mcp_tools, dict)
-    config = MCPConfig.model_validate(agent.mcp_tools)
-    assert "fetch" in config.mcpServers
-    fetch_server = config.mcpServers["fetch"]
-    assert hasattr(fetch_server, "command")
-    assert hasattr(fetch_server, "args")
-    assert getattr(fetch_server, "command") == "uvx"
-    assert getattr(fetch_server, "args") == ["mcp-server-fetch"]
+    fetch_server = agent.mcp_tools["fetch"]
+    assert fetch_server.command == "uvx"
+    assert fetch_server.args == ["mcp-server-fetch"]
 
 
 def test_repo_skill_without_mcp_tools(tmp_path):
@@ -671,7 +747,7 @@ name: invalid-mcp-tools
 type: repo
 version: 1.0.0
 agent: CodeActAgent
-mcp_tools: "this should be a dict or MCPConfig, not a string"
+mcp_tools: "this should be a FastMCP config mapping, not a string"
 ---
 
 # Invalid MCP Tools

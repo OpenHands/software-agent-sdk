@@ -51,7 +51,7 @@ with DockerWorkspace(
     server_image=server_image,
     host_port=18010,
     platform=detect_platform(),
-    extra_ports=True,  # Expose extra ports for VSCode and VNC
+    extra_ports=True,  # Expose the additional VSCode port
 ) as workspace:
     """Extra ports allows you to access VSCode at localhost:18011"""
 

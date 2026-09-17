@@ -2,12 +2,14 @@
 
 import logging
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
 
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import (
+    get_git_repository_metadata,
     redact_url_credentials,
     run_git_command,
 )  # re-exported for compat
@@ -314,7 +316,7 @@ class TestRunGitCommandCredentialRedaction:
         assert "SUPERSECRET" not in exc_info.value.stderr
         assert REDACTED_URL in exc_info.value.stderr
 
-    def test_stderr_credentials_redacted_in_log(self, caplog):
+    def test_stderr_credentials_redacted_in_error_log_by_default(self, caplog):
         """Credentials echoed in stderr must not leak into the error log line."""
         leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
         completed = subprocess.CompletedProcess(
@@ -326,3 +328,50 @@ class TestRunGitCommandCredentialRedaction:
                     run_git_command(self._args())
         assert "SUPERSECRET" not in caplog.text
         assert REDACTED_URL in caplog.text
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+
+    def test_expected_failure_is_logged_at_debug(self, caplog):
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr="fatal: repo not found"
+        )
+        with patch("subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG):
+                with pytest.raises(GitCommandError):
+                    run_git_command(self._args(), expected_failure=True)
+        assert "Git command failed" in caplog.text
+        assert all(record.levelno < logging.ERROR for record in caplog.records)
+
+
+def test_run_git_command_replaces_undecodable_stdout_bytes():
+    """Invalid-encoding stdout must not raise UnicodeDecodeError (AGE-1871)."""
+    result = run_git_command(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff\\xfe')"],
+        cwd=None,
+        timeout=5,
+    )
+    assert result == "��"
+
+
+def test_get_git_repository_metadata():
+    responses = [
+        subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="HTTPS://user:secret@github.com/org/repo.git\n",
+            stderr="",
+        ),
+        subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="abc123\nfeature-x\n",
+            stderr="",
+        ),
+    ]
+    with patch("openhands.sdk.git.utils._run_git_subprocess", side_effect=responses):
+        metadata = get_git_repository_metadata("/repo")
+
+    assert metadata == {
+        "repo_remote": "HTTPS://****@github.com/org/repo.git",
+        "head_commit": "abc123",
+        "branch": "feature-x",
+    }
