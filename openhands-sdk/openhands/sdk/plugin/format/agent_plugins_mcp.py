@@ -77,7 +77,8 @@ _TOKEN_CHARS: Final[frozenset[str]] = frozenset(
 
 
 #: Parent of the ``PLUGIN_DATA`` directories (§9.1). Outside ``plugins/``, whose
-#: every child is loaded as a plugin.
+#: every child is loaded as a plugin. Bound at import, like the other defaults
+#: here, so a later persistence-dir change needs ``plugin_data_root``.
 DEFAULT_PLUGIN_DATA_DIR = get_user_persistence_dir() / "plugin-data"
 
 
@@ -187,6 +188,16 @@ def _load_server(entry: Any, plugin_root: Path, plugin_data: Path) -> MCPServer:
         server = MCPServer.model_validate(fields)
     except ValidationError as e:  # pragma: no cover - the schema constrains this
         raise MCPConfigError(str(e)) from e
+
+    if transport == "stdio":
+        # §9.1: it must exist and be writable before the subprocess launches.
+        # Created only once the entry is known to be a usable stdio server, so
+        # a remote-only, invalid or rejected entry leaves no trace on disk.
+        try:
+            plugin_data.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise MCPConfigError(f"cannot create PLUGIN_DATA {plugin_data}: {e}") from e
+
     # Fully expanded already; §9.2 forbids expanding anything else.
     return server.as_literal()
 
@@ -216,13 +227,6 @@ def _stdio_fields(
             else plugin_root
         ),
     }
-    try:
-        # §9.1: it must exist and be writable before the subprocess launches.
-        # Created only now, once this entry is known to be a usable stdio
-        # server, so a remote-only or invalid mcp.json leaves no trace on disk.
-        plugin_data.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        raise MCPConfigError(f"cannot create PLUGIN_DATA {plugin_data}: {e}") from e
     return fields
 
 

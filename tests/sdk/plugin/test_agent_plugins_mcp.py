@@ -689,6 +689,24 @@ class TestPluginData:
 
         assert not data_root.exists()
 
+    def test_not_created_for_an_entry_the_model_rejects(
+        self, plugin_dir: Path, data_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The schema is not the last word: model validation can still reject."""
+
+        def reject(*args, **kwargs):
+            raise ValidationError.from_exception_data("MCPServer", [])
+
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.format.agent_plugins_mcp.MCPServer.model_validate",
+            reject,
+        )
+
+        server = load_one(plugin_dir, data_root, {"type": "stdio", "command": "echo"})
+
+        assert server is None
+        assert not data_root.exists()
+
     def test_lives_outside_the_plugin_package(self, plugin_dir: Path, data_root: Path):
         """Anything inside the package would be lost on update."""
         load(plugin_dir, data_root, {"s": {"type": "stdio", "command": "echo"}})
