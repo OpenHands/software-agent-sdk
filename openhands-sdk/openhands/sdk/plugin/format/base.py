@@ -10,9 +10,11 @@ overview and the recipe to add a new format.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
@@ -28,6 +30,14 @@ if TYPE_CHECKING:
     from openhands.sdk.plugin.plugin import Plugin
 
 logger = get_logger(__name__)
+
+_SCHEMAS_DIR = Path(__file__).parent / "schemas"
+
+
+@cache
+def _load_schema(filename: str) -> dict[str, Any]:
+    """Read a vendored schema. Cached; never fetched over the network."""
+    return json.loads((_SCHEMAS_DIR / filename).read_text(encoding="utf-8"))
 
 
 class PluginFormat(ABC):

@@ -560,24 +560,14 @@ class MCPServer(_MCPBaseModel):
 
     @property
     def literal_values(self) -> bool:
-        """Whether this server's config is literal package data, never expanded.
+        """True if built by :meth:`as_literal`: never ``${VAR}``-expanded.
 
-        True only for servers built by a package loader through
-        :meth:`as_literal`. ``${VAR}`` placeholders in them are left as written
-        rather than resolved against the environment or per-conversation
-        secrets. ``env`` and ``headers`` are still redacted like any other
-        secret. The flag lives in memory only: it is never read from input nor
-        written by a dump, so data from outside can neither set it nor carry it.
+        In memory only; input cannot set it and dumps do not write it.
         """
         return self._literal_values
 
     def as_literal(self) -> MCPServer:
-        """Return a copy that is exempt from ``${VAR}`` expansion.
-
-        For loaders of package-declared config: Agent Plugins forbids any
-        expansion beyond its own two placeholders, so a package cannot pull a
-        user's secrets or environment into its subprocess (§9.2).
-        """
+        """Return a copy exempt from ``${VAR}`` expansion, for package servers."""
         server = self.model_copy()
         server._literal_values = True
         return server
