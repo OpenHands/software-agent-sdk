@@ -137,10 +137,10 @@ def test_collect_fixture_cases_and_validate_current_repo_fixtures() -> None:
         versions_by_surface.setdefault(case.surface_key, set()).add(case.version)
 
     assert versions_by_surface == {
-        "agent_settings": {1, 2, 3, 4, 5},
+        "agent_settings": {1, 2, 3, 4, 5, 6},
         "agent_profile": {1, 2},
         "conversation_settings": {1},
-        "persisted_settings": {1, 2},
+        "persisted_settings": {1, 2, 3},
     }
 
 

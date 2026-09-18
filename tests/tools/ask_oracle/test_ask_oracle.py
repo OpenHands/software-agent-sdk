@@ -164,7 +164,7 @@ def test_ask_oracle_tool_returns_oracle_recommendation(
     assert "The tool needs an Oracle profile name." in _message_text(
         oracle_llm.last_messages[1]
     )
-    assert oracle_llm.last_tools == []
+    assert oracle_llm.last_tools is None
     assert conversation.agent.llm.model == "default-model"
     assert conversation.state.agent.llm.model == "default-model"
 

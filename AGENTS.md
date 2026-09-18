@@ -148,7 +148,9 @@ consult each relevant package-level AGENTS.md.
 
 The `.pr/` directory is intentionally temporary by repository policy: the
 `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
-PR-only reviewer context and automatically removes it after PR approval.
+PR-only reviewer context. It removes the directory after approval for
+same-repository PRs. If artifacts reach `main`, the workflow opens or updates a
+cleanup PR against `main`.
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
 
@@ -170,14 +172,14 @@ mkdir -p .pr
 ## How It Works
 
 1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
-2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
-3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+2. **Approval cleanup**: For same-repository PRs, approval removes `.pr/` from the PR branch via commit
+3. **Post-merge cleanup**: If `.pr/` reaches `main`, including through a fork PR, the workflow opens or updates a cleanup PR against `main`
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+- Cleanup PRs follow the normal review and required-check protections for `main`
 
 ## When to Use
 

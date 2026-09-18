@@ -67,7 +67,7 @@ class _InjectingAsyncLLM(LLM):
     def __init__(self):
         super().__init__(model=MODEL, usage_id="test-llm")
 
-    def uses_responses_api(self) -> bool:  # keep amake_llm_completion on acompletion
+    def uses_responses_api(self) -> bool:  # keep agenerate on acompletion
         return False
 
     async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
