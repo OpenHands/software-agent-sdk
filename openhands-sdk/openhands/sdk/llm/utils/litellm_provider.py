@@ -73,7 +73,13 @@ class LLMProvider:
         return api_key
 
     def as_litellm_call_kwargs(self, *, api_key: str | None = None) -> dict[str, str]:
-        kwargs = {"model": self.model}
+        # LiteLLM peels one provider prefix on the call path. If the parsed
+        # model still starts with that prefix, re-add it so the peel lands on
+        # the original parsed model instead of double-stripping.
+        model = self.model
+        if self.name is not None and model.startswith(f"{self.name}/"):
+            model = f"{self.name}/{model}"
+        kwargs = {"model": model}
         if self.name is not None:
             kwargs["custom_llm_provider"] = self.name
         normalized_api_key = self.api_key_for_litellm(api_key)
