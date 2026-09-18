@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr, model_validator
@@ -120,6 +120,10 @@ class DockerWorkspace(RemoteWorkspace):
         default=None,
         description="Connect a container to the specified Docker network.",
     )
+    network_isolation: Literal["private", "offline"] = Field(
+        default="private",
+        description="Use a private bridge network, optionally without internet egress.",
+    )
     health_check_timeout: float = Field(
         default=120.0,
         gt=0.0,
@@ -130,6 +134,7 @@ class DockerWorkspace(RemoteWorkspace):
     _image_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _network_name: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="before")
     @classmethod
@@ -215,11 +220,11 @@ class DockerWorkspace(RemoteWorkspace):
             flags += ["-v", volume]
             logger.info(f"Adding volume mount: {volume}")
 
-        ports = ["-p", f"{self.host_port}:8000"]
+        ports = ["-p", f"127.0.0.1:{self.host_port}:8000"]
         if self.extra_ports:
             ports += [
                 "-p",
-                f"{self.host_port + 1}:8001",  # VSCode
+                f"127.0.0.1:{self.host_port + 1}:8001",  # VSCode
             ]
         flags += ports
 
@@ -227,9 +232,31 @@ class DockerWorkspace(RemoteWorkspace):
         if self.enable_gpu:
             flags += ["--gpus", "all"]
 
-        # Connect container to the specified Docker network
+        if self.network is None:
+            self._network_name = f"openhands-workspace-{uuid.uuid4().hex[:12]}"
+            network_cmd = ["docker", "network", "create", "--driver", "bridge"]
+            if self.network_isolation == "offline":
+                network_cmd += [
+                    "--opt",
+                    "com.docker.network.bridge.enable_ip_masquerade=false",
+                ]
+            network_cmd.append(self._network_name)
+            network_result = execute_command(network_cmd)
+            if network_result.returncode != 0:
+                self._network_name = None
+                raise RuntimeError(
+                    "Failed to create Docker workspace network: "
+                    f"{network_result.stderr}"
+                )
+
+        # Connect the container to its private or explicitly specified network.
         if self.network:
             flags += ["--network", self.network]
+        elif self._network_name:
+            flags += ["--network", self._network_name]
+
+        session_api_key = uuid.uuid4().hex
+        flags += ["-e", f"SESSION_API_KEY={session_api_key}"]
 
         # Run container
         run_cmd = [
@@ -252,6 +279,7 @@ class DockerWorkspace(RemoteWorkspace):
         ]
         proc = execute_command(run_cmd)
         if proc.returncode != 0:
+            self._remove_network()
             raise RuntimeError(f"Failed to run docker container: {proc.stderr}")
 
         self._container_id = proc.stdout.strip()
@@ -269,10 +297,14 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        object.__setattr__(self, "api_key", None)
+        object.__setattr__(self, "api_key", session_api_key)
 
         # Wait for container to be healthy
-        self._wait_for_health(timeout=self.health_check_timeout)
+        try:
+            self._wait_for_health(timeout=self.health_check_timeout)
+        except BaseException:
+            self.cleanup()
+            raise
         logger.info(f"Docker workspace is ready at {self.host}")
 
         # Now initialize the parent RemoteWorkspace with the container URL
@@ -368,8 +400,12 @@ class DockerWorkspace(RemoteWorkspace):
 
             # Stop and remove the container
             logger.info(f"Stopping container: {self._container_id}")
-            execute_command(["docker", "stop", self._container_id])
-            self._container_id = None
+            try:
+                execute_command(["docker", "stop", self._container_id])
+            finally:
+                self._container_id = None
+
+        self._remove_network()
 
         # Optionally delete the Docker image
         if self.cleanup_image and self._image_name:
@@ -382,6 +418,17 @@ class DockerWorkspace(RemoteWorkspace):
                     f"Failed to delete image {self._image_name}: {result.stderr}"
                 )
             self._image_name = None
+
+    def _remove_network(self) -> None:
+        if self._network_name is None:
+            return
+        result = execute_command(["docker", "network", "rm", self._network_name])
+        if result.returncode:
+            logger.warning(
+                "Failed to remove Docker workspace network: %s", result.stderr
+            )
+        else:
+            self._network_name = None
 
     def pause(self) -> None:
         """Pause the Docker container to conserve resources.
