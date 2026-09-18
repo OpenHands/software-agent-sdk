@@ -1,6 +1,6 @@
 """Conversation-addressed APIs with workspace and terminal-history context.
 
-Local processes and desktop/VSCode services still share the host; these path
+Local processes and VSCode services still share the host; these path
 checks are routing safeguards, not a sandbox for arbitrary shell commands.
 """
 
@@ -19,7 +19,6 @@ from openhands.agent_server.dependencies import (
     get_conversation_service,
     get_event_service,
 )
-from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.vscode_router import (
@@ -34,8 +33,10 @@ async def bind_local_conversation_runtime(
 ) -> None:
     conversation_service = get_conversation_service(request)
     event_service = await get_event_service(
-        runtime_conversation_id, conversation_service
+        runtime_conversation_id, request, conversation_service
     )
+    if event_service is None:
+        raise HTTPException(404, "Conversation not found")
     request.state.runtime_event_service = event_service
     workspace_root = Path(
         event_service.get_conversation().workspace.working_dir
@@ -83,7 +84,6 @@ def create_runtime_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
         bash_router,
         file_router,
         git_router,
-        desktop_router,
     ):
         router.include_router(source)
     router.add_api_route("/vscode/url", get_runtime_vscode_url, methods=["GET"])

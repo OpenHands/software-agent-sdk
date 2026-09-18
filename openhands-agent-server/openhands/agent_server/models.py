@@ -360,6 +360,13 @@ class ConversationInfo(_ConversationInfoBase):
             "persisted events, avoiding 'Unknown kind' deserialization errors."
         ),
     )
+    runtime_info: ConversationRuntimeInfo | None = Field(
+        default=None,
+        description=(
+            "Availability of the execution runtime. Catalog responses populate "
+            "this when the hosting server manages runtime lifecycle."
+        ),
+    )
 
 
 class ConversationPage(BaseModel):

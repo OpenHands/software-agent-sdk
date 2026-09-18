@@ -1,129 +1,97 @@
+"""Curated lists of models that are known to work well with OpenHands.
+
+These lists feed the model pickers (agent-server ``/llm/verified-models``) and
+the ``openhands/`` provider allowlist. They are meant to be short.
+
+Rule: for each model line, keep only the two latest versions. Variants of a kept
+version (``-pro``, ``-mini``, ``-codex``, ``-flash``, dated aliases) stay with it.
+Unversioned "current" aliases (for example ``deepseek-chat``, ``kimi-for-coding``)
+stay. When a new version lands, drop the oldest one in the same line.
+"""
+
+# GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
     "gpt-6-astra",
     "gpt-5.6",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.2",
-    "gpt-5.2-codex",
     "gpt-5.3-codex",
-    "gpt-5.1",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5-codex",
-    "gpt-5-2025-08-07",
-    "gpt-5-mini-2025-08-07",
-    "o4-mini",
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-4-32k",
-    "gpt-4.1",
-    "gpt-4.1-2025-04-14",
-    "o1-mini",
-    "o3",
-    "o3-pro",
-    "codex-mini-latest",
+    "gpt-5.2-codex",
 ]
 
+# Opus: 5 and 4.8. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
 VERIFIED_ANTHROPIC_MODELS = [
-    "claude-sonnet-4-5-20250929",
-    "claude-haiku-4-5-20251001",
-    "claude-opus-4-5-20251101",
-    "claude-opus-4-5",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
     "claude-opus-5",
-    "claude-fable-5",
-    "claude-fable-5-1",
+    "claude-opus-4-8",
     "claude-sonnet-5",
-    "claude-sonnet-4-5",
     "claude-sonnet-4-6",
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-opus-4-1-20250805",
-    "claude-3-7-sonnet-20250219",
-    "claude-3-sonnet-20240229",
-    "claude-3-opus-20240229",
-    "claude-3-haiku-20240307",
-    "claude-3-5-haiku-20241022",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-sonnet-20240620",
+    "claude-haiku-4-5-20251001",
+    "claude-fable-5-1",
+    "claude-fable-5",
 ]
 
+# Devstral 2512 (two sizes).
 VERIFIED_MISTRAL_MODELS = [
-    "devstral-small-2505",
-    "devstral-small-2507",
-    "devstral-medium-2507",
     "devstral-2512",
     "devstral-medium-2512",
 ]
 
+# Pro: 3.1. Flash: 3.8 and 3.7. Flash-lite: 3.5 and 3.1.
 VERIFIED_GEMINI_MODELS = [
-    "gemini-3.1-pro-preview",
     "gemini-3.1-pro",
-    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3-flash",
-    "gemini-3-pro",
+    "gemini-3.1-flash-lite",
 ]
 
+# V4 and V3.2; ``deepseek-chat`` is the current alias.
 VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-chat",
-    "deepseek-v3.2-reasoner",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
+    "deepseek-v3.2-reasoner",
 ]
 
+# Kimi K3 and K2.7; ``kimi-for-coding`` is Moonshot's own alias (direct API only;
+# the OpenHands proxy does not serve it, so it is not in the openhands list).
 VERIFIED_MOONSHOT_MODELS = [
     "kimi-k3",
-    "kimi-k2-thinking",
     "kimi-k2.7-code",
-    "kimi-k2.6",
-    "kimi-k2.5",
     "kimi-for-coding",
 ]
 
+# M3 and M2.7.
 VERIFIED_MINIMAX_MODELS = [
-    "minimax-m2.1",
-    "minimax-m2.5",
-    "minimax-m2.7",
     "minimax-m3",
+    "minimax-m2.7",
 ]
 
+# GLM 5.3 and 5.2.
 VERIFIED_GLM_MODELS = [
-    "glm-4.7",
-    "glm-4.7-flash",
-    "glm-5",
-    "glm-5.1",
-    "glm-5.2",
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.2",
 ]
 
+# Nemotron 3.5 and 3.
 VERIFIED_NVIDIA_MODELS = [
+    "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
     "nemotron-3-super-120b-a12b",
     "nemotron-3-ultra-550b-a55b",
-    "nemotron-3.5-lightning-30b-a3b",
 ]
 
+# Plus: 3.7 and 3.6. Max: 3.8 and 3.7. Flash: 3.8 and 3.7. Coder: unversioned.
 VERIFIED_QWEN_MODELS = [
-    "qwen3-6-plus",
-    "qwen3.5-plus",
-    "qwen3.6-plus",
     "qwen3.7-plus",
+    "qwen3.6-plus",
     "qwen3.8-max",
     "qwen3.7-max",
-    "qwen3-max",
     "qwen3.8-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
@@ -132,70 +100,47 @@ VERIFIED_QWEN_MODELS = [
     "qwen3-coder-flash",
 ]
 
+# What the ``openhands/`` provider serves. Same rule; every entry must also be in
+# a provider list above, except OpenHands-only models.
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5-20251101",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
     "claude-opus-5",
-    "claude-fable-5",
-    "claude-fable-5-1",
+    "claude-opus-4-8",
     "claude-sonnet-5",
-    "claude-sonnet-4-5",
     "claude-sonnet-4-6",
+    "claude-fable-5-1",
+    "claude-fable-5",
     "gpt-6-astra",
     "gpt-5.6",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.2",
-    "gpt-5.2-codex",
     "gpt-5.3-codex",
-    "minimax-m2.1",
-    "minimax-m2.5",
-    "minimax-m2.7",
+    "gpt-5.2-codex",
     "minimax-m3",
+    "minimax-m2.7",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
-    "gemini-3-flash",
-    "gemini-3-pro",
     "deepseek-chat",
-    "deepseek-v3.2-reasoner",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
+    "deepseek-v3.2-reasoner",
     "kimi-k3",
-    "kimi-k2-thinking",
     "kimi-k2.7-code",
-    "kimi-k2.6",
-    "kimi-k2.5",
-    "devstral-medium-2512",
     "devstral-2512",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "gpt-5.1",
-    "o3-pro",
-    "glm-4.7",
-    "glm-5",
-    "glm-5.1",
-    "glm-5.2",
+    "devstral-medium-2512",
     "glm-5.3",
     "glm-5.3-flash",
+    "glm-5.2",
+    "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
     "nemotron-3-super-120b-a12b",
     "nemotron-3-ultra-550b-a55b",
-    "nemotron-3.5-lightning-30b-a3b",
-    "qwen3-6-plus",
-    "qwen3.5-plus",
-    "qwen3.6-plus",
     "qwen3.7-plus",
+    "qwen3.6-plus",
     "qwen3.8-max",
     "qwen3.7-max",
-    "qwen3-max",
     "qwen3.8-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
