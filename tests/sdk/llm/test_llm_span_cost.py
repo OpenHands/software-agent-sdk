@@ -97,6 +97,24 @@ def test_cache_buckets_survive_absent_prompt_tokens_details():
     assert Telemetry._cache_buckets(usage)[1] == 42
 
 
+def test_cache_buckets_handle_missing_cache_creation_tokens_attribute():
+    # litellm's PromptTokensDetailsWrapper drops `cache_creation_tokens` from
+    # the instance when it is None (it is not part of the provider response),
+    # yet it can still be reported in `model_fields_set`. The old code accessed
+    # `details.cache_creation_tokens` directly and blew up with
+    # `AttributeError: 'PromptTokensDetailsWrapper' object has no attribute
+    # 'cache_creation_tokens'` — which killed the whole conversation run after
+    # every LLM call. Access it defensively (getattr) instead.
+    ptd = PromptTokensDetailsWrapper(cached_tokens=7)
+    assert "cache_creation_tokens" not in ptd.__dict__
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        prompt_tokens_details=ptd,
+    )
+    assert Telemetry._cache_buckets(usage) == (7, 0)
+
+
 def test_span_closed_on_error(exporter):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})

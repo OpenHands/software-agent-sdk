@@ -255,16 +255,15 @@ class Telemetry(BaseModel):
             details = usage.prompt_tokens_details
             if details is None:
                 return 0, 0
-            cache_write = (
-                details.cache_creation_tokens
-                if "cache_creation_tokens" in details.model_fields_set
-                else 0
+            cache_write = int(
+                getattr(details, "cache_creation_tokens", 0) or 0
             )
-            return int(details.cached_tokens or 0), int(cache_write or 0)
+            cache_read = int(getattr(details, "cached_tokens", 0) or 0)
+            return cache_read, cache_write
 
         details = usage.input_tokens_details
-        cache_read = details.cached_tokens if details is not None else 0
-        return int(cache_read or 0), 0
+        cache_read = int(getattr(details, "cached_tokens", None) or 0) if details is not None else 0
+        return cache_read, 0
 
     # ---------- Observability span ----------
     # These bracket one LLM call: ``on_request`` -> transport -> ``on_response``
