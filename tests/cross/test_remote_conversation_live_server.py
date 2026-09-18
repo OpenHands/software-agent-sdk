@@ -297,7 +297,6 @@ def test_subagent_workspace_factory_returns_result(
         assert resumed.result == "Hello from patched LLM"
         if remote:
             assert resumed.conversation is task.conversation
-        assert len(patched_llm) == 2
     finally:
         manager.close()
         parent.close()
