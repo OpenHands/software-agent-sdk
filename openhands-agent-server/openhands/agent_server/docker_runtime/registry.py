@@ -314,6 +314,8 @@ class DockerConversationRegistry(ConversationRegistry):
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            "--add-host",
+            "host.docker.internal:host-gateway",
             "--label",
             f"{_OWNER_LABEL}={self.owner}",
             "--name",
