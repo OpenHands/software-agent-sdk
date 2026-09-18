@@ -33,8 +33,10 @@ async def bind_local_conversation_runtime(
 ) -> None:
     conversation_service = get_conversation_service(request)
     event_service = await get_event_service(
-        runtime_conversation_id, conversation_service
+        runtime_conversation_id, request, conversation_service
     )
+    if event_service is None:
+        raise HTTPException(404, "Conversation not found")
     request.state.runtime_event_service = event_service
     workspace_root = Path(
         event_service.get_conversation().workspace.working_dir

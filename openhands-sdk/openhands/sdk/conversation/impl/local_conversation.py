@@ -63,8 +63,6 @@ from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPServer,
-    coerce_mcp_config,
-    dump_mcp_config,
     enabled_mcp_servers,
 )
 from openhands.sdk.mcp.tool import MCPToolDefinition
@@ -100,7 +98,7 @@ from openhands.sdk.skills import (
     merge_skills_by_name,
 )
 from openhands.sdk.skills.utils import (
-    expand_mcp_variables,
+    expand_mcp_servers,
     expand_variable_references,
 )
 from openhands.sdk.subagent import (
@@ -1205,16 +1203,13 @@ class LocalConversation(BaseConversation):
         # - Variables with defaults that don't have secrets fall back to their defaults
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
+        # Agent Plugins servers are left literal (see expand_mcp_servers).
         if merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
-            expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(merged_mcp)},
-                {},
-                get_secret=self._state.secret_registry.get_secret_value,
-                expand_defaults=True,
+            merged_mcp = expand_mcp_servers(
+                merged_mcp, self._state.secret_registry.get_secret_value
             )
-            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
@@ -1447,25 +1442,13 @@ class LocalConversation(BaseConversation):
         get_secret = self._state.secret_registry.get_secret_value
         runtime_plugin_mcp: dict[str, MCPServer] = {}
         if plugin.mcp_config:
-            expanded_plugin_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(plugin.mcp_config)},
-                {},
-                get_secret=get_secret,
-                expand_defaults=True,
-            )
-            runtime_plugin_mcp = coerce_mcp_config(expanded_plugin_mcp["mcpServers"])
+            runtime_plugin_mcp = expand_mcp_servers(plugin.mcp_config, get_secret)
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
         if merged_mcp:
-            expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(merged_mcp)},
-                {},
-                get_secret=get_secret,
-                expand_defaults=True,
-            )
-            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
+            merged_mcp = expand_mcp_servers(merged_mcp, get_secret)
         runtime_mcp_tools = (
             self._runtime_mcp_tools(
                 runtime_plugin_mcp,
