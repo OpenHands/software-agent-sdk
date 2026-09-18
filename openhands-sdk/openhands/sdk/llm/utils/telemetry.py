@@ -255,12 +255,16 @@ class Telemetry(BaseModel):
             details = usage.prompt_tokens_details
             if details is None:
                 return 0, 0
-            cache_write = (
-                details.cache_creation_tokens
-                if "cache_creation_tokens" in details.model_fields_set
-                else 0
+            # NB: PromptTokensDetailsWrapper deletes unset optional fields
+            # (e.g. providers without prompt caching like MiniMax), so direct
+            # attribute access raises AttributeError. getattr with a default
+            # is the only safe read here.
+            cache_write = getattr(details, "cache_creation_tokens", 0) or getattr(
+                details, "cache_write_tokens", 0
             )
-            return int(details.cached_tokens or 0), int(cache_write or 0)
+            return int(getattr(details, "cached_tokens", 0) or 0), int(
+                cache_write or 0
+            )
 
         details = usage.input_tokens_details
         cache_read = details.cached_tokens if details is not None else 0
