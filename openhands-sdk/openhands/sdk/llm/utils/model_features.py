@@ -283,6 +283,33 @@ def _resolved_bool(
     return fallback
 
 
+def _supports_reasoning_effort(
+    model: str | None,
+    model_info: Mapping[str, Any] | None,
+    overrides: Mapping[str, Any] | None,
+    supported_params: frozenset[str],
+) -> bool:
+    """Whether it is safe to send the OpenAI-style ``reasoning_effort`` param.
+
+    Generic ``supports_reasoning`` metadata only reports *some* thinking
+    capability (e.g. MiniMax M3), whose provider adapter may still reject the
+    exact ``reasoning_effort`` parameter -- so it must not enable sending it.
+    An explicit ``False`` still disables, since a model without reasoning
+    takes no effort parameter.
+    """
+    override = _optional_bool(overrides, "supports_reasoning_effort")
+    if override is not None:
+        return override
+    if _optional_bool(model_info, "supports_reasoning_effort") is True:
+        return True
+    if _optional_bool(model_info, "supports_reasoning") is False:
+        return False
+    return (
+        model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
+        or "reasoning_effort" in supported_params
+    )
+
+
 def _thinking_mode(
     model: str | None,
     model_info: Mapping[str, Any] | None,
@@ -359,15 +386,8 @@ def get_features(
 ) -> ModelFeatures:
     """Resolve model features from overrides, metadata, and fallbacks."""
     supported_params = _normalized_supported_openai_params(model)
-    supports_reasoning_effort = _resolved_bool(
-        "supports_reasoning_effort",
-        overrides=overrides,
-        metadata=model_info,
-        metadata_key="supports_reasoning",
-        fallback=(
-            model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
-            or "reasoning_effort" in supported_params
-        ),
+    supports_reasoning_effort = _supports_reasoning_effort(
+        model, model_info, overrides, supported_params
     )
     thinking_mode = _thinking_mode(model, model_info, overrides)
     supports_sampling_params = _optional_bool(overrides, "supports_sampling_params")

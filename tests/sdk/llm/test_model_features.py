@@ -356,6 +356,31 @@ def test_metadata_false_takes_precedence_over_name_fallbacks():
     assert features.supports_responses_api is False
 
 
+def test_generic_reasoning_metadata_does_not_enable_reasoning_effort():
+    """MiniMax M3-style metadata: reasoning exists, effort param unsupported."""
+    features = get_features(
+        "minimax/MiniMax-M3",
+        model_info={
+            "litellm_provider": "minimax",
+            "supports_reasoning": True,
+        },
+    )
+
+    assert features.supports_reasoning_effort is False
+
+
+def test_exact_reasoning_effort_metadata_wins_over_generic_reasoning():
+    features = get_features(
+        "minimax/MiniMax-M3",
+        model_info={
+            "supports_reasoning": False,
+            "supports_reasoning_effort": True,
+        },
+    )
+
+    assert features.supports_reasoning_effort is True
+
+
 def test_capability_overrides_take_precedence_over_metadata():
     features = get_features(
         "proxy/future-model",
