@@ -247,7 +247,11 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
     ]
     listed = {entry.name for entry in entries}
     entries.extend(
-        ToolCatalogEntry(name=class_name, user_selectable=True, usable=True)
+        ToolCatalogEntry(
+            name=class_name,
+            user_selectable=True,
+            usable=_check_tool_usable(class_name, _usability_from_subclass(tool_class)),
+        )
         for class_name, tool_class in BUILT_IN_TOOL_CLASSES.items()
         if tool_class.user_selectable and class_name not in listed
     )

@@ -185,6 +185,22 @@ def test_catalog_reports_selectability_and_usability():
     assert catalog["catalog_unusable"]["usable"] is False
 
 
+def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
+    """A built-in is listed by class name, so its usability comes from the class."""
+    from openhands.sdk.tool import builtins, registry
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "UnusableBuiltin", _UnavailableHelloTool
+    )
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+
+    assert _catalog()["UnusableBuiltin"] == {
+        "name": "UnusableBuiltin",
+        "user_selectable": True,
+        "usable": False,
+    }
+
+
 def test_sealed_catalog_ignores_later_registrations(monkeypatch):
     """Tools a conversation registers vanish on restart, so a server seals the
     catalog once its own tools are loaded."""
