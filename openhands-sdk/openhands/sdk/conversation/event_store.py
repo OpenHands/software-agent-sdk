@@ -2,7 +2,7 @@
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
-from typing import SupportsIndex, overload
+from typing import Final, SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -21,6 +21,10 @@ logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
+
+# Sidecar marker naming the log's event count, so a writer can check it with one
+# ``exists()``. The count lives in the name because ``FileStore.read`` is cached.
+LENGTH_MARKER_PATTERN: Final[str] = ".eventlog-len-{length}.marker"
 
 # ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
 # below in _effective_parent_id and re-exported here so existing
@@ -181,8 +185,11 @@ class EventLog(EventsListBase):
             self._event_cache[i] = evt
             yield evt
 
-    def append(self, event: Event) -> None:
+    def append(self, event: Event) -> int:
         """Append an event with locking for thread/process safety.
+
+        Returns:
+            The sequence number (index) the log assigned to ``event``.
 
         Raises:
             TimeoutError: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
@@ -193,10 +200,11 @@ class EventLog(EventsListBase):
 
         try:
             with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
-                # Sync with disk in case another process wrote while we waited
-                disk_length = self._count_events_on_disk()
-                if disk_length > self._length:
-                    self._sync_from_disk(disk_length)
+                # Sync with disk only if the marker cannot rule out another writer
+                if not self._marker_matches_length():
+                    disk_length = self._count_events_on_disk()
+                    if disk_length > self._length:
+                        self._sync_from_disk(disk_length)
 
                 if evt_id in self._id_to_idx:
                     existing_idx = self._id_to_idx[evt_id]
@@ -218,19 +226,49 @@ class EventLog(EventsListBase):
                 write_guard = (
                     nullcontext() if self._write_guard is None else self._write_guard()
                 )
+                idx = self._length
                 with write_guard:
-                    target_path = self._path(self._length, event_id=evt_id)
+                    target_path = self._path(idx, event_id=evt_id)
                     self._fs.write(target_path, payload)
-                self._idx_to_id[self._length] = evt_id
-                self._id_to_idx[evt_id] = self._length
-                self._event_cache[self._length] = event
+                self._idx_to_id[idx] = evt_id
+                self._id_to_idx[evt_id] = idx
+                self._event_cache[idx] = event
                 self._length += 1
+                self._advance_length_marker(idx)
+                return idx
         except TimeoutError:
             logger.error(
                 f"Failed to acquire EventLog lock within {LOCK_TIMEOUT_SECONDS}s "
                 f"for event {evt_id}"
             )
             raise
+
+    def _marker_path(self, length: int) -> str:
+        return f"{self._dir}/{LENGTH_MARKER_PATTERN.format(length=length)}"
+
+    def _marker_matches_length(self) -> bool:
+        """Whether the marker proves no one has appended since we last did.
+
+        ``False`` is not proof of divergence, so callers must fall back to the
+        exact count.
+        """
+        try:
+            return bool(self._fs.exists(self._marker_path(self._length)))
+        except Exception as e:
+            logger.warning("Error reading event count marker in %s: %s", self._dir, e)
+            return False
+
+    def _advance_length_marker(self, previous_length: int) -> None:
+        """Move the marker from ``previous_length`` to the current length.
+
+        Deleting first is deliberate: an interrupted update leaves no marker
+        rather than a stale one claiming to be current.
+        """
+        try:
+            self._fs.delete(self._marker_path(previous_length))
+            self._fs.write(self._marker_path(self._length), "")
+        except Exception as e:
+            logger.warning("Error updating event count marker in %s: %s", self._dir, e)
 
     def _count_events_on_disk(self) -> int:
         """Count event files on disk."""
@@ -296,6 +334,9 @@ class EventLog(EventsListBase):
                 idx = int(m.group("idx"))
                 evt_id = m.group("event_id")
                 by_idx[idx] = evt_id
+            elif name.startswith("."):
+                # Our own sidecars (lock file, count marker), not event files.
+                continue
             else:
                 logger.warning(f"Unrecognized event file name: {name}")
 

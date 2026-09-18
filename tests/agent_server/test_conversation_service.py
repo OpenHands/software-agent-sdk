@@ -3487,7 +3487,7 @@ class TestAutoTitle:
         """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
 
         Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
-        to LLM.completion. Only the network boundary (LLM.completion) is mocked,
+        to LLM.generate. Only the generic dispatch boundary (LLM.generate) is mocked,
         so this catches regressions in profile loading, LLM passthrough, and the
         agent-server → SDK integration — the unit tests above only exercise
         AutoTitleSubscriber in isolation.
@@ -3518,7 +3518,7 @@ class TestAutoTitle:
 
         calls: list[str] = []
 
-        def fake_completion(self_llm, _messages, **_kwargs):
+        def fake_generate(self_llm, _messages, **_kwargs):
             calls.append(self_llm.usage_id)
             msg = LiteLLMMessage(content="✨ Generated", role="assistant")
             choice = Choices(finish_reason="stop", index=0, message=msg)
@@ -3553,9 +3553,9 @@ class TestAutoTitle:
         request.addfinalizer(reset_stores)
 
         with patch(
-            "openhands.sdk.llm.llm.LLM.completion",
+            "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
-            side_effect=fake_completion,
+            side_effect=fake_generate,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -3613,7 +3613,7 @@ class TestAutoTitle:
 
         seen_keys: list[str] = []
 
-        def fake_completion(self_llm, _messages, **_kwargs):
+        def fake_generate(self_llm, _messages, **_kwargs):
             seen_keys.append(
                 self_llm.api_key.get_secret_value() if self_llm.api_key else ""
             )
@@ -3647,9 +3647,9 @@ class TestAutoTitle:
         request.addfinalizer(reset_stores)
 
         with patch(
-            "openhands.sdk.llm.llm.LLM.completion",
+            "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
-            side_effect=fake_completion,
+            side_effect=fake_generate,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -3692,6 +3692,40 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_adds_and_removes_record(
+    tmp_path, sample_stored_conversation
+):
+    conversations_dir = tmp_path / "conversations"
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        assert (await service.search_conversations()).items == []
+
+        conversation_dir = conversations_dir / sample_stored_conversation.id.hex
+        conversation_dir.mkdir(parents=True)
+        (conversation_dir / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            persistence_dir=str(conversations_dir),
+        )
+        (conversation_dir / "base_state.json").write_text(state.model_dump_json())
+
+        await service.refresh_persisted_conversation(sample_stored_conversation.id)
+        info = await service.get_conversation(sample_stored_conversation.id)
+        page = await service.search_conversations()
+        (conversation_dir / "meta.json").unlink()
+        await service.refresh_persisted_conversation(sample_stored_conversation.id)
+        removed = await service.get_conversation(sample_stored_conversation.id)
+
+    assert info is not None
+    assert info.id == sample_stored_conversation.id
+    assert [item.id for item in page.items] == [sample_stored_conversation.id]
+    assert removed is None
 
 
 def _branch_events(conversation) -> list:
@@ -4225,3 +4259,79 @@ async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
             holder.join(timeout=2)
 
     assert [item.id for item in page.items] == [conversation_info.id]
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_updates_metadata_without_state_change(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    directory = conversations_dir / conversation_id.hex
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        initial = await service.search_conversations()
+        assert initial.items[0].title is None
+        state_before = (directory / "base_state.json").read_bytes()
+        metadata = json.loads((directory / "meta.json").read_text())
+        metadata["title"] = "Generated externally"
+        (directory / "meta.json").write_text(json.dumps(metadata))
+
+        await service.refresh_persisted_conversation(conversation_id)
+        info = await service.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "Generated externally"
+        assert (await service.search_conversations()).items[0].title == info.title
+        assert (directory / "base_state.json").read_bytes() == state_before
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_preserves_live_metadata(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+        runtime.stored = runtime.stored.model_copy(update={"title": "Live title"})
+        metadata_path = conversations_dir / conversation_id.hex / "meta.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["title"] = "Stale disk title"
+        metadata_path.write_text(json.dumps(metadata))
+
+        await service.refresh_persisted_conversation(conversation_id)
+        info = await service.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "Live title"
+        assert (await service.search_conversations()).items[0].title == "Live title"
+        assert await service.get_event_service(conversation_id) is runtime
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_only_decrypts_requested_record(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    reads = []
+
+    def cipher_for(cid):
+        reads.append(cid)
+        return Cipher("catalog-test-key")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        runtime_cipher_resolver=cipher_for,
+    ) as service:
+        unrelated = uuid4()
+        directory = conversations_dir / unrelated.hex
+        directory.mkdir()
+        (directory / "meta.json").write_bytes(
+            (conversations_dir / conversation_id.hex / "meta.json").read_bytes()
+        )
+        reads.clear()
+        assert (await service.search_conversations()).items
+        assert reads == [conversation_id]
+
+        reads.clear()
+        await service.refresh_persisted_conversation(conversation_id)
+        assert reads == [conversation_id]
+        assert await service.get_conversation(conversation_id) is not None
+        assert reads == [conversation_id]
