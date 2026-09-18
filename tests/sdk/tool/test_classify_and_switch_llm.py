@@ -290,9 +290,7 @@ def test_executor_switches_to_matched_class(
     _register_tool(conversation, meta_store)
     _patch_classifier(conversation, monkeypatch, reply="1")
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert not obs.is_error
@@ -322,9 +320,7 @@ def test_executor_uses_inline_cloud_llms_without_profile_store(tmp_path) -> None
     conversation._ensure_agent_ready()
     conversation.agent.add_runtime_tools([tool])
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert not obs.is_error
@@ -349,9 +345,7 @@ def test_classifier_call_is_accounted_in_conversation_stats(
     usage_id = "classifier:classifier"
     assert usage_id not in conversation.conversation_stats.usage_to_metrics
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert not obs.is_error
@@ -386,9 +380,7 @@ def test_executor_errors_when_no_class_matches(
     _register_tool(conversation, meta_store)
     _patch_classifier(conversation, monkeypatch, reply="0")
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert obs.is_error
@@ -412,9 +404,7 @@ def test_executor_direct_prompt_switches_to_selected_model(
     conversation.agent.add_runtime_tools([tool])
     _patch_classifier(conversation, monkeypatch, reply='{"model": "MiniMax-M3"}')
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert not obs.is_error
@@ -440,9 +430,7 @@ def test_executor_direct_prompt_errors_when_model_is_unknown(
     conversation.agent.add_runtime_tools([tool])
     _patch_classifier(conversation, monkeypatch, reply='{"model": "unknown"}')
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert obs.is_error
@@ -458,9 +446,7 @@ def test_executor_errors_when_classifier_profile_missing(
     _register_tool(conversation, meta_store)
     # No "classifier" profile saved and no patch -> load fails.
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert obs.is_error
     assert "classifier" in obs.text
@@ -476,9 +462,7 @@ def test_executor_errors_when_target_profile_missing(
     (Path(profile_store.base_dir) / "slow.json").unlink()
     _patch_classifier(conversation, monkeypatch, reply="2")
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert isinstance(obs, ClassifyAndSwitchLLMObservation)
     assert obs.is_error
@@ -496,9 +480,7 @@ def test_executor_errors_when_no_meta_profile_available(
     conversation._ensure_agent_ready()
     conversation.agent.add_runtime_tools([tool])
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert obs.is_error
     assert "no meta-profile" in obs.text.lower()
@@ -516,9 +498,7 @@ def test_executor_errors_when_active_meta_profile_missing(
     conversation._ensure_agent_ready()
     conversation.agent.add_runtime_tools([tool])
 
-    obs = conversation.execute_tool(
-        "route_task_to_model", ClassifyAndSwitchLLMAction()
-    )
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
 
     assert obs.is_error
     assert "resolve" in obs.text.lower()

@@ -163,14 +163,10 @@ def test_save_respects_max_profiles(tmp_path: Path) -> None:
     store.save("a", MetaProfile(classifier_model="a"))
 
     with pytest.raises(MetaProfileLimitExceeded):
-        store.save(
-            "b", MetaProfile(classifier_model="a"), max_profiles=1
-        )
+        store.save("b", MetaProfile(classifier_model="a"), max_profiles=1)
 
     # Overwriting an existing one is still allowed at the limit.
-    store.save(
-        "a", MetaProfile(classifier_model="x"), max_profiles=1
-    )
+    store.save("a", MetaProfile(classifier_model="x"), max_profiles=1)
     assert store.load("a").classifier_model == "x"
 
 
