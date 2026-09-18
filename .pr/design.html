@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PR #5042 · Explicit lazy package exports</title>
+  <style>
+    :root {
+      --fg: #1a1a1a; --muted: #5a5a5a; --subtle: #85857e;
+      --bg: #fdfdfb; --card: #ffffff; --elevated: #f7f6f1;
+      --accent: #2b4eaa; --accent-soft: #e6ecfa;
+      --rule: #e2e2dc; --rule-strong: #bdbcb4;
+      --code-bg: #f3f1ec; --warn: #b25b0e; --ok: #2f7a3a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+    body { line-height: 1.6; font-size: 16px; }
+    .wrap { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 44px; max-width: 1160px; margin: 0 auto; padding: 32px 28px 96px; }
+    nav { position: sticky; top: 24px; align-self: start; font-size: 13px; }
+    nav h2 { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; }
+    nav ol { list-style: none; padding: 0; margin: 0; counter-reset: toc; }
+    nav li { counter-increment: toc; margin: 6px 0; }
+    nav li::before { content: counter(toc) ". "; color: var(--muted); }
+    nav a { color: var(--fg); text-decoration: none; }
+    nav a:hover, a.src:hover { color: var(--warn); }
+    header { border-bottom: 1px solid var(--rule); padding-bottom: 22px; margin-bottom: 28px; }
+    .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+    h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 8px; letter-spacing: -.01em; }
+    header p { color: var(--muted); max-width: 760px; margin: 0; }
+    h2 { font-size: 22px; margin: 44px 0 10px; }
+    h2 .num { color: var(--muted); font-weight: 500; margin-right: 8px; }
+    h3 { font-size: 16px; margin: 22px 0 8px; }
+    code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+    pre { font-family: var(--mono); font-size: 13px; background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--rule); }
+    pre code { background: transparent; padding: 0; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 12px 0; }
+    th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+    th { font-weight: 600; background: var(--code-bg); }
+    .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 11px 14px; margin: 14px 0; border-radius: 0 4px 4px 0; font-size: 14.5px; }
+    .callout.note { border-color: var(--muted); background: var(--code-bg); }
+    .callout.warn { border-color: var(--warn); background: #fbf1e6; }
+    .fig { margin: 18px 0 22px; }
+    .fig svg { display: block; max-width: 100%; height: auto; background: #fff; border: 1px solid var(--rule); border-radius: 6px; }
+    .fig figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; text-align: center; }
+    a.src { font-family: var(--mono); font-size: 12px; color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
+    .tag { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--elevated); border: 1px solid var(--rule); font-size: 11px; white-space: nowrap; }
+    .ok { color: var(--ok); font-weight: 700; }
+    details { border: 1px solid var(--rule); border-radius: 6px; margin: 12px 0; }
+    details > summary { cursor: pointer; padding: 8px 12px; color: var(--muted); font-size: 13px; }
+    details > div { padding: 0 12px 12px; }
+    @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } nav { position: static; } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#decision">Typed boundary</a></li>
+      <li><a href="#compatibility">Compatibility</a></li>
+      <li><a href="#files">Files to review</a></li>
+      <li><a href="#evidence">Evidence</a></li>
+      <li><a href="#draft">Draft follow-ups</a></li>
+    </ol>
+  </nav>
+  <main>
+    <header>
+      <div class="eyebrow">Draft PR #5042 · design note</div>
+      <h1>Lazy imports stay lazy; export resolution becomes explicit</h1>
+      <p>Marketplace, MCP, and settings keep their public package-level import paths and cycle-avoidance behavior. The only design change is at the resolution boundary: supported names now map directly to imported objects instead of probing an imported module by string.</p>
+    </header>
+
+    <section id="decision">
+      <h2><span class="num">1</span>The dynamic boundary is now closed</h2>
+      <div class="callout">★ Compatibility verdict: <strong>behavior-preserving</strong>. Public names, lazy loading, unknown-name errors, and resolved object identity remain unchanged; six broad checker allowances disappear.</div>
+      <figure class="fig">
+        <svg viewBox="0 0 920 390" role="img" aria-labelledby="flow-title flow-desc">
+          <title id="flow-title">Lazy export resolution before and after</title>
+          <desc id="flow-desc">Before, a public name selected a module and getattr probed it. After, the same name selects an explicit import and object mapping before being cached.</desc>
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--subtle)"/></marker>
+            <marker id="arr-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="var(--warn)"/></marker>
+            <style>
+              .old { fill: var(--code-bg); stroke: var(--subtle); stroke-width: 1.4; stroke-dasharray: 5 3; }
+              .new { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+              .title { font: 700 13px var(--sans); fill: var(--fg); }
+              .detail { font: 11px var(--mono); fill: var(--muted); }
+              .label { font: 700 12px var(--sans); fill: var(--muted); letter-spacing: .08em; }
+              .edge { stroke: var(--subtle); stroke-width: 1.5; stroke-dasharray: 5 3; fill: none; }
+              .edge-new { stroke: var(--warn); stroke-width: 1.8; fill: none; }
+            </style>
+          </defs>
+          <text class="label" x="44" y="35">BEFORE · OPEN MODULE PROBE</text>
+          <rect class="old" x="44" y="62" width="200" height="70" rx="7"/>
+          <text class="title" x="144" y="89" text-anchor="middle">__getattr__(name)</text>
+          <text class="detail" x="144" y="111" text-anchor="middle">package __init__.py</text>
+          <rect class="old" x="355" y="62" width="210" height="70" rx="7"/>
+          <text class="title" x="460" y="89" text-anchor="middle">import module</text>
+          <text class="detail" x="460" y="111" text-anchor="middle">selected by name group</text>
+          <rect class="old" x="676" y="62" width="200" height="70" rx="7"/>
+          <text class="title" x="776" y="89" text-anchor="middle">getattr(module, name)</text>
+          <text class="detail" x="776" y="111" text-anchor="middle">open string probe</text>
+          <path class="edge" d="M244 97 L355 97" marker-end="url(#arr)"/>
+          <path class="edge" d="M565 97 L676 97" marker-end="url(#arr)"/>
+
+          <text class="label" x="44" y="205">AFTER · EXPLICIT OBJECT MAP</text>
+          <rect class="new" x="44" y="232" width="200" height="74" rx="7"/>
+          <text class="title" x="144" y="260" text-anchor="middle">__getattr__(name)</text>
+          <text class="detail" x="144" y="282" text-anchor="middle">same public entrypoint</text>
+          <rect class="new" x="355" y="232" width="210" height="74" rx="7"/>
+          <text class="title" x="460" y="260" text-anchor="middle">explicit symbol import</text>
+          <text class="detail" x="460" y="282" text-anchor="middle">cycle-safe branch</text>
+          <rect class="new" x="676" y="232" width="200" height="74" rx="7"/>
+          <text class="title" x="776" y="260" text-anchor="middle">exports[name]</text>
+          <text class="detail" x="776" y="282" text-anchor="middle">closed object mapping</text>
+          <path class="edge-new" d="M244 269 L355 269" marker-end="url(#arr-new)"/>
+          <path class="edge-new" d="M565 269 L676 269" marker-end="url(#arr-new)"/>
+          <rect x="371" y="328" width="178" height="32" rx="16" fill="var(--elevated)" stroke="var(--rule-strong)"/>
+          <text class="detail" x="460" y="349" text-anchor="middle">globals()[name] caches value</text>
+        </svg>
+        <figcaption>Fig 1 · The import timing is preserved, but the last hop is statically enumerated and visible to type tooling.</figcaption>
+      </figure>
+      <p>Sources: <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/b5c8ab950401996f171b29c076900fa22fc80e21/openhands-sdk/openhands/sdk/marketplace/__init__.py#L57">before marketplace:57</a> · <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/openhands-sdk/openhands/sdk/marketplace/__init__.py#L56">after marketplace:56</a> · <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/openhands-sdk/openhands/sdk/mcp/__init__.py#L24">after mcp:24</a></p>
+    </section>
+
+    <section id="compatibility">
+      <h2><span class="num">2</span>The public contract does not move</h2>
+      <table>
+        <thead><tr><th>Contract</th><th>Before</th><th>After</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>Import path</td><td><code>from openhands.sdk.&lt;package&gt; import Name</code></td><td>Same</td><td class="ok">Compatible</td></tr>
+          <tr><td>Import timing</td><td>Target module loads on first attribute access</td><td>Same</td><td class="ok">Compatible</td></tr>
+          <tr><td>Object identity</td><td>Object from defining module</td><td>Same exact object, selected explicitly</td><td class="ok">Compatible</td></tr>
+          <tr><td>Unknown names</td><td><code>AttributeError</code></td><td>Same</td><td class="ok">Compatible</td></tr>
+          <tr><td>Checker policy</td><td>Six baseline allowances</td><td>No allowance for these packages</td><td class="ok">Stricter</td></tr>
+        </tbody>
+      </table>
+      <p>Sources: <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/b5c8ab950401996f171b29c076900fa22fc80e21/openhands-sdk/openhands/sdk/settings/__init__.py#L132">before settings:132</a> · <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/openhands-sdk/openhands/sdk/settings/__init__.py#L132">after settings:132</a> · <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/scripts/forbidden_dynamic_attributes_baseline.json#L1">baseline</a></p>
+    </section>
+
+    <section id="files">
+      <h2><span class="num">3</span>Four files carry one cohesive slice</h2>
+      <table>
+        <thead><tr><th>File</th><th>Role</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag">✏️ +45/−5</span> marketplace/<code>__init__.py</code></td><td>Types and registry exports</td><td>Two explicit object maps; resolved values are cached. <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/openhands-sdk/openhands/sdk/marketplace/__init__.py#L56">source</a></td></tr>
+          <tr><td><span class="tag">✏️ +17/−6</span> mcp/<code>__init__.py</code></td><td>Definition, tool, and provider exports</td><td>Each cycle-safe branch imports named symbols and returns from its closed map. <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/openhands-sdk/openhands/sdk/mcp/__init__.py#L24">source</a></td></tr>
+          <tr><td><span class="tag">✏️ +56/−2</span> settings/<code>__init__.py</code></td><td>Settings model exports</td><td>The model surface is enumerated as imported objects and cached. <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/openhands-sdk/openhands/sdk/settings/__init__.py#L132">source</a></td></tr>
+          <tr><td><span class="tag">⚙️ +0/−30</span> checker baseline</td><td>Architecture guard</td><td>Six five-line allowances are removed, so regression is mechanically rejected. <a class="src" href="https://github.com/ProvenceLavanda/software-agent-sdk/blob/dc1941c1ff7e4539280329f338ba5e085cc6e6e2/scripts/forbidden_dynamic_attributes_baseline.json#L1">source</a></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="evidence">
+      <h2><span class="num">4</span>Runtime imports and repository gates agree</h2>
+      <div class="callout note">ⓘ A fresh interpreter imported representative symbols from every lazy group and printed the expected defining object names.</div>
+      <pre><code>Marketplace MarketplaceRegistry
+MCPToolAction create_mcp_tools
+AgentSettingsBase export_settings_schema</code></pre>
+      <table>
+        <thead><tr><th>Evidence</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Marketplace, MCP, and settings targeted suites</td><td class="ok">191 passed in 6.44s</td></tr>
+          <tr><td>Ruff format/lint and pycodestyle</td><td class="ok">Passed</td></tr>
+          <tr><td>Pyright</td><td class="ok">Passed</td></tr>
+          <tr><td>Forbidden dynamic attributes</td><td class="ok">Passed · baseline 122 → 116</td></tr>
+          <tr><td>Import rules and tool registration</td><td class="ok">Passed</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="draft">
+      <h2><span class="num">5</span>Draft status keeps the remaining boundaries visible</h2>
+      <div class="callout warn">⚠ This page describes the committed package-export slice, not completion of #4979. The PR remains Draft while the platform, remote response, Laminar, and model-name boundaries are implemented and tested.</div>
+      <p>The remaining work will be kept in domain-focused helpers rather than folded into a generic reflection utility. Any unavoidable dynamic access must be isolated, documented, covered by a targeted behavior test, and removed from the broad baseline.</p>
+      <details><summary>Planned review sequence</summary><div>
+        <ol>
+          <li>Platform flags, optional file APIs, and Rich stdout compatibility.</li>
+          <li>Shared remote-response status normalization with sync and async coverage.</li>
+          <li>Laminar root-span and model display-name boundaries.</li>
+          <li>Final baseline shrink, focused suites, and full changed-file checks.</li>
+        </ol>
+      </div></details>
+    </section>
+  </main>
+</div>
+</body>
+</html>
