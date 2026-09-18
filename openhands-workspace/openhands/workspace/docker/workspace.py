@@ -256,7 +256,14 @@ class DockerWorkspace(RemoteWorkspace):
             flags += ["--network", self._network_name]
 
         session_api_key = uuid.uuid4().hex
-        flags += ["-e", f"SESSION_API_KEY={session_api_key}"]
+        # Override any forwarded host credentials with a key scoped to this
+        # workspace. The server supports both legacy and V1 env names.
+        flags += [
+            "-e",
+            f"SESSION_API_KEY={session_api_key}",
+            "-e",
+            f"OH_SESSION_API_KEYS_0={session_api_key}",
+        ]
 
         # Run container
         run_cmd = [
@@ -394,14 +401,23 @@ class DockerWorkspace(RemoteWorkspace):
         """Stop and remove the Docker container."""
         if self._container_id:
             # Stop logs streaming
-            self._stop_logs.set()
-            if self._logs_thread and self._logs_thread.is_alive():
-                self._logs_thread.join(timeout=2)
+            stop_logs = getattr(self, "_stop_logs", None)
+            if stop_logs is not None:
+                stop_logs.set()
+            logs_thread = getattr(self, "_logs_thread", None)
+            if (
+                logs_thread
+                and logs_thread.is_alive()
+                and logs_thread is not threading.current_thread()
+            ):
+                logs_thread.join(timeout=2)
 
             # Stop and remove the container
             logger.info(f"Stopping container: {self._container_id}")
             try:
                 execute_command(["docker", "stop", self._container_id])
+            except Exception as e:
+                logger.warning("Failed to stop Docker workspace container: %s", e)
             finally:
                 self._container_id = None
 

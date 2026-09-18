@@ -217,6 +217,7 @@ def test_docker_workspace_creates_private_network_and_authenticates():
         assert run_cmd[run_cmd.index("--network") + 1] == network_cmd[-1]
         assert "127.0.0.1:8000:8000" in run_cmd
         assert any(arg.startswith("SESSION_API_KEY=") for arg in run_cmd)
+        assert any(arg.startswith("OH_SESSION_API_KEYS_0=") for arg in run_cmd)
         assert workspace.api_key
 
 
