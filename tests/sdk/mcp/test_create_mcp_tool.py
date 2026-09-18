@@ -13,11 +13,14 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+import uvicorn
 from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.stores.memory import MemoryStore
 from pydantic import SecretStr
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import PlainTextResponse
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import (
@@ -742,3 +745,51 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_mcp_tool_reconnects_after_http_error():
+    mcp = FastMCP("http-error-test-server")
+
+    @mcp.tool()
+    def ping() -> str:
+        return "pong"
+
+    class FailFirstToolCall(BaseHTTPMiddleware):
+        failed = False
+
+        async def dispatch(self, request, call_next):
+            body = (await request.body()).replace(b" ", b"")
+            if not self.failed and b'"method":"tools/call"' in body:
+                self.failed = True
+                return PlainTextResponse("gateway timeout", status_code=504)
+            return await call_next(request)
+
+    port = _find_free_port()
+    app = mcp.http_app(path="/mcp")
+    app.add_middleware(FailFirstToolCall)
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    _wait_for_port(port)
+
+    try:
+        config = {
+            "server": {"transport": "http", "url": f"http://127.0.0.1:{port}/mcp"}
+        }
+        with create_mcp_tools(coerce_mcp_config(config), timeout=5) as client:
+            tool = next(tool for tool in client if tool.name == "ping")
+            assert tool.executor is not None
+            action = tool.action_from_arguments({})
+
+            first = tool.executor(action)
+            second = tool.executor(action)
+
+            assert first.is_error
+            assert "504 Gateway Timeout" in first.text
+            assert not second.is_error
+            assert "pong" in second.text
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
