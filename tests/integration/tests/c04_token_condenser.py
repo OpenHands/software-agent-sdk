@@ -6,29 +6,18 @@ This integration test verifies that:
 3. Condensation is triggered when token limit is exceeded
 """
 
-from openhands.sdk import get_logger
+from openhands.sdk import Message, TextContent, get_logger
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
-# Instruction designed to generate multiple agent messages
-INSTRUCTION = """
-Count from 1 to 1000. For each number, use the echo command to print it along with
-a short, unique property of that number (e.g., "1 is the first natural number",
-"2 is the only even prime number", etc.). Be creative with your descriptions.
+INSTRUCTION = """I will send batches of service logs. For each batch, report the
+number of ERROR entries in one sentence. Do not repeat the logs."""
 
-DO NOT write a script to do this. Instead, interactively call the echo command
-1000 times, once for each number from 1 to 1000.
-
-This won't be efficient -- that is okay, we're using the output as a test for our
-context management system.
-
-Make sure you should generate some "extended thinking" for each tool call you make
-to help us test the system.
-"""
 
 logger = get_logger(__name__)
 
@@ -42,15 +31,6 @@ class TokenCondenserTest(BaseIntegrationTest):
         """Initialize test with tracking variables."""
         self.condensations: list[Condensation] = []
         super().__init__(*args, **kwargs)
-
-        # Some models explicitly disallow long, repetitive tool loops for cost/safety.
-        # Skip this test for models that decline such requests.
-        self.skip_if_model_matches(
-            "gpt-5.1-codex-max",
-            "This test stresses long repetitive tool loops to trigger token-based "
-            "condensation. GPT-5.1 Codex Max often declines such requests for "
-            "efficiency/safety reasons.",
-        )
 
     @property
     def tools(self) -> list[Tool]:
@@ -75,19 +55,33 @@ class TokenCondenserTest(BaseIntegrationTest):
 
     @property
     def max_iteration_per_run(self) -> int:
-        return 50
+        return 10
 
     def conversation_callback(self, event):
         """Override callback to detect condensation events."""
         super().conversation_callback(event)
 
         if isinstance(event, Condensation):
-            if len(self.condensations) >= 1:
-                logger.info("2nd condensation detected! Stopping test early.")
-                self.conversation.pause()
-            # We allow the first condensation request to test if
-            # thinking block + condensation will work together
             self.condensations.append(event)
+
+    def run_instructions(self, conversation: LocalConversation) -> None:
+        conversation.send_message(message=self.instruction_message)
+        conversation.run()
+        for batch in range(6):
+            lines = [
+                f"request={batch * 120 + index} level=INFO service=checkout "
+                "operation=validate_order status=completed duration_ms=42"
+                for index in range(120)
+            ]
+            conversation.send_message(
+                message=Message(
+                    role="user",
+                    content=[TextContent(text="\n".join(lines))],
+                )
+            )
+            conversation.run()
+            if self.condensations:
+                break
 
     def setup(self) -> None:
         logger.info(f"Token condenser test: max_tokens={self.condenser.max_tokens}")

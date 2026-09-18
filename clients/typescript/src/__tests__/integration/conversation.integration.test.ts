@@ -16,7 +16,7 @@ import {
   Event,
   AgentExecutionStatus,
 } from '../../index';
-import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from './test-config';
+import { getTestConfig, skipIfNoConfig, createTestAgentConfig } from './test-config';
 import {
   waitFor,
   waitForAgentIdle,
@@ -48,9 +48,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -78,9 +76,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -110,9 +106,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -142,9 +136,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -170,9 +162,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -196,9 +186,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -230,9 +218,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -267,9 +253,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -304,9 +288,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -354,9 +336,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -403,9 +383,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -449,9 +427,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -482,9 +458,7 @@ describe('Conversation Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -521,9 +495,7 @@ describe('Conversation Integration Tests', () => {
         const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
         const expectedContent = 'Hello from the agent!';
 
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,
@@ -576,9 +548,7 @@ describe('Conversation Integration Tests', () => {
         const fileContent = 'This file contains the secret number: 42';
 
         // Create the file first
-        const agent = new Agent({
-          llm: createTestLLMConfig(),
-        });
+        const agent = new Agent(createTestAgentConfig());
 
         const workspace = new Workspace({
           host: config.agentServerUrl,

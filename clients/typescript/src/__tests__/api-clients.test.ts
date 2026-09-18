@@ -1602,6 +1602,32 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it.each(['idle', 'finished'])(
+    'RemoteConversation.run replaces cached %s status with the new run status',
+    async (initialStatus) => {
+      let executionStatus = initialStatus;
+      global.fetch = vi.fn().mockImplementation((_url: unknown, init: RequestInit) => {
+        if (init.method === 'POST') executionStatus = 'running';
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: 'conv-123', execution_status: executionStatus }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        );
+      }) as typeof fetch;
+
+      const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+      const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+      const conversation = new RemoteConversation(agent, workspace, {
+        conversationId: 'conv-123',
+      });
+
+      await expect(conversation.state.getExecutionStatus()).resolves.toBe(initialStatus);
+      await conversation.run();
+      await expect(conversation.state.getExecutionStatus()).resolves.toBe('running');
+    }
+  );
+
   it('RemoteConversation.switchLlm POSTs the llm to the switch_llm endpoint', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {

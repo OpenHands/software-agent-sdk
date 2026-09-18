@@ -8,7 +8,7 @@
  */
 
 import { WebSocketCallbackClient, HttpClient, Event } from '../../index';
-import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from './test-config';
+import { getTestConfig, skipIfNoConfig, createTestAgentConfig } from './test-config';
 import { sleep, waitFor } from './test-utils';
 
 const SKIP_TESTS = skipIfNoConfig();
@@ -51,10 +51,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 10,
             stuck_detection: true,
             workspace: {
@@ -122,10 +119,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 15,
             stuck_detection: true,
             workspace: {
@@ -187,10 +181,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 5,
             stuck_detection: true,
             workspace: {
@@ -255,10 +246,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 5,
             stuck_detection: true,
             workspace: {
@@ -319,10 +307,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 10,
             stuck_detection: true,
             workspace: {
@@ -383,10 +368,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 15,
             stuck_detection: true,
             workspace: {
@@ -448,10 +430,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 15,
             stuck_detection: true,
             workspace: {
@@ -515,10 +494,7 @@ describe('WebSocket Integration Tests', () => {
         const createResponse = await httpClient.post<CreateConversationResponse>(
           '/api/conversations',
           {
-            agent: {
-              kind: 'Agent',
-              llm: createTestLLMConfig(),
-            },
+            agent: createTestAgentConfig(),
             max_iterations: 10,
             stuck_detection: true,
             workspace: {

@@ -261,7 +261,7 @@ describe('RemoteWorkspace Integration Tests', () => {
 
         // Create file via command
         await workspace.executeCommand(
-          `echo -n "${content}" > ${config.agentWorkspaceDir}/${fileName}`
+          `printf '%s' "${content}" > ${config.agentWorkspaceDir}/${fileName}`
         );
 
         // Give a moment for file to be created

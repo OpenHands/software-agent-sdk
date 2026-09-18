@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1034,17 +1035,13 @@ def test_long_output_from_nested_directories(terminal_type):
         )
         session.initialize()
         try:
-            # Create nested directories with many files
-            setup_cmd = (
-                "mkdir -p /tmp/test_dir && cd /tmp/test_dir && "
-                'for i in $(seq 1 100); do mkdir -p "folder_$i"; '
-                'for j in $(seq 1 100); do touch "folder_$i/file_$j.txt"; done; done'
-            )
-            obs = _run_bash_action(session, setup_cmd.strip(), timeout=60)
-            assert obs.metadata.exit_code == 0
+            for i in range(1, 101):
+                folder = Path(temp_dir) / f"folder_{i}"
+                folder.mkdir()
+                for j in range(1, 101):
+                    (folder / f"file_{j}.txt").touch()
 
-            # List the directory structure recursively
-            obs = _run_bash_action(session, "ls -R /tmp/test_dir", timeout=60)
+            obs = _run_bash_action(session, "ls -R .", timeout=60)
             assert obs.metadata.exit_code == 0
 
             # Verify output contains expected files
@@ -1066,10 +1063,7 @@ def test_command_backslash(terminal_type):
         session.initialize()
         try:
             # Create a file with the content "implemented_function"
-            cmd = (
-                "mkdir -p /tmp/test_dir && "
-                'echo "implemented_function" > /tmp/test_dir/file_1.txt'
-            )
+            cmd = 'echo "implemented_function" > file_1.txt'
             obs = _run_bash_action(session, cmd)
             assert obs.metadata.exit_code == 0
 
@@ -1080,12 +1074,12 @@ def test_command_backslash(terminal_type):
                 semicolon = "\\;"  # Escape for tmux
 
             cmd = (
-                "find /tmp/test_dir -type f -exec grep"
+                "find . -type f -exec grep"
                 + f' -l "implemented_function" {{}} {semicolon}'
             )
             obs = _run_bash_action(session, cmd)
             assert obs.metadata.exit_code == 0
-            assert "/tmp/test_dir/file_1.txt" in obs.text
+            assert "./file_1.txt" in obs.text
         finally:
             session.close()
 
