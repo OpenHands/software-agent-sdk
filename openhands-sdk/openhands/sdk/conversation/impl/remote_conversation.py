@@ -32,6 +32,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
+    ConversationDeltaCallbackType,
     ConversationID,
     StuckDetectionThresholds,
     TraceMetadataValue,
@@ -48,6 +49,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -66,8 +68,10 @@ logger = get_logger(__name__)
 
 CONVERSATIONS_PATH = "/api/conversations"
 FATAL_WS_CLOSE_CODES = frozenset({4001, 4004})
-_WEBSOCKET_AUTH_TYPE: Final = "auth"
-_WEBSOCKET_SESSION_API_KEY_FIELD: Final = "session_api_key"
+_WEBSOCKET_AUTH_TYPE: Final[str] = "auth"
+_WEBSOCKET_SESSION_API_KEY_FIELD: Final[str] = "session_api_key"
+# Matched before the durable decode: Event.model_validate rejects this kind.
+_STREAMING_DELTA_KIND: Final[str] = StreamingDeltaEvent.__name__
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -132,6 +136,7 @@ class WebSocketCallbackClient:
     host: str
     conversation_id: str
     callback: ConversationCallbackType
+    delta_callback: ConversationDeltaCallbackType | None
     on_reconnect: Callable[[], object] | None
     api_key: str | None
     _thread: threading.Thread | None
@@ -145,10 +150,12 @@ class WebSocketCallbackClient:
         callback: ConversationCallbackType,
         api_key: str | None = None,
         on_reconnect: Callable[[], object] | None = None,
+        delta_callback: ConversationDeltaCallbackType | None = None,
     ):
         self.host = host
         self.conversation_id = conversation_id
         self.callback = callback
+        self.delta_callback = delta_callback
         self.api_key = api_key
         self.on_reconnect = on_reconnect
         self._thread = None
@@ -237,7 +244,14 @@ class WebSocketCallbackClient:
                         if self._stop.is_set():
                             break
                         try:
-                            event = Event.model_validate(json.loads(message))
+                            data = json.loads(message)
+                            if data.get("kind") == _STREAMING_DELTA_KIND:
+                                if self.delta_callback is not None:
+                                    self.delta_callback(
+                                        StreamingDeltaEvent.model_validate(data)
+                                    )
+                                continue
+                            event = Event.model_validate(data)
 
                             # Set ready on first ConversationStateUpdateEvent
                             # The server sends this immediately after subscription
@@ -694,6 +708,7 @@ class RemoteConversation(BaseConversation):
     _ws_client: "WebSocketCallbackClient | None"
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
+    _delta_callbacks: list[ConversationDeltaCallbackType]
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
@@ -726,6 +741,9 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        # Appended, not grouped with ``callbacks``: a mid-signature insert
+        # would move every positional after it (the API breakage check).
+        delta_callbacks: list[ConversationDeltaCallbackType] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -763,6 +781,8 @@ class RemoteConversation(BaseConversation):
             observability_tags: Optional root span tags for observability backends.
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
+            delta_callbacks: Optional callbacks for streaming token deltas.
+                      Deltas are not Events and never reach ``callbacks``.
         """
         # Client tool specs the server already has persisted for this
         # conversation (populated when re-attaching to an existing one). These
@@ -884,6 +904,7 @@ class RemoteConversation(BaseConversation):
             max_iteration_per_run=max_iteration_per_run,
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
+            delta_callbacks=delta_callbacks,
         )
 
         # Initialize secrets if provided
@@ -1001,10 +1022,12 @@ class RemoteConversation(BaseConversation):
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
+        delta_callbacks: list[ConversationDeltaCallbackType] | None = None,
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
+        self._delta_callbacks = delta_callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
@@ -1114,6 +1137,7 @@ class RemoteConversation(BaseConversation):
             callback=composed_callback,
             api_key=self.workspace.api_key,
             on_reconnect=self._state.events.reconcile,
+            delta_callback=self._on_delta if self._delta_callbacks else None,
         )
         self._ws_client.start()
 
@@ -1151,6 +1175,11 @@ class RemoteConversation(BaseConversation):
         # were emitted between the initial REST sync and WebSocket subscription.
         # This is the "reconciliation" part of the subscription handshake.
         self._state.events.reconcile()
+
+    def _on_delta(self, delta: StreamingDeltaEvent) -> None:
+        """Fan a decoded delta out, like compose_callbacks does for events."""
+        for callback in self._delta_callbacks:
+            callback(delta)
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""

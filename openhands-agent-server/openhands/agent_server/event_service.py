@@ -141,6 +141,11 @@ class EventService:
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
+    # Uncapped: every delta subscriber is internal or paired with a durable
+    # one, so the cap above already bounds this bus.
+    _delta_pub_sub: PubSub[StreamingDeltaEvent] = field(
+        default_factory=lambda: PubSub[StreamingDeltaEvent](), init=False
+    )
     # Its own fan-out, not the event bus: frames are not events, and only the
     # session socket consumes them.
     _stream_pub_sub: PubSub[StreamProgress] = field(
@@ -864,6 +869,15 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    async def subscribe_to_deltas(
+        self, subscriber: Subscriber[StreamingDeltaEvent]
+    ) -> UUID:
+        """Subscribe to streaming deltas. No state is pushed on connect."""
+        return self._delta_pub_sub.subscribe(subscriber)
+
+    async def unsubscribe_from_deltas(self, subscriber_id: UUID) -> bool:
+        return self._delta_pub_sub.unsubscribe(subscriber_id)
+
     async def subscribe_to_stream_progress(
         self, subscriber: Subscriber[StreamProgress]
     ) -> UUID:
@@ -1086,9 +1100,8 @@ class EventService:
             content: str | None = None,
             reasoning_content: str | None = None,
         ) -> None:
-            # Published directly to _pub_sub (not via _callback_wrapper) so
-            # deltas reach subscribers but are NOT persisted to
-            # ConversationState.events. See StreamingDeltaEvent docstring.
+            # Straight to the delta bus, not via _callback_wrapper, so deltas
+            # are never persisted to ConversationState.events.
             if not self._main_loop or not self._main_loop.is_running():
                 return
             # Use `is not None` rather than truthiness: some providers
@@ -1102,7 +1115,9 @@ class EventService:
             )
             self._signal_stream_activity()
             with suppress(RuntimeError):  # main loop already closed during teardown
-                asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+                asyncio.run_coroutine_threadsafe(
+                    self._delta_pub_sub(event), self._main_loop
+                )
 
         def _publish_stream_progress(frame: StreamProgress) -> None:
             # Same cross-thread hop as _publish_stream_delta: called from the
@@ -1834,6 +1849,7 @@ class EventService:
             self._run_task = None
 
         await self._pub_sub.close()
+        await self._delta_pub_sub.close()
         await self._stream_pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
