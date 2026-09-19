@@ -156,3 +156,31 @@ def test_switch_llm_tool_reports_unexpected_profile_load_error(
     assert "Cannot read fast" in observation.text
     assert conversation.agent.llm.model == "default-model"
     assert conversation.state.agent.llm.model == "default-model"
+
+
+def test_include_default_tools_is_idempotent_against_the_tools_list(profile_store):
+    """Naming a built-in in both channels must not fail the conversation.
+
+    Cloud attaches `SwitchLLMTool` through `include_default_tools` after
+    building the agent, while the settings flag now puts `switch_llm` in
+    `tools`. Both say "give the agent this tool", so the second one is a
+    no-op rather than a duplicate-name error.
+    """
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default"), tools=[]
+    ).create_agent()
+    assert any(tool.name == "switch_llm" for tool in agent.tools)
+
+    agent = agent.model_copy(
+        update={
+            "include_default_tools": [
+                *agent.include_default_tools,
+                SwitchLLMTool.__name__,
+            ]
+        }
+    )
+
+    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
+    conversation._ensure_agent_ready()
+
+    assert "switch_llm" in agent.tools_map

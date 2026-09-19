@@ -599,6 +599,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 VisionInspectTool.__name__,
             )
 
+        # A built-in can also be named in ``tools`` — both channels mean "give
+        # the agent this tool", so the second mention is a no-op rather than a
+        # duplicate-name error.
+        selected_names = {tool.name for tool in tools}
         for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
@@ -606,7 +610,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"Unknown built-in tool class: '{tool_name}'. "
                     f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
                 )
-            tool_instances = tool_class.create(state)
+            tool_instances = [
+                tool
+                for tool in tool_class.create(state)
+                if tool.name not in selected_names
+            ]
+            selected_names.update(tool.name for tool in tool_instances)
             tools.extend(tool_instances)
 
         # Check tool types
