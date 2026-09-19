@@ -147,7 +147,7 @@ def register_tool(
     with _LOCK:
         # TODO: throw exception when registering duplicate name tools
         if name in _REG:
-            logger.warning(f"Duplicate tool name registerd {name}")
+            logger.warning(f"Duplicate tool name registered: {name}")
         _REG[name] = resolver
         _USABILITY_REG[name] = usability_checker
         _TOOL_CLASSES[name] = tool_class
@@ -161,12 +161,14 @@ def resolve_tool(
         resolver = _REG.get(tool_spec.name)
 
     if resolver is None:
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
-
-        tool_class = BUILT_IN_TOOL_CLASSES.get(tool_spec.name) or next(
-            (c for c in BUILT_IN_TOOL_CLASSES.values() if c.name == tool_spec.name),
-            None,
+        from openhands.sdk.tool.builtins import (
+            BUILT_IN_TOOL_CLASSES,
+            BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME,
         )
+
+        tool_class = BUILT_IN_TOOL_CLASSES.get(
+            tool_spec.name
+        ) or BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME.get(tool_spec.name)
         if tool_class is None:
             raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
         resolver = _resolver_from_subclass(tool_spec.name, tool_class)

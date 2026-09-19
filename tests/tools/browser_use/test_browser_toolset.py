@@ -472,3 +472,40 @@ def test_resolve_tool_survives_browser_executor_failure():
             resolved = resolve_tool(Tool(name=BrowserToolSet.name), conv_state)
 
     assert list(resolved) == []
+
+
+def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
+    """A v3 profile carrying `browser_tool_set` is harmless without a browser.
+
+    Schema v3 pins the standard set — browser included — into `tools` when it
+    folds away `enable_sub_agents`, and `resolve_tool_specs` then uses an
+    explicit list verbatim. Nothing downstream re-checks usability, so the
+    pinned entry is only safe because `BrowserToolSet.create` degrades to no
+    tools. Pin that, or the migration turns into a crash on such a host.
+    """
+    from openhands.sdk.profiles.agent_profile import fold_sub_agents_into_tools
+    from openhands.sdk.tool.defaults import resolve_tool_specs
+    from openhands.sdk.tool.registry import resolve_tool
+
+    migrated = fold_sub_agents_into_tools(None, enable_sub_agents=True)
+    assert migrated is not None
+    specs = resolve_tool_specs(migrated)
+    assert [spec.name for spec in specs] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "task_tool_set",
+    ]
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        with patch.object(
+            BrowserToolSet,
+            "_get_or_create_shared_executor",
+            side_effect=RuntimeError("no chromium on this host"),
+        ):
+            browser_spec = next(s for s in specs if s.name == "browser_tool_set")
+            resolved = resolve_tool(browser_spec, conv_state)
+
+    assert list(resolved) == []
