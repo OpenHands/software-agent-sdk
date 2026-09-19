@@ -103,7 +103,7 @@ class MCPClient(AsyncMCPClient):
         if hasattr(self, "close") and inspect.iscoroutinefunction(self.close):
             try:
                 self._executor.run_async(self.close, timeout=10.0)
-            except Exception:
+            except BaseException:  # noqa: BLE001 - cleanup must never mask the original error
                 pass  # Ignore close errors during cleanup
 
         # Always cleanup the executor
