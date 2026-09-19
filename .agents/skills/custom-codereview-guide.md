@@ -153,7 +153,9 @@ If there are significant issues, leave detailed comments explaining the concerns
 
 ## Design Docs for Deep PRs
 
-A diff shows what changed line by line, not the design: the shape of the change, the API before and after, and why this approach. For a *deep* PR, expect a short design doc. The `pr-design-doc` skill in `.agents/skills/pr-design-doc/` produces a self-contained `.pr/` HTML page (big picture plus before/after, grounded to real code) linked from the PR description.
+A diff shows what changed line by line, not the design: the shape of the change, the API before and after, and why this approach. For a *deep* PR, expect design context covering intent, important before/after behavior or API shape, compatibility, and risk, grounded in code references. A sufficient PR description satisfies this expectation at any risk level. The `pr-design-doc` skill in `.agents/skills/pr-design-doc/` can supplement it with a self-contained `.pr/` HTML page.
+
+Keep the essential design summary in the PR description. Link supplementary `.pr/` documents to the commit containing them, since automated approval can trigger cleanup and break branch-based links. Refresh the document and its link when substantive changes affect the design.
 
 A PR is "deep" when a reviewer cannot fully judge it from the diff in a couple of minutes, for example:
 
@@ -164,13 +166,13 @@ A PR is "deep" when a reviewer cannot fully judge it from the diff in a couple o
 
 Skip it for trivial PRs — a typo, a one-line guard, a config or dependency bump, a docs tweak, a small localized bug fix. If the diff is its own explanation, do not ask for a page.
 
-When a deep PR ships without a design doc, weigh the omission against the change's risk assessment:
+When a deep PR lacks sufficient design context, weigh the omission against the change's risk assessment:
 
-- **🔴 HIGH risk and deep, no design doc:** withhold approval. Leave a **COMMENT** review and ask for a design doc (or an equivalent write-up in the PR description) so a human can judge the proposal before merge.
-- **🟡 MEDIUM risk and deep, no design doc:** use judgment. Prefer to withhold approval and request one when the change is hard to reconstruct from the diff; a MEDIUM change that is small and self-evident does not need a page.
+- **🔴 HIGH risk and deep, insufficient context:** withhold approval. Leave a **COMMENT** review identifying the missing information needed to judge the proposal before merge.
+- **🟡 MEDIUM risk and deep, insufficient context:** use judgment. Withhold approval when missing information prevents a sound review; a small, self-evident change does not need a page.
 - **🟢 LOW risk:** never block on a missing design doc.
 
-A design doc is a review aid, not a merge gate by itself. A well-written doc does not excuse real correctness, security, or architecture problems.
+A separate design doc is not required when the PR description provides sufficient context. A well-written doc does not excuse real correctness, security, or architecture problems.
 
 ## Security
 
