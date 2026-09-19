@@ -301,6 +301,26 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ),
     )
 
+    content_response_policy: Literal["finish", "nudge"] = Field(
+        default="finish",
+        description=(
+            "Policy for assistant responses that contain text content but no tool "
+            "call. 'finish' (default) treats such a message as the final answer "
+            "and marks the conversation FINISHED. 'nudge' emits the message, then "
+            "sends corrective feedback and keeps the loop running, reserving "
+            "completion for an explicit signal such as the `finish` tool. The "
+            "'nudge' policy reduces false terminations from weaker/local models "
+            "that narrate a step in prose before emitting its tool call. It is "
+            "bounded structurally: at most one nudge per prose streak (a second "
+            "consecutive content-only turn finishes), and no nudge when the "
+            "user's last message was a question or a hold, or the model is "
+            "itself asking a question or refusing. The nudge is emitted with "
+            "source='environment' so it never resets the stuck detector's "
+            "human-turn boundary. See the Stop hook for an external policy on "
+            "stopping; the two are not meant to be stacked."
+        ),
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _tools_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
