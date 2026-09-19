@@ -1404,12 +1404,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             resolve_tool_specs,
         )
 
-        # Legacy switches of this settings model. Both add a tool that ``tools``
-        # can also select, and the agent rejects a duplicate name, so each is
-        # added only when the selection does not already carry it.
+        # Legacy switches of this settings model, each kept to the reach it
+        # always had: ``enable_sub_agents`` only ever fed the default set, so an
+        # explicit ``tools`` (``[]`` included) stays exactly as given, while
+        # ``enable_switch_llm_tool`` attached its tool to every agent. Both
+        # tools can also be selected in ``tools``, and the agent rejects a
+        # duplicate name, so neither is added twice.
         tools = resolve_tool_specs(self.tools)
         for flag, name in (
-            (self.enable_sub_agents, SUB_AGENT_TOOL_NAME),
+            (self.enable_sub_agents and self.tools is None, SUB_AGENT_TOOL_NAME),
             (self.enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
         ):
             if flag and all(tool.name != name for tool in tools):

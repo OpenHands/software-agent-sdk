@@ -1002,6 +1002,36 @@ def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
     ]
 
 
+def test_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
+    """The switch only ever fed the default set.
+
+    An explicit ``tools`` is used exactly as given, so turning sub-agents on
+    must not append to it — honouring the switch against an explicit list is
+    its own behaviour change (#5157), deliberately not made here.
+    """
+    explicit = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"),
+        tools=[Tool(name="terminal")],
+        enable_sub_agents=True,
+    ).create_agent()
+    assert "task_tool_set" not in [t.name for t in explicit.tools]
+
+    bare = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[], enable_sub_agents=True
+    ).create_agent()
+    assert "task_tool_set" not in [t.name for t in bare.tools]
+
+
+def test_explicitly_selected_switch_llm_is_not_added_twice() -> None:
+    """The catalog offers `switch_llm` as a pick; the default-on switch must
+    not then deliver it a second time and trip the duplicate-name guard."""
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[Tool(name="switch_llm")]
+    ).create_agent()
+
+    assert [t.name for t in agent.tools] == ["switch_llm"]
+
+
 def test_create_agent_empty_tools_stays_bare() -> None:
     """tools=[] is an explicit choice: no default injection (persisted-payload
     compatibility — [] predates the None default and keeps its old meaning)."""
