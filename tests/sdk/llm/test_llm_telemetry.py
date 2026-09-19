@@ -195,6 +195,28 @@ class TestTelemetryTokenUsage:
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.cache_write_tokens == 30
 
+    def test_record_usage_with_real_details_no_cache_fields(self, basic_telemetry):
+        """Providers without prompt caching (e.g. MiniMax) return a real
+        PromptTokensDetailsWrapper with the cache attributes deleted.
+
+        Regression test: _record_usage must not raise AttributeError here,
+        and must still count cache reads.
+        """
+        from litellm.types.utils import PromptTokensDetailsWrapper
+
+        usage = Usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            prompt_tokens_details=PromptTokensDetailsWrapper(cached_tokens=25),
+        )
+
+        basic_telemetry._record_usage(usage, "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_read_tokens == 25
+        assert token_usage.cache_write_tokens == 0
+
     def test_record_usage_missing_tokens(self, basic_telemetry):
         """Test token usage recording with missing token counts."""
         usage = Usage()  # Empty usage
