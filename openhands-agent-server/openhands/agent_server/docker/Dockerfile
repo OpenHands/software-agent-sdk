@@ -480,7 +480,7 @@ RUN set -eux; \
     fi; \
     # Install Docker Engine, containerd, and Docker Compose
     apt-get update; \
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
+    apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     \
@@ -497,7 +497,7 @@ RUN set -eux; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
     apt-get update; \
-    apt-get install -y gh; \
+    apt-get install -y --no-install-recommends gh; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
