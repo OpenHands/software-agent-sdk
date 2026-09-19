@@ -4,6 +4,7 @@ import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.agent_server._secrets_exposure import (
@@ -183,7 +184,13 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
             # Display the profile exactly as stored: don't inject the linked
             # provider's credentials, and don't fail a read when the reference
             # dangles. Effective key presence is reported via ``api_key_set``.
-            llm = store.load(name, cipher=cipher, resolve_provider=False)
+            #
+            # Loading constructs an ``LLM``, which may perform a synchronous,
+            # network-bound model-info probe. Run it in a worker thread so a
+            # slow or unreachable endpoint can never block the event loop.
+            llm = await run_in_threadpool(
+                store.load, name, cipher=cipher, resolve_provider=False
+            )
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -471,7 +478,8 @@ async def activate_profile(
     # store_errors() maps to 422.
     try:
         with store_errors():
-            llm = profile_store.load(name, cipher=cipher)
+            # See ``get_profile``: keep the network-bound load off the loop.
+            llm = await run_in_threadpool(profile_store.load, name, cipher=cipher)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
