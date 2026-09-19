@@ -722,6 +722,14 @@ class FileEditor:
         # Check file type - allow image files
         file_extension = path.suffix.lower()
         if is_binary(str(path)) and file_extension not in IMAGE_EXTENSIONS:
+            # binaryornot's 1024-byte sample can split a UTF-8 character.
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                pass
+            else:
+                if not re.search(r"[\x00-\x08\x0e-\x1f\x7f]", text):
+                    return
             raise FileValidationError(
                 path=str(path),
                 reason=(
