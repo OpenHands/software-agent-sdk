@@ -186,6 +186,30 @@ def test_grep_executor_include_filter_still_skips_hidden_directories():
 
 
 @pytest.mark.skipif(not _check_grep_available(), reason="grep not available")
+@pytest.mark.parametrize(
+    ("pattern", "matching_content", "other_content"),
+    [
+        (r"^(foo|bar)+[0-9]{2}$", "FooBAR12\n", "foo12 extra\n"),
+        (r"^foo\(bar\)\+$", "foo(bar)+\n", "foobar\n"),
+        ("", "any content\n", ""),
+    ],
+)
+def test_grep_executor_system_grep_regex(
+    monkeypatch, tmp_path, pattern, matching_content, other_content
+):
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
+    matching_file = tmp_path / "matching.txt"
+    matching_file.write_text(matching_content)
+    (tmp_path / "other.txt").write_text(other_content)
+
+    executor = GrepExecutor(working_dir=str(tmp_path))
+    observation = executor(GrepAction(pattern=pattern))
+
+    assert observation.is_error is False
+    assert observation.matches == [str(matching_file.resolve())]
+
+
+@pytest.mark.skipif(not _check_grep_available(), reason="grep not available")
 def test_grep_executor_system_grep_matches_python_fallback_for_hidden_include():
     with tempfile.TemporaryDirectory() as temp_dir:
         visible = Path(temp_dir) / "visible.py"
