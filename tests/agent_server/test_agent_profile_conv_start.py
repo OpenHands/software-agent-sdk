@@ -453,6 +453,7 @@ class TestResolveAgentFromProfile:
             "file_editor",
             "task_tracker",
             "browser_tool_set",
+            "switch_llm",
         ]
 
     def test_openhands_default_profile_triggers_discovery(self):
