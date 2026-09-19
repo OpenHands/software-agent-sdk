@@ -683,14 +683,24 @@ async def ask_agent(
 
 @conversation_router.post(
     "/{conversation_id}/condense",
-    responses={404: {"description": "Item not found"}},
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "Conversation cannot be condensed"},
+    },
 )
 async def condense_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
     """Force condensation of the conversation history."""
-    success = await conversation_service.condense(conversation_id)
+    try:
+        success = await conversation_service.condense(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(
+            409,
+            "Conversation could not be condensed. Check that its agent has a "
+            "compatible condenser and enough history.",
+        ) from exc
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
