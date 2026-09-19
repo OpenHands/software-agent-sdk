@@ -255,11 +255,13 @@ class Telemetry(BaseModel):
             details = usage.prompt_tokens_details
             if details is None:
                 return 0, 0
-            cache_write = (
-                details.cache_creation_tokens
-                if "cache_creation_tokens" in details.model_fields_set
-                else 0
-            )
+            # PromptTokensDetailsWrapper mirrors cache_write_tokens and
+            # cache_creation_tokens, and deletes either when unset. The field
+            # name can still appear in model_fields_set after the attribute is
+            # deleted, so membership there is not a reliable presence check — use
+            # getattr to avoid AttributeError on responses that report cache
+            # reads without any cache-creation tokens.
+            cache_write = getattr(details, "cache_creation_tokens", None)
             return int(details.cached_tokens or 0), int(cache_write or 0)
 
         details = usage.input_tokens_details

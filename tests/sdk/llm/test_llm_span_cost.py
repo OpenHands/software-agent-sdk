@@ -97,6 +97,33 @@ def test_cache_buckets_survive_absent_prompt_tokens_details():
     assert Telemetry._cache_buckets(usage)[1] == 42
 
 
+def test_cache_buckets_handle_deleted_cache_creation_attr():
+    """Regression: cache-creation attr can be deleted while still "set".
+
+    ``PromptTokensDetailsWrapper`` keeps ``cache_creation_tokens`` in
+    ``model_fields_set`` but deletes the attribute itself when the value is None
+    (and, on newer litellm, mirrors writes between ``cache_write_tokens`` and
+    ``cache_creation_tokens`` so the name lingers in ``model_fields_set`` even
+    when only cache reads are reported). The old ``in model_fields_set``
+    presence check therefore raised ``AttributeError`` on responses that report
+    cache reads (``cached_tokens``) without cache creation.
+    ``_cache_buckets`` must tolerate the attribute being absent and return the
+    read/write counts correctly.
+    """
+    details = PromptTokensDetailsWrapper(cached_tokens=25, cache_creation_tokens=None)
+    # The field name is "set" but the attribute was deleted.
+    assert "cache_creation_tokens" in details.model_fields_set
+    assert not hasattr(details, "cache_creation_tokens")
+    # Assign details directly so Usage.__init__'s normalization (which rebuilds
+    # the wrapper via model_dump and drops the lingering field) does not mask
+    # the deleted-attribute state that real backends can produce.
+    usage = Usage(prompt_tokens=100, completion_tokens=5)
+    usage.prompt_tokens_details = details
+    cache_read, cache_write = Telemetry._cache_buckets(usage)
+    assert cache_read == 25
+    assert cache_write == 0
+
+
 def test_span_closed_on_error(exporter):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})
