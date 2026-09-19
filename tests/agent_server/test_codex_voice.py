@@ -37,6 +37,7 @@ import json, sys
 options = json.loads(sys.argv[1])
 results = []
 requests = []
+pending_speech = []
 def send(value):
     print(json.dumps(value), flush=True)
 for line in sys.stdin:
@@ -65,6 +66,14 @@ for line in sys.stdin:
               "params": {"threadId": "bound-thread", "sdp": "v=0\r\n"}})
     elif method == "thread/realtime/stop" and options.get("stall_stop"):
         continue
+    elif method == "thread/realtime/appendSpeech" and options.get("stall_speech"):
+        pending_speech.append(message["id"])
+        continue
+    elif method == "fixture/releaseSpeech":
+        options["stall_speech"] = False
+        for request_id in pending_speech:
+            send({"id": request_id, "result": {}})
+        pending_speech.clear()
     elif method == "fixture/call":
         send({"id": params.pop("rpcId", 100),
               "method": params.pop("method", "item/tool/call"), "params": params})
@@ -145,6 +154,43 @@ def _call(**kwargs):
     }
 
 
+def _handoff(*, thread_id="bound-thread", **changes):
+    return {
+        "method": "thread/realtime/itemAdded",
+        "params": {
+            "threadId": thread_id,
+            "item": {
+                "type": "handoff_request",
+                "handoff_id": "delegation-1",
+                "item_id": "delegation-1",
+                "input_transcript": "Remember coral.",
+                "active_transcript": [{"role": "assistant", "text": "Do not forward"}],
+                **changes,
+            },
+        },
+    }
+
+
+async def _speeches(relay, count):
+    async with asyncio.timeout(5):
+        while True:
+            result = await relay.rpc("fixture/results", {})
+            speeches = [
+                x["params"]["text"]
+                for x in result["requests"]
+                if x["method"] == "thread/realtime/appendSpeech"
+            ]
+            if len(speeches) >= count:
+                return speeches
+            await asyncio.sleep(0.01)
+
+
+async def _status(relay, status):
+    async with asyncio.timeout(5):
+        while relay.status.status != status:
+            await asyncio.sleep(0.01)
+
+
 @pytest.mark.parametrize("answer", ["猫 remembers coral. 🐾", "Short answer."])
 def test_spoken_excerpt_preserves_short_answer(answer):
     assert spoken_excerpt(answer) == answer
@@ -184,16 +230,9 @@ async def test_long_answer_keeps_saved_record_and_speaks_opening(
     relay = CodexRelay(state.id, events, tmp_path / "home")
     try:
         await relay.start("v=0", "")
-        await relay.rpc("fixture/call", _call())
-        result = await _results(relay, 1)
-        returned = result["results"][0]["result"]["contentItems"][0]["text"]
-        assert returned == full_answer[:12000]
-        speech = next(
-            x["params"]["text"]
-            for x in result["requests"]
-            if x["method"] == "thread/realtime/appendSpeech"
-        )
-        assert speech == spoken_excerpt(returned)
+        await relay.rpc("fixture/notify", _handoff())
+        speeches = await _speeches(relay, 1)
+        assert speeches == [spoken_excerpt(full_answer[:12000])]
         saved = list(state.events)[-1]
         assert isinstance(saved, MessageEvent)
         content = saved.llm_message.content[0]
@@ -208,21 +247,18 @@ async def test_real_stdio_replay_binding_and_context(protocol, relay_events, tmp
     relay = CodexRelay(state.id, events, tmp_path / "home")
     try:
         assert await relay.start("v=0", "x" * 14000 + " saved coral") == "v=0\r\n"
+        await relay.rpc("fixture/notify", _handoff())
+        assert await _speeches(relay, 1) == ["Saved coral."]
+        await _status(relay, "listening")
+        await relay.rpc("fixture/notify", _handoff())
+        await relay.rpc("fixture/notify", _handoff(thread_id="other"))
         await relay.rpc("fixture/call", _call())
-        first = await _results(relay, 1)
-        await relay.rpc("fixture/call", _call(rpcId=101))
-        await relay.rpc("fixture/call", _call(rpcId=102, callId="tool-2"))
-        await relay.rpc(
-            "fixture/call", _call(rpcId=103, turnId="turn-2", threadId="other")
-        )
-        result = await _results(relay, 4)
+        result = await _results(relay, 1)
         assert events.send_message.await_count == 1
-        assert result["results"][0]["result"] == result["results"][1]["result"]
-        assert (
-            first["results"][0]["result"]["contentItems"][0]["text"] == "Saved coral."
-        )
-        assert result["results"][2]["result"]["success"] is False
-        assert result["results"][3]["result"]["success"] is False
+        assert events.send_message.call_args.args[0].content == [
+            TextContent(text="Remember coral.")
+        ]
+        assert result["results"][0]["error"]["code"] == -32601
         await relay.rpc(
             "fixture/notify",
             {
@@ -238,6 +274,7 @@ async def test_real_stdio_replay_binding_and_context(protocol, relay_events, tmp
         starts = [x for x in result["requests"] if x["method"] == "thread/start"]
         assert starts[0]["params"]["ephemeral"] is True
         assert starts[0]["params"]["environments"] == []
+        assert starts[0]["params"]["dynamicTools"] == []
         realtime = next(
             x for x in result["requests"] if x["method"] == "thread/realtime/start"
         )
@@ -248,7 +285,6 @@ async def test_real_stdio_replay_binding_and_context(protocol, relay_events, tmp
             realtime["params"]["initialItems"][-1]["text"]
             == realtime["params"]["prompt"]
         )
-        assert "call send_to_insider" in realtime["params"]["realtimeStartInstructions"]
         assert realtime["params"]["clientManagedHandoffs"] is True
         assert (
             len(
@@ -276,7 +312,7 @@ async def test_real_stdio_replay_binding_and_context(protocol, relay_events, tmp
         {"method": "item/commandExecution/requestApproval"},
     ],
 )
-async def test_protocol_rejects_unlisted_and_invalid_tools(
+async def test_protocol_rejects_all_tools_and_approvals(
     protocol, relay_events, tmp_path, change
 ):
     events, state = relay_events
@@ -303,9 +339,10 @@ async def test_busy_or_approval_never_appends(protocol, relay_events, tmp_path, 
     relay = CodexRelay(state.id, events, tmp_path / "home")
     try:
         await relay.start("v=0", "")
-        await relay.rpc("fixture/call", _call())
-        result = await _results(relay, 1)
-        assert result["results"][0]["result"]["success"] is False
+        await relay.rpc("fixture/notify", _handoff())
+        assert "not sent" in (await _speeches(relay, 1))[0]
+        await _status(relay, "error")
+        assert relay.status.error_code == "request_not_sent"
         events.send_message.assert_not_awaited()
     finally:
         await relay.close()
@@ -317,13 +354,14 @@ async def test_uncertain_append_result_is_cached(protocol, relay_events, tmp_pat
     relay = CodexRelay(state.id, events, tmp_path / "home")
     try:
         await relay.start("v=0", "")
-        await relay.rpc("fixture/call", _call())
-        await _results(relay, 1)
-        await relay.rpc("fixture/call", _call(rpcId=101))
-        result = await _results(relay, 2)
+        await relay.rpc("fixture/notify", _handoff())
+        speeches = await _speeches(relay, 1)
+        await _status(relay, "error")
+        await relay.rpc("fixture/notify", _handoff())
         assert events.send_message.await_count == 1
-        assert "private provider detail" not in json.dumps(result["results"])
-        assert "uncertain" in json.dumps(result["results"])
+        assert "private provider detail" not in json.dumps(speeches)
+        assert "uncertain" in speeches[0]
+        assert relay.status.error_code == "relay_failed"
     finally:
         await relay.close()
 
@@ -342,7 +380,7 @@ async def test_hangup_cannot_split_accepted_append_and_run(
     events.send_message.side_effect = send
     relay = CodexRelay(state.id, events, tmp_path / "home")
     await relay.start("v=0", "")
-    await relay.rpc("fixture/call", _call())
+    await relay.rpc("fixture/notify", _handoff())
     await asyncio.wait_for(entered.wait(), 3)
     await relay.close()
     assert not completed.is_set()
@@ -378,36 +416,29 @@ async def test_cancelled_close_still_stops_child_and_repeated_close_joins(
 
 
 @pytest.mark.parametrize("status", ["failed", "completed"])
-async def test_unsaved_codex_turn_stops_voice_without_saving_request(
-    relay_events, tmp_path, status
+async def test_background_codex_turn_cannot_block_direct_handoff(
+    protocol, relay_events, tmp_path, status
 ):
     events, state = relay_events
     relay = CodexRelay(state.id, events, tmp_path / "home")
-    relay.thread_id = "bound-thread"
     try:
-        relay._notification(
+        await relay.start("v=0", "")
+        await relay.rpc(
+            "fixture/notify",
             {
                 "method": "turn/completed",
                 "params": {
                     "threadId": "bound-thread",
                     "turn": {"id": "unsaved-turn", "status": status},
                 },
-            }
+            },
         )
-        relay._notification(
-            {
-                "method": "thread/realtime/transcript/done",
-                "params": {
-                    "threadId": "bound-thread",
-                    "role": "assistant",
-                    "text": "An answer that was never saved",
-                },
-            }
-        )
-        assert relay.status.status == "error"
-        assert relay.status.error is not None
-        assert relay.status.transcripts == []
-        events.send_message.assert_not_awaited()
+        await relay.rpc("fixture/notify", _handoff())
+        assert await _speeches(relay, 1) == ["Saved coral."]
+        await _status(relay, "listening")
+        assert relay.status.error is None
+        assert relay.status.error_code is None
+        events.send_message.assert_awaited_once()
     finally:
         await relay.close()
 
@@ -429,7 +460,7 @@ async def test_terminal_transport_ignores_late_transcript_and_work_completion(
     relay = CodexRelay(state.id, events, tmp_path / "home")
     try:
         await relay.start("v=0", "")
-        await relay.rpc("fixture/call", _call())
+        await relay.rpc("fixture/notify", _handoff())
         await asyncio.wait_for(entered.wait(), 3)
         for method, params in [
             (f"thread/realtime/{terminal}", {}),
@@ -449,24 +480,200 @@ async def test_terminal_transport_ignores_late_transcript_and_work_completion(
                     },
                 },
             )
-        await relay.rpc(
-            "fixture/call", _call(rpcId=101, turnId="turn-2", callId="tool-2")
-        )
+        await relay.rpc("fixture/notify", _handoff(handoff_id="delegation-2"))
         release.set()
-        result = await _results(relay, 2)
+        assert relay.handoff_task is not None
+        await asyncio.wait_for(asyncio.shield(relay.handoff_task), 3)
+        result = await relay.rpc("fixture/results", {})
         assert relay.status.status == terminal
         assert relay.status.transcripts == []
         assert not any(
             x["method"] == "thread/realtime/appendSpeech" for x in result["requests"]
         )
         assert events.send_message.await_count == 1
-        assert any(x["result"]["success"] is False for x in result["results"])
+        assert relay.status.error_code == (
+            "connection_failed" if terminal == "error" else None
+        )
         saved = list(state.events)[-1]
         assert isinstance(saved, ActionEvent)
         assert isinstance(saved.action, FinishAction)
         assert saved.action.message == "Saved coral."
     finally:
         release.set()
+        await relay.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"handoff_id": ""},
+        {"handoff_id": "x" * 257},
+        {"handoff_id": 12},
+        {"input_transcript": ""},
+        {"input_transcript": "   "},
+        {"input_transcript": "x" * 8001},
+        {"input_transcript": None},
+    ],
+)
+async def test_invalid_handoff_is_not_saved_or_replaced_by_active_transcript(
+    protocol, relay_events, tmp_path, change
+):
+    events, state = relay_events
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff(**change))
+        assert relay.status.status == "error"
+        assert relay.status.error_code == "request_not_sent"
+        events.send_message.assert_not_awaited()
+    finally:
+        await relay.close()
+
+
+async def test_conflicting_handoff_id_cannot_save_a_second_request(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        await _speeches(relay, 1)
+        await _status(relay, "listening")
+        await relay.rpc(
+            "fixture/notify", _handoff(input_transcript="A different request")
+        )
+        assert relay.status.error_code == "request_not_sent"
+        events.send_message.assert_awaited_once()
+    finally:
+        await relay.close()
+
+
+async def test_overlapping_handoff_is_rejected_without_losing_first_answer(
+    protocol, relay_events, tmp_path
+):
+    events, state = relay_events
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(timeout):
+        if timeout:
+            entered.set()
+            await release.wait()
+        return ConversationExecutionStatus.FINISHED
+
+    events.wait_for_run_completion.side_effect = wait
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        await asyncio.wait_for(entered.wait(), 3)
+        await relay.rpc("fixture/notify", _handoff())
+        await relay.rpc(
+            "fixture/notify",
+            _handoff(handoff_id="delegation-2", input_transcript="Another request"),
+        )
+        speeches = await _speeches(relay, 1)
+        assert "not sent" in speeches[0]
+        assert relay.status.status == "thinking"
+        assert relay.status.error_code is None
+        events.send_message.assert_awaited_once()
+
+        release.set()
+        assert (await _speeches(relay, 2))[-1] == "Saved coral."
+        await _status(relay, "listening")
+        await relay.rpc(
+            "fixture/notify",
+            _handoff(handoff_id="delegation-2", input_transcript="Another request"),
+        )
+        events.send_message.assert_awaited_once()
+        await relay.rpc(
+            "fixture/notify",
+            _handoff(handoff_id="delegation-3", input_transcript="A fresh request"),
+        )
+        assert await _speeches(relay, 3) == [
+            speeches[0],
+            "Saved coral.",
+            "Saved coral.",
+        ]
+        assert events.send_message.await_count == 2
+        assert events.send_message.call_args.args[0].content == [
+            TextContent(text="A fresh request")
+        ]
+    finally:
+        release.set()
+        await relay.close()
+
+
+async def test_overlap_burst_coalesces_busy_speech_and_keeps_bounded_replay_ids(
+    protocol, relay_events, tmp_path
+):
+    protocol["stall_speech"] = True
+    events, state = relay_events
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def wait(timeout):
+        if timeout:
+            entered.set()
+            await release.wait()
+        return ConversationExecutionStatus.FINISHED
+
+    events.wait_for_run_completion.side_effect = wait
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        await asyncio.wait_for(entered.wait(), 3)
+        for index in range(2, 130):
+            await relay.rpc(
+                "fixture/notify", _handoff(handoff_id=f"delegation-{index}")
+            )
+        assert len(await _speeches(relay, 1)) == 1
+        events.send_message.assert_awaited_once()
+        assert relay.status.status == "thinking"
+        assert relay.status.error is None
+
+        await relay.rpc("fixture/releaseSpeech", {})
+        release.set()
+        assert (await _speeches(relay, 2))[-1] == "Saved coral."
+        await _status(relay, "listening")
+        await relay.rpc("fixture/notify", _handoff(handoff_id="delegation-128"))
+        assert relay.status.error is None
+        await relay.rpc("fixture/notify", _handoff(handoff_id="delegation-130"))
+        assert relay.status.error_code == "request_not_sent"
+        assert "new voice call" in (relay.status.error or "")
+        events.send_message.assert_awaited_once()
+    finally:
+        release.set()
+        await relay.close()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+        ConversationExecutionStatus.ERROR,
+        TimeoutError(),
+    ],
+)
+async def test_saved_request_without_settled_answer_never_speaks_proposed_finish(
+    protocol, relay_events, tmp_path, outcome
+):
+    events, state = relay_events
+    events.wait_for_run_completion.side_effect = [
+        ConversationExecutionStatus.FINISHED,
+        outcome,
+    ]
+    relay = CodexRelay(state.id, events, tmp_path / "home")
+    try:
+        await relay.start("v=0", "")
+        await relay.rpc("fixture/notify", _handoff())
+        speech = (await _speeches(relay, 1))[0]
+        await _status(relay, "error")
+        assert "request is saved" in speech
+        assert "Saved coral." not in speech
+        assert relay.status.error_code == "relay_failed"
+        events.send_message.assert_awaited_once()
+    finally:
         await relay.close()
 
 

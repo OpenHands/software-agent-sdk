@@ -14,7 +14,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import UUID
 
 import httpx
@@ -25,7 +25,7 @@ from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
-from openhands.agent_server.codex_voice import RelayError
+from openhands.agent_server.codex_voice import CodexRelay, CodexVoiceStatus, RelayError
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -227,6 +227,24 @@ def test_insider_voice_missing_key_and_condense_are_safe_over_http(
             assert codex.json()["delegation"] == "server"
             assert codex.json()["reason"] == "codex_not_installed"
             assert client.get(f"{path}/voice/realtime/unknown").status_code == 404
+            relay = Mock(spec=CodexRelay)
+            relay.status = CodexVoiceStatus(
+                status="error",
+                transcripts=[],
+                error="Voice did not send this request to the saved Cat.",
+                error_code="request_not_sent",
+            )
+            with patch.object(
+                env["app"].state.codex_voice, "get", return_value=relay
+            ) as get_call:
+                failed = client.get(f"{path}/voice/realtime/rtc_fixture")
+                assert failed.status_code == 200
+                assert failed.headers["cache-control"] == "no-store"
+                assert failed.json()["error_code"] == "request_not_sent"
+                assert failed.json()["error"] == relay.status.error
+                get_call.assert_called_once_with(
+                    UUID(created.json()["id"]), "rtc_fixture"
+                )
             assert client.get(path).json()["execution_status"] == "idle"
             client.headers.pop("X-Session-API-Key")
             assert client.get(f"{path}/voice").status_code == 401
