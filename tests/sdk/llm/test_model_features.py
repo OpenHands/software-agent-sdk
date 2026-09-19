@@ -72,7 +72,7 @@ def test_model_matches(name, pattern, expected):
         # not take the parameter at all (see the two rows above). These follow
         # LiteLLM's per-route `supported_openai_params` rather than an SDK
         # override, so a value here tracks upstream and may move again (#4877).
-        ("openrouter/moonshotai/kimi-k2.5", False),
+        ("openrouter/moonshotai/kimi-k2.5", True),
         ("openrouter/moonshotai/kimi-k2-thinking", True),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
