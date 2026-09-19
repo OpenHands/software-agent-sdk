@@ -215,6 +215,10 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         )
     """
 
+    catalog_description: ClassVar[str] = (
+        "Delegate a self-contained sub-task to a separate agent."
+    )
+
     user_selectable: ClassVar[bool] = True
 
     @classmethod

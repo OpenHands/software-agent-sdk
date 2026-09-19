@@ -44,6 +44,7 @@ class ToolCatalogEntry(BaseModel):
     name: str
     user_selectable: bool = True
     usable: bool = True
+    description: str = ""
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -162,7 +163,10 @@ def resolve_tool(
     if resolver is None:
         from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
 
-        tool_class = BUILT_IN_TOOL_CLASSES.get(tool_spec.name)
+        tool_class = BUILT_IN_TOOL_CLASSES.get(tool_spec.name) or next(
+            (c for c in BUILT_IN_TOOL_CLASSES.values() if c.name == tool_spec.name),
+            None,
+        )
         if tool_class is None:
             raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
         resolver = _resolver_from_subclass(tool_spec.name, tool_class)
@@ -242,18 +246,24 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
             name=name,
             user_selectable=tool_classes[name].user_selectable,
             usable=_check_tool_usable(name, usability_checkers.get(name, lambda: True)),
+            description=tool_classes[name].catalog_description,
         )
         for name in names
     ]
+    # Built-ins are keyed by class name, but a profile stores the same snake_case
+    # tool name as every other pick.
     listed = {entry.name for entry in entries}
     entries.extend(
         ToolCatalogEntry(
-            name=class_name,
+            name=tool_class.name,
             user_selectable=True,
-            usable=_check_tool_usable(class_name, _usability_from_subclass(tool_class)),
+            usable=_check_tool_usable(
+                tool_class.name, _usability_from_subclass(tool_class)
+            ),
+            description=tool_class.catalog_description,
         )
-        for class_name, tool_class in BUILT_IN_TOOL_CLASSES.items()
-        if tool_class.user_selectable and class_name not in listed
+        for tool_class in BUILT_IN_TOOL_CLASSES.values()
+        if tool_class.user_selectable and tool_class.name not in listed
     )
     return entries
 
