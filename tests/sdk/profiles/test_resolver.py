@@ -233,7 +233,7 @@ def test_missing_llm_ref_raises_profile_not_found(
 # --------------------------------------------------------------------------- #
 
 
-def test_enable_switch_llm_tool_defaults_true_threads_through(
+def test_enable_switch_llm_tool_defaults_false_threads_through(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
@@ -245,15 +245,15 @@ def test_enable_switch_llm_tool_defaults_true_threads_through(
         cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    # Defaults True to match the global agent settings default.
-    assert settings.enable_switch_llm_tool is True
+    # Defaults False to match the global agent settings default.
+    assert settings.enable_switch_llm_tool is False
 
 
-def test_enable_switch_llm_tool_false_threads_through(
+def test_enable_switch_llm_tool_true_threads_through(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
     profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", enable_switch_llm_tool=False
+        name="oh", llm_profile_ref="default", enable_switch_llm_tool=True
     )
     settings = resolve_agent_profile(
         profile,
@@ -263,7 +263,7 @@ def test_enable_switch_llm_tool_false_threads_through(
         cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.enable_switch_llm_tool is False
+    assert settings.enable_switch_llm_tool is True
 
 
 # --------------------------------------------------------------------------- #
