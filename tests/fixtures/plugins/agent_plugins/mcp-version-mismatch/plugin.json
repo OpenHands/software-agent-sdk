@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mcp-version-mismatch",
+  "version": "1.0.0",
+  "description": "A 1.0.0 manifest beside an mcp.json that targets another version."
+}

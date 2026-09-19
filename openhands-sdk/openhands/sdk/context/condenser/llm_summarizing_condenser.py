@@ -225,13 +225,8 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
-        from openhands.sdk.agent.utils import make_llm_completion
-
         try:
-            llm_response = make_llm_completion(
-                llm=self.llm,
-                messages=messages,
-            )
+            llm_response = self.llm.generate(messages=messages, store=False)
         except Exception as e:
             raise NoCondensationAvailableException(
                 f"Summarization LLM call failed: {e}"
@@ -423,13 +418,9 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
-        from openhands.sdk.agent.utils import amake_llm_completion
 
         try:
-            llm_response = await amake_llm_completion(
-                llm=self.llm,
-                messages=messages,
-            )
+            llm_response = await self.llm.agenerate(messages=messages, store=False)
         except Exception as e:
             raise NoCondensationAvailableException(
                 f"Summarization LLM call failed: {e}"
