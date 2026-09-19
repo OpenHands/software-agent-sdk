@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from typing import TYPE_CHECKING
 
 from openhands.sdk.critic.base import CriticResult
@@ -59,10 +60,10 @@ class CriticMixin:
             llm_convertible_events = [
                 e for e in events if isinstance(e, LLMConvertibleEvent)
             ]
+            git_patch = self._build_git_patch_for_critic(conversation)
 
-            # Evaluate without git_patch for now
             critic_result = self.critic.evaluate(
-                events=llm_convertible_events, git_patch=None
+                events=llm_convertible_events, git_patch=git_patch
             )
             logger.info(
                 f"✓ Critic evaluation: score={critic_result.score:.3f}, "
@@ -72,6 +73,48 @@ class CriticMixin:
         except Exception as e:
             logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
             return None
+
+    def _build_git_patch_for_critic(
+        self, conversation: LocalConversation
+    ) -> str | None:
+        """Build a best-effort git patch for critic evaluation."""
+        workspace = conversation.state.workspace
+        try:
+            changes = workspace.git_changes(".")
+        except Exception as e:
+            logger.debug(f"Unable to collect git changes for critic: {e}")
+            return None
+
+        if not changes:
+            return None
+
+        patch_parts: list[str] = []
+        for change in changes:
+            try:
+                diff = workspace.git_diff(change.path)
+            except Exception as e:
+                logger.debug(
+                    f"Unable to collect git diff for critic path {change.path}: {e}"
+                )
+                continue
+
+            path = str(change.path).replace("\\", "/")
+            original = diff.original or ""
+            modified = diff.modified or ""
+            file_patch = list(
+                difflib.unified_diff(
+                    original.splitlines(keepends=True),
+                    modified.splitlines(keepends=True),
+                    fromfile=f"a/{path}",
+                    tofile=f"b/{path}",
+                )
+            )
+            if file_patch and not file_patch[-1].endswith(("\n", "\r")):
+                file_patch[-1] += "\n"
+            patch_parts.extend(file_patch)
+
+        git_patch = "".join(patch_parts)
+        return git_patch or None
 
     def _check_iterative_refinement(
         self, conversation: LocalConversation, action_event: ActionEvent
