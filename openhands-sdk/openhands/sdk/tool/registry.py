@@ -258,7 +258,7 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
     entries.extend(
         ToolCatalogEntry(
             name=tool_class.name,
-            user_selectable=True,
+            user_selectable=tool_class.user_selectable,
             usable=_check_tool_usable(
                 tool_class.name, _usability_from_subclass(tool_class)
             ),
