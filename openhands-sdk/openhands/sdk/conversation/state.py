@@ -5,7 +5,7 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import Field, PrivateAttr
 
@@ -37,12 +37,16 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
 logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from openhands.sdk.subagent.registry import ConversationAgentRegistry
 
 
 class ConversationExecutionStatus(str, Enum):
@@ -80,6 +84,7 @@ class ConversationExecutionStatus(str, Enum):
 
 
 class ConversationState(OpenHandsModel):
+    _agent_registry: "ConversationAgentRegistry | None" = PrivateAttr(default=None)
     # ===== Public, validated fields =====
     id: ConversationID = Field(description="Unique conversation ID")
 
@@ -91,6 +96,11 @@ class ConversationState(OpenHandsModel):
             "check agent configuration to handle e.g., tool changes, "
             "LLM changes, etc."
         ),
+    )
+    agent_definitions: list[AgentDefinition] = Field(
+        default_factory=list,
+        description="Forwarded subagent definitions used to rebuild the "
+        "conversation registry on resume.",
     )
     workspace: BaseWorkspace = Field(
         ...,
