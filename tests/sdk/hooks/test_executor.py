@@ -56,6 +56,44 @@ class TestHookExecutor:
         assert output_data["event_type"] == "PreToolUse"
         assert output_data["tool_name"] == "BashTool"
 
+    def test_null_decision_leaves_a_successful_hook_successful(
+        self, executor, sample_event
+    ):
+        """`{"decision": null}` on exit 0 is a hook that made no decision.
+
+        Regression test for
+        https://github.com/OpenHands/software-agent-sdk/issues/4766: .lower() on
+        the None raised, and because only JSONDecodeError is caught the
+        AttributeError reached the outer handler and reported exit -1 for a
+        subprocess that had exited 0.
+        """
+        hook = HookDefinition(command="""echo '{"decision": null}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.exit_code == 0
+        assert result.decision is None
+        assert not result.error
+
+    def test_non_string_decision_is_ignored_rather_than_fatal(
+        self, executor, sample_event
+    ):
+        """Any non-string decision means no decision, not a failed hook."""
+        hook = HookDefinition(command="""echo '{"decision": 1}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.decision is None
+
+    def test_string_decisions_still_parse(self, executor, sample_event):
+        hook = HookDefinition(command="""echo '{"decision": "allow"}'""")
+
+        result = executor.execute(hook, sample_event)
+
+        assert result.decision == HookDecision.ALLOW
+
     def test_execute_blocking_exit_code(self, executor, sample_event):
         """Test that exit code 2 blocks the operation."""
         hook = HookDefinition(command=python_command("import sys; sys.exit(2)"))
