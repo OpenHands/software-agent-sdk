@@ -1,6 +1,14 @@
-"""ACP npm installation catalog — the single source of truth for each
-built-in provider's pinned npm package(s), CLI entry point, and any launch
-arguments needed to invoke it.
+"""ACP installation catalog — the single source of truth for each built-in
+provider's pinned distribution, CLI entry point, and any launch arguments
+needed to invoke it.
+
+Two install flavours are described:
+
+- :class:`ACPInstallSpec` — one or more pinned npm packages, launched with
+  ``npx`` and preinstallable into the agent-server image.
+- :class:`ACPPreinstalledBinaryInstallSpec` — a first-party CLI that is not
+  an npm package. The binary must already be on ``PATH``;
+  :func:`render_docker_install_plan` rejects it.
 
 Deliberately dependency-free (stdlib only, no pydantic): the agent-server
 Dockerfile's ``acp-providers`` stage builds from a bare ``python:*-bookworm``
@@ -23,6 +31,7 @@ import argparse
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import TypeGuard
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,54 @@ class ACPInstallSpec:
             *self.trailing_args,
         )
 
+    def launch_command(self) -> tuple[str, ...]:
+        """Alias of :meth:`npx_command`, shared with
+        :class:`ACPPreinstalledBinaryInstallSpec`."""
+        return self.npx_command()
+
+
+@dataclass(frozen=True)
+class ACPPreinstalledBinaryInstallSpec:
+    """A first-party CLI that is not distributed as an npm package.
+
+    Cursor is the motivating case: its ACP server is the official ``agent acp``
+    binary, installed by a curl/PowerShell script
+    (https://cursor.com/docs/cli/installation), not published on npm. There is
+    no download-on-demand path — ``_prefer_pinned_binary`` leaves a non-npx
+    command unchanged, and launch fails if ``binary_name`` is absent from
+    ``PATH``.
+
+    Nothing here reaches the published agent-server images —
+    :func:`render_docker_install_plan` rejects this flavour, and joining
+    :data:`DEFAULT_PREINSTALLED_ACP_PROVIDERS` is a separate decision that
+    this spec cannot satisfy (there is no npm package to bake in).
+    """
+
+    key: str
+    """Provider key, matching
+    :class:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.key`."""
+
+    binary_name: str
+    """CLI entry point resolved off ``PATH`` at launch (e.g. ``agent``)."""
+
+    trailing_args: tuple[str, ...] = field(default=())
+    """Args appended after the binary (e.g. Cursor's ``acp`` subcommand)."""
+
+    min_node_version: str | None = None
+    """Always ``None`` — this flavour is not a Node package."""
+
+    def launch_command(self) -> tuple[str, ...]:
+        """The on-PATH binary plus any trailing args that enter ACP mode."""
+        return (self.binary_name, *self.trailing_args)
+
+
+ACPInstallCatalogEntry = ACPInstallSpec | ACPPreinstalledBinaryInstallSpec
+
+
+def is_npm_install_spec(spec: ACPInstallCatalogEntry) -> TypeGuard[ACPInstallSpec]:
+    """True when *spec* can be baked into the image via npm."""
+    return isinstance(spec, ACPInstallSpec)
+
 
 # Pinned npm versions for the built-in ACP launchers. A bump here is the only
 # edit needed — ACP_PROVIDERS, the Dockerfile install stage, and the
@@ -115,7 +172,7 @@ PI_CODING_AGENT_VERSION = "0.83.0"
 OPENCODE_VERSION = "1.18.23"
 
 
-ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
+ACP_INSTALL_CATALOG: Mapping[str, ACPInstallCatalogEntry] = {
     "claude-code": ACPInstallSpec(
         key="claude-code",
         packages=(
@@ -176,11 +233,20 @@ ACP_INSTALL_CATALOG: Mapping[str, ACPInstallSpec] = {
         # No `engines` field on opencode-ai or its platform packages: the CLI
         # is a compiled Bun binary and only its postinstall runs on Node.
     ),
+    "cursor": ACPPreinstalledBinaryInstallSpec(
+        key="cursor",
+        # Official Cursor CLI entry point. The installer places ``agent`` on
+        # PATH as a symlink to ``cursor-agent`` under
+        # ``~/.local/share/cursor-agent/versions/<calver>/``.
+        binary_name="agent",
+        trailing_args=("acp",),
+    ),
 }
-"""Every ACP provider installable via npm. Registry membership only makes a
-provider *selectable* (``INSTALL_ACP_PROVIDERS``) — see
+"""Every built-in ACP provider's install recipe. Registry membership only
+makes a provider *selectable* — see
 :data:`DEFAULT_PREINSTALLED_ACP_PROVIDERS` for what actually ships in the
-default image."""
+default image. npm specs can join that default; preinstalled-binary specs
+cannot (there is nothing to bake in)."""
 
 
 DEFAULT_PREINSTALLED_ACP_PROVIDERS: tuple[str, ...] = (
@@ -197,13 +263,15 @@ deliberate decision per provider (see OpenHands/software-agent-sdk#4820)."""
 
 def render_docker_install_plan(
     keys: Iterable[str],
-    catalog: Mapping[str, ACPInstallSpec] = ACP_INSTALL_CATALOG,
+    catalog: Mapping[str, ACPInstallCatalogEntry] = ACP_INSTALL_CATALOG,
 ) -> tuple[list[str], list[str]]:
     """Resolve provider ``keys`` to (npm packages, wrapper bin names).
 
     Packages are deduplicated (first-seen order preserved) so two providers
     sharing a dependency only install it once. Raises :class:`ValueError`
-    listing the valid keys when ``keys`` contains one not in ``catalog``.
+    listing the valid keys when ``keys`` contains one not in ``catalog``, or
+    when a key names a preinstalled-binary provider that cannot be baked
+    into the image.
     """
     packages: list[str] = []
     wrapper_bins: list[str] = []
@@ -215,6 +283,11 @@ def render_docker_install_plan(
             raise ValueError(
                 f"Unknown ACP provider {key!r} in INSTALL_ACP_PROVIDERS "
                 f"(expected one of: {valid})"
+            )
+        if not is_npm_install_spec(spec):
+            raise ValueError(
+                f"ACP provider {key!r} is a preinstalled binary and cannot "
+                "be added to INSTALL_ACP_PROVIDERS (no npm package to bake in)"
             )
         for pkg in spec.packages:
             if pkg.pinned not in seen:
