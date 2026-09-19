@@ -7,9 +7,11 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
@@ -29,6 +31,18 @@ def _make_llm() -> LLM:
         api_key=SecretStr("test-key"),
         usage_id="test-llm",
     )
+
+
+def _make_profile_store(base_dir: Path, profiles: dict[str, str]) -> LLMProfileStore:
+    """Save one LLM profile per name -> model mapping into a store."""
+    store = LLMProfileStore(base_dir=base_dir / "profiles")
+    for name, model in profiles.items():
+        store.save(
+            name,
+            LLM(model=model, api_key=SecretStr(f"{name}-key"), usage_id=name),
+            include_secrets=True,
+        )
+    return store
 
 
 def _make_parent_conversation(
@@ -523,6 +537,298 @@ class TestTaskManager:
             "delegate.parent_span_id": str(parent_ctx.span_id),
             "tool_call_id": "call_abc123",
         }
+
+
+class TestTaskManagerLLMProfile:
+    """Tests for the per-call llm_profile override on task creation/resume.
+
+    The conftest redirects the default profile-store dir to ``tmp_path``, so
+    ``_make_profile_store(tmp_path, ...)`` writes exactly where the parent
+    conversation's store (and the registry's cached getter) resolves.
+    """
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_create_task_with_llm_profile(self, tmp_path):
+        """A saved profile's LLM replaces the parent-inherited one."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(tmp_path, {"fast": "fast-model"})
+        parent_model = parent.agent.llm.model
+        parent_metrics = parent.agent.llm.metrics
+
+        task = manager._create_task(
+            subagent_type="general-purpose",
+            description=None,
+            llm_profile="fast",
+        )
+
+        assert task.llm_profile == "fast"
+        assert task.conversation is not None
+        assert task.conversation.agent.llm.model == "fast-model"
+        assert task.conversation.agent.llm.stream is False
+        assert task.conversation.agent.llm.metrics is not parent_metrics
+        assert parent.agent.llm.model == parent_model
+        assert "profile:fast" not in parent.llm_registry.list_usage_ids()
+
+    def test_create_task_unknown_profile_raises(self, tmp_path):
+        """Unknown profiles raise before any task state is created."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(tmp_path, {"fast": "fast-model"})
+
+        with pytest.raises(FileNotFoundError, match="not found") as excinfo:
+            manager._create_task(
+                subagent_type="general-purpose",
+                description=None,
+                llm_profile="missing",
+            )
+
+        assert "fast" in str(excinfo.value)  # available profiles are listed
+        assert len(manager._tasks) == 0
+
+    def test_definition_model_conflicts_with_llm_profile(self, tmp_path):
+        """A definition-owned model must not silently ignore ``llm_profile``."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        agent_def = AgentDefinition(
+            name="pinned_agent",
+            description="Agent with its own model profile",
+            model="pinned",
+            tools=[],
+            system_prompt="You are pinned.",
+        )
+        register_agent(
+            name="pinned_agent",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+
+        manager, _ = _manager_with_parent(tmp_path)
+        _make_profile_store(tmp_path, {"pinned": "pinned-model"})
+
+        with pytest.raises(ValueError, match="already selects model profile 'pinned'"):
+            manager._create_task(
+                subagent_type="pinned_agent",
+                description=None,
+                llm_profile="typo-does-not-exist",
+            )
+
+        assert len(manager._tasks) == 0
+
+    def test_subscription_profile_keeps_worker_condenser(self, tmp_path):
+        """Subscription workers retain the factory's supported condenser."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        subscription_llm = _make_llm()
+        subscription_llm.is_subscription = True
+
+        with patch.object(parent, "load_profile_llm", return_value=subscription_llm):
+            task = manager._create_task(
+                subagent_type="general-purpose",
+                description=None,
+                llm_profile="subscription",
+            )
+
+        assert task.conversation is not None
+        assert task.conversation.agent.llm.is_subscription is True
+        condenser = task.conversation.agent.condenser
+        assert isinstance(condenser, LLMSummarizingCondenser)
+        assert condenser.llm.is_subscription is True
+
+    def test_resume_with_llm_profile(self, tmp_path):
+        """Resuming with llm_profile rebuilds the worker on that profile."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(tmp_path, {"fast": "fast-model"})
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        original_id = task.id
+        manager._evict_task(task)
+
+        resumed = manager._resume_task(
+            resume=original_id,
+            subagent_type="general-purpose",
+            llm_profile="fast",
+        )
+
+        assert resumed.id == original_id
+        assert resumed.llm_profile == "fast"
+        assert resumed.conversation is not None
+        assert resumed.conversation.agent.llm.model == "fast-model"
+        assert resumed.conversation.agent.llm.stream is False
+
+    def test_resume_definition_model_conflicts_with_llm_profile(self, tmp_path):
+        """Resume reports a definition/profile conflict without mutating state."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(
+            tmp_path,
+            {"fast": "fast-model", "pinned": "pinned-model"},
+        )
+        task = manager._create_task(
+            subagent_type="general-purpose",
+            description=None,
+            llm_profile="fast",
+        )
+        manager._evict_task(task)
+
+        agent_def = AgentDefinition(
+            name="pinned_agent",
+            description="Agent with its own model profile",
+            model="pinned",
+            tools=["terminal", "file_editor", "task_tracker"],
+            system_prompt="You are pinned.",
+        )
+        register_agent(
+            name="pinned_agent",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+
+        with pytest.raises(ValueError, match="already selects model profile 'pinned'"):
+            manager._resume_task(
+                resume=task.id,
+                subagent_type="pinned_agent",
+                llm_profile="ignored-missing-profile",
+            )
+
+        assert manager._tasks[task.id].llm_profile == "fast"
+        assert manager._tasks[task.id].conversation is None
+
+    def test_resume_definition_model_discards_stored_profile(self, tmp_path):
+        """A pinned definition replaces a stored inherited-model profile."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(
+            tmp_path,
+            {"fast": "fast-model", "pinned": "pinned-model"},
+        )
+        task = manager._create_task(
+            subagent_type="general-purpose",
+            description=None,
+            llm_profile="fast",
+        )
+        manager._evict_task(task)
+
+        agent_def = AgentDefinition(
+            name="pinned_agent",
+            description="Agent with its own model profile",
+            model="pinned",
+            tools=["terminal", "file_editor", "task_tracker"],
+            system_prompt="You are pinned.",
+        )
+        register_agent(
+            name="pinned_agent",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+
+        resumed = manager._resume_task(
+            resume=task.id,
+            subagent_type="pinned_agent",
+        )
+
+        assert resumed.llm_profile is None
+        assert resumed.conversation is not None
+        assert resumed.conversation.agent.llm.model == "pinned-model"
+
+    def test_resume_without_profile_keeps_original(self, tmp_path):
+        """A bare resume keeps the profile the task was created with."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(tmp_path, {"fast": "fast-model"})
+
+        task = manager._create_task(
+            subagent_type="general-purpose", description=None, llm_profile="fast"
+        )
+        original_id = task.id
+        manager._evict_task(task)
+
+        resumed = manager._resume_task(
+            resume=original_id, subagent_type="general-purpose"
+        )
+
+        assert resumed.llm_profile == "fast"
+        assert resumed.conversation is not None
+        assert resumed.conversation.agent.llm.model == "fast-model"
+
+    def test_resume_after_profile_removed_returns_clear_error(self, tmp_path):
+        """A bare resume fails clearly if its stored profile was removed."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        store = _make_profile_store(tmp_path, {"fast": "fast-model"})
+
+        task = manager._create_task(
+            subagent_type="general-purpose", description=None, llm_profile="fast"
+        )
+        manager._evict_task(task)
+        store.delete("fast")
+
+        with pytest.raises(FileNotFoundError, match="Profile `fast` not found"):
+            manager._resume_task(
+                resume=task.id,
+                subagent_type="general-purpose",
+            )
+
+        assert manager._tasks[task.id].llm_profile == "fast"
+        assert manager._tasks[task.id].conversation is None
+
+    def test_resume_with_explicit_profile_overrides_stored(self, tmp_path):
+        """An explicit resume-time profile replaces the stored one for later
+        bare resumes."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        _make_profile_store(tmp_path, {"fast": "fast-model", "slow": "slow-model"})
+
+        task = manager._create_task(
+            subagent_type="general-purpose", description=None, llm_profile="fast"
+        )
+        original_id = task.id
+        manager._evict_task(manager._tasks[original_id])
+
+        resumed = manager._resume_task(
+            resume=original_id,
+            subagent_type="general-purpose",
+            llm_profile="slow",
+        )
+        assert resumed.llm_profile == "slow"
+        assert resumed.conversation is not None
+        assert resumed.conversation.agent.llm.model == "slow-model"
+
+        manager._evict_task(manager._tasks[original_id])
+        resumed_again = manager._resume_task(
+            resume=original_id, subagent_type="general-purpose"
+        )
+        assert resumed_again.llm_profile == "slow"
+        assert resumed_again.conversation is not None
+        assert resumed_again.conversation.agent.llm.model == "slow-model"
+
+    def test_resume_after_inherit_created_still_inherits(self, tmp_path):
+        """A task created without llm_profile keeps inheriting the parent
+        model on bare resumes."""
+        manager, _ = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        original_id = task.id
+        manager._evict_task(task)
+
+        resumed = manager._resume_task(
+            resume=original_id, subagent_type="general-purpose"
+        )
+
+        assert resumed.llm_profile is None
+        assert resumed.conversation is not None
+        assert resumed.conversation.agent.llm.model == "gpt-4o"
 
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
