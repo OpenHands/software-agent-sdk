@@ -1,4 +1,7 @@
 from abc import ABC, abstractmethod
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import ActionEvent
@@ -10,6 +13,17 @@ from openhands.sdk.utils.models import (
 
 
 logger = get_logger(__name__)
+
+
+class SecurityAnalysis(BaseModel):
+    """Result of analyzing one action: a risk level plus optional detail."""
+
+    risk: SecurityRisk
+    details: dict[str, Any] | None = Field(
+        default=None,
+        description="Analyzer-specific detail behind the risk (probabilities, "
+        "confidence, rationale, ...). Surfaced in SecurityAnalysisEvent.",
+    )
 
 
 class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
@@ -82,30 +96,54 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
             # LOW and MEDIUM risk actions don't require confirmation by default
             return False
 
+    def analyze_action(self, action: ActionEvent) -> SecurityAnalysis:
+        """Analyze one action, returning its risk and optional detail.
+
+        The default implementation wraps :meth:`security_risk` with no detail.
+        Analyzers that can explain their verdict (probabilities, confidence, a
+        rationale) should override this instead of ``security_risk``.
+        """
+        return SecurityAnalysis(risk=self.security_risk(action))
+
+    def analyze_actions(
+        self, pending_actions: list[ActionEvent]
+    ) -> list[tuple[ActionEvent, SecurityAnalysis]]:
+        """Analyze pending actions, returning (action, analysis) pairs.
+
+        An analyzer error defaults that action to HIGH risk, with the error
+        recorded in the analysis detail.
+        """
+        analyzed: list[tuple[ActionEvent, SecurityAnalysis]] = []
+        for action_event in pending_actions:
+            try:
+                analysis = self.analyze_action(action_event)
+                logger.debug(
+                    f"Action {action_event} analyzed with risk level: {analysis.risk}"
+                )
+            except Exception as e:
+                logger.error(f"Error analyzing action {action_event}: {e}")
+                # Default to HIGH risk on analysis error for safety
+                analysis = SecurityAnalysis(
+                    risk=SecurityRisk.HIGH, details={"error": str(e)}
+                )
+            analyzed.append((action_event, analysis))
+        return analyzed
+
     def analyze_pending_actions(
         self, pending_actions: list[ActionEvent]
     ) -> list[tuple[ActionEvent, SecurityRisk]]:
         """Analyze all pending actions in a conversation.
 
-        This method gets all unmatched actions from the conversation state
-        and analyzes each one for security risks.
+        Compatibility form of :meth:`analyze_actions` that returns only the
+        risk level for each action.
 
         Args:
-            conversation: The conversation to analyze
+            pending_actions: The unmatched actions to analyze
 
         Returns:
             List of tuples containing (action, risk_level) for each pending action
         """
-        analyzed_actions = []
-
-        for action_event in pending_actions:
-            try:
-                risk = self.security_risk(action_event)
-                analyzed_actions.append((action_event, risk))
-                logger.debug(f"Action {action_event} analyzed with risk level: {risk}")
-            except Exception as e:
-                logger.error(f"Error analyzing action {action_event}: {e}")
-                # Default to HIGH risk on analysis error for safety
-                analyzed_actions.append((action_event, SecurityRisk.HIGH))
-
-        return analyzed_actions
+        return [
+            (action, analysis.risk)
+            for action, analysis in self.analyze_actions(pending_actions)
+        ]
