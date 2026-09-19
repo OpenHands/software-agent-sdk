@@ -249,7 +249,7 @@ jobs:
                   python-version: '3.13'
 
             - name: Install Node.js (for npx)
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
                   node-version: 22
 
