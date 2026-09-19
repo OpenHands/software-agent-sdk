@@ -96,6 +96,10 @@ class _UnavailableHelloTool(_SimpleHelloTool):
         return False
 
 
+class _DescribedHelloTool(_SimpleHelloTool):
+    catalog_description = "Say hello, briefly."
+
+
 class _InternalHelloTool(_SimpleHelloTool):
     user_selectable = False
 
@@ -180,9 +184,43 @@ def test_catalog_reports_selectability_and_usability():
         "name": "catalog_plain",
         "user_selectable": True,
         "usable": True,
+        "description": "",
     }
     assert catalog["catalog_internal"]["user_selectable"] is False
     assert catalog["catalog_unusable"]["usable"] is False
+
+
+def test_catalog_offers_a_builtin_under_its_snake_case_name(monkeypatch):
+    """A built-in is keyed by class name internally but offered like any tool."""
+    from openhands.sdk.tool import builtins, registry
+
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+    catalog = _catalog()
+
+    assert "switch_llm" in catalog
+    assert "SwitchLLMTool" not in catalog
+    assert builtins.SwitchLLMTool.name == "switch_llm"
+
+
+def test_builtin_resolves_under_its_snake_case_name():
+    from openhands.sdk.tool import builtins
+
+    resolved = resolve_tool(Tool(name="switch_llm"), _create_mock_conv_state())
+
+    assert [t.name for t in resolved] == ["switch_llm"]
+    assert isinstance(resolved[0], builtins.SwitchLLMTool)
+
+
+def test_catalog_carries_the_class_blurb(monkeypatch):
+    register_tool("catalog_described", _DescribedHelloTool)
+
+    assert _catalog()["catalog_described"]["description"] == "Say hello, briefly."
+
+
+def test_catalog_description_defaults_to_empty():
+    register_tool("catalog_undescribed", _SimpleHelloTool)
+
+    assert _catalog()["catalog_undescribed"]["description"] == ""
 
 
 def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
@@ -194,10 +232,11 @@ def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
     )
     monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
 
-    assert _catalog()["UnusableBuiltin"] == {
-        "name": "UnusableBuiltin",
+    assert _catalog()[_UnavailableHelloTool.name] == {
+        "name": _UnavailableHelloTool.name,
         "user_selectable": True,
         "usable": False,
+        "description": "",
     }
 
 

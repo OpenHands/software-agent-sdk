@@ -51,8 +51,12 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
         "workflow_tool_set",
         "ask_oracle",
         "task_tool_set",
-        "SwitchLLMTool",
+        "switch_llm",
     } <= selectable
+    assert "SwitchLLMTool" not in entries, (
+        "built-ins are offered under their snake_case tool name"
+    )
+    assert entries["terminal"]["description"], "catalog carries a per-tool blurb"
     assert (
         not {
             "task",
