@@ -112,7 +112,7 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     )
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
-        "openhands.agent_server.conversation_service.discover_profile_skills",
+        "openhands.agent_server.profile_launch.discover_profile_skills",
         lambda: [],
     )
     monkeypatch.setattr(

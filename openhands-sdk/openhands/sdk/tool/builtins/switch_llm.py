@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -150,6 +150,12 @@ class SwitchLLMExecutor(ToolExecutor):
 
 class SwitchLLMTool(ToolDefinition[SwitchLLMAction, SwitchLLMObservation]):
     """Tool for switching a conversation to a saved LLM profile."""
+
+    catalog_description: ClassVar[str] = (
+        "Let the agent switch the conversation to another saved LLM profile."
+    )
+
+    user_selectable: ClassVar[bool] = True
 
     @classmethod
     def create(

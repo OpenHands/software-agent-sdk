@@ -1397,20 +1397,28 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.defaults import default_tool_specs
-
-        # Single defaulting point: None = the canonical default set (honoring
-        # enable_sub_agents); [] stays an explicitly bare agent.
-        tools = (
-            self.tools
-            if self.tools is not None
-            else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
+        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS
+        from openhands.sdk.tool.defaults import (
+            SUB_AGENT_TOOL_NAME,
+            SWITCH_LLM_TOOL_NAME,
+            resolve_tool_specs,
         )
 
+        # Legacy switches of this settings model, each kept to the reach it
+        # always had: ``enable_sub_agents`` only ever fed the default set, so an
+        # explicit ``tools`` (``[]`` included) stays exactly as given, while
+        # ``enable_switch_llm_tool`` attached its tool to every agent. Both
+        # tools can also be selected in ``tools``, and the agent rejects a
+        # duplicate name, so neither is added twice.
+        tools = resolve_tool_specs(self.tools)
+        for flag, name in (
+            (self.enable_sub_agents and self.tools is None, SUB_AGENT_TOOL_NAME),
+            (self.enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
+        ):
+            if flag and all(tool.name != name for tool in tools):
+                tools = [*tools, Tool(name=name)]
+
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-        if self.enable_switch_llm_tool:
-            include_default_tools.append(SwitchLLMTool.__name__)
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)

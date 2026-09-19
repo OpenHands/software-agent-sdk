@@ -53,9 +53,16 @@ BUILT_IN_TOOL_CLASSES = {
     VisionInspectTool.__name__: VisionInspectTool,
 }
 
+# The same classes keyed by the snake_case tool name a profile stores, so
+# resolving a stored pick is a lookup rather than a scan.
+BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME = {
+    tool.name: tool for tool in BUILT_IN_TOOL_CLASSES.values()
+}
+
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

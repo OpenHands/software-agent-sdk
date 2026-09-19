@@ -9,7 +9,7 @@ See epic #3713 for the resolution model.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
@@ -31,9 +31,15 @@ from openhands.sdk.settings.model import (
     VerificationSettings,
 )
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    DEFAULT_EXEC_TOOL_NAMES,
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+)
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 2
+AGENT_PROFILE_SCHEMA_VERSION = 3
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -162,9 +168,8 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default="CodeActAgent",
         description="Agent class to build.",
     )
-    # Same tri-state as the resolved settings' ``tools``: passed through
-    # verbatim by the resolver, so ``create_agent`` is the single defaulting
-    # point (#3978). Secret-free by construction (``Tool`` is name + params).
+    # Same tri-state as the settings' ``tools``, resolved by
+    # ``resolve_tool_specs``. Secret-free by construction (name + params).
     tools: list[Tool] | None = Field(
         default=None,
         description=(
@@ -197,18 +202,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
     verification: ProfileVerificationSettings = Field(
         default_factory=ProfileVerificationSettings,
         description="Critic/verification policy (secret-free; no critic_api_key).",
-    )
-    enable_sub_agents: bool = Field(
-        default=False,
-        description="Enable sub-agent delegation via TaskToolSet.",
-    )
-    enable_switch_llm_tool: bool = Field(
-        default=True,
-        description=(
-            "Enable the built-in switch_llm tool for switching between saved "
-            "LLM profiles. Defaults True to match the global agent settings "
-            "default (AgentSettingsConfig.enable_switch_llm_tool)."
-        ),
     )
     tool_concurrency_limit: int = Field(
         default=1,
@@ -365,8 +358,61 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def fold_tool_switches_into_tools(
+    tools: Sequence[dict[str, Any] | Tool] | None,
+    *,
+    enable_sub_agents: bool,
+    enable_switch_llm_tool: bool,
+) -> list[Tool] | None:
+    """Express the legacy tool switches as a ``tools`` selection.
+
+    Behaviour-preserving: the switches are folded into the list only where the
+    result would otherwise differ from the standard set, so a profile that ran
+    on the defaults keeps an unset ``tools`` and stays free to follow future
+    changes to that set.
+    """
+    if tools is None and not enable_sub_agents and enable_switch_llm_tool:
+        return None
+    # Anything else has to be pinned: "the standard set plus/minus one tool" is
+    # not expressible. Browser is part of that set because it resolves to
+    # nothing where the runtime cannot run it.
+    entries = (
+        [_as_tool(tool) for tool in tools]
+        if tools is not None
+        else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
+    )
+    for enabled, name in (
+        (enable_sub_agents, SUB_AGENT_TOOL_NAME),
+        (enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
+    ):
+        if enabled and all(entry.name != name for entry in entries):
+            entries.append(Tool(name=name))
+    return entries
+
+
+def _as_tool(tool: dict[str, Any] | Tool) -> Tool:
+    return tool if isinstance(tool, Tool) else Tool.model_validate(tool)
+
+
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    migrated = dict(payload)
+    sub_agents = migrated.pop("enable_sub_agents", False) is True
+    switch_llm = migrated.pop("enable_switch_llm_tool", True) is not False
+    if migrated.get("agent_kind", "openhands") == "openhands":
+        stored = migrated.get("tools")
+        migrated["tools"] = fold_tool_switches_into_tools(
+            stored if isinstance(stored, list) else None,
+            enable_sub_agents=sub_agents,
+            enable_switch_llm_tool=switch_llm,
+        )
+    migrated["schema_version"] = 3
+    return migrated
+
+
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 

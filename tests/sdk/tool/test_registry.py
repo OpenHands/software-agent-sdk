@@ -7,7 +7,14 @@ from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
+from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
+from openhands.sdk.tool.registry import (
+    list_registered_tools,
+    list_tool_catalog,
+    list_usable_tools,
+    resolve_tool,
+    seal_tool_catalog,
+)
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolExecutor
@@ -89,6 +96,18 @@ class _UnavailableHelloTool(_SimpleHelloTool):
         return False
 
 
+class _DescribedHelloTool(_SimpleHelloTool):
+    catalog_description = "Say hello, briefly."
+
+
+class _InternalHelloTool(_SimpleHelloTool):
+    user_selectable = False
+
+
+def _catalog() -> dict[str, dict]:
+    return {entry.name: entry.model_dump() for entry in list_tool_catalog()}
+
+
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
@@ -152,3 +171,90 @@ def test_register_tool_type_uses_create_params():
     observation = tool(_HelloAction(name="Alice"))
     assert isinstance(observation, _HelloObservation)
     assert observation.message == "Howdy, Alice?"
+
+
+def test_catalog_reports_selectability_and_usability():
+    register_tool("catalog_plain", _SimpleHelloTool)
+    register_tool("catalog_internal", _InternalHelloTool)
+    register_tool("catalog_unusable", _UnavailableHelloTool)
+
+    catalog = _catalog()
+
+    assert catalog["catalog_plain"] == {
+        "name": "catalog_plain",
+        "user_selectable": True,
+        "usable": True,
+        "description": "",
+    }
+    assert catalog["catalog_internal"]["user_selectable"] is False
+    assert catalog["catalog_unusable"]["usable"] is False
+
+
+def test_catalog_offers_a_builtin_under_its_snake_case_name(monkeypatch):
+    """A built-in is keyed by class name internally but offered like any tool."""
+    from openhands.sdk.tool import builtins, registry
+
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+    catalog = _catalog()
+
+    assert "switch_llm" in catalog
+    assert "SwitchLLMTool" not in catalog
+    assert builtins.SwitchLLMTool.name == "switch_llm"
+
+
+def test_builtin_resolves_under_its_snake_case_name():
+    from openhands.sdk.tool import builtins
+
+    resolved = resolve_tool(Tool(name="switch_llm"), _create_mock_conv_state())
+
+    assert [t.name for t in resolved] == ["switch_llm"]
+    assert isinstance(resolved[0], builtins.SwitchLLMTool)
+
+
+def test_catalog_carries_the_class_blurb(monkeypatch):
+    register_tool("catalog_described", _DescribedHelloTool)
+
+    assert _catalog()["catalog_described"]["description"] == "Say hello, briefly."
+
+
+def test_catalog_description_defaults_to_empty():
+    register_tool("catalog_undescribed", _SimpleHelloTool)
+
+    assert _catalog()["catalog_undescribed"]["description"] == ""
+
+
+def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
+    """A built-in is listed by class name, so its usability comes from the class."""
+    from openhands.sdk.tool import builtins, registry
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "UnusableBuiltin", _UnavailableHelloTool
+    )
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+
+    assert _catalog()[_UnavailableHelloTool.name] == {
+        "name": _UnavailableHelloTool.name,
+        "user_selectable": True,
+        "usable": False,
+        "description": "",
+    }
+
+
+def test_sealed_catalog_ignores_later_registrations(monkeypatch):
+    """Tools a conversation registers vanish on restart, so a server seals the
+    catalog once its own tools are loaded."""
+    from openhands.sdk.tool import registry
+
+    register_tool("catalog_at_startup", _SimpleHelloTool)
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+    seal_tool_catalog()
+
+    register_tool("catalog_after_seal", _SimpleHelloTool)
+    register_client_tools(
+        [ClientToolSpec(name="catalog_client_tool", description="client side")]
+    )
+
+    assert "catalog_at_startup" in _catalog()
+    assert "catalog_after_seal" in list_registered_tools()
+    assert "catalog_after_seal" not in _catalog()
+    assert "catalog_client_tool" not in _catalog()
