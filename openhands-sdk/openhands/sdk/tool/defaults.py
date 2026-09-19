@@ -35,6 +35,9 @@ themselves on the settings launch path.
 SUB_AGENT_TOOL_NAME = "task_tool_set"
 """Name of the sub-agent delegation tool set, selected like any other tool."""
 
+SWITCH_LLM_TOOL_NAME = "switch_llm"
+"""Name of the built-in LLM-switching tool, selected like any other tool."""
+
 
 def resolve_tool_specs(
     tools: Sequence[Tool] | None,
@@ -43,15 +46,25 @@ def resolve_tool_specs(
 ) -> list[Tool]:
     """Resolve an agent's ``tools`` setting into the specs it is built with.
 
-    ``None`` is the standard exec set, plus browser when ``enable_browser``; a
-    list (``[]`` included) is used as given.
+    ``None`` is the standard exec set, plus browser when ``enable_browser``,
+    plus LLM switching; a list (``[]`` included) is used as given.
     """
     if tools is not None:
         return list(tools)
-    resolved = [Tool(name=name) for name in DEFAULT_EXEC_TOOL_NAMES]
+    # ``switch_llm`` is an SDK built-in rather than part of the openhands-tools
+    # preset, so it joins here and not in :func:`default_tool_specs`, which
+    # stays in lockstep with ``get_default_tools``.
+    return [
+        *_preset_specs(enable_browser=enable_browser),
+        Tool(name=SWITCH_LLM_TOOL_NAME),
+    ]
+
+
+def _preset_specs(*, enable_browser: bool) -> list[Tool]:
+    specs = [Tool(name=name) for name in DEFAULT_EXEC_TOOL_NAMES]
     if enable_browser:
-        resolved.append(Tool(name=BROWSER_TOOL_NAME))
-    return resolved
+        specs.append(Tool(name=BROWSER_TOOL_NAME))
+    return specs
 
 
 def default_tool_specs(
@@ -69,7 +82,7 @@ def default_tool_specs(
     Browser is off by default (see :data:`BROWSER_TOOL_NAME` — the serving
     layer enables it where it can actually run).
     """
-    specs = resolve_tool_specs(None, enable_browser=enable_browser)
+    specs = _preset_specs(enable_browser=enable_browser)
     if enable_sub_agents:
         specs.append(Tool(name=SUB_AGENT_TOOL_NAME))
     return specs

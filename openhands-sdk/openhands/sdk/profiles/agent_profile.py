@@ -35,6 +35,7 @@ from openhands.sdk.tool.defaults import (
     BROWSER_TOOL_NAME,
     DEFAULT_EXEC_TOOL_NAMES,
     SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
 )
 
 
@@ -357,24 +358,35 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def fold_sub_agents_into_tools(
+def fold_tool_switches_into_tools(
     tools: Sequence[dict[str, Any] | Tool] | None,
     *,
     enable_sub_agents: bool,
+    enable_switch_llm_tool: bool,
 ) -> list[Tool] | None:
-    """Express a legacy ``enable_sub_agents`` switch as a ``tools`` selection."""
-    if not enable_sub_agents:
-        return None if tools is None else [_as_tool(tool) for tool in tools]
-    # "The standard set plus delegation" is not expressible without the switch,
-    # so an unset list has to be pinned. Browser is part of that set because it
-    # resolves to nothing where the runtime cannot run it.
+    """Express the legacy tool switches as a ``tools`` selection.
+
+    Behaviour-preserving: the switches are folded into the list only where the
+    result would otherwise differ from the standard set, so a profile that ran
+    on the defaults keeps an unset ``tools`` and stays free to follow future
+    changes to that set.
+    """
+    if tools is None and not enable_sub_agents and enable_switch_llm_tool:
+        return None
+    # Anything else has to be pinned: "the standard set plus/minus one tool" is
+    # not expressible. Browser is part of that set because it resolves to
+    # nothing where the runtime cannot run it.
     entries = (
         [_as_tool(tool) for tool in tools]
         if tools is not None
         else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
     )
-    if all(entry.name != SUB_AGENT_TOOL_NAME for entry in entries):
-        entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
+    for enabled, name in (
+        (enable_sub_agents, SUB_AGENT_TOOL_NAME),
+        (enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
+    ):
+        if enabled and all(entry.name != name for entry in entries):
+            entries.append(Tool(name=name))
     return entries
 
 
@@ -386,14 +398,13 @@ def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     """Fold the retired tool switches into ``tools``."""
     migrated = dict(payload)
     sub_agents = migrated.pop("enable_sub_agents", False) is True
-    # Dropped rather than folded: it defaulted on, so honouring it would pin a
-    # list on nearly every profile.
-    migrated.pop("enable_switch_llm_tool", None)
-    if sub_agents and migrated.get("agent_kind", "openhands") == "openhands":
+    switch_llm = migrated.pop("enable_switch_llm_tool", True) is not False
+    if migrated.get("agent_kind", "openhands") == "openhands":
         stored = migrated.get("tools")
-        migrated["tools"] = fold_sub_agents_into_tools(
+        migrated["tools"] = fold_tool_switches_into_tools(
             stored if isinstance(stored, list) else None,
-            enable_sub_agents=True,
+            enable_sub_agents=sub_agents,
+            enable_switch_llm_tool=switch_llm,
         )
     migrated["schema_version"] = 3
     return migrated

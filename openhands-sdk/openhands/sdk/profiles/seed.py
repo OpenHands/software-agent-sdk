@@ -14,7 +14,7 @@ from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
     build_profile_verification,
-    fold_sub_agents_into_tools,
+    fold_tool_switches_into_tools,
 )
 
 
@@ -65,10 +65,11 @@ def build_seed_profile(
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
         # Verbatim, except that a legacy ``enable_sub_agents`` switch has to be
-        # said as a tool selection now (see fold_sub_agents_into_tools).
-        tools=fold_sub_agents_into_tools(
+        # said as a tool selection now (see fold_tool_switches_into_tools).
+        tools=fold_tool_switches_into_tools(
             agent_settings.tools,
             enable_sub_agents=agent_settings.enable_sub_agents,
+            enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
         ),
         # Deny-list defaults to [] — the seeded default profile launches with all
         # discovered skills, matching the "all skills by default" model. No names

@@ -1166,6 +1166,7 @@ def test_materialize_reports_the_tools_a_launch_would_build(
         "file_editor",
         "task_tracker",
         "browser_tool_set",
+        "switch_llm",
     ]
 
 
@@ -1218,6 +1219,7 @@ def test_materialize_draft_takes_precedence_over_the_stored_profile(
         "terminal",
         "file_editor",
         "task_tracker",
+        "switch_llm",
     ]
 
 

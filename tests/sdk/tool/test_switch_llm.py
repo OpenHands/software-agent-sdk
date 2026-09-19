@@ -61,7 +61,7 @@ def test_agent_settings_includes_switch_llm_tool_when_profiles_exist(profile_sto
         llm=_make_llm("default-model", "default"), tools=[]
     ).create_agent()
 
-    assert "SwitchLLMTool" in agent.include_default_tools
+    assert any(tool.name == "switch_llm" for tool in agent.tools)
 
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()
@@ -87,7 +87,7 @@ def test_agent_settings_includes_switch_llm_tool_without_profiles(empty_profile_
         llm=_make_llm("default-model", "default"), tools=[]
     ).create_agent()
 
-    assert "SwitchLLMTool" in agent.include_default_tools
+    assert any(tool.name == "switch_llm" for tool in agent.tools)
 
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()

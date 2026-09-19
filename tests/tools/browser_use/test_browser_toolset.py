@@ -483,11 +483,13 @@ def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
     pinned entry is only safe because `BrowserToolSet.create` degrades to no
     tools. Pin that, or the migration turns into a crash on such a host.
     """
-    from openhands.sdk.profiles.agent_profile import fold_sub_agents_into_tools
+    from openhands.sdk.profiles.agent_profile import fold_tool_switches_into_tools
     from openhands.sdk.tool.defaults import resolve_tool_specs
     from openhands.sdk.tool.registry import resolve_tool
 
-    migrated = fold_sub_agents_into_tools(None, enable_sub_agents=True)
+    migrated = fold_tool_switches_into_tools(
+        None, enable_sub_agents=True, enable_switch_llm_tool=True
+    )
     assert migrated is not None
     specs = resolve_tool_specs(migrated)
     assert [spec.name for spec in specs] == [
@@ -496,6 +498,7 @@ def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
         "task_tracker",
         "browser_tool_set",
         "task_tool_set",
+        "switch_llm",
     ]
 
     with tempfile.TemporaryDirectory() as temp_dir:

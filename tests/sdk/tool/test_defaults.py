@@ -7,6 +7,7 @@ from openhands.sdk.tool.defaults import (
     BROWSER_TOOL_NAME,
     DEFAULT_EXEC_TOOL_NAMES,
     SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
     default_tool_specs,
     resolve_tool_specs,
 )
@@ -43,6 +44,18 @@ def test_resolve_unset_tools_is_the_default_set() -> None:
     assert [t.name for t in resolve_tool_specs(None, enable_browser=True)] == [
         *DEFAULT_EXEC_TOOL_NAMES,
         BROWSER_TOOL_NAME,
+        SWITCH_LLM_TOOL_NAME,
+    ]
+
+
+def test_preset_default_specs_exclude_the_sdk_builtin() -> None:
+    """``default_tool_specs`` stays in lockstep with the openhands-tools preset.
+
+    ``switch_llm`` is an SDK built-in, so it belongs to the settings/profile
+    default (``resolve_tool_specs``) and not to the preset constructor.
+    """
+    assert SWITCH_LLM_TOOL_NAME not in [
+        t.name for t in default_tool_specs(enable_browser=True)
     ]
 
 

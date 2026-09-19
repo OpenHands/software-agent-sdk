@@ -101,14 +101,24 @@ def test_openhands_resolves_to_settings_with_injected_llm(
         "terminal",
         "file_editor",
         "task_tracker",
+        "switch_llm",
     ]
 
 
 @pytest.mark.parametrize(
     ("browser_available", "expected"),
     [
-        (False, ["terminal", "file_editor", "task_tracker"]),
-        (True, ["terminal", "file_editor", "task_tracker", "browser_tool_set"]),
+        (False, ["terminal", "file_editor", "task_tracker", "switch_llm"]),
+        (
+            True,
+            [
+                "terminal",
+                "file_editor",
+                "task_tracker",
+                "browser_tool_set",
+                "switch_llm",
+            ],
+        ),
     ],
 )
 def test_openhands_resolves_default_exec_tools(
