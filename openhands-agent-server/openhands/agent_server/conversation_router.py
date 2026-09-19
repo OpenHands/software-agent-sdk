@@ -40,6 +40,8 @@ from openhands.agent_server.models import (
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
     StartConversationRequest,
     StartGoalRequest,
     Success,
@@ -742,6 +744,41 @@ async def fork_conversation(
     if not include_skills:
         info = trim_conversation_response_skills(info)
     return info
+
+
+@conversation_router.post(
+    "/{conversation_id}/children",
+    responses={
+        201: {"description": "Child conversation created"},
+        404: {"description": "Parent conversation not found"},
+    },
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_child_conversation(
+    conversation_id: UUID,
+    request: Annotated[StartChildConversationRequest, Body()],
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> StartChildConversationResponse:
+    """Start a child conversation of ``conversation_id`` on this server.
+
+    The child inherits the parent's configuration and workspace (optionally
+    isolated in a git worktree), is linked via ``parent_conversation_id`` and
+    receives ``task`` as its first user message. This is the default launcher
+    behind the ``start_child_conversation`` tool.
+    """
+    try:
+        result = await conversation_service.start_child_conversation(
+            conversation_id, request
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    if result is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Parent conversation not found"
+        )
+    return result
 
 
 @conversation_router.post(
