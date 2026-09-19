@@ -333,7 +333,15 @@ def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> Non
         {"name": "bare", "revision": 0},
     ],
 )
-def test_v1_explicit_empty_tools_remain_empty(payload: dict[str, object]) -> None:
+def test_v1_explicit_empty_tools_keep_only_switch_llm(
+    payload: dict[str, object],
+) -> None:
+    """An explicitly bare agent stays bare of exec tools.
+
+    It does not come out of the migration as ``[]`` though: ``switch_llm`` was
+    attached by the default-on switch regardless of ``tools``, so preserving
+    behaviour means saying so in the list.
+    """
     profile = validate_agent_profile(
         {
             "schema_version": 1,
@@ -343,7 +351,7 @@ def test_v1_explicit_empty_tools_remain_empty(payload: dict[str, object]) -> Non
         }
     )
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert profile.tools == []
+    assert [tool.name for tool in profile.tools or []] == ["switch_llm"]
 
 
 def test_v2_sub_agents_switch_pins_the_standard_set_plus_delegation() -> None:
@@ -364,6 +372,7 @@ def test_v2_sub_agents_switch_pins_the_standard_set_plus_delegation() -> None:
         "task_tracker",
         "browser_tool_set",
         "task_tool_set",
+        "switch_llm",
     ]
 
 
@@ -379,23 +388,47 @@ def test_v2_sub_agents_switch_appends_to_an_explicit_list() -> None:
         }
     )
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert [tool.name for tool in profile.tools or []] == ["glob", "task_tool_set"]
+    assert [tool.name for tool in profile.tools or []] == [
+        "glob",
+        "task_tool_set",
+        "switch_llm",
+    ]
 
 
-@pytest.mark.parametrize("switch_llm", [True, False])
-def test_v2_switch_llm_flag_is_dropped_without_pinning_tools(switch_llm: bool) -> None:
+def test_v2_default_switch_llm_needs_no_pinned_list() -> None:
+    """The default set now carries switch_llm, so nothing has to be frozen."""
     profile = validate_agent_profile(
         {
             "schema_version": 2,
             "name": "default",
             "llm_profile_ref": "default",
             "revision": 0,
-            "enable_switch_llm_tool": switch_llm,
+            "enable_switch_llm_tool": True,
         }
     )
     assert isinstance(profile, OpenHandsAgentProfile)
     assert profile.tools is None
     assert not hasattr(profile, "enable_switch_llm_tool")
+
+
+def test_v2_switch_llm_turned_off_pins_a_list_without_it() -> None:
+    """Off is not the default, so it has to be said explicitly."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "enable_switch_llm_tool": False,
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+    ]
 
 
 def test_v2_sub_agents_switch_leaves_acp_profiles_alone() -> None:
