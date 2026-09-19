@@ -1014,3 +1014,66 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert arguments["message"] == "Hello!"
     assert arguments["security_risk"] == "LOW"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "I'll list the files.\n"
+            "<tool_call>terminal\n"
+            "<parameter=command>ls</parameter>\n"
+            "</tool_call>"
+        ),
+        "<tool_call>terminal\n<parameter=command>ls</parameter>",
+    ],
+)
+def test_tool_call_wrapper_normalized_to_function_call(content):
+    messages = [
+        {"role": "user", "content": "run ls"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert tool_call["name"] == "terminal"
+    assert json.loads(tool_call["arguments"]) == {"command": "ls"}
+
+
+def test_tool_call_wrapper_preserves_closing_tag_in_parameter():
+    content = (
+        "<tool_call>terminal\n"
+        "<parameter=command>printf '</tool_call>'</parameter>\n"
+        "</tool_call>"
+    )
+    messages = [
+        {"role": "user", "content": "print the closing tag"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert json.loads(tool_call["arguments"]) == {"command": "printf '</tool_call>'"}
+
+
+def test_tool_call_mention_in_plain_text_is_not_converted():
+    content = (
+        "Here is how you write a tool call:\n\n"
+        "<tool_call> is the opening tag, followed by parameters."
+    )
+    messages = [
+        {"role": "user", "content": "explain the format"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    assert not fncall_messages[1].get("tool_calls")
