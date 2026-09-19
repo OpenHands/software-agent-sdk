@@ -120,6 +120,13 @@ from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provi
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
+from openhands.sdk.llm.utils.oci_genai_provider import (
+    OCI_GENAI_PROJECT_HEADER,
+    is_oci_genai_model,
+    normalize_oci_genai_config,
+    oci_genai_litellm_call_kwargs,
+    oci_genai_model_name,
+)
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
@@ -299,6 +306,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         description="API version (e.g., Azure).",
         json_schema_extra=field_meta(),
+    )
+    oci_region: str | None = Field(
+        default=None,
+        description="OCI region used by the Generative AI endpoint.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="OCI region",
+        ),
+    )
+    oci_project_id: str | None = Field(
+        default=None,
+        description="OCI Generative AI project OCID.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="OCI Generative AI project OCID",
+        ),
     )
 
     aws_access_key_id: str | SecretStr | None = Field(
@@ -704,6 +727,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if base == "https://api.openai.com" or base == "https://api.openai.com/":
                 d["base_url"] = None  # Let LiteLLM use its default which includes /v1
 
+        if is_oci_genai_model(model_val):
+            oci_genai_model_name(model_val)
+            region, project_id = normalize_oci_genai_config(
+                d.get("oci_region"), d.get("oci_project_id")
+            )
+            d["oci_region"] = region
+            d["oci_project_id"] = project_id
+            d["base_url"] = None
+            d["api_mode"] = "responses"
+
         return d
 
     @model_validator(mode="after")
@@ -776,7 +809,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # deep copies, so routing-field updates must rebuild derived metadata.
         copied = super().model_copy(update=update, deep=deep)
         route_changed = update is not None and any(
-            k in update for k in ("model", "base_url", "litellm_extra_body")
+            k in update
+            for k in ("model", "base_url", "oci_region", "litellm_extra_body")
         )
         if route_changed:
             copied._refresh_litellm_metadata()
@@ -1074,12 +1108,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value, subscription_headers = (
             auth_values if auth_values is not None else self._get_litellm_auth_values()
         )
-        if subscription_headers:
+        required_headers = {**subscription_headers, **self._provider_headers()}
+        if required_headers:
             final_kwargs = {
                 **final_kwargs,
                 "extra_headers": {
                     **(final_kwargs.get("extra_headers") or {}),
-                    **subscription_headers,
+                    **required_headers,
                 },
             }
         return {
@@ -2132,7 +2167,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
 
     def _litellm_call_kwargs(self) -> LiteLLMCallKwargs:
+        if is_oci_genai_model(self.model):
+            assert self.oci_region is not None
+            return oci_genai_litellm_call_kwargs(self.model, self.oci_region)
         return litellm_call_kwargs(self.model, self.base_url)
+
+    def _provider_headers(self) -> dict[str, str]:
+        """Return headers required by the selected first-class provider."""
+        if not is_oci_genai_model(self.model):
+            return {}
+        assert self.oci_project_id is not None
+        return {OCI_GENAI_PROJECT_HEADER: self.oci_project_id}
 
     def _infer_litellm_provider(self) -> str | None:
         provider_info = self._provider_info
@@ -2246,10 +2291,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         api_key_value, subscription_headers = (
             auth_values if auth_values is not None else self._get_litellm_auth_values()
         )
-        if subscription_headers:
+        required_headers = {**subscription_headers, **self._provider_headers()}
+        if required_headers:
             kwargs["extra_headers"] = {
                 **(kwargs.get("extra_headers") or {}),
-                **subscription_headers,
+                **required_headers,
             }
         return {
             **provider_info.as_litellm_call_kwargs(api_key=api_key_value),
@@ -2336,7 +2382,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
-        return self.model_canonical_name or self.model
+        if self.model_canonical_name:
+            return self.model_canonical_name
+        if is_oci_genai_model(self.model):
+            call_kwargs = self._litellm_call_kwargs()
+            return call_kwargs["model"]
+        return self.model
 
     def _model_features(self) -> ModelFeatures:
         """Resolve capabilities consistently for every request path."""

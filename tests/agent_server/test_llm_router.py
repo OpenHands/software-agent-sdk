@@ -29,6 +29,7 @@ async def test_list_providers():
     assert len(response.providers) > 0
     assert "openai" in response.providers
     assert "anthropic" in response.providers
+    assert "oci_genai" in response.providers
     assert response.providers == sorted(response.providers)
 
 
@@ -78,6 +79,7 @@ def test_providers_endpoint_integration(client):
     assert "providers" in data
     assert len(data["providers"]) > 0
     assert "openai" in data["providers"]
+    assert "oci_genai" in data["providers"]
 
 
 def test_models_endpoint_integration(client):

@@ -16,6 +16,9 @@ from openhands.sdk.llm.auth.openai import (
     DeviceCode,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.utils.oci_genai_provider import (
+    OCI_GENAI_PROVIDER,
+)
 from openhands.sdk.llm.utils.unverified_models import (
     _extract_model_and_provider,
     _get_litellm_provider_names,
@@ -114,7 +117,7 @@ def _drop_expired_device_logins() -> None:
 @llm_router.get("/providers", response_model=ProvidersResponse)
 async def list_providers() -> ProvidersResponse:
     """List all available LLM providers supported by LiteLLM."""
-    providers = sorted(_get_litellm_provider_names())
+    providers = sorted({*_get_litellm_provider_names(), OCI_GENAI_PROVIDER})
     return ProvidersResponse(providers=providers)
 
 
