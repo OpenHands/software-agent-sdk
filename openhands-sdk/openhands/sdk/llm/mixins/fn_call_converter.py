@@ -589,6 +589,11 @@ def _preprocess_model_output(content: str) -> str:
     - </think> before the function call
     - <tool_call>...</tool_call> around the function call
 
+    When a model emits <tool_call>...</tool_call> WITHOUT a nested <function=...>
+    (e.g. Synthetic provider with GLM 5.2 / Kimi K3), rewrite the open/close tags
+    to the canonical <function=...></function> form so the parser can pick them up.
+    Plain prose that mentions the literal substring "<tool_call>" is left untouched.
+
     Only strips tags at boundaries, not inside parameter values.
     """
     # Strip </think> when it appears before <function= (Nemotron reasoning end)
@@ -597,6 +602,26 @@ def _preprocess_model_output(content: str) -> str:
     content = re.sub(r"<tool_call>\s*(?=<function=)", "", content)
     # Strip </tool_call> when it appears right after </function>
     content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
+    # Some providers (Synthetic) emit <tool_call>name</tool_call> directly,
+    # with no nested <function=...> wrapper. In that case the open/close
+    # tags are the function-call tags themselves, so rewrite them to the
+    # canonical form. Only rewrite when the next token after the open tag
+    # is followed by a <parameter=...> block, otherwise plain prose that
+    # mentions the literal "<tool_call>" substring is left untouched.
+    if "<function=" not in content:
+        content = re.sub(
+            r"<tool_call>\s*([^\s<>]+)\s*(?=<parameter=)",
+            r"<function=\1>",
+            content,
+        )
+        # Balance close tags: any <tool_call> we just rewrote would have
+        # produced one extra "<function=" open tag that needs a matching
+        # close. Replace remaining </tool_call> closes with </function>
+        # only when there is an unmatched open.
+        opens = content.count("<function=")
+        closes = content.count("</function>")
+        if opens > closes:
+            content = content.replace("</tool_call>", "</function>")
     return content
 
 
