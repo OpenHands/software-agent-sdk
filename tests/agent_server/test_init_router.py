@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -490,7 +491,9 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
         bash_events_dir=tmp_path / "bash",
     )
     # Build a fake FastAPI app — api_lifespan only touches `.state`.
-    fake_app = SimpleNamespace(state=SimpleNamespace(config=cfg))
+    fake_app = SimpleNamespace(
+        state=SimpleNamespace(config=cfg, codex_voice=AsyncMock())
+    )
     async with api_lifespan(fake_app):  # type: ignore[arg-type]
         init_svc = fake_app.state.init_service
         assert init_svc.state == "dormant"
@@ -506,5 +509,6 @@ async def test_lifespan_teardown_releases_conversation_service_after_init(
     assert init_svc._entered_service is None
     # Same for the bash service: it must be torn down on lifespan exit.
     assert init_svc._entered_bash_service is None
+    fake_app.state.codex_voice.close.assert_awaited_once()
     _reset_conversation_singleton()
     _reset_bash_singleton()

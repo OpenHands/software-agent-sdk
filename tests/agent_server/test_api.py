@@ -308,7 +308,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
 
             async with api_lifespan(mock_app):
                 pass
@@ -352,7 +352,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
 
             async with api_lifespan(mock_app):
                 # Exit the context to trigger shutdown
@@ -361,6 +361,7 @@ class TestServiceParallelization:
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
             mock_tool_preload_service.stop.assert_called_once()
+            mock_app.state.codex_voice.close.assert_awaited_once()
 
     async def test_services_handle_none_values(self):
         """Test that the lifespan handles None service values correctly."""
@@ -379,7 +380,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
 
             # This should not raise any exceptions
             async with api_lifespan(mock_app):
@@ -411,7 +412,7 @@ class TestServiceParallelization:
         ):
             mock_app = AsyncMock()
             mock_app.state = SimpleNamespace(
-                config=Config(), conversation_registry=registry
+                config=Config(), conversation_registry=registry, codex_voice=AsyncMock()
             )
 
             async with api_lifespan(mock_app):
@@ -439,7 +440,7 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
             expected_tmux_tmpdir = tmp_path / f"openhands-agent-server-{os.getpid()}"
 
             async with api_lifespan(mock_app):
