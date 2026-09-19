@@ -69,7 +69,7 @@ class ProfileListResponse(BaseModel):
 
 
 class ProfileDetailResponse(BaseModel):
-    """``config.api_key`` is always nulled; use ``api_key_set`` instead."""
+    """Secrets are nulled unless explicitly requested via X-Expose-Secrets."""
 
     name: str
     config: dict[str, Any]
@@ -171,7 +171,8 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
 
     Use the ``X-Expose-Secrets`` header to control secret exposure:
     - ``encrypted``: Returns cipher-encrypted values (safe for frontend clients)
-    - ``plaintext``: Returns raw secret values (backend clients only!)
+    - ``plaintext``: Resolves linked providers and returns raw secret values
+      for backend clients constructing a runnable LLM configuration
     - (absent): Returns nulled ``api_key`` with ``api_key_set`` indicator
     """
     expose_mode = parse_expose_secrets_header(request)
@@ -180,10 +181,11 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     store = get_llm_profile_store()
     try:
         with store_errors():
-            # Display the profile exactly as stored: don't inject the linked
-            # provider's credentials, and don't fail a read when the reference
-            # dangles. Effective key presence is reported via ``api_key_set``.
-            llm = store.load(name, cipher=cipher, resolve_provider=False)
+            # Runtime reads need current provider credentials. Editor reads
+            # retain the stored reference, including dangling references.
+            llm = store.load(
+                name, cipher=cipher, resolve_provider=expose_mode == "plaintext"
+            )
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
