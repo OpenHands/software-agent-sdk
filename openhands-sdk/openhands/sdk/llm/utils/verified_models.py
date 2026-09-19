@@ -53,6 +53,7 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
     "deepseek-v3.2-reasoner",
 ]
 
@@ -123,6 +124,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
     "deepseek-v3.2-reasoner",
     "kimi-k3",
     "kimi-k2.7-code",
