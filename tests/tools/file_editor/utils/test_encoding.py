@@ -14,6 +14,7 @@ from openhands.tools.file_editor.utils.encoding import (
     EncodingManager,
     with_encoding,
 )
+from tests.platform_utils import symlink_or_skip
 
 
 @pytest.fixture
@@ -368,8 +369,9 @@ def test_insert_non_utf8_file(temp_non_utf8_file):
         ("Привет, мир!", "cp1251"),
     ],
 )
+@pytest.mark.parametrize("use_symlink", [False, True])
 def test_write_file_falls_back_to_utf8_only_when_needed(
-    tmp_path, content, read_encoding
+    tmp_path, content, read_encoding, use_symlink
 ):
     """Regression: writing content the file's encoding cannot represent must not
     truncate the file; it upgrades to UTF-8. Content that the encoding can represent
@@ -378,17 +380,30 @@ def test_write_file_falls_back_to_utf8_only_when_needed(
     editor = FileEditor(workspace_root=str(tmp_path))
     path = tmp_path / "doc.txt"
     path.write_text("seed", encoding="ascii")
+    target = path
+    if use_symlink:
+        path = tmp_path / "link.txt"
+        symlink_or_skip(target, path)
 
     editor.write_file(path, content, encoding="cp1251")
 
     assert path.read_bytes(), "file was truncated/destroyed by a failed write"
     assert path.read_text(encoding=read_encoding) == content
+    assert target.read_text(encoding=read_encoding) == content
+    assert path.is_symlink() == use_symlink
 
 
-def test_write_failure_leaves_original_file_intact(temp_non_utf8_file, monkeypatch):
+@pytest.mark.parametrize("use_symlink", [False, True])
+def test_write_failure_leaves_original_file_intact(
+    temp_non_utf8_file, monkeypatch, tmp_path, use_symlink
+):
     """Regression: a failure during the write must leave the original file
     untouched (atomic write) and not leave a stray temp file behind."""
     before = temp_non_utf8_file.read_bytes()
+    path = temp_non_utf8_file
+    if use_symlink:
+        path = tmp_path / "link.txt"
+        symlink_or_skip(temp_non_utf8_file, path)
 
     def boom(src, dst):
         raise OSError("simulated os.replace failure")
@@ -397,17 +412,19 @@ def test_write_failure_leaves_original_file_intact(temp_non_utf8_file, monkeypat
 
     result = file_editor(
         command="str_replace",
-        path=str(temp_non_utf8_file),
+        path=str(path),
         old_str="numbers = [1, 2, 3, 4, 5]",
         new_str="numbers = [9, 9, 9]",
     )
 
     assert result.is_error is True
     assert temp_non_utf8_file.read_bytes() == before
+    assert path.is_symlink() == use_symlink
     leftovers = list(
         temp_non_utf8_file.parent.glob(f".{temp_non_utf8_file.name}.*.tmp")
     )
     assert leftovers == [], f"stray temp files left behind: {leftovers}"
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
 
 def test_create_non_utf8_file():
