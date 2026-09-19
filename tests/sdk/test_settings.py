@@ -35,6 +35,7 @@ from openhands.sdk.settings import (
     NoOpCondenserSettings,
     VerificationSettings,
 )
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 from openhands.sdk.settings.model import ACPServerKind
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -387,16 +388,12 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     # minor override).
     server_field = next(f for f in acp_section.fields if f.key == "acp_server")
     assert server_field.prominence is SettingProminence.CRITICAL
+    # Derived from the registry rather than restated: this asserts that every
+    # built-in provider reaches the picker, which is the property that matters,
+    # without adding a literal every new-provider PR has to update.
+    # test_acp_server_kind_matches_registry_keys guards the registry itself.
     server_choices = {c.value for c in server_field.choices}
-    assert server_choices == {
-        "claude-code",
-        "codex",
-        "gemini-cli",
-        "kimi-code",
-        "pi",
-        "opencode",
-        "custom",
-    }
+    assert server_choices == set(ACP_PROVIDERS) | {"custom"}
 
     command_field = next(f for f in acp_section.fields if f.key == "acp_command")
     assert command_field.prominence is SettingProminence.MINOR
