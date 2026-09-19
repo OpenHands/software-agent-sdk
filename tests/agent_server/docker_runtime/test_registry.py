@@ -218,6 +218,7 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("--cap-drop") : command.index("--cap-drop") + 2
     ]
     assert "no-new-privileges" in command
+    assert "host.docker.internal:host-gateway" in command
     assert "127.0.0.1::8000" in command
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
     assert len(mounts) == 3
