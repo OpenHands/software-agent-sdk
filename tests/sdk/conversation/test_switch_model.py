@@ -568,14 +568,13 @@ def test_switch_llm_does_not_consult_store(empty_profile_store, monkeypatch):
     assert calls == [], f"profile store was consulted: {calls}"
 
 
-def test_switch_profile_decrypts_with_cipher(tmp_path, monkeypatch):
+def test_switch_profile_custom_store_decrypts_with_cipher(tmp_path):
     """A profile saved with cipher-encrypted secrets must decrypt on switch
     so the agent's LLM ends up with the plaintext API key, not a Fernet
     token (regression for #3164).
     """
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
-    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
 
     cipher = Cipher("test-key-for-switch-profile")
     store = LLMProfileStore(base_dir=profile_dir)
@@ -596,6 +595,7 @@ def test_switch_profile_decrypts_with_cipher(tmp_path, monkeypatch):
             tools=[],
         ),
         workspace=Path.cwd(),
+        profile_store_dir=profile_dir,
         cipher=cipher,
     )
 
