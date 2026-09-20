@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +30,7 @@ class DummyLLM:
     _call_context: LLMCallContext = field(default_factory=LLMCallContext)
     openrouter_site_url: str = ""
     openrouter_app_name: str = ""
+    model_fields_set: set[str] = field(default_factory=set)
 
     def _openrouter_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -117,6 +119,60 @@ def test_kimi_k3_uses_reasoning_effort_and_strips_temp_top_p():
     assert out.get("reasoning_effort") == "high"
     assert "temperature" not in out
     assert "top_p" not in out
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openhands/deepseek-v4-pro",
+        "openhands/deepseek-v4-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek-v4-pro",
+        "litellm_proxy/deepseek-v4-flash",
+        "litellm_proxy/deepseek-v4.1-flash",
+    ],
+)
+def test_deepseek_v4_proxy_aliases_send_reasoning_effort_without_metadata(model):
+    llm = DummyLLM(model=model, reasoning_effort="low", model_info=None)
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert out["reasoning_effort"] == "low"
+
+
+def test_openai_reasoning_override_allows_reasoning_effort_through_litellm():
+    llm = DummyLLM(
+        model="openai/openrouter/deepseek/deepseek-v4.1-flash",
+        reasoning_effort="high",
+        capability_overrides={"supports_reasoning_effort": True},
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    optional_params = get_optional_params(
+        model="openrouter/deepseek/deepseek-v4.1-flash",
+        custom_llm_provider="openai",
+        drop_params=True,
+        reasoning_effort=out["reasoning_effort"],
+        allowed_openai_params=out["allowed_openai_params"],
+    )
+
+    assert optional_params["reasoning_effort"] == "high"
+
+
+def test_unsupported_reasoning_effort_is_not_sent_and_logs_model(caplog):
+    model = "openai/openrouter/deepseek/deepseek-v4.1-flash"
+    llm = DummyLLM(
+        model=model,
+        reasoning_effort="high",
+        model_fields_set={"reasoning_effort"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+    assert model in caplog.text
+    assert "not forwarded" in caplog.text
 
 
 def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():

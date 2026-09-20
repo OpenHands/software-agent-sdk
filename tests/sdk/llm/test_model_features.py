@@ -102,6 +102,16 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/dev/claude-opus-4-5", True),
         ("litellm_proxy/staging/gpt-5", True),
         ("litellm_proxy/test/o1", True),
+        # OpenHands and LiteLLM proxy aliases omit the provider segment, so
+        # DeepSeek V4 support must resolve without proxy metadata.
+        ("openhands/deepseek-v4-pro", True),
+        ("openhands/deepseek-v4-flash", True),
+        ("openhands/deepseek-v4.1-flash", True),
+        ("litellm_proxy/deepseek-v4-pro", True),
+        ("litellm_proxy/deepseek-v4-flash", True),
+        ("litellm_proxy/deepseek-v4.1-flash", True),
+        # OpenAI-compatible routes still require an explicit override.
+        ("openai/openrouter/deepseek/deepseek-v4.1-flash", False),
         ("unknown-model", False),
     ],
 )
