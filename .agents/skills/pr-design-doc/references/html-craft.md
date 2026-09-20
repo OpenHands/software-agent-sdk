@@ -312,14 +312,14 @@ This works with self-contained pages containing only inline CSS and SVG.
 the design doc to GitHub Pages or another public host. Keep the document free of external
 scripts and assets: opening a local file does not make third-party active content private.
 
-- Link authorized reviewers to the GitHub blob at the full document commit SHA and ask
-  them to download and open the self-contained HTML file locally; or use an existing
-  access-controlled artifact service.
+- Link reviewers to the GitHub blob at the full document commit SHA and ask them to download
+  and open the self-contained HTML file locally; or use an existing artifact service such as
+  htmlpreview.github.io.
 - For a local browser preview, open `.pr/design.html` directly. If the browser needs HTTP,
   serve only on loopback:
   ```bash
   python -m http.server 8000 --bind 127.0.0.1 --directory .pr
   # open http://127.0.0.1:8000/design.html
   ```
-- Use GitHub Pages only when the user explicitly authorizes publication and an administrator
-  confirms that private Pages access control is enabled for this repository.
+- Use GitHub Pages only when the user explicitly authorizes publication and you 
+  confirm that private Pages access control is enabled for this repository.
