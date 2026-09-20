@@ -17,20 +17,20 @@ def client():
     return TestClient(create_app())
 
 
-def test_action_schema_has_discriminator(client):
-    """Test that Action schema has proper discriminator field."""
+@pytest.fixture(params=["Input", "Output"])
+def action_schema_and_components(client, request):
     response = client.get("/openapi.json")
     assert response.status_code == 200
+    schemas = response.json()["components"]["schemas"]
+    name = f"Action-{request.param}"
+    action_schema = schemas.get(name, schemas.get("Action"))
+    assert action_schema is not None, f"Missing {name} or shared Action schema"
+    return action_schema, schemas
 
-    openapi_schema = response.json()
 
-    # Check that Action schema exists
-    assert "components" in openapi_schema
-    assert "schemas" in openapi_schema["components"]
-    schemas = openapi_schema["components"]["schemas"]
-
-    assert "Action" in schemas, "Action schema should be in components/schemas"
-    action_schema = schemas["Action"]
+def test_action_schema_has_discriminator(action_schema_and_components):
+    """Test that Action schema has proper discriminator field."""
+    action_schema, _ = action_schema_and_components
 
     # Check that it has oneOf
     assert "oneOf" in action_schema, "Action should have oneOf field"
@@ -114,16 +114,10 @@ def test_event_schema_has_discriminator(client):
             )
 
 
-def test_action_variants_have_proper_schemas(client):
+def test_action_variants_have_proper_schemas(action_schema_and_components):
     """Test that Action variants (FinishAction, etc.) have proper schemas."""
-    response = client.get("/openapi.json")
-    assert response.status_code == 200
-
-    openapi_schema = response.json()
-    schemas = openapi_schema["components"]["schemas"]
-
-    action_schema = schemas.get("Action", {})
-    one_of = action_schema.get("oneOf", [])
+    action_schema, schemas = action_schema_and_components
+    one_of = action_schema["oneOf"]
 
     # Extract action type names from $refs
     action_types = []
@@ -154,11 +148,8 @@ def test_action_variants_have_proper_schemas(client):
             f"{action_type}.kind should have const or enum"
         )
 
-        # If const, it should match the type name
         if "const" in kind_field:
-            assert kind_field["const"] == action_type, (
-                f"{action_type}.kind const should be '{action_type}'"
-            )
+            assert kind_field["const"] == type_schema["title"]
 
         # Should have title
         assert "title" in type_schema, (

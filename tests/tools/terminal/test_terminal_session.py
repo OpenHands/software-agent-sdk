@@ -61,6 +61,24 @@ def test_session_initialization(terminal_type):
     session.close()
 
 
+def test_subprocess_waits_for_shell_initialization(tmp_path):
+    shell = tmp_path / "slow-bash"
+    shell.write_text('#!/bin/sh\nsleep 1.2\nexec /bin/bash "$@"\n')
+    shell.chmod(0o755)
+    session = create_terminal_session(
+        work_dir=tmp_path, terminal_type="subprocess", shell_path=str(shell)
+    )
+    try:
+        session.initialize()
+        observation = session.execute(
+            TerminalAction(command="sleep 0.2; printf 'shell-ready\\n'")
+        )
+        assert observation.exit_code == 0
+        assert observation.text.strip() == "shell-ready"
+    finally:
+        session.close()
+
+
 @parametrize_terminal_types
 def test_cwd_property(tmp_path, terminal_type):
     session = create_terminal_session(work_dir=tmp_path, terminal_type=terminal_type)
@@ -706,7 +724,10 @@ def test_bash_background_server(terminal_type):
         server_port = 8081
         try:
             # Start the server in background
-            obs = _run_bash_action(session, f"python3 -m http.server {server_port} &")
+            obs = _run_bash_action(
+                session,
+                f"python3 -m http.server {server_port} & test_server_pid=$!",
+            )
             assert obs.metadata.exit_code == 0
 
             # Give the server a moment to be ready
@@ -719,7 +740,7 @@ def test_bash_background_server(terminal_type):
             assert "Directory listing for" in obs.text
 
             # Kill the server
-            obs = _run_bash_action(session, 'pkill -f "http.server"')
+            obs = _run_bash_action(session, 'kill "$test_server_pid"')
             assert obs.metadata.exit_code == 0
 
         finally:
