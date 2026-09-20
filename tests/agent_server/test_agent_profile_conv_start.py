@@ -30,7 +30,7 @@ from openhands.agent_server.models import (
     StartConversationRequest,
     StoredConversation,
 )
-from openhands.agent_server.persistence import PersistedSettings
+from openhands.agent_server.persistence import PersistedSettings, reset_stores
 from openhands.sdk import LLM, Agent, AgentBase, AgentContext
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -1320,3 +1320,45 @@ class TestProfileSecretScope:
                 await service.start_conversation(request)
 
         assert set(captured["secrets"]) == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("secret_refs", "expected"),
+        [
+            (None, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            ([], set()),
+            (["GITHUB_TOKEN"], {"GITHUB_TOKEN"}),
+        ],
+    )
+    async def test_runtime_launched_profile_drops_disallowed_secrets(
+        self, tmp_path, monkeypatch, secret_refs, expected
+    ):
+        """A profile bound via OH_RUNTIME_LAUNCHED_PROFILE (per-conversation
+        container runtimes) scopes create-time secrets exactly like a profile
+        named on the request.
+        """
+        launched = LaunchedAgentProfile(
+            agent_profile_id=uuid4(), revision=1, secret_refs=secret_refs
+        )
+        monkeypatch.setenv("OH_RUNTIME_LAUNCHED_PROFILE", launched.model_dump_json())
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "settings"))
+        reset_stores()
+        request = StartConversationRequest(
+            agent=_make_agent(),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(value=SecretStr("gh")),
+                "DATADOG_API_KEY": StaticSecret(value=SecretStr("dd")),
+            },
+        )
+        try:
+            async with ConversationService(
+                conversations_dir=tmp_path / "conversations"
+            ) as service:
+                info, _ = await service.start_conversation(request)
+                event_service = await service.get_event_service(info.id)
+                assert event_service is not None
+                assert set(event_service.stored.secrets) == expected
+                assert event_service.stored.launched_agent_profile == launched
+        finally:
+            reset_stores()

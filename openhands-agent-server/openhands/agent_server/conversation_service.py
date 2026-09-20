@@ -1699,6 +1699,23 @@ class ConversationService:
                     if name in allowed_secrets
                 }
             request = request.model_copy(update=updates)
+        elif (
+            launched_agent_profile is not None
+            and launched_agent_profile.secret_refs is not None
+        ):
+            # A profile bound through OH_RUNTIME_LAUNCHED_PROFILE (e.g.
+            # per-conversation container runtimes) scopes create-time secrets
+            # the same way; otherwise the boundary would only hold on resume.
+            runtime_allowed = set(launched_agent_profile.secret_refs)
+            request = request.model_copy(
+                update={
+                    "secrets": {
+                        name: value
+                        for name, value in request.secrets.items()
+                        if name in runtime_allowed
+                    }
+                }
+            )
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to
