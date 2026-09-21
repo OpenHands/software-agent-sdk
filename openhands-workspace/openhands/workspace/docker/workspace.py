@@ -215,11 +215,11 @@ class DockerWorkspace(RemoteWorkspace):
             flags += ["-v", volume]
             logger.info(f"Adding volume mount: {volume}")
 
-        ports = ["-p", f"{self.host_port}:8000"]
+        ports = ["-p", f"127.0.0.1:{self.host_port}:8000"]
         if self.extra_ports:
             ports += [
                 "-p",
-                f"{self.host_port + 1}:8001",  # VSCode
+                f"127.0.0.1:{self.host_port + 1}:8001",  # VSCode
             ]
         flags += ports
 
@@ -269,7 +269,10 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        object.__setattr__(self, "api_key", None)
+        session_api_key = os.environ.get(
+            "SESSION_API_KEY", os.environ.get("OH_SESSION_API_KEYS_0")
+        )
+        object.__setattr__(self, "api_key", session_api_key)
 
         # Wait for container to be healthy
         self._wait_for_health(timeout=self.health_check_timeout)
