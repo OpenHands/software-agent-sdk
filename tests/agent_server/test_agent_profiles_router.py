@@ -604,19 +604,21 @@ def test_delete_clears_active_pointer(client, store):
 
 def test_delete_active_acp_profile_resets_agent_settings(client, store):
     """Reproduces bug #5205: agent_settings.agent_kind stays 'acp' after deletion.
-    
+
     This test demonstrates the bug where agent_settings contains stale ACP configuration
     after deleting the active ACP profile, then verifies the fix resets it properly.
     """
     # Save and activate an ACP profile
-    store.save(ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5"))
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
     profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
     client.post(f"/api/agent-profiles/{profile_id}/activate")
-    
+
     # Verify the profile is active
     settings = client.get("/api/settings").json()
     assert settings["active_agent_profile_id"] == profile_id
-    
+
     # Manually set agent_settings to ACP state to reproduce the bug scenario
     # In production, this state can occur from various paths (conversation creation,
     # manual PATCH /api/settings, etc.)
@@ -631,19 +633,19 @@ def test_delete_active_acp_profile_resets_agent_settings(client, store):
         },
     )
     assert response.status_code == 200
-    
+
     # Verify agent_settings now has ACP configuration (bug state setup)
     settings_with_acp = client.get("/api/settings").json()
     assert settings_with_acp["agent_settings"]["agent_kind"] == "acp"
     assert settings_with_acp["agent_settings"]["acp_server"] == "codex"
     assert settings_with_acp["agent_settings"]["acp_model"] == "gpt-5.5"
-    
+
     # Delete the ACP profile
     # BUG (before fix): agent_settings would remain unchanged with agent_kind="acp"
     # FIX (after): agent_settings is reset to default OpenHands
     response = client.delete("/api/agent-profiles/codex-test")
     assert response.status_code == 200
-    
+
     # Verify the fix: agent_settings is reset to default (agent_kind="openhands")
     settings_after = client.get("/api/settings").json()
     assert settings_after["active_agent_profile_id"] is None
@@ -659,20 +661,23 @@ def test_delete_active_openhands_profile_does_not_reset_agent_settings(client, s
     store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))
     profile_id = client.get("/api/agent-profiles/custom-oh").json()["profile"]["id"]
     client.post(f"/api/agent-profiles/{profile_id}/activate")
-    
+
     # Get initial agent_settings
     settings_before = client.get("/api/settings").json()
     agent_settings_before = settings_before["agent_settings"]
-    
+
     # Delete the OpenHands profile
     client.delete("/api/agent-profiles/custom-oh")
-    
+
     # Verify pointer is cleared but agent_settings unchanged (still openhands)
     settings_after = client.get("/api/settings").json()
     assert settings_after["active_agent_profile_id"] is None
     assert settings_after["agent_settings"]["agent_kind"] == "openhands"
     # agent_settings should remain the same for OpenHands profiles
-    assert settings_after["agent_settings"]["agent_kind"] == agent_settings_before["agent_kind"]
+    assert (
+        settings_after["agent_settings"]["agent_kind"]
+        == agent_settings_before["agent_kind"]
+    )
 
 
 def test_rename_success(client, store):

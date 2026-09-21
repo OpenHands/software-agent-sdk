@@ -377,7 +377,7 @@ async def delete_agent_profile(
     """
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
-    
+
     # Load the profile before deletion to check its agent_kind
     deleted_agent_kind = None
     if deleted_id is not None:
