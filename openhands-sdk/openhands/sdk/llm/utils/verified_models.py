@@ -82,6 +82,7 @@ VERIFIED_GLM_MODELS = [
 VERIFIED_NVIDIA_MODELS = [
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
+    "nemotron-3-nano-omni-30b-a3b-reasoning",
     "nemotron-3-super-120b-a12b",
     "nemotron-3-ultra-550b-a55b",
 ]
