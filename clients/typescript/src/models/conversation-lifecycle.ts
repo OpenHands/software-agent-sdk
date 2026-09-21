@@ -1,5 +1,5 @@
 import { ConversationExecutionStatus } from '../types/base';
-import type { ConversationRuntimeStatus } from './conversation';
+import type { ConversationInfo, ConversationRuntimeStatus } from './conversation';
 
 export interface ConversationLifecycle {
   isArchived: boolean;
@@ -9,12 +9,10 @@ export interface ConversationLifecycle {
   canResume: boolean;
 }
 
-export interface ConversationLifecycleFields {
-  archived_at: string | null;
-  runtime_status: ConversationRuntimeStatus;
-  execution_status: ConversationExecutionStatus;
-  can_resume: boolean;
-}
+export type ConversationLifecycleFields = Pick<
+  ConversationInfo,
+  'archived_at' | 'runtime_info' | 'execution_status'
+>;
 
 export interface LegacyCloudConversationLifecycleFields {
   archived_at?: string | null;
@@ -27,12 +25,17 @@ export interface LegacyCloudConversationLifecycleFields {
 export function normalizeConversationLifecycle(
   conversation: ConversationLifecycleFields
 ): ConversationLifecycle {
+  const { archived_at: archivedAt, runtime_info: runtimeInfo } = conversation;
+  if (archivedAt === undefined || runtimeInfo == null) {
+    throw new Error('Conversation response does not include canonical lifecycle fields');
+  }
+
   return {
-    isArchived: conversation.archived_at !== null,
-    archivedAt: conversation.archived_at,
-    runtimeStatus: conversation.runtime_status,
+    isArchived: archivedAt !== null,
+    archivedAt,
+    runtimeStatus: runtimeInfo.runtime_status,
     executionStatus: conversation.execution_status,
-    canResume: conversation.can_resume,
+    canResume: runtimeInfo.can_resume,
   };
 }
 

@@ -3,15 +3,19 @@ import {
   normalizeConversationLifecycle,
 } from '../models/conversation-lifecycle';
 import { ConversationExecutionStatus } from '../types/base';
+import type { ConversationInfo } from '../models/conversation';
 
 describe('normalizeConversationLifecycle', () => {
   it('maps explicit archived Agent Server lifecycle fields directly', () => {
     expect(
       normalizeConversationLifecycle({
         archived_at: '2026-09-12T15:00:00Z',
-        runtime_status: 'missing',
+        runtime_info: {
+          runtime_status: 'missing',
+          can_resume: true,
+          runtime_error: null,
+        },
         execution_status: ConversationExecutionStatus.PAUSED,
-        can_resume: true,
       })
     ).toEqual({
       isArchived: true,
@@ -26,9 +30,12 @@ describe('normalizeConversationLifecycle', () => {
     expect(
       normalizeConversationLifecycle({
         archived_at: null,
-        runtime_status: 'missing',
+        runtime_info: {
+          runtime_status: 'missing',
+          can_resume: false,
+          runtime_error: null,
+        },
         execution_status: ConversationExecutionStatus.ERROR,
-        can_resume: false,
       })
     ).toEqual({
       isArchived: false,
@@ -37,6 +44,33 @@ describe('normalizeConversationLifecycle', () => {
       executionStatus: ConversationExecutionStatus.ERROR,
       canResume: false,
     });
+  });
+
+  it('accepts the public conversation response type', () => {
+    const conversation = {
+      archived_at: null,
+      runtime_info: {
+        runtime_status: 'available',
+        can_resume: false,
+        runtime_error: null,
+      },
+      execution_status: ConversationExecutionStatus.FINISHED,
+    } as ConversationInfo;
+
+    expect(normalizeConversationLifecycle(conversation)).toMatchObject({
+      isArchived: false,
+      runtimeStatus: 'available',
+      executionStatus: ConversationExecutionStatus.FINISHED,
+      canResume: false,
+    });
+  });
+
+  it('rejects responses from servers without the canonical lifecycle contract', () => {
+    expect(() =>
+      normalizeConversationLifecycle({
+        execution_status: ConversationExecutionStatus.FINISHED,
+      })
+    ).toThrow('Conversation response does not include canonical lifecycle fields');
   });
 });
 
