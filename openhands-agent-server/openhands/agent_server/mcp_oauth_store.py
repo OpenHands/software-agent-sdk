@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple, SupportsFloat
@@ -29,6 +30,7 @@ from openhands.sdk.mcp.utils import (
     ToolsReconciledCallback,
     create_mcp_tools,
 )
+from openhands.sdk.utils.cipher import Cipher
 
 
 logger = get_logger(__name__)
@@ -83,7 +85,33 @@ def _state_field_for_fastmcp_key(
 
 
 class MCPSettingsOAuthTokenStore:
-    """FastMCP OAuth token storage persisted inside settings MCP servers."""
+    """FastMCP OAuth token storage persisted inside settings MCP servers.
+
+    ``seed_mcp_config`` covers OAuth servers that are not in this server's
+    settings store, such as the ones a hosted deployment passes inline on the
+    agent (their settings live on the remote app server): the ``auth.state``
+    they carry is served to FastMCP, and tokens refreshed during the
+    conversation are kept in memory for the lifetime of the store instead of
+    being dropped. Servers found in settings always take precedence.
+    """
+
+    def __init__(
+        self,
+        *,
+        seed_mcp_config: Mapping[str, MCPServer] | None = None,
+        cipher: Cipher | None = None,
+    ):
+        self._seeded: dict[str, MCPOAuthState] = {}
+        self._seeded_lock = threading.Lock()
+        for server in (seed_mcp_config or {}).values():
+            if server.url is None or server.oauth_auth is None:
+                continue
+            state = server.initial_oauth_state(cipher=cipher) or MCPOAuthState()
+            self._seeded[server.url.rstrip("/")] = state
+
+    def _seeded_state(self, key: str) -> MCPOAuthState | None:
+        with self._seeded_lock:
+            return self._seeded.get(_server_url_from_fastmcp_key(key))
 
     def _get_entry_sync(
         self, key: str, collection: str | None
@@ -94,13 +122,13 @@ class MCPSettingsOAuthTokenStore:
 
         store = get_settings_store()
         settings = store.load()
-        if settings is None:
-            return None, None
-
-        mcp_config = settings.agent_settings.mcp_config
+        mcp_config = settings.agent_settings.mcp_config if settings else {}
         match = _find_matching_oauth_server(mcp_config, key)
         if match is None:
-            return None, None
+            seeded = self._seeded_state(key)
+            if seeded is None:
+                return None, None
+            return seeded.get_token_storage_value(field), None
         _, _, auth = match
         return (auth.state or MCPOAuthState()).get_token_storage_value(field), None
 
@@ -133,6 +161,14 @@ class MCPSettingsOAuthTokenStore:
             mcp_config = settings.agent_settings.mcp_config
             match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
+                server_url = _server_url_from_fastmcp_key(key)
+                with self._seeded_lock:
+                    seeded = self._seeded.get(server_url)
+                    if seeded is not None:
+                        self._seeded[server_url] = seeded.with_token_storage_value(
+                            field, stored_value
+                        )
+                        return settings
                 logger.warning(
                     "Could not persist MCP OAuth state: no configured MCP "
                     "server matches FastMCP key %r",
@@ -188,6 +224,12 @@ class MCPSettingsOAuthTokenStore:
             mcp_config = settings.agent_settings.mcp_config
             match = _find_matching_oauth_server(mcp_config, key)
             if match is None:
+                server_url = _server_url_from_fastmcp_key(key)
+                with self._seeded_lock:
+                    seeded = self._seeded.get(server_url)
+                    if seeded is not None:
+                        seeded, deleted = seeded.without_token_storage_value(field)
+                        self._seeded[server_url] = seeded
                 return settings
             server_name, server, auth = match
             state, deleted = (
@@ -330,7 +372,13 @@ class InMemoryMCPOAuthTokenStore:
 
 @dataclass(frozen=True, slots=True)
 class SettingsBackedMCPToolProvider:
-    """Create MCP tools with FastMCP OAuth state persisted in settings."""
+    """Create MCP tools with FastMCP OAuth state persisted in settings.
+
+    OAuth servers absent from settings (passed inline on the agent) fall back
+    to the OAuth state they carry; see ``MCPSettingsOAuthTokenStore``.
+    """
+
+    cipher: Cipher | None = None
 
     def create_tools(
         self,
@@ -343,7 +391,9 @@ class SettingsBackedMCPToolProvider:
         return create_mcp_tools(
             mcp_config,
             timeout,
-            mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
+            mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(
+                seed_mcp_config=mcp_config, cipher=self.cipher
+            ),
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,
         )
@@ -360,4 +410,4 @@ def create_settings_backed_mcp_tool_provider(
             "(no OH_SECRET_KEY configured). Configure OH_SECRET_KEY for "
             "production deployments."
         )
-    return SettingsBackedMCPToolProvider()
+    return SettingsBackedMCPToolProvider(cipher=config.cipher)
