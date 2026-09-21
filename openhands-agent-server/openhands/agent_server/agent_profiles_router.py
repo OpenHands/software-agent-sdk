@@ -402,11 +402,13 @@ async def delete_agent_profile(
                 s: PersistedSettings,
             ) -> PersistedSettings:
                 s.active_agent_profile_id = None
-                # Reset agent_settings to default if the deleted profile was not OpenHands
+                # Reset agent_settings to default if deleted profile was not
+                # OpenHands
                 if deleted_agent_kind is not None and deleted_agent_kind != "openhands":
                     s.agent_settings = default_agent_settings()
                     logger.info(
-                        f"Reset agent_settings to default (deleted profile was agent_kind='{deleted_agent_kind}')"
+                        f"Reset agent_settings to default "
+                        f"(deleted profile was agent_kind='{deleted_agent_kind}')"
                     )
                 return s
 
