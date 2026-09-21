@@ -1129,8 +1129,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             delta = event.delta
             if delta:
+                # ModelResponseStream mints a fresh id per instance, and a
+                # changed chunk id reads as a retry (StreamContext._emit_delta).
                 delta_chunk = ModelResponseStream(
-                    choices=[StreamingChoices(delta=Delta(content=delta))]
+                    id=event.item_id,
+                    choices=[StreamingChoices(delta=Delta(content=delta))],
                 )
 
         return output_item, delta_chunk
