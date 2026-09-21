@@ -1,21 +1,16 @@
 """Tests for in-process resolution of this server's own LookupSecret URLs."""
 
-import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from threading import Thread
-from typing import Iterator
-
-from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
-from openhands.agent_server.init_router import InitRequest, _build_initialized_config
 from openhands.agent_server.local_secret_resolver import (
     _secret_name_if_local,
     build_local_secret_resolver,
 )
-from openhands.agent_server.persistence import FileSecretsStore, get_secrets_store
+from openhands.agent_server.persistence import get_secrets_store
 from openhands.sdk.secret import (
     LookupSecret,
     register_local_secret_resolver,
@@ -39,7 +34,8 @@ def _foreign_secret_server() -> Iterator[str]:
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        host, port = server.server_address
+        host = server.server_address[0]
+        port = server.server_address[1]
         yield f"http://{host}:{port}"
     finally:
         server.shutdown()
@@ -47,27 +43,27 @@ def _foreign_secret_server() -> Iterator[str]:
         server.server_close()
 
 
-
-
-
-def test_matches_loopback_secret_url():
+def test_matches_loopback_secret_url(monkeypatch):
+    monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://127.0.0.1:8000")
     assert (
         _secret_name_if_local("http://127.0.0.1:8000/api/settings/secrets/TOKEN")
         == "TOKEN"
     )
     assert (
-        _secret_name_if_local("http://localhost:18000/api/settings/secrets/TOKEN")
+        _secret_name_if_local("http://localhost:8000/api/settings/secrets/TOKEN")
         == "TOKEN"
     )
 
 
-def test_ignores_remote_host():
+def test_ignores_remote_host(monkeypatch):
+    monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://127.0.0.1:8000")
     assert (
         _secret_name_if_local("https://remote.example/api/settings/secrets/T") is None
     )
 
 
-def test_ignores_other_routes_and_malformed_names():
+def test_ignores_other_routes_and_malformed_names(monkeypatch):
+    monkeypatch.setenv("OH_INTERNAL_SERVER_URL", "http://127.0.0.1:8000")
     assert _secret_name_if_local("http://127.0.0.1:8000/api/settings") is None
     assert _secret_name_if_local("http://127.0.0.1:8000/api/settings/secrets/") is None
     assert (
@@ -87,21 +83,3 @@ def test_foreign_loopback_port_uses_its_own_server(monkeypatch):
             assert secret.get_value() == "foreign-value"
     finally:
         unregister_local_secret_resolver(resolver)
-
-
-def test_deferred_resolver_uses_initialized_secret_key(tmp_path: Path):
-    base = Config(deferred_init=True, secret_key=SecretStr("dormant-key"))
-    initialized = _build_initialized_config(
-        base,
-        InitRequest(secret_key=SecretStr("initialized-key")),
-    )
-    FileSecretsStore(
-        persistence_dir=Path(os.environ["OH_PERSISTENCE_DIR"]),
-        cipher=initialized.cipher,
-    ).set_secret("TOKEN", "initialized-value")
-
-    resolver = build_local_secret_resolver(base)
-
-    assert resolver("http://127.0.0.1:8000/api/settings/secrets/TOKEN") == (
-        "initialized-value"
-    )

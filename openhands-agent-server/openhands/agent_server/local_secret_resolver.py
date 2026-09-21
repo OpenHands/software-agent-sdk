@@ -8,6 +8,7 @@ Resolving those URLs against the local store keeps the laziness and drops the
 round trip.
 """
 
+import os
 from urllib.parse import urlsplit
 
 from openhands.agent_server.config import Config
@@ -21,14 +22,31 @@ from openhands.sdk.secret import (
 
 logger = get_logger(__name__)
 
+_INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
+_DEFAULT_INTERNAL_SERVER_URL = "http://127.0.0.1:8000"
 _SECRET_PATH_PREFIX = "/api/settings/secrets/"
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _effective_port(scheme: str, port: int | None) -> int | None:
+    return port if port is not None else _DEFAULT_PORTS.get(scheme)
 
 
 def _secret_name_if_local(url: str) -> str | None:
     """Return the secret name when ``url`` is one this process serves itself."""
     parsed = urlsplit(url)
-    if parsed.hostname not in _LOOPBACK_HOSTS:
+    server = urlsplit(os.getenv(_INTERNAL_SERVER_URL_ENV, _DEFAULT_INTERNAL_SERVER_URL))
+    if parsed.scheme != server.scheme:
+        return None
+    if _effective_port(parsed.scheme, parsed.port) != _effective_port(
+        server.scheme, server.port
+    ):
+        return None
+    if parsed.hostname != server.hostname and not {
+        parsed.hostname,
+        server.hostname,
+    }.issubset(_LOOPBACK_HOSTS):
         return None
     if not parsed.path.startswith(_SECRET_PATH_PREFIX):
         return None
