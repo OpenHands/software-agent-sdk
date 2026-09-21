@@ -1,5 +1,6 @@
 """Secrets manager for handling sensitive data in conversations."""
 
+import asyncio
 import re
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -128,6 +129,7 @@ class SecretRegistry(OpenHandsModel):
     _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
     _exported_values_lock: RLock = PrivateAttr(default_factory=RLock)
     _failed_lookups: dict[str, float] = PrivateAttr(default_factory=dict)
+    _offloaded_resolve: "asyncio.Future[None] | None" = PrivateAttr(default=None)
 
     def track_exported_values(self, values: Mapping[str, str]) -> None:
         """Track values for output masking."""
@@ -228,6 +230,42 @@ class SecretRegistry(OpenHandsModel):
                 env_vars[name] = value
         return env_vars
 
+    def _resolve_uncached_sources(self) -> None:
+        """Resolve every source whose value is not cached yet.
+
+        ``get_value()`` may do blocking network I/O, so on the async agent path
+        this must never run inline: a ``LookupSecret`` normally targets the very
+        agent-server making the call (see ``OH_INTERNAL_SERVER_URL``), so the
+        event loop would block waiting for a response only it could produce —
+        a self-deadlock that hangs every endpoint until the request times out.
+        On a loop, hand the work to a thread and mask with what is cached; the
+        values land before the next output.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._resolve_uncached_sources_blocking()
+            return
+
+        pending = self._offloaded_resolve
+        if pending is not None and not pending.done():
+            return
+        self._offloaded_resolve = loop.run_in_executor(
+            None, self._resolve_uncached_sources_blocking
+        )
+
+    def _resolve_uncached_sources_blocking(self) -> None:
+        """Resolve uncached sources, backing off on failure."""
+        now = time.monotonic()
+        for key in list(self.secret_sources):
+            if key in self._exported_values:
+                continue
+            failed_at = self._failed_lookups.get(key)
+            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
+                continue
+            if not self.get_secret_value(key):
+                self._failed_lookups[key] = now
+
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
@@ -245,17 +283,7 @@ class SecretRegistry(OpenHandsModel):
         if not text:
             return text
 
-        # Resolve uncached sources, backing off on failure: get_value() may do
-        # blocking network I/O and masking runs per output and per ACP chunk.
-        now = time.monotonic()
-        for key in list(self.secret_sources):
-            if key in self._exported_values:
-                continue
-            failed_at = self._failed_lookups.get(key)
-            if failed_at is not None and now - failed_at < FAILED_LOOKUP_RETRY_SECONDS:
-                continue
-            if not self.get_secret_value(key):
-                self._failed_lookups[key] = now
+        self._resolve_uncached_sources()
 
         masked_text = text
         with self._exported_values_lock:

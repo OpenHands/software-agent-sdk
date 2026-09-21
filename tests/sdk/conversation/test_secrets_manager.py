@@ -1,5 +1,8 @@
 """Tests for SecretsManager class."""
 
+import asyncio
+import threading
+
 from pydantic import SecretStr
 
 from openhands.sdk.conversation.secret_registry import (
@@ -28,6 +31,29 @@ class MyFailingTokenSource(SecretSource):
 class MyWorkingTokenSource(SecretSource):
     def get_value(self):
         return "working-value"
+
+
+# Records the thread each lookup runs on, so a test can tell an inline resolve
+# (event-loop thread) from an offloaded one.
+LOOKUP_THREADS: list[str] = []
+
+# Held shut to emulate get_value()'s blocking network I/O: a lookup cannot
+# finish until a test opens it.
+LOOKUP_GATE = threading.Event()
+
+
+class MyThreadRecordingSource(SecretSource):
+    def get_value(self):
+        LOOKUP_THREADS.append(threading.current_thread().name)
+        return "recorded-value"
+
+
+class MyBlockingSource(SecretSource):
+    def get_value(self):
+        LOOKUP_THREADS.append(threading.current_thread().name)
+        if not LOOKUP_GATE.wait(timeout=10):
+            raise AssertionError("lookup gate never opened")
+        return "blocked-value"
 
 
 class MyCountingFailingSource(SecretSource):
@@ -508,3 +534,54 @@ def test_compile_stream_mask_releases_text_when_nothing_is_registered():
 
     assert masker.feed("nothing held back") == "nothing held back"
     assert masker.flush() == ""
+
+
+def test_mask_secrets_in_output_resolves_inline_off_the_event_loop():
+    """Without a running loop, resolution stays inline on the calling thread."""
+    LOOKUP_THREADS.clear()
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": MyThreadRecordingSource()})
+
+    masked = secret_registry.mask_secrets_in_output("leak: recorded-value")
+
+    assert masked == "leak: <secret-hidden>"
+    assert LOOKUP_THREADS == [threading.current_thread().name]
+
+
+def test_mask_secrets_in_output_never_resolves_on_the_event_loop():
+    """Resolution is offloaded when a loop is running.
+
+    ``get_value()`` does blocking network I/O and a ``LookupSecret`` normally
+    targets the very agent-server making the call, so resolving inline here
+    deadlocks the loop against itself and hangs every endpoint until the
+    request times out.
+    """
+    LOOKUP_THREADS.clear()
+    LOOKUP_GATE.clear()
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"TOKEN": MyBlockingSource()})
+
+    async def scenario() -> None:
+        loop_thread = threading.current_thread().name
+
+        # The lookup is wedged shut, so an inline resolve could not return.
+        # Reaching the next line at all is the property under test.
+        assert (
+            secret_registry.mask_secrets_in_output("leak: blocked-value")
+            == "leak: blocked-value"
+        )
+        assert not LOOKUP_GATE.is_set()
+
+        LOOKUP_GATE.set()
+        pending = secret_registry._offloaded_resolve
+        assert pending is not None
+        await pending
+        assert LOOKUP_THREADS and loop_thread not in LOOKUP_THREADS
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+    # The offloaded lookup landed, so the next output is masked.
+    assert (
+        secret_registry.mask_secrets_in_output("leak: blocked-value")
+        == "leak: <secret-hidden>"
+    )
