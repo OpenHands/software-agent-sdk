@@ -111,8 +111,22 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
         """Analyze pending actions, returning (action, analysis) pairs.
 
         An analyzer error defaults that action to HIGH risk, with the error
-        recorded in the analysis detail.
+        recorded in the analysis detail. Existing overrides of
+        :meth:`analyze_pending_actions` supply the verdicts without detail.
         """
+        if (
+            type(self).analyze_pending_actions
+            is not SecurityAnalyzerBase.analyze_pending_actions
+        ):
+            return [
+                (action, SecurityAnalysis(risk=risk))
+                for action, risk in self.analyze_pending_actions(pending_actions)
+            ]
+        return self._analyze_actions(pending_actions)
+
+    def _analyze_actions(
+        self, pending_actions: list[ActionEvent]
+    ) -> list[tuple[ActionEvent, SecurityAnalysis]]:
         analyzed: list[tuple[ActionEvent, SecurityAnalysis]] = []
         for action_event in pending_actions:
             try:
@@ -134,8 +148,8 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
     ) -> list[tuple[ActionEvent, SecurityRisk]]:
         """Analyze all pending actions in a conversation.
 
-        Compatibility form of :meth:`analyze_actions` that returns only the
-        risk level for each action.
+        Returns only the risk level for each action. Overrides may call this
+        implementation via ``super()`` without re-entering the batch override.
 
         Args:
             pending_actions: The unmatched actions to analyze
@@ -145,5 +159,5 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
         """
         return [
             (action, analysis.risk)
-            for action, analysis in self.analyze_actions(pending_actions)
+            for action, analysis in self._analyze_actions(pending_actions)
         ]

@@ -2,9 +2,11 @@
 batch of actions, independent of what the confirmation policy does with it."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Self
 from unittest.mock import patch
 
+import pytest
 from litellm import ChatCompletionMessageToolCall
 from litellm.types.utils import (
     Choices,
@@ -82,6 +84,37 @@ class ExplodingAnalyzer(SecurityAnalyzerBase):
         raise RuntimeError("analyzer down")
 
 
+class LegacyBatchAnalyzer(SecurityAnalyzerBase):
+    delegate: bool = False
+
+    def security_risk(self, action: ActionEvent) -> SecurityRisk:
+        return SecurityRisk.LOW
+
+    def analyze_pending_actions(
+        self, pending_actions: list[ActionEvent]
+    ) -> list[tuple[ActionEvent, SecurityRisk]]:
+        if self.delegate:
+            pending_actions = [
+                action for action, _ in super().analyze_pending_actions(pending_actions)
+            ]
+        return [(action, SecurityRisk.HIGH) for action in pending_actions]
+
+
+_SYNTHETIC_SECRET = "qa-fake-secret-5182-not-real"
+
+
+class SecretDetailAnalyzer(DetailedAnalyzer):
+    fail: bool = False
+
+    def analyze_action(self, action: ActionEvent) -> SecurityAnalysis:
+        if self.fail:
+            raise RuntimeError(f"upstream rejected credential {_SYNTHETIC_SECRET}")
+        return SecurityAnalysis(
+            risk=SecurityRisk.MEDIUM,
+            details={"nested": [{"rationale": _SYNTHETIC_SECRET}], "confidence": 0.42},
+        )
+
+
 def _llm() -> LLM:
     return LLM(
         usage_id="test-llm",
@@ -128,10 +161,23 @@ def _tool_call_response(n_calls: int = 1):
     return mock
 
 
-def _run_step(analyzer, policy, n_calls: int = 1):
+def _run_step(
+    analyzer,
+    policy,
+    n_calls: int = 1,
+    persistence_dir: str | None = None,
+    secrets: dict[str, str] | None = None,
+):
     agent = Agent(llm=_llm(), tools=[Tool(name="SecurityAnalysisNoopTool")])
     events: list[Event] = []
-    conversation = Conversation(agent=agent, callbacks=[events.append])
+    conversation = Conversation(
+        agent=agent,
+        callbacks=[events.append],
+        persistence_dir=persistence_dir,
+        visualizer=None,
+    )
+    if secrets is not None:
+        conversation.update_secrets(secrets)
     if analyzer is not None:
         conversation.set_security_analyzer(analyzer)
     conversation.set_confirmation_policy(policy)
@@ -142,7 +188,8 @@ def _run_step(analyzer, policy, n_calls: int = 1):
         conversation.send_message(
             Message(role="user", content=[TextContent(text="go")])
         )
-        agent.step(conversation, on_event=events.append)
+        with conversation.state:
+            agent.step(conversation, on_event=conversation._on_event)
     return conversation, events
 
 
@@ -236,3 +283,64 @@ def test_analyze_pending_actions_keeps_its_risk_only_shape():
     _, events = _run_step(analyzer, NeverConfirm())
     (action,) = [e for e in events if isinstance(e, ActionEvent)]
     assert analyzer.analyze_pending_actions([action]) == [(action, SecurityRisk.MEDIUM)]
+
+
+@pytest.mark.parametrize("delegate", [False, True])
+def test_legacy_batch_verdict_controls_confirmation_and_audit(delegate: bool):
+    conversation, events = _run_step(
+        LegacyBatchAnalyzer(delegate=delegate), ConfirmRisky()
+    )
+    (event,) = [e for e in events if isinstance(e, SecurityAnalysisEvent)]
+    (action,) = [e for e in events if isinstance(e, ActionEvent)]
+    assert event.risks == {action.id: SecurityRisk.HIGH}
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    assert not any(isinstance(e, ObservationEvent) for e in events)
+    conversation.close()
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_analysis_secrets_masked_in_callbacks_and_persistence(
+    tmp_path: Path, fail: bool
+):
+    conversation, events = _run_step(
+        SecretDetailAnalyzer(fail=fail),
+        ConfirmRisky(threshold=SecurityRisk.MEDIUM),
+        persistence_dir=str(tmp_path),
+        secrets={"QA_SYNTHETIC": _SYNTHETIC_SECRET},
+    )
+    (event,) = [e for e in events if isinstance(e, SecurityAnalysisEvent)]
+    (action,) = [e for e in events if isinstance(e, ActionEvent)]
+    expected_risk = SecurityRisk.HIGH if fail else SecurityRisk.MEDIUM
+    assert event.risks == {action.id: expected_risk}
+    expected_details = (
+        {"error": "upstream rejected credential <secret-hidden>"}
+        if fail
+        else {"nested": [{"rationale": "<secret-hidden>"}], "confidence": 0.42}
+    )
+    assert event.details == {action.id: expected_details}
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    conversation.close()
+
+    reopened = Conversation(
+        agent=conversation.agent,
+        conversation_id=conversation.id,
+        persistence_dir=str(tmp_path),
+        visualizer=None,
+    )
+    try:
+        with reopened.state:
+            restored = [
+                e for e in reopened.state.events if isinstance(e, SecurityAnalysisEvent)
+            ]
+        assert restored == [event]
+    finally:
+        reopened.close()
+    event_files = list(tmp_path.rglob("events/*.json"))
+    assert event_files
+    assert all(_SYNTHETIC_SECRET not in path.read_text() for path in event_files)

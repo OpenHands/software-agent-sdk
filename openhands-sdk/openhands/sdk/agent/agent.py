@@ -1077,20 +1077,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # Record the verdict regardless of what the policy does with it, so
             # the log and UI show what the analyzer said even under NeverConfirm.
             if on_event is not None:
-                on_event(
-                    SecurityAnalysisEvent(
-                        analyzer=state.security_analyzer.__class__.__name__,
-                        policy=state.confirmation_policy.__class__.__name__,
-                        risks={
-                            action.id: analysis.risk for action, analysis in analyses
-                        },
-                        details={
-                            action.id: analysis.details
-                            for action, analysis in analyses
-                            if analysis.details is not None
-                        },
-                    )
+                event = SecurityAnalysisEvent(
+                    analyzer=state.security_analyzer.__class__.__name__,
+                    policy=state.confirmation_policy.__class__.__name__,
+                    risks={action.id: analysis.risk for action, analysis in analyses},
+                    details={
+                        action.id: analysis.details
+                        for action, analysis in analyses
+                        if analysis.details is not None
+                    },
                 )
+                on_event(state.secret_registry.mask_secrets_in_model(event))
         else:
             risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
 
