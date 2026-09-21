@@ -47,6 +47,7 @@ from openhands.sdk.profiles import (
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.settings.model import default_agent_settings
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -370,10 +371,23 @@ async def delete_agent_profile(
     """Delete a stored profile (idempotent).
 
     If the deleted profile was the active one, ``active_agent_profile_id`` is
-    cleared.
+    cleared. If the deleted profile's ``agent_kind`` was not ``"openhands"``,
+    ``agent_settings`` is reset to default OpenHands agent settings to prevent
+    stale ACP configuration from persisting.
     """
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
+    
+    # Load the profile before deletion to check its agent_kind
+    deleted_agent_kind = None
+    if deleted_id is not None:
+        try:
+            with store_errors():
+                profile = store.load(name)
+                deleted_agent_kind = profile.agent_kind
+        except Exception:
+            # Profile may not exist or may be corrupted; proceed with deletion
+            pass
 
     with store_errors():
         store.delete(name)
@@ -384,11 +398,19 @@ async def delete_agent_profile(
         settings = settings_store.load() or PersistedSettings()
         if settings.active_agent_profile_id == deleted_id:
 
-            def clear_pointer(s: PersistedSettings) -> PersistedSettings:
+            def clear_pointer_and_reset_settings(
+                s: PersistedSettings,
+            ) -> PersistedSettings:
                 s.active_agent_profile_id = None
+                # Reset agent_settings to default if the deleted profile was not OpenHands
+                if deleted_agent_kind is not None and deleted_agent_kind != "openhands":
+                    s.agent_settings = default_agent_settings()
+                    logger.info(
+                        f"Reset agent_settings to default (deleted profile was agent_kind='{deleted_agent_kind}')"
+                    )
                 return s
 
-            settings_store.update(clear_pointer)
+            settings_store.update(clear_pointer_and_reset_settings)
             logger.info(f"Cleared active pointer for deleted profile '{name}'")
 
     logger.info(f"Deleted agent profile '{name}'")
