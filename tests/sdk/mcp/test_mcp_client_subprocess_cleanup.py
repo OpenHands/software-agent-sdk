@@ -1,6 +1,8 @@
 """Tests for MCPClient stdio subprocess cleanup."""
 
 import os
+import signal
+import subprocess
 import sys
 import time
 from collections.abc import Sequence
@@ -44,6 +46,11 @@ def _client(client_type: type[MCPClient] = MCPClient) -> MCPClient:
 
 
 def _is_alive(pid: int) -> bool:
+    try:
+        if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
+            return False
+    except FileNotFoundError:
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -94,3 +101,40 @@ def test_sync_close_closes_executor_when_forced_cleanup_fails() -> None:
 
     assert client._closed
     assert client._executor._portal is None
+
+
+def test_process_group_escalates_after_leader_exits() -> None:
+    script = """
+import signal
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen([
+    sys.executable,
+    "-c",
+    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+])
+print(child.pid, flush=True)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+time.sleep(60)
+"""
+    leader = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert leader.stdout is not None
+    child_pid = int(leader.stdout.readline())
+    try:
+        MCPClient._kill_process_group(leader.pid)
+
+        leader.wait(timeout=5)
+        _wait_until_dead(child_pid)
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        leader.wait(timeout=5)

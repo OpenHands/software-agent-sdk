@@ -149,29 +149,29 @@ class MCPClient(AsyncMCPClient):
 
         return list(dict.fromkeys(pids))
 
-    def _kill_process_group(self, pid: int) -> None:
+    @staticmethod
+    def _kill_process_group(pid: int) -> None:
         """Kill a process and its group (SIGTERM then SIGKILL)."""
         try:
-            os.kill(pid, 0)  # Check if alive
+            os.kill(pid, 0)
+            pgid = os.getpgid(pid)
         except (ProcessLookupError, PermissionError, OSError):
-            return  # Already dead or not ours
+            return
 
-        # Try killing the process group first (handles `npm exec` → `node`)
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                pgid = os.getpgid(pid)
                 os.killpg(pgid, sig)
             except (ProcessLookupError, PermissionError, OSError):
                 try:
                     os.kill(pid, sig)
                 except (ProcessLookupError, PermissionError, OSError):
-                    return  # Gone or not ours
+                    return
             if sig == signal.SIGTERM:
-                time.sleep(0.5)  # Give it time to exit gracefully
+                time.sleep(0.5)
             try:
-                os.kill(pid, 0)
-            except (ProcessLookupError, OSError):
-                return  # Dead
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError, OSError):
+                return
 
     def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
         """Kill stdio MCP subprocesses captured before async close."""
