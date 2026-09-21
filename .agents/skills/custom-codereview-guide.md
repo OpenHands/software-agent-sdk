@@ -151,6 +151,29 @@ Use COMMENT when you have feedback or concerns:
 
 If there are significant issues, leave detailed comments explaining the concerns—but let a human maintainer decide whether to block the PR.
 
+## Design Docs for Deep PRs
+
+A diff shows what changed line by line, not the design: the shape of the change, the API before and after, and why this approach. For a *deep* PR, expect design context covering intent, important before/after behavior or API shape, compatibility, and risk, grounded in code references. A sufficient PR description satisfies this expectation at any risk level. The `pr-design-doc` skill in `.agents/skills/pr-design-doc/` can supplement it with a self-contained `.pr/` HTML page.
+
+Keep the essential design summary in the PR description. Link supplementary `.pr/` documents to the commit containing them, since automated approval can trigger cleanup and break branch-based links. Refresh the document and its link when substantive changes affect the design.
+
+A PR is "deep" when a reviewer cannot fully judge it from the diff in a couple of minutes, for example:
+
+- a new or changed public SDK API, the Agent Server REST contract, or an event/wire model;
+- a new module or subsystem, or a cross-cutting refactor or migration;
+- a behavior change in core logic (agent loop, conversation, tools, events, workspaces); or
+- a large diff (roughly 500+ lines changed) whose intent a reviewer cannot hold in their head at once, even if no single hunk is complex.
+
+Skip it for trivial PRs — a typo, a one-line guard, a config or dependency bump, a docs tweak, a small localized bug fix. If the diff is its own explanation, do not ask for a page.
+
+When a deep PR lacks sufficient design context, weigh the omission against the change's risk assessment:
+
+- **🔴 HIGH risk and deep, insufficient context:** withhold approval. Leave a **COMMENT** review identifying the missing information needed to judge the proposal before merge.
+- **🟡 MEDIUM risk and deep, insufficient context:** use judgment. Withhold approval when missing information prevents a sound review; a small, self-evident change does not need a page.
+- **🟢 LOW risk:** never block on a missing design doc.
+
+A separate design doc is not required when the PR description provides sufficient context. A well-written doc does not excuse real correctness, security, or architecture problems.
+
 ## Security
 
 ### Dependency freshness / supply-chain guardrail
