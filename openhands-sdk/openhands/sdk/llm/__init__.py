@@ -4,6 +4,7 @@ from openhands.sdk.llm.auth import (
     OAuthCredentials,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.llm.cleanup_profile import (
     CLEANUP_PROFILE_NAME,
     aclean_outward_text,
@@ -56,6 +57,7 @@ __all__ = [
     "FallbackStrategy",
     "LLMResponse",
     "LLM",
+    "LLMCallContext",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileLoader",

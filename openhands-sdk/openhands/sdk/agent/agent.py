@@ -61,6 +61,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContentPolicyViolationError,
@@ -639,7 +640,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             self._step(conversation, on_event, stream)
 
     def _step(
@@ -849,7 +854,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             await self._astep(conversation, on_event, stream)
 
     async def _astep(
