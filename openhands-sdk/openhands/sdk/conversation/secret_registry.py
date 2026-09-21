@@ -233,13 +233,10 @@ class SecretRegistry(OpenHandsModel):
     def _resolve_uncached_sources(self) -> None:
         """Resolve every source whose value is not cached yet.
 
-        ``get_value()`` may do blocking network I/O, so on the async agent path
-        this must never run inline: a ``LookupSecret`` normally targets the very
-        agent-server making the call (see ``OH_INTERNAL_SERVER_URL``), so the
-        event loop would block waiting for a response only it could produce —
-        a self-deadlock that hangs every endpoint until the request times out.
-        On a loop, hand the work to a thread and mask with what is cached; the
-        values land before the next output.
+        ``get_value()`` blocks on network I/O, and a ``LookupSecret`` normally
+        targets the agent-server making the call (``OH_INTERNAL_SERVER_URL``),
+        so resolving on the event loop deadlocks it against itself. Offload it
+        there and mask with what is cached.
         """
         try:
             loop = asyncio.get_running_loop()
