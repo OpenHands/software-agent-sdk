@@ -383,7 +383,10 @@ def fold_tool_switches_into_tools(
         else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
     )
     for enabled, name in (
-        (enable_sub_agents, SUB_AGENT_TOOL_NAME),
+        # Each switch keeps the reach it had: `enable_sub_agents` only ever fed
+        # the default set, so an explicit list is used as given, while
+        # `enable_switch_llm_tool` attached its tool to every agent.
+        (enable_sub_agents and tools is None, SUB_AGENT_TOOL_NAME),
         (enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
     ):
         selected = {canonical_tool_name(entry.name) for entry in entries}
