@@ -32,6 +32,8 @@ jobs:
                   GH_TOKEN: ${{ github.token }}
                   ACTION: ${{ github.event.action }}
                   ACTOR: ${{ github.event.sender.login }}
+                  REPOSITORY: ${{ github.repository }}
+                  ISSUE_NUMBER: ${{ github.event.issue.number }}
               run: |
                   set -euo pipefail
 
@@ -40,13 +42,13 @@ jobs:
                     exit 0
                   fi
 
-                  permission="$(gh api                     "repos/${{ github.repository }}/collaborators/$ACTOR/permission"                     --jq .permission 2>/dev/null || true)"
+                  permission="$(gh api "repos/$REPOSITORY/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || true)"
                   case "$permission" in
                     write|maintain|admin)
                       echo "refresh-linked-prs=true" >> "$GITHUB_OUTPUT"
                       ;;
                     *)
-                      gh issue edit "${{ github.event.issue.number }}"                         --repo "${{ github.repository }}"                         --remove-label ready-for-dev
+                      gh issue edit "$ISSUE_NUMBER" --repo "$REPOSITORY" --remove-label ready-for-dev
                       echo "refresh-linked-prs=false" >> "$GITHUB_OUTPUT"
                       ;;
                   esac
