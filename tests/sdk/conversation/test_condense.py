@@ -12,6 +12,11 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.event import Condensation
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
@@ -142,7 +147,7 @@ def test_local_conversation_condense_without_condenser(tmp_path, agent):
 def test_local_conversation_condense_with_condenser(
     mock_condense, tmp_path, agent_with_condenser
 ):
-    """condense adds CondensationRequest and calls agent.step() when condenser is configured."""  # noqa: E501
+    """Explicit condensation records a request and invokes the condenser."""
     # Mock the condenser to avoid actual LLM calls
     from openhands.sdk.event.condenser import Condensation
 
@@ -181,6 +186,55 @@ def test_local_conversation_condense_with_condenser(
 
     # The condenser should have been called
     mock_condense.assert_called_once()
+
+
+def test_condense_preserves_pending_approval(tmp_path, agent_with_condenser):
+    conv = Conversation(
+        agent=agent_with_condenser,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    pending = ActionEvent(
+        source="agent",
+        thought=[TextContent(text="Pending action")],
+        action=CondenseTestMockAction(command="must not run"),
+        tool_name="terminal",
+        tool_call_id="pending-call",
+        tool_call=MessageToolCall(
+            id="pending-call",
+            name="terminal",
+            arguments='{"command":"must not run"}',
+            origin="completion",
+        ),
+        llm_response_id="pending-response",
+    )
+    conv.state.events.append(pending)
+    with conv.state:
+        conv.state.execution_status = (
+            ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        )
+    summary = Condensation(
+        summary="The user is deciding whether to approve the action.",
+        summary_offset=0,
+        llm_response_id="summary-response",
+    )
+    with (
+        patch.object(LLMSummarizingCondenser, "condense", return_value=summary),
+        patch.object(
+            Agent, "_execute_actions", side_effect=AssertionError("tool execution")
+        ),
+    ):
+        conv.condense()
+    assert (
+        conv.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    assert ConversationState.get_unmatched_actions(conv.state.active_branch()) == [
+        pending
+    ]
+    assert any(isinstance(event, Condensation) for event in conv.state.events)
+    assert not any(isinstance(event, ObservationEvent) for event in conv.state.events)
+    conv.close()
 
 
 def test_local_conversation_condense_copies_llm_config(tmp_path):

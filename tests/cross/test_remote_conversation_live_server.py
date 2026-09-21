@@ -14,7 +14,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from uuid import UUID
 
 import httpx
@@ -25,6 +25,7 @@ from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
+from openhands.agent_server.codex_voice import CodexRelay, CodexVoiceStatus, RelayError
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -168,6 +169,86 @@ def live_server_env(
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
         reset_stores()
+
+
+def test_insider_voice_missing_key_and_condense_are_safe_over_http(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Browser display detection uses macOS AppKit, which requires the main thread.
+    monkeypatch.setattr(
+        "openhands.agent_server.server_details_router.list_usable_tools", lambda: []
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.api.get_tool_preload_service", lambda: None
+    )
+    with live_server_env(
+        tmp_path, monkeypatch, session_api_keys=["voice-fixture"]
+    ) as env:
+        with httpx.Client(
+            base_url=env["host"], headers={"X-Session-API-Key": "voice-fixture"}
+        ) as client:
+            agent = Agent(llm=LLM(model="gpt-4o-mini", usage_id="voice-test"), tools=[])
+            created = client.post(
+                "/api/conversations",
+                json={
+                    "agent": agent.model_dump(mode="json"),
+                    "workspace": {"working_dir": str(env["workspace_path"])},
+                    "tags": {"smolpaws": "insider", "insiderrole": "controller"},
+                    "autotitle": False,
+                },
+            )
+            assert created.status_code == 201, created.text
+            path = f"/api/conversations/{created.json()['id']}"
+            availability = client.get(f"{path}/voice")
+            assert availability.status_code == 200
+            assert availability.json()["reason"] == "missing_openai_api_key"
+            assert availability.json()["run_active"] is False
+            assert availability.json()["execution_status"] == "idle"
+            assert (
+                client.post(f"{path}/voice/realtime", json={"sdp": "v=0"}).status_code
+                == 409
+            )
+            assert client.post(f"{path}/condense").status_code == 409
+            assert client.get(path).json()["execution_status"] == "idle"
+            env["app"].state.config = env["app"].state.config.model_copy(
+                update={"voice_provider": "codex"}
+            )
+
+            def missing_codex(home):
+                raise RelayError("codex_not_installed")
+
+            monkeypatch.setattr(
+                "openhands.agent_server.codex_voice._command", missing_codex
+            )
+            codex = client.get(f"{path}/voice")
+            assert codex.status_code == 200
+            assert codex.json()["provider"] == "codex"
+            assert codex.json()["delegation"] == "server"
+            assert codex.json()["reason"] == "codex_not_installed"
+            assert client.get(f"{path}/voice/realtime/unknown").status_code == 404
+            relay = Mock(spec=CodexRelay)
+            relay.status = CodexVoiceStatus(
+                status="error",
+                transcripts=[],
+                error="Voice did not send this request to the saved Cat.",
+                error_code="request_not_sent",
+            )
+            with patch.object(
+                env["app"].state.codex_voice, "get", return_value=relay
+            ) as get_call:
+                failed = client.get(f"{path}/voice/realtime/rtc_fixture")
+                assert failed.status_code == 200
+                assert failed.headers["cache-control"] == "no-store"
+                assert failed.json()["error_code"] == "request_not_sent"
+                assert failed.json()["error"] == relay.status.error
+                get_call.assert_called_once_with(
+                    UUID(created.json()["id"]), "rtc_fixture"
+                )
+            assert client.get(path).json()["execution_status"] == "idle"
+            client.headers.pop("X-Session-API-Key")
+            assert client.get(f"{path}/voice").status_code == 401
+            assert client.get(f"{path}/voice/realtime/unknown").status_code == 401
 
 
 def _assert_secret(value: "str | SecretStr", expected: str) -> None:
