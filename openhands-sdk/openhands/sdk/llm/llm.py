@@ -1129,10 +1129,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             delta = event.delta
             if delta:
-                # Stamp the output item's id: ModelResponseStream generates a
-                # fresh one per instance, and consumers read a changed chunk id
-                # as a retry of the item (StreamContext._emit_delta), so an
-                # unstamped chunk makes every delta look like a new attempt.
+                # ModelResponseStream mints a fresh id per instance, and a
+                # changed chunk id reads as a retry (StreamContext._emit_delta).
                 delta_chunk = ModelResponseStream(
                     id=event.item_id,
                     choices=[StreamingChoices(delta=Delta(content=delta))],

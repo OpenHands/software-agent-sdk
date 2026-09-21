@@ -601,11 +601,8 @@ async def test_aresponses_streaming_accepts_async_generator(mock_aresponses):
 def test_stream_delta_chunks_carry_the_output_item_id():
     """All deltas of one output item must share a chunk id.
 
-    ``ModelResponseStream`` generates a fresh id per instance, and consumers
-    read a changed chunk id as a retry of the item
-    (``StreamContext._emit_delta``). Unstamped chunks therefore make every
-    delta look like a new attempt, which resets the receiving slot and — once
-    a secret is registered — drops the text its stream masker is holding.
+    A changed chunk id reads as a retry (``StreamContext._emit_delta``), which
+    resets the slot and drops text the stream masker is holding.
     """
     llm = LLM(model="gpt-5-mini", usage_id="test-stream-id")
 
