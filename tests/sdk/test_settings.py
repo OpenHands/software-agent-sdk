@@ -1002,6 +1002,29 @@ def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
     ]
 
 
+def test_switch_llm_turned_off_is_honoured_for_the_default_set() -> None:
+    """The default set carries `switch_llm`, so the off switch has to remove it.
+
+    Reported by @rajshah4: an agent_settings with the flag off and `tools`
+    unset was still getting the tool.
+    """
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), enable_switch_llm_tool=False
+    ).create_agent()
+
+    assert "switch_llm" not in [t.name for t in agent.tools]
+
+
+def test_switch_llm_class_name_alias_is_not_duplicated() -> None:
+    """`resolve_tool` takes a built-in under either name, so both select one
+    tool — adding the second spelling would trip the duplicate-name guard."""
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[Tool(name="SwitchLLMTool")]
+    ).create_agent()
+
+    assert [t.name for t in agent.tools] == ["SwitchLLMTool"]
+
+
 def test_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
     """The switch only ever fed the default set.
 

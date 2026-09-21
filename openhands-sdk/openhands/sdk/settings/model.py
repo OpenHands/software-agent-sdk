@@ -1401,6 +1401,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.tool.defaults import (
             SUB_AGENT_TOOL_NAME,
             SWITCH_LLM_TOOL_NAME,
+            canonical_tool_name,
             resolve_tool_specs,
         )
 
@@ -1410,12 +1411,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         # ``enable_switch_llm_tool`` attached its tool to every agent. Both
         # tools can also be selected in ``tools``, and the agent rejects a
         # duplicate name, so neither is added twice.
-        tools = resolve_tool_specs(self.tools)
+        tools = resolve_tool_specs(
+            self.tools, enable_switch_llm=self.enable_switch_llm_tool
+        )
         for flag, name in (
             (self.enable_sub_agents and self.tools is None, SUB_AGENT_TOOL_NAME),
             (self.enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
         ):
-            if flag and all(tool.name != name for tool in tools):
+            selected = {canonical_tool_name(tool.name) for tool in tools}
+            if flag and name not in selected:
                 tools = [*tools, Tool(name=name)]
 
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
