@@ -411,6 +411,21 @@ def test_v2_default_switch_llm_needs_no_pinned_list() -> None:
     assert not hasattr(profile, "enable_switch_llm_tool")
 
 
+def test_v2_fold_recognises_the_switch_llm_class_alias() -> None:
+    """A stored list naming the built-in by class name already has the tool."""
+    profile = validate_agent_profile(
+        {
+            "schema_version": 2,
+            "name": "default",
+            "llm_profile_ref": "default",
+            "revision": 0,
+            "tools": [{"name": "SwitchLLMTool", "params": {}}],
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == ["SwitchLLMTool"]
+
+
 def test_v2_switch_llm_turned_off_pins_a_list_without_it() -> None:
     """Off is not the default, so it has to be said explicitly."""
     profile = validate_agent_profile(

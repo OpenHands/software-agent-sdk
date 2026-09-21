@@ -36,6 +36,7 @@ from openhands.sdk.tool.defaults import (
     DEFAULT_EXEC_TOOL_NAMES,
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
+    canonical_tool_name,
 )
 
 
@@ -385,7 +386,8 @@ def fold_tool_switches_into_tools(
         (enable_sub_agents, SUB_AGENT_TOOL_NAME),
         (enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
     ):
-        if enabled and all(entry.name != name for entry in entries):
+        selected = {canonical_tool_name(entry.name) for entry in entries}
+        if enabled and name not in selected:
             entries.append(Tool(name=name))
     return entries
 
