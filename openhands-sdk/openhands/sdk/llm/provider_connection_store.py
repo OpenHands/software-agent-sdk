@@ -66,10 +66,12 @@ class ProviderConnectionLimitExceeded(Exception):
 
 
 class ProviderConnectionNotFound(ValueError):
-    """A referenced provider connection id does not exist.
+    """A referenced provider connection cannot supply a usable credential.
 
-    Raised by :meth:`LLMProfileStore.load` when a profile points at a connection
-    that has been deleted and the profile has no usable inline key to fall back
+    Raised by :meth:`LLMProfileStore.resolve_provider_connection` (and, via
+    it, :meth:`LLMProfileStore.load`) when a profile or LLM points at a
+    connection that either has been deleted, or exists but carries no
+    api_key, and the referencing LLM has no usable inline key to fall back
     on.
 
     Subclasses :class:`ValueError` so every ``load()`` caller degrades sensibly

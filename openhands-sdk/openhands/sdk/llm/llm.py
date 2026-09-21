@@ -126,6 +126,9 @@ from openhands.sdk.llm.utils.openhands_provider import (
     litellm_call_kwargs,
 )
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
+from openhands.sdk.llm.utils.streaming_reasoning_details import (
+    merge_streamed_reasoning_details,
+)
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -2263,6 +2266,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             **kwargs,
         }
 
+    def _restore_streamed_reasoning_details(
+        self,
+        ret: Any,
+        chunks: list[ModelResponseStream],
+    ) -> None:
+        """Patch OpenRouter's ``reasoning_details`` back onto a streamed result.
+
+        ``litellm.stream_chunk_builder`` drops this field (see
+        ``merge_streamed_reasoning_details``), so re-attach it here from the
+        raw chunks before the built response reaches
+        :meth:`_build_completion_result`. Only OpenRouter's transport sends
+        this field, and only the first choice is used downstream (see
+        ``_build_completion_result``'s ``first_choice`` pattern), so this
+        guards on both.
+        """
+        if not self._model_features().send_reasoning_details:
+            return
+        if not isinstance(ret, ModelResponse) or not ret.choices:
+            return
+        merged = merge_streamed_reasoning_details(chunks, choice_index=0)
+        if merged is None:
+            return
+        cast(Any, ret.choices[0].message).reasoning_details = merged
+
     def _transport_call(
         self,
         *,
@@ -2283,6 +2310,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 on_token(chunk)
                 chunks.append(chunk)
             ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            self._restore_streamed_reasoning_details(ret, chunks)
 
         assert isinstance(ret, ModelResponse), (
             f"Expected ModelResponse, got {type(ret)}"
@@ -2325,6 +2353,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
             ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            self._restore_streamed_reasoning_details(ret, chunks)
 
         assert isinstance(ret, ModelResponse), (
             f"Expected ModelResponse, got {type(ret)}"
@@ -2820,6 +2849,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
+        send_reasoning_details = model_features.send_reasoning_details
         return [
             message.to_chat_dict(
                 cache_enabled=cache_enabled,
@@ -2827,6 +2857,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 function_calling_enabled=function_calling_enabled,
                 force_string_serializer=force_string_serializer,
                 send_reasoning_content=send_reasoning_content,
+                send_reasoning_details=send_reasoning_details,
             )
             for message in messages
         ]

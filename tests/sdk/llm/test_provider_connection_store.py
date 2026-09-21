@@ -233,6 +233,85 @@ def test_bare_profile_store_auto_wires_provider_store(tmp_path):
     assert llm.base_url == "https://api.anthropic.com"
 
 
+def test_resolve_provider_connection_applies_to_unsaved_llm(tmp_path):
+    """The resolver is public so boundaries other than named-profile
+    activation (raw agent-start, ``switch_llm``) can apply it to an LLM that
+    was never saved as a profile — e.g. a client-submitted LLM that
+    references a shared connection instead of carrying an inline key."""
+    provider = ProviderConnectionStore(base_dir=tmp_path / "conns")
+    provider.create(_connection())
+    profiles = LLMProfileStore(base_dir=tmp_path / "profiles", provider_store=provider)
+
+    llm = LLM(model="anthropic/claude-sonnet-4", provider_connection_id="conn1")
+    resolved = profiles.resolve_provider_connection(llm)
+
+    assert isinstance(resolved.api_key, SecretStr)
+    assert resolved.api_key.get_secret_value() == "sk-shared"
+    assert resolved.base_url == "https://api.anthropic.com"
+
+
+def test_resolve_provider_connection_passthrough_without_connection_id(tmp_path):
+    """No ``provider_connection_id`` -> unchanged, same object (Rule 1)."""
+    profiles = LLMProfileStore(base_dir=tmp_path / "profiles")
+    llm = LLM(model="gpt-4o", api_key="sk-inline")
+    resolved = profiles.resolve_provider_connection(llm)
+    assert resolved is llm
+
+
+def test_resolve_provider_connection_missing_raises(tmp_path):
+    """A dangling connection id with no inline key fails loudly (Rule 5b),
+    the same way :meth:`LLMProfileStore.load` does for a saved profile."""
+    profiles = LLMProfileStore(base_dir=tmp_path / "profiles")
+    llm = LLM(model="anthropic/claude-sonnet-4", provider_connection_id="ghost")
+    with pytest.raises(ProviderConnectionNotFound):
+        profiles.resolve_provider_connection(llm)
+
+
+def test_resolve_provider_connection_missing_key_raises(tmp_path):
+    """A connection that exists but carries no api_key must fail loudly
+    rather than silently resolving to a keyless LLM (atomic-failure
+    requirement: never swap a working LLM for one with no usable
+    credential). The REST create/update endpoints block ever producing a
+    keyless connection, but one constructed directly (bypassing the router,
+    as in this test) must still be caught here."""
+    provider = ProviderConnectionStore(base_dir=tmp_path / "conns")
+    provider.create(_connection(api_key=None))
+    profiles = LLMProfileStore(base_dir=tmp_path / "profiles", provider_store=provider)
+
+    llm = LLM(model="anthropic/claude-sonnet-4", provider_connection_id="conn1")
+    with pytest.raises(ProviderConnectionNotFound):
+        profiles.resolve_provider_connection(llm)
+
+
+def test_resolve_provider_connection_missing_key_falls_back_to_inline_key(tmp_path):
+    """Symmetric with the missing-connection fallback: an LLM that already
+    carries its own inline key is not blocked by a keyless connection."""
+    provider = ProviderConnectionStore(base_dir=tmp_path / "conns")
+    provider.create(_connection(api_key=None))
+    profiles = LLMProfileStore(base_dir=tmp_path / "profiles", provider_store=provider)
+
+    llm = LLM(
+        model="anthropic/claude-sonnet-4",
+        provider_connection_id="conn1",
+        api_key=SecretStr("sk-inline-fallback"),
+    )
+    resolved = profiles.resolve_provider_connection(llm)
+    assert isinstance(resolved.api_key, SecretStr)
+    assert resolved.api_key.get_secret_value() == "sk-inline-fallback"
+
+
+def test_resolve_provider_connection_decrypts_with_cipher(tmp_path):
+    cipher = Cipher("unit-test-secret-key")
+    provider = ProviderConnectionStore(base_dir=tmp_path / "conns")
+    provider.create(_connection(), cipher=cipher)
+    profiles = LLMProfileStore(base_dir=tmp_path / "profiles", provider_store=provider)
+
+    llm = LLM(model="anthropic/claude-sonnet-4", provider_connection_id="conn1")
+    resolved = profiles.resolve_provider_connection(llm, cipher=cipher)
+    assert isinstance(resolved.api_key, SecretStr)
+    assert resolved.api_key.get_secret_value() == "sk-shared"
+
+
 def test_wrong_cipher_update_raises_not_destroys_key(tmp_path):
     """Fix: a read-modify-write with a wrong cipher must raise a ValidationError,
     not silently persist api_key=null and destroy the stored ciphertext."""

@@ -63,6 +63,9 @@ class ModelFeatures:
     requires_inline_image_data: bool
     # Effective capability from LiteLLM metadata plus SDK overrides.
     supports_vision: bool
+    # Additive, defaulted for backward compatibility with any direct
+    # ModelFeatures(...) construction that predates this field.
+    send_reasoning_details: bool = False
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -92,6 +95,19 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
         return "moonshot/kimi-k3"
 
     return normalized
+
+
+def _is_openrouter_transport(model: str | None) -> bool:
+    """Whether ``model`` actually routes through OpenRouter's transport.
+
+    Anchored on the normalized raw model id's *prefix*, matching
+    ``detect_provider()`` in ``runtime_metadata.py``. A substring check
+    (e.g. via :func:`model_matches`) would also match a hypothetical
+    ``some-provider/openrouter/model`` id that never touches OpenRouter, so
+    this only ever returns True for genuine ``openrouter/<...>`` routes.
+    """
+    normalized = _normalize_model_for_litellm(model) or ""
+    return normalized.startswith("openrouter/")
 
 
 @cache
@@ -392,6 +408,7 @@ def get_features(
         supports_responses_api=_supports_responses_api(model, model_info, overrides),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_MODELS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_MODELS),
+        send_reasoning_details=_is_openrouter_transport(model),
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
         supports_prompt_cache_retention=_resolved_bool(
             "supports_prompt_cache_retention",

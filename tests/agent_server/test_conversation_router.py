@@ -2501,6 +2501,91 @@ def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
         client.app.dependency_overrides.clear()
 
 
+def test_switch_conversation_llm_resolves_provider_connection(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A caller-supplied LLM that references a shared provider connection
+    (no inline key -- Canvas never transports the plaintext key) must have
+    that connection's credentials resolved before being forwarded to
+    ``conversation.switch_llm``.
+    """
+    from openhands.agent_server.persistence import (
+        ProviderConnection,
+        get_provider_connections_store,
+    )
+
+    get_provider_connections_store().create(
+        ProviderConnection(
+            id="conn1",
+            display_name="Shared",
+            provider="openrouter",
+            api_key=SecretStr("sk-shared-key"),
+            created_at=1000,
+            updated_at=1000,
+        )
+    )
+
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/anthropic/claude-3.5-sonnet",
+                    "usage_id": "caller-supplied-id",
+                    "provider_connection_id": "conn1",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        mock_conversation.switch_llm.assert_called_once()
+        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        assert isinstance(forwarded_llm.api_key, SecretStr)
+        assert forwarded_llm.api_key.get_secret_value() == "sk-shared-key"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_missing_connection_does_not_switch(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A dangling/absent provider connection must fail the request and must
+    NOT replace the conversation's currently active LLM (atomic failure).
+    """
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/anthropic/claude-3.5-sonnet",
+                    "usage_id": "caller-supplied-id",
+                    "provider_connection_id": "ghost",
+                }
+            },
+        )
+
+        assert response.status_code == 422
+        mock_conversation.switch_llm.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_switch_conversation_llm_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
