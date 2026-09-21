@@ -1,9 +1,8 @@
 ---
 name: Ready-for-dev Label Policy
 
-# The issue-triage automation owns readiness. This workflow only rejects a
-# ready-for-dev label applied by another identity and refreshes linked PR gates
-# after the authoritative label state changes.
+# The issue-triage automation and repository writers may grant ready-for-dev.
+# Labels from any other actor are removed.
 
 on:
     issues:
@@ -14,35 +13,48 @@ concurrency:
     cancel-in-progress: false
 
 jobs:
-    reject-unauthorized-label:
-        name: Reject unauthorized ready-for-dev label
+    enforce-label-policy:
+        name: Enforce ready-for-dev label policy
         if: >-
             github.event.issue.state == 'open'
             && github.event.issue.pull_request == null
-            && github.event.action == 'labeled'
             && github.event.label.name == 'ready-for-dev'
-            && github.event.sender.login != 'all-hands-bot'
         runs-on: ubuntu-24.04
         timeout-minutes: 5
         permissions:
             issues: write
+        outputs:
+            refresh-linked-prs: ${{ steps.policy.outputs.refresh-linked-prs }}
         steps:
-            - name: Remove ready-for-dev label
+            - name: Check label actor
+              id: policy
               env:
                   GH_TOKEN: ${{ github.token }}
-              run: >-
-                  gh issue edit "${{ github.event.issue.number }}"
-                  --repo "${{ github.repository }}"
-                  --remove-label ready-for-dev
+                  ACTION: ${{ github.event.action }}
+                  ACTOR: ${{ github.event.sender.login }}
+              run: |
+                  set -euo pipefail
+
+                  if [ "$ACTION" = "unlabeled" ]; then
+                    echo "refresh-linked-prs=true" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  permission="$(gh api                     "repos/${{ github.repository }}/collaborators/$ACTOR/permission"                     --jq .permission 2>/dev/null || true)"
+                  case "$permission" in
+                    write|maintain|admin)
+                      echo "refresh-linked-prs=true" >> "$GITHUB_OUTPUT"
+                      ;;
+                    *)
+                      gh issue edit "${{ github.event.issue.number }}"                         --repo "${{ github.repository }}"                         --remove-label ready-for-dev
+                      echo "refresh-linked-prs=false" >> "$GITHUB_OUTPUT"
+                      ;;
+                  esac
 
     refresh-linked-pr-gates:
         name: Refresh PR gates for linked issues
-        if: >-
-            github.event.issue.state == 'open'
-            && github.event.issue.pull_request == null
-            && github.event.label.name == 'ready-for-dev'
-            && (github.event.action == 'unlabeled'
-                || github.event.sender.login == 'all-hands-bot')
+        needs: enforce-label-policy
+        if: needs.enforce-label-policy.outputs.refresh-linked-prs == 'true'
         runs-on: ubuntu-24.04
         timeout-minutes: 10
         permissions:
