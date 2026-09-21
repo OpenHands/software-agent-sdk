@@ -229,7 +229,8 @@ def test_archive_stops_runtime_and_unarchive_stays_cold(tmp_path, monkeypatch):
     conversation_id = uuid4()
     registry = DockerConversationRegistry(config)
     registry.provisioning.create(conversation_id)
-    registry.stop = AsyncMock()
+    transitions = []
+    registry.stop = AsyncMock(side_effect=lambda _: transitions.append("stop"))
     archived_at = utc_now()
     conversation = ConversationInfo(
         id=conversation_id,
@@ -237,10 +238,16 @@ def test_archive_stops_runtime_and_unarchive_stays_cold(tmp_path, monkeypatch):
         agent=Agent(llm=LLM(model="test-model"), tools=[]),
     )
     service = AsyncMock()
-    service.set_conversation_archived.side_effect = [
-        conversation.model_copy(update={"archived_at": archived_at}),
-        conversation,
-    ]
+
+    async def set_archived(_, *, archived):
+        transitions.append("archive" if archived else "unarchive")
+        return (
+            conversation.model_copy(update={"archived_at": archived_at})
+            if archived
+            else conversation
+        )
+
+    service.set_conversation_archived.side_effect = set_archived
 
     app = FastAPI()
     app.state.conversation_registry = registry
@@ -263,6 +270,7 @@ def test_archive_stops_runtime_and_unarchive_stays_cold(tmp_path, monkeypatch):
             call(conversation_id, archived=False),
         ]
     )
+    assert transitions == ["stop", "archive", "unarchive"]
 
 
 def test_archived_conversation_cannot_start_a_runtime(tmp_path, monkeypatch):
@@ -283,11 +291,15 @@ def test_archived_conversation_cannot_start_a_runtime(tmp_path, monkeypatch):
     app.state.conversation_service = AsyncMock()
     app.include_router(docker_conversation_router, prefix="/api")
     with TestClient(app) as client:
+        start = client.post(
+            "/api/conversations", json={"conversation_id": str(conversation_id)}
+        )
         reprovision = client.post(
             f"/api/conversations/{conversation_id}/runtime/reprovision"
         )
         proxy = client.get(f"/api/conversations/{conversation_id}/run")
 
+    assert start.status_code == 409
     assert reprovision.status_code == 409
     assert proxy.status_code == 409
     assert registry.get(conversation_id) is None
