@@ -1234,6 +1234,44 @@ def test_load_skills_from_agent_server_preserves_current_datetime():
         assert context.current_datetime == fixed_time
 
 
+def test_load_skills_from_agent_server_applies_disabled_skills():
+    """Test a skill named in disabled_skills is filtered out, not just carried."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(disabled_skills=["risky-skill"])
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [
+            {"name": "risky-skill", "content": "Denied"},
+            {"name": "ok-skill", "content": "Allowed"},
+        ],
+        "sources": {"public": 2},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server(base_context=base_context)
+        assert [s.name for s in context.skills] == ["ok-skill"]
+        assert context.disabled_skills == ["risky-skill"]
+
+
+def test_load_skills_from_agent_server_fallback_resolves_public_skills():
+    """Test the empty-skills fallback materializes public skills, as before."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    legacy = AgentContext(skills=[], load_public_skills=True)
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server()
+        assert context.load_public_skills is True
+        assert [s.name for s in context.skills] == [s.name for s in legacy.skills]
+
+
 # --- Completion callback tests ---
 
 

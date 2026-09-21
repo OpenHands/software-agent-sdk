@@ -978,4 +978,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 update={"skills": [], "load_public_skills": True}
             )
 
-        return loaded_skills, agent_context
+        # ``model_copy`` skips validators, so re-run the resolution that
+        # applies ``load_*_skills`` and the ``disabled_skills`` deny-list.
+        return loaded_skills, agent_context.resolve_auto_skills()
