@@ -27,7 +27,7 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Check out release tag
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
               with:
                   ref: v${{ inputs.version }}
 
