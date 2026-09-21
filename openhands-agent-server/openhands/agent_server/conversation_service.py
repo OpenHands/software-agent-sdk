@@ -1244,6 +1244,18 @@ class ConversationService:
             return None
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
+        if require_runtime_bindings and (
+            record.stored.required_runtime_credential_bindings - pending_bindings.keys()
+        ):
+            # A cold local runtime can reconstruct canonical bindings (for
+            # example CODEX_AUTH_JSON) from its injected secrets store. Restore
+            # those bindings before enforcing admission; _start_event_service
+            # consumes the same pending map below.
+            restored = await self._resolve_credential_bindings(
+                record.stored, agent=agent
+            )
+            pending_bindings = self._credential_bindings.setdefault(conversation_id, {})
+            pending_bindings.update(restored)
         missing_bindings = (
             record.stored.required_runtime_credential_bindings - pending_bindings.keys()
         )

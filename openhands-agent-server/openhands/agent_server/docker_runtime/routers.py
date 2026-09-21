@@ -112,6 +112,10 @@ async def start_conversation(
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
     registry = get_registry(request)
+    if _is_archived(registry, conversation_id):
+        raise HTTPException(
+            409, "Conversation is archived; unarchive it before using its runtime"
+        )
     try:
         prepared, launched = await prepare_start(body, registry.config)
         identity = registry.provisioning.create(conversation_id, host_workspace)
@@ -213,13 +217,16 @@ async def _set_archive_state(
     conversation_id: UUID, request: Request, *, archived: bool
 ) -> ConversationInfo:
     registry = get_registry(request)
+    if archived:
+        # The inner service may still hold an older copy of meta.json and write it
+        # during graceful shutdown. Stop it before persisting the archive marker
+        # so that stale runtime state cannot undo the transition.
+        await registry.stop(conversation_id)
     conversation = await get_conversation_service(request).set_conversation_archived(
         conversation_id, archived=archived
     )
     if conversation is None:
         raise HTTPException(404, "Conversation not found")
-    if archived:
-        await registry.stop(conversation_id)
     return conversation.model_copy(
         update={"runtime_info": registry.runtime_info(conversation_id)}
     )
