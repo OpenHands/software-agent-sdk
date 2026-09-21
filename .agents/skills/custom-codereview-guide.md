@@ -105,15 +105,19 @@ packaging or installation path.
 
 ### Agent behavior and evaluation
 
-Do not approve changes that can plausibly alter agent or benchmark behavior
-without evaluation evidence. This includes prompts, tool descriptions or
-execution, model capability routing, the agent loop, planning, memory,
-condensation, terminal I/O, and evaluation harnesses. Leave a concise COMMENT
-asking a maintainer to assess the relevant evals.
+For changes that can plausibly alter agent or benchmark behavior, assess whether
+the linked issue, PR acceptance criteria, or required checks call for a specific
+evaluation. This includes prompts, tool descriptions or execution, model
+capability routing, the agent loop, planning, memory, condensation, terminal
+I/O, and evaluation harnesses.
 
-This gate is satisfied only when the PR or comments link a completed run on
-`openhands-eval-monitor.vercel.app` and a human maintainer confirms the result.
-Then apply the normal approval policy.
+Missing optional eval evidence is not a code defect and does not by itself
+justify a COMMENT decision. When the current head has no material finding,
+APPROVE it and identify the eval risk in the review so the subsequently
+requested human maintainer can choose the appropriate lightweight evaluation.
+Use COMMENT when required eval evidence is missing or failing, or when available
+evaluation evidence demonstrates a regression; name the concrete requirement or
+failure.
 
 For provider/model registries, preserve declared order and capability semantics;
 do not infer behavior from unordered collections or provider-name heuristics when
