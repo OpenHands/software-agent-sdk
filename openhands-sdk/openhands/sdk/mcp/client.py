@@ -1,15 +1,20 @@
 """Minimal sync helpers on top of fastmcp.Client, preserving original behavior."""
 
 import asyncio
+import contextlib
 import inspect
 import os
 import signal
 import time
-from collections.abc import Callable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from types import CoroutineType
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from anyio.abc import Process
 from fastmcp import Client as AsyncMCPClient
 from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports.base import ClientTransport
+from fastmcp.client.transports.config import MCPConfigTransport
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.exceptions import MCPError
@@ -21,6 +26,10 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+
+class _ExitStackInternals(Protocol):
+    _exit_callbacks: Iterable[tuple[bool, Callable[..., Any]]]
 
 
 ToolsReconciledCallback = Callable[
@@ -104,12 +113,8 @@ class MCPClient(AsyncMCPClient):
         ``AsyncExitStack``. Its async-generator frame owns the exact process
         object, so this avoids matching another client's subprocess by command.
         """
-        transport = getattr(self, "transport", None)
-        if transport is None:
-            return []
-
         pids: list[int] = []
-        pending = [transport]
+        pending: list[ClientTransport] = [self.transport]
         seen: set[int] = set()
 
         while pending:
@@ -118,33 +123,44 @@ class MCPClient(AsyncMCPClient):
                 continue
             seen.add(id(transport))
 
-            child = getattr(transport, "transport", None)
-            if child is not None:
-                pending.append(child)
-            pending.extend(getattr(transport, "_transports", ()))
+            if isinstance(transport, MCPConfigTransport):
+                pending.extend(transport._transports)
+            if not isinstance(transport, StdioTransport):
+                continue
 
-            task = getattr(transport, "_connect_task", None)
+            task = transport._connect_task
             coroutine = task.get_coro() if task is not None else None
-            frame = getattr(coroutine, "cr_frame", None)
+            frame = coroutine.cr_frame if isinstance(coroutine, CoroutineType) else None
             stack = frame.f_locals.get("stack") if frame is not None else None
+            stack_internals = (
+                cast(_ExitStackInternals, stack)
+                if isinstance(stack, contextlib.AsyncExitStack)
+                else None
+            )
             transport_pids: list[int] = []
-            for _, callback in getattr(stack, "_exit_callbacks", ()):
-                manager = getattr(callback, "__self__", None)
-                generator = getattr(manager, "gen", None)
-                generator_frame = getattr(generator, "ag_frame", None)
+            callbacks = (
+                stack_internals._exit_callbacks if stack_internals is not None else ()
+            )
+            for _, callback in callbacks:
+                if not inspect.ismethod(callback):
+                    continue
+                manager = callback.__self__
+                if not isinstance(manager, contextlib._AsyncGeneratorContextManager):
+                    continue
+                generator = manager.gen
+                if not inspect.isasyncgen(generator):
+                    continue
+                generator_frame = generator.ag_frame
                 process = (
-                    generator_frame.f_locals.get("process")
+                    cast(Process | None, generator_frame.f_locals.get("process"))
                     if generator_frame is not None
                     else None
                 )
-                pid = getattr(process, "pid", None)
+                pid = process.pid if process is not None else None
                 if isinstance(pid, int):
                     transport_pids.append(pid)
-            if isinstance(transport, StdioTransport) and task is not None:
-                if not task.done() and not transport_pids:
-                    logger.warning(
-                        "Could not extract active stdio transport process PID"
-                    )
+            if task is not None and not task.done() and not transport_pids:
+                logger.warning("Could not extract active stdio transport process PID")
             pids.extend(transport_pids)
 
         return list(dict.fromkeys(pids))
