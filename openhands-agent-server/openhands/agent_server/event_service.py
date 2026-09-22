@@ -1176,11 +1176,7 @@ class EventService:
                 )
         self._conversation._state.set_write_guard(self._write_guard)
 
-        # Opt-in: if the control plane exposed a managed-key refresh URL, wire the
-        # SDK's refresh-on-401 hook onto the managed-proxy LLMs so a stale managed
-        # key (rotated/healed after this conversation's snapshot) recovers in place
-        # instead of failing the first call with 401 token_not_found_in_db (#5189).
-        # No-op unless OH_LLM_API_KEY_REFRESH_URL is set.
+        # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL); see #5189.
         register_managed_llm_key_refresh(self._conversation.agent)
 
         if not self._external_lease_renewal:

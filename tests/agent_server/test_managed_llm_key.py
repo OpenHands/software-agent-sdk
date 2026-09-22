@@ -131,9 +131,8 @@ def test_without_allowlist_applies_to_all_api_key_llms(monkeypatch):
 
 
 def test_hook_failure_surfaces_original_error(monkeypatch):
-    # Point at a fast-failing address (connection refused) with no local
-    # resolver: the hook must swallow the error and return None so the SDK
-    # surfaces the original 401 rather than masking it with a new error.
+    # Unreachable address, no local resolver: the fetch fails, and the hook must
+    # swallow it (return None) rather than mask the original 401.
     monkeypatch.setenv(REFRESH_URL_ENV, "http://127.0.0.1:1/managed-llm-key")
     monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
     llm = _llm("m", MANAGED_BASE_URL)
