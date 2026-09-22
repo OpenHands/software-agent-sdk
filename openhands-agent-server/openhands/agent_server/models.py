@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, ClassVar, Self
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -18,7 +18,10 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
     StartConversationRequest as StartConversationRequest,
 )
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
@@ -347,6 +350,47 @@ class _ConversationInfoBase(BaseModel):
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
 
+    STATE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "id",
+            "agent",
+            "workspace",
+            "persistence_dir",
+            "max_iterations",
+            "stuck_detection",
+            "execution_status",
+            "confirmation_policy",
+            "security_analyzer",
+            "activated_knowledge_skills",
+            "invoked_skills",
+            "blocked_actions",
+            "blocked_messages",
+            "last_user_message_id",
+            "leaf_event_id",
+            "stats",
+            "secret_registry",
+            "tags",
+            "agent_state",
+            "hook_config",
+        }
+    )
+    INTERNAL_STATE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"activated_path_rules", "head_is_empty"}
+    )
+    STORED_METADATA_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "title",
+            "metrics",
+            "created_at",
+            "updated_at",
+            "forked_from_conversation_id",
+            "forked_from_event_id",
+            "parent_conversation_id",
+            "client_tools",
+            "launched_agent_profile",
+        }
+    )
+
     agent: AgentBase = Field(
         ...,
         description="The agent running in the conversation.",
@@ -367,6 +411,35 @@ class ConversationInfo(_ConversationInfoBase):
             "this when the hosting server manages runtime lifecycle."
         ),
     )
+
+    @classmethod
+    def from_sources(
+        cls,
+        state: ConversationState,
+        stored: StoredConversation,
+        *,
+        current_model_id: str | None,
+        available_models: list[ACPModelInfo],
+        supports_runtime_model_switch: bool,
+        sub_conversation_ids: list[UUID],
+    ) -> Self:
+        """Build public conversation info from its explicit source models."""
+        state_fields = state.model_dump(
+            mode="json",
+            include=set(cls.STATE_FIELDS),
+        )
+        stored_metadata = stored.model_dump(
+            mode="json",
+            include=set(cls.STORED_METADATA_FIELDS),
+        )
+        return cls(
+            **state_fields,
+            **stored_metadata,
+            current_model_id=current_model_id,
+            available_models=available_models,
+            supports_runtime_model_switch=supports_runtime_model_switch,
+            sub_conversation_ids=sub_conversation_ids,
+        )
 
 
 class ConversationPage(BaseModel):
