@@ -174,6 +174,22 @@ def test_completion_no_retry_when_hook_returns_same_key(mock_litellm_completion)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_raising_hook_surfaces_original_error(mock_litellm_completion):
+    """A hook that raises must not mask the original 401."""
+    mock_litellm_completion.side_effect = _auth_error()
+
+    def refresh() -> str:
+        raise RuntimeError("hook boom")
+
+    llm = _make_llm()
+    llm.set_api_key_refresh_hook(refresh)
+
+    with pytest.raises(LLMAuthenticationError):
+        llm.completion(messages=_message())
+    assert mock_litellm_completion.call_count == 1
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_hook_not_called_for_non_auth_error(mock_litellm_completion):
     """Non-auth errors never invoke the refresh hook."""
     from litellm.exceptions import APIConnectionError

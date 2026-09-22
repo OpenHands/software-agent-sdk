@@ -1062,7 +1062,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return None
         if not looks_like_auth_error(error):
             return None
-        new_key = self._api_key_refresh_hook()
+        try:
+            new_key = self._api_key_refresh_hook()
+        except Exception:
+            # A flaky hook must not mask the original authentication error;
+            # log and skip the refresh so the caller sees the real 401.
+            logger.warning(
+                "API key refresh hook raised; skipping refresh and "
+                "surfacing the original authentication error.",
+                exc_info=True,
+            )
+            return None
         if new_key is None:
             return None
         new_secret = new_key if isinstance(new_key, SecretStr) else SecretStr(new_key)
