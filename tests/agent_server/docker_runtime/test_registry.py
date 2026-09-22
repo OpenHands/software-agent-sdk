@@ -243,6 +243,62 @@ async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_attached_session_prevents_idle_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 100
+    )
+    runtime.attach_session(conversation_id)
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_idle_runtime_is_evicted_after_session_detaches(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    now = 100.0
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: now
+    )
+    runtime.attach_session(conversation_id)
+
+    await runtime._evict_idle_runtimes(10)
+    assert runtime.get(conversation_id) is active
+
+    runtime.detach_session(conversation_id)
+    now = 111.0
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+@pytest.mark.asyncio
 async def test_runtime_access_refreshes_idle_deadline(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()

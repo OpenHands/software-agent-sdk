@@ -78,6 +78,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._lock = asyncio.Lock()
         self._service: ConversationService | None = None
         self._last_access: dict[UUID, float] = {}
+        self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
 
     def configure_service(self, service: ConversationService) -> None:
@@ -172,6 +173,29 @@ class DockerConversationRegistry(ConversationRegistry):
     def is_starting(self, conversation_id: UUID) -> bool:
         return conversation_id in self._starts
 
+    def attach_session(self, conversation_id: UUID) -> None:
+        """Record an outer proxied session attached to this runtime.
+
+        Non-zero counts suppress idle eviction, mirroring the inner
+        ``EventService.has_external_subscribers()`` guard: a client holding a
+        live events websocket or a long-lived proxied stream keeps the
+        container alive even while the conversation itself looks idle.
+        """
+        self._sessions[conversation_id] = self._sessions.get(conversation_id, 0) + 1
+
+    def detach_session(self, conversation_id: UUID) -> None:
+        """Release a session recorded by :meth:`attach_session`."""
+        remaining = self._sessions.get(conversation_id, 0) - 1
+        if remaining > 0:
+            self._sessions[conversation_id] = remaining
+        else:
+            self._sessions.pop(conversation_id, None)
+        self._last_access[conversation_id] = time.monotonic()
+
+    def has_attached_sessions(self, conversation_id: UUID) -> bool:
+        """True if an outer proxied session is currently attached."""
+        return self._sessions.get(conversation_id, 0) > 0
+
     def cleanup_stale_containers(self) -> None:
         result = execute_command(
             ["docker", "ps", "-aq", "--filter", f"label={_OWNER_LABEL}={self.owner}"]
@@ -246,6 +270,7 @@ class DockerConversationRegistry(ConversationRegistry):
             task = self._starts.pop(conversation_id, None)
             container = self._containers.pop(conversation_id, None)
             self._last_access.pop(conversation_id, None)
+            self._sessions.pop(conversation_id, None)
         if task is not None:
             try:
                 started = await task
@@ -286,6 +311,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 (conversation_id, container)
                 for conversation_id, container in self._containers.items()
                 if self._last_access.get(conversation_id, float("inf")) <= cutoff
+                and not self.has_attached_sessions(conversation_id)
             ]
 
         for conversation_id, container in candidates:
@@ -299,6 +325,8 @@ class DockerConversationRegistry(ConversationRegistry):
                 if self._containers.get(conversation_id) is not container:
                     continue
                 if self._last_access.get(conversation_id, float("inf")) > cutoff:
+                    continue
+                if self.has_attached_sessions(conversation_id):
                     continue
                 self._containers.pop(conversation_id)
                 self._last_access.pop(conversation_id, None)
