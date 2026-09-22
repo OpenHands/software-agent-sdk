@@ -17,6 +17,7 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
 )
+from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -1174,6 +1175,14 @@ class EventService:
                     binding,
                 )
         self._conversation._state.set_write_guard(self._write_guard)
+
+        # Opt-in: if the control plane exposed a managed-key refresh URL, wire the
+        # SDK's refresh-on-401 hook onto the managed-proxy LLMs so a stale managed
+        # key (rotated/healed after this conversation's snapshot) recovers in place
+        # instead of failing the first call with 401 token_not_found_in_db (#5189).
+        # No-op unless OH_LLM_API_KEY_REFRESH_URL is set.
+        register_managed_llm_key_refresh(self._conversation.agent)
+
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
 
