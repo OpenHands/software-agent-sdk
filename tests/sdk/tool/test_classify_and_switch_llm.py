@@ -282,6 +282,7 @@ def test_resolve_prefers_store_over_stale_inline_blob(tmp_path: Path) -> None:
         meta_profile=MetaProfile.model_validate(profile_a),
         meta_profile_store=store,
     )[0]
+    assert isinstance(tool.executor, ClassifyAndSwitchLLMExecutor)
     assert tool.executor._resolve_meta_profile().classifier_model == "classifier-a"
 
     # Now only the active name changes to "b" (PATCH /api/settings), but the
@@ -291,6 +292,7 @@ def test_resolve_prefers_store_over_stale_inline_blob(tmp_path: Path) -> None:
         meta_profile=MetaProfile.model_validate(profile_a),
         meta_profile_store=store,
     )[0]
+    assert isinstance(stale.executor, ClassifyAndSwitchLLMExecutor)
     assert stale.executor._resolve_meta_profile().classifier_model == "classifier-b"
 
     # And overwriting the active file is reflected (no stale inline blob wins).
@@ -302,6 +304,7 @@ def test_resolve_prefers_store_over_stale_inline_blob(tmp_path: Path) -> None:
         meta_profile=MetaProfile.model_validate(profile_a),
         meta_profile_store=store,
     )[0]
+    assert isinstance(overwritten.executor, ClassifyAndSwitchLLMExecutor)
     assert (
         overwritten.executor._resolve_meta_profile().classifier_model
         == "classifier-a-prime"
