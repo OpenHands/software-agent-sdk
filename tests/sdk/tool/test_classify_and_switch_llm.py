@@ -256,6 +256,58 @@ def test_create_prefers_inline_meta_profile_over_filesystem(tmp_path: Path) -> N
     )
 
 
+def test_resolve_prefers_store_over_stale_inline_blob(tmp_path: Path) -> None:
+    """The store is authoritative when an active name is set.
+
+    Regression for the inline-blob divergence: activation bakes an inline
+    ``meta_profile`` blob, but a subsequent ``PATCH /api/settings`` that only
+    changes the active name must not keep routing with the stale blob. With a
+    name set, the executor loads the meta-profile from the store by name; the
+    inline blob is only a fallback when the store cannot resolve the name
+    (e.g. cloud runtimes with no store on disk).
+    """
+    meta_dir = tmp_path / "meta-profiles"
+    meta_dir.mkdir()
+    profile_a = dict(META)
+    profile_a["classifier_model"] = "classifier-a"
+    profile_b = dict(META)
+    profile_b["classifier_model"] = "classifier-b"
+    (meta_dir / "a.json").write_text(json.dumps(profile_a), encoding="utf-8")
+    (meta_dir / "b.json").write_text(json.dumps(profile_b), encoding="utf-8")
+    store = MetaProfileStore(base_dir=meta_dir)
+
+    # Simulate activation of "a": name set AND inline blob baked (profile a).
+    tool = ClassifyAndSwitchLLMTool.create(
+        active_meta_profile="a",
+        meta_profile=MetaProfile.model_validate(profile_a),
+        meta_profile_store=store,
+    )[0]
+    assert tool.executor._resolve_meta_profile().classifier_model == "classifier-a"
+
+    # Now only the active name changes to "b" (PATCH /api/settings), but the
+    # inline blob is still profile a's (stale). The store must win.
+    stale = ClassifyAndSwitchLLMTool.create(
+        active_meta_profile="b",
+        meta_profile=MetaProfile.model_validate(profile_a),
+        meta_profile_store=store,
+    )[0]
+    assert stale.executor._resolve_meta_profile().classifier_model == "classifier-b"
+
+    # And overwriting the active file is reflected (no stale inline blob wins).
+    profile_a_updated = dict(profile_a)
+    profile_a_updated["classifier_model"] = "classifier-a-prime"
+    (meta_dir / "a.json").write_text(json.dumps(profile_a_updated), encoding="utf-8")
+    overwritten = ClassifyAndSwitchLLMTool.create(
+        active_meta_profile="a",
+        meta_profile=MetaProfile.model_validate(profile_a),
+        meta_profile_store=store,
+    )[0]
+    assert (
+        overwritten.executor._resolve_meta_profile().classifier_model
+        == "classifier-a-prime"
+    )
+
+
 def test_create_uses_oh_persistence_dir_meta_profiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

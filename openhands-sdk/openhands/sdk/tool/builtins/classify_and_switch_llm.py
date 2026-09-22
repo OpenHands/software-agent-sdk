@@ -214,30 +214,54 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
         self._meta_profile_llms = meta_profile_llms or {}
 
     def _resolve_meta_profile(self) -> MetaProfile:
-        """Resolve the active meta-profile, falling back to the first available.
+        """Resolve the active meta-profile.
+
+        When an ``active_meta_profile`` name is set, the store is authoritative
+        (loaded by name) so the inline ``meta_profile`` blob and the store
+        cannot diverge after a name change (``PATCH /api/settings``) or a
+        file overwrite (``POST /api/meta-profiles/{name}``). The inline blob is
+        only consulted when the store cannot resolve the name — e.g. cloud
+        runtimes whose ephemeral filesystem has no meta-profile store. When no
+        name is set, fall back to the inline blob if present, otherwise the
+        first available meta-profile in the store.
 
         Raises:
             FileNotFoundError: If no meta-profile can be resolved.
             ValueError: If the resolved meta-profile is invalid.
         """
+        name = self._active_meta_profile
+        if name:
+            try:
+                return self._store.load(name)
+            except FileNotFoundError:
+                # Store cannot resolve the name (e.g. a cloud runtime with no
+                # meta-profile store on disk); fall through to the inline blob.
+                pass
+
         if self._meta_profile is not None:
             return self._meta_profile
 
-        name = self._active_meta_profile
-        if not name:
+        if name:
             available = self._store.list()
-            if not available:
-                raise FileNotFoundError(
-                    "No meta-profile is active and none are available in the "
-                    "meta-profile store."
-                )
-            # ``list()`` is alphabetically sorted, so this is the
-            # alphabetically-first meta-profile, not the most recently saved.
-            name = available[0]
-            logger.info(
-                "No active meta-profile set; falling back to first available: %r",
-                name,
+            raise FileNotFoundError(
+                f"Active meta-profile '{name}' could not be resolved from the "
+                "store or inline configuration. "
+                f"Available meta-profiles: {', '.join(available) or 'none'}"
             )
+
+        available = self._store.list()
+        if not available:
+            raise FileNotFoundError(
+                "No meta-profile is active and none are available in the "
+                "meta-profile store."
+            )
+        # ``list()`` is alphabetically sorted, so this is the
+        # alphabetically-first meta-profile, not the most recently saved.
+        name = available[0]
+        logger.info(
+            "No active meta-profile set; falling back to first available: %r",
+            name,
+        )
         return self._store.load(name)
 
     def __call__(
