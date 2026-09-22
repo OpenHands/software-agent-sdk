@@ -143,8 +143,11 @@ def test_preserves_browser_screenshot_payload_and_llm_content():
     masked = registry.mask_secrets_in_model(observation)
 
     assert masked.screenshot_data == payload
+    assert masked.screenshot_data is not None
     assert base64.b64decode(masked.screenshot_data, validate=True) == b"abc"
-    assert masked.to_llm_content[-1].image_urls == [f"data:image/png;base64,{payload}"]
+    llm_content = masked.to_llm_content[-1]
+    assert isinstance(llm_content, ImageContent)
+    assert llm_content.image_urls == [f"data:image/png;base64,{payload}"]
 
 
 def test_preserves_data_image_urls_but_masks_regular_image_urls():
@@ -181,4 +184,6 @@ def test_preserves_mcp_image_data_url():
 
     masked = registry.mask_secrets_in_model(observation)
 
-    assert masked.content[-1].image_urls == [f"data:image/png;base64,{payload}"]
+    image_content = masked.content[-1]
+    assert isinstance(image_content, ImageContent)
+    assert image_content.image_urls == [f"data:image/png;base64,{payload}"]
