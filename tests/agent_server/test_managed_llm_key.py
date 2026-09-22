@@ -19,6 +19,7 @@ from openhands.agent_server.managed_llm_key import (
     REFRESH_BASE_URLS_ENV,
     REFRESH_HEADERS_ENV,
     REFRESH_URL_ENV,
+    _load_headers,
     register_managed_llm_key_refresh,
 )
 from openhands.sdk import LLM, Agent
@@ -197,3 +198,21 @@ def test_bad_headers_env_is_ignored(monkeypatch):
         refreshed = llm._resolve_refreshed_api_key(_auth_error())
     assert refreshed is not None
     assert refreshed.get_secret_value() == "fresh_key"
+
+
+def test_headers_expand_env_references(monkeypatch):
+    """Header values may reference env vars so the control plane can point at a
+    per-sandbox credential (e.g. the session key) it cannot know up front."""
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "sess-abc123")
+    headers = _load_headers(
+        '{"X-Session-API-Key": "${OH_SESSION_API_KEYS_0}", "X-Static": "plain"}'
+    )
+    assert headers == {"X-Session-API-Key": "sess-abc123", "X-Static": "plain"}
+
+
+def test_headers_bare_dollar_reference_expands(monkeypatch):
+    """The ``$VAR`` form (no braces) expands too."""
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "sess-xyz")
+    assert _load_headers('{"X-Session-API-Key": "$OH_SESSION_API_KEYS_0"}') == {
+        "X-Session-API-Key": "sess-xyz"
+    }
