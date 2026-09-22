@@ -20,6 +20,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
+from openhands.sdk.llm.llm import LLMCallContext
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -367,3 +368,73 @@ def test_completion_no_retry_when_hook_returns_empty_key(mock_litellm_completion
     with pytest.raises(LLMAuthenticationError):
         llm.completion(messages=_message())
     assert mock_litellm_completion.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# call_context parity — the refreshed retry re-issues the *same* logical call,
+# so it must carry the same threaded per-conversation context (prompt_cache_key
+# / x-litellm-session-id) as the initial attempt. The async paths previously
+# dropped the threaded context and fell back to the LLM's bound _call_context,
+# diverging from the sync paths (#3443). See OpenHands/software-agent-sdk#5218.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
+async def test_acompletion_retry_preserves_threaded_call_context(
+    mock_litellm_acompletion,
+):
+    """The async completion retry re-issues under the threaded call_context."""
+    mock_litellm_acompletion.side_effect = [
+        _auth_error(),
+        create_mock_response("Recovered"),
+    ]
+
+    llm = _make_llm()  # bound _call_context is the empty default
+    llm.set_api_key_refresh_hook(lambda: "fresh_key")
+
+    ctx = LLMCallContext(prompt_cache_key="threaded-pck", session_id="threaded-sid")
+    await llm.acompletion(messages=_message(), call_context=ctx)
+
+    assert mock_litellm_acompletion.call_count == 2
+    initial_kwargs = mock_litellm_acompletion.call_args_list[0].kwargs
+    retry_kwargs = mock_litellm_acompletion.call_args_list[1].kwargs
+    # The retry must use the fresh key AND the same threaded context as attempt 0.
+    assert retry_kwargs["api_key"] == "fresh_key"
+    assert retry_kwargs["prompt_cache_key"] == initial_kwargs["prompt_cache_key"]
+    assert retry_kwargs["prompt_cache_key"] == "threaded-pck"
+    assert (
+        retry_kwargs["extra_headers"]["x-litellm-session-id"]
+        == initial_kwargs["extra_headers"]["x-litellm-session-id"]
+        == "threaded-sid"
+    )
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_retry_preserves_threaded_call_context(
+    mock_litellm_aresponses,
+):
+    """The async responses retry re-issues under the threaded call_context."""
+    mock_litellm_aresponses.side_effect = [
+        _auth_error(),
+        create_mock_responses_response("Recovered"),
+    ]
+
+    llm = _make_llm()  # bound _call_context is the empty default
+    llm.set_api_key_refresh_hook(lambda: "fresh_key")
+
+    ctx = LLMCallContext(prompt_cache_key="threaded-pck", session_id="threaded-sid")
+    await llm.aresponses(messages=_message(), call_context=ctx)
+
+    assert mock_litellm_aresponses.call_count == 2
+    initial_kwargs = mock_litellm_aresponses.call_args_list[0].kwargs
+    retry_kwargs = mock_litellm_aresponses.call_args_list[1].kwargs
+    assert retry_kwargs["api_key"] == "fresh_key"
+    assert retry_kwargs["prompt_cache_key"] == initial_kwargs["prompt_cache_key"]
+    assert retry_kwargs["prompt_cache_key"] == "threaded-pck"
+    assert (
+        retry_kwargs["extra_headers"]["x-litellm-session-id"]
+        == initial_kwargs["extra_headers"]["x-litellm-session-id"]
+        == "threaded-sid"
+    )
