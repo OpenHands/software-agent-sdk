@@ -23,7 +23,12 @@ What the control plane must expose (see ``register_managed_llm_key_refresh``):
   *current* managed key as the plain-text response body. This is the only
   required piece; without it the feature is off.
 * ``OH_LLM_API_KEY_REFRESH_HEADERS`` — optional JSON object of request headers
-  used to authenticate the refresh call (e.g. the sandbox session key).
+  used to authenticate the refresh call (e.g. the sandbox session key). Header
+  values may reference environment variables with ``$VAR`` / ``${VAR}`` syntax,
+  expanded from the sandbox environment; this lets the control plane point a
+  header at ``${OH_SESSION_API_KEYS_0}`` without knowing the per-sandbox key when
+  it builds the environment (the remote runtime assigns that key inside the
+  sandbox).
 * ``OH_LLM_API_KEY_REFRESH_BASE_URLS`` — optional comma-separated allow-list of
   LLM ``base_url`` values the managed key applies to. Strongly recommended so
   the hook is registered only on managed-proxy LLMs and never on a user's
@@ -59,7 +64,12 @@ def _load_headers(raw: str | None) -> dict[str, str]:
     if not isinstance(data, dict):
         logger.warning("%s must be a JSON object; ignoring", REFRESH_HEADERS_ENV)
         return {}
-    return {str(k): str(v) for k, v in data.items()}
+    # Values may reference environment variables (``$VAR`` / ``${VAR}``), expanded
+    # from this process's environment. This lets the control plane point a header
+    # at a credential it cannot know when it builds the env — notably the sandbox
+    # session key in ``OH_SESSION_API_KEYS_0``, which is assigned per sandbox and,
+    # for remote runtimes, only known inside the sandbox itself.
+    return {str(k): os.path.expandvars(str(v)) for k, v in data.items()}
 
 
 def _managed_base_urls(raw: str | None) -> set[str] | None:
