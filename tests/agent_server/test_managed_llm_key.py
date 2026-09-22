@@ -10,6 +10,7 @@ and that the registered hook actually feeds the SDK's re-resolution path.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Literal
 
 from litellm.exceptions import AuthenticationError
 from pydantic import SecretStr
@@ -43,7 +44,11 @@ def _auth_error() -> AuthenticationError:
     )
 
 
-def _llm(usage_id: str, base_url: str | None, auth_type: str = "api_key") -> LLM:
+def _llm(
+    usage_id: str,
+    base_url: str | None,
+    auth_type: Literal["api_key", "subscription"] = "api_key",
+) -> LLM:
     return LLM(
         usage_id=usage_id,
         model="gpt-4o",
