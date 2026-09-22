@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
+from openhands.sdk.utils.masking import PreserveDataUrls, SkipSecretMasking
 from openhands.sdk.utils.models import OpenHandsModel
 
 
@@ -97,11 +98,13 @@ def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) ->
     """
     updates = {}
     for name, field in type(model).model_fields.items():
-        metadata = field.json_schema_extra
-        if not isinstance(metadata, dict):
-            metadata = {}
-        skip_secret_masking = metadata.get("skip_secret_masking") is True
-        preserve_data_urls = metadata.get("preserve_data_urls") is True
+        metadata = field.metadata
+        skip_secret_masking = any(
+            isinstance(item, SkipSecretMasking) for item in metadata
+        )
+        preserve_data_urls = any(
+            isinstance(item, PreserveDataUrls) for item in metadata
+        )
         updates[name] = _mask_value(
             getattr(model, name),
             mask,
