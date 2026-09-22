@@ -2012,6 +2012,7 @@ def test_get_profile_resolve_provider_returns_connection_credentials(client):
     assert resolved["config"]["base_url"] == "https://api.openai.com/v1"
     assert resolved["config"]["provider_connection_id"] == connection_id
 
+
 def test_validate_profile_subscription_restores_credentials(client):
     """Pre-flight resolves OAuth credentials for subscription profiles.
 
