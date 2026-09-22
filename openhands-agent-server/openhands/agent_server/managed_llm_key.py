@@ -69,14 +69,11 @@ def _managed_base_urls(raw: str | None) -> set[str] | None:
 
 
 def _llm_is_in_scope(llm: LLM, managed_base_urls: set[str] | None) -> bool:
-    # Only api_key auth can be refreshed; subscription auth carries its own
-    # credential lifecycle and the SDK resolver skips it anyway.
+    # Subscription auth isn't a refreshable API key (the SDK resolver skips it too).
     if llm.auth_type != "api_key":
         return False
     if managed_base_urls is None:
-        # No allow-list configured: apply to every api_key LLM. The control
-        # plane should set OH_LLM_API_KEY_REFRESH_BASE_URLS to avoid touching
-        # BYOK LLMs.
+        # Without an allow-list, every api_key LLM matches — including BYOK keys.
         return True
     base_url = (llm.base_url or "").rstrip("/")
     return base_url in managed_base_urls
@@ -101,9 +98,8 @@ def register_managed_llm_key_refresh(agent: AgentBase) -> int:
     managed_base_urls = _managed_base_urls(os.environ.get(REFRESH_BASE_URLS_ENV))
 
     def _refresh() -> str | None:
-        # Build a fresh LookupSecret per call so a rotated value is never served
-        # from a cached instance. Never raise out of the hook: a failed refresh
-        # must surface the original 401, not mask it with a new error.
+        # Fresh LookupSecret per call so a rotated key isn't served from a cached one.
+        # Never raise: a failed refresh must leave the original 401 to surface.
         try:
             value = LookupSecret(url=url, headers=headers).get_value()
         except Exception:
