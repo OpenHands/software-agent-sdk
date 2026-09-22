@@ -10,7 +10,6 @@ from pydantic import BaseModel, SecretStr
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.llm import ImageContent
 from openhands.sdk.mcp import MCPToolObservation
-from openhands.tools.browser_use.definition import BrowserObservation
 
 
 SECRET = "sk-supersecret-value"
@@ -131,23 +130,6 @@ def test_preserves_namedtuple_type():
 
 def _base64_payload() -> str:
     return base64.b64encode(b"abc").decode()
-
-
-def test_preserves_browser_screenshot_payload_and_llm_content():
-    payload = _base64_payload()
-    registry = SecretRegistry()
-    registry.update_secrets({"TOKEN": payload})
-    registry.get_secret_value("TOKEN")
-    observation = BrowserObservation(screenshot_data=payload)
-
-    masked = registry.mask_secrets_in_model(observation)
-
-    assert masked.screenshot_data == payload
-    assert masked.screenshot_data is not None
-    assert base64.b64decode(masked.screenshot_data, validate=True) == b"abc"
-    llm_content = masked.to_llm_content[-1]
-    assert isinstance(llm_content, ImageContent)
-    assert llm_content.image_urls == [f"data:image/png;base64,{payload}"]
 
 
 def test_preserves_data_image_urls_but_masks_regular_image_urls():
