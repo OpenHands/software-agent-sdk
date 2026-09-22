@@ -10,6 +10,7 @@ from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
 from openhands.sdk.context.prompts.prompt import render_template
@@ -62,8 +63,6 @@ from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPServer,
-    coerce_mcp_config,
-    dump_mcp_config,
     enabled_mcp_servers,
 )
 from openhands.sdk.mcp.tool import MCPToolDefinition
@@ -99,7 +98,7 @@ from openhands.sdk.skills import (
     merge_skills_by_name,
 )
 from openhands.sdk.skills.utils import (
-    expand_mcp_variables,
+    expand_mcp_servers,
     expand_variable_references,
 )
 from openhands.sdk.subagent import (
@@ -183,6 +182,7 @@ class LocalConversation(BaseConversation):
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
+    _on_stream: StreamProgressCallbackType | None
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
@@ -202,7 +202,6 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    _subscription_disabled_condenser: Any | None
     _mcp_tool_provider: MCPToolProvider
 
     def __init__(
@@ -238,6 +237,8 @@ class LocalConversation(BaseConversation):
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
+        profile_store_dir: str | Path | None = None,
+        stream_callbacks: list[StreamProgressCallbackType] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -260,6 +261,8 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
+            stream_callbacks: Optional list of callbacks invoked with the
+                stream-progress frames minted by ``StreamContext``.
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
@@ -296,6 +299,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+            profile_store_dir: Optional directory containing saved LLM profiles.
+                Defaults to ``~/.openhands/profiles``.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -314,7 +319,6 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
-        self._subscription_disabled_condenser = None
         self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
         # Create-or-resume: factory inspects BASE_STATE to decide
@@ -424,7 +428,14 @@ class LocalConversation(BaseConversation):
                 self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
-        composed_list = callback_list + [_default_callback]
+        # _default_callback (persist) runs before the caller-supplied callbacks
+        # (e.g. a PubSub publish), so no subscriber is told about an event that
+        # is not on disk yet. compose_callbacks' plain for-loop has no
+        # try/except, so if persist raises here, the callbacks after it in the
+        # list never run. The visualizer is prepended below and so still renders
+        # ahead of persist — that is local terminal output, not an announcement
+        # a client can act on.
+        composed_list = [_default_callback] + callback_list
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -446,7 +457,7 @@ class LocalConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Compose the base callback chain (visualizer -> user callbacks -> default)
+        # Compose the base callback chain (visualizer -> default -> user callbacks)
         base_callback = BaseConversation.compose_callbacks(composed_list)
         self._base_callback = base_callback  # Store for _ensure_plugins_loaded
 
@@ -458,6 +469,14 @@ class LocalConversation(BaseConversation):
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
+            else None
+        )
+        self._on_stream = (
+            cast(
+                StreamProgressCallbackType,
+                BaseConversation.compose_callbacks(stream_callbacks),  # type: ignore[arg-type]
+            )
+            if stream_callbacks
             else None
         )
 
@@ -484,7 +503,7 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self._profile_store = LLMProfileStore()
+        self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
         # Seed agent_context.secrets into the registry for every agent (regular
@@ -678,6 +697,15 @@ class LocalConversation(BaseConversation):
     @property
     def conversation_stats(self):
         return self._state.stats
+
+    def _latest_acp_prompt_message_id(self) -> str | None:
+        """Id of the most recent ACP prompt message, or None if there is none."""
+        acp_prompt_messages = [
+            event
+            for event in self._state.active_branch()
+            if _is_acp_prompt_message(event)
+        ]
+        return acp_prompt_messages[-1].id if acp_prompt_messages else None
 
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
@@ -1175,16 +1203,13 @@ class LocalConversation(BaseConversation):
         # - Variables with defaults that don't have secrets fall back to their defaults
         # - This is the ONLY place where defaults are applied (plugin loading preserves
         #   placeholders with expand_defaults=False to avoid double-expansion)
+        # Agent Plugins servers are left literal (see expand_mcp_servers).
         if merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
-            expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(merged_mcp)},
-                {},
-                get_secret=self._state.secret_registry.get_secret_value,
-                expand_defaults=True,
+            merged_mcp = expand_mcp_servers(
+                merged_mcp, self._state.secret_registry.get_secret_value
             )
-            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
             logger.debug("Expanded MCP config variables")
 
         # Update agent with merged content only if something changed.
@@ -1417,25 +1442,13 @@ class LocalConversation(BaseConversation):
         get_secret = self._state.secret_registry.get_secret_value
         runtime_plugin_mcp: dict[str, MCPServer] = {}
         if plugin.mcp_config:
-            expanded_plugin_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(plugin.mcp_config)},
-                {},
-                get_secret=get_secret,
-                expand_defaults=True,
-            )
-            runtime_plugin_mcp = coerce_mcp_config(expanded_plugin_mcp["mcpServers"])
+            runtime_plugin_mcp = expand_mcp_servers(plugin.mcp_config, get_secret)
         merged_context = plugin.add_skills_to(self.agent.agent_context)
         merged_mcp = plugin.add_mcp_config_to(
             dict(self.agent.mcp_config) if self.agent.mcp_config else {}
         )
         if merged_mcp:
-            expanded_mcp = expand_mcp_variables(
-                {"mcpServers": dump_mcp_config(merged_mcp)},
-                {},
-                get_secret=get_secret,
-                expand_defaults=True,
-            )
-            merged_mcp = coerce_mcp_config(expanded_mcp["mcpServers"])
+            merged_mcp = expand_mcp_servers(merged_mcp, get_secret)
         runtime_mcp_tools = (
             self._runtime_mcp_tools(
                 runtime_plugin_mcp,
@@ -1596,8 +1609,7 @@ class LocalConversation(BaseConversation):
         thread an explicit ``call_context`` through the completion call
         (e.g. the condenser's dedicated LLM) still get correct per-
         conversation state.  The primary agent completion path threads
-        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
-        → ``llm.completion(call_context=...)``.
+        context explicitly via ``Agent.step()`` → ``llm.generate(call_context=...)``.
 
         See #3443 for background.
         """
@@ -1659,21 +1671,10 @@ class LocalConversation(BaseConversation):
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
             update: dict[str, object] = {"llm": new_llm}
-            if new_llm.is_subscription:
-                if self.agent.condenser is not None:
-                    self._subscription_disabled_condenser = self.agent.condenser
-                update["condenser"] = None
-            elif (
-                self.agent.condenser is None
-                and self._subscription_disabled_condenser is not None
-            ):
-                update["condenser"] = self._subscription_disabled_condenser
-                self._subscription_disabled_condenser = None
-            else:
-                update["condenser"] = self._condenser_for_switched_llm(
-                    self.agent.llm,
-                    new_llm,
-                )
+            update["condenser"] = self._condenser_for_switched_llm(
+                self.agent.llm,
+                new_llm,
+            )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
@@ -2242,6 +2243,7 @@ class LocalConversation(BaseConversation):
                         # worker threads skip re-acquiring it instead of
                         # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
+                        last_user_message_id = self._state.last_user_message_id
                         try:
                             await self.agent.astep(
                                 self,
@@ -2252,6 +2254,59 @@ class LocalConversation(BaseConversation):
                             self._step_holds_state_lock = False
                         iteration += 1
 
+                        # astep releases the state lock for the LLM call, so a
+                        # message can land mid-step with status still RUNNING and
+                        # go unrecorded; without this rescan the loop would break
+                        # (or hang behind a stale pending confirmation) with it
+                        # unread (agent-canvas#1900). Mirrors the ACP branch's
+                        # rescan below. step_finished is captured before this
+                        # rescan can flip status back to RUNNING, so the budget
+                        # carve-out below still sees the step's real outcome.
+                        step_finished = (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        )
+                        step_awaiting_confirmation = (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        )
+                        new_message_arrived = (
+                            self._state.last_user_message_id != last_user_message_id
+                        )
+                        if new_message_arrived and (
+                            step_finished or step_awaiting_confirmation
+                        ):
+                            if step_awaiting_confirmation:
+                                # Reject up front, regardless of whether we
+                                # continue running or go IDLE below: astep()
+                                # executes any pending action it finds as an
+                                # implicit confirmation, so leaving it
+                                # unmatched would let it run on the very next
+                                # call, silently overriding the new message.
+                                logger.info(
+                                    "User message arrived while awaiting "
+                                    "confirmation; rejecting the pending action"
+                                )
+                                self.reject_pending_actions(
+                                    "Superseded by a new user message"
+                                )
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived during final iteration; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            if not step_awaiting_confirmation:
+                                logger.info(
+                                    "User message arrived during step; continuing run"
+                                )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+
                         if (
                             self.state.execution_status
                             == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
@@ -2259,10 +2314,7 @@ class LocalConversation(BaseConversation):
                             break
 
                         budget_detail = self._budget_exceeded_detail()
-                        if budget_detail and (
-                            self._state.execution_status
-                            != ConversationExecutionStatus.FINISHED
-                        ):
+                        if budget_detail and not step_finished:
                             self._emit_run_limit_error(
                                 "MaxBudgetReached", budget_detail
                             )
@@ -2299,13 +2351,8 @@ class LocalConversation(BaseConversation):
                 # for each individual mutation.
                 if acp_step_user_message is None:
                     with self._state:
-                        acp_prompt_messages = [
-                            event
-                            for event in self._state.active_branch()
-                            if _is_acp_prompt_message(event)
-                        ]
                         latest_acp_prompt_message_id = (
-                            acp_prompt_messages[-1].id if acp_prompt_messages else None
+                            self._latest_acp_prompt_message_id()
                         )
                         acp_prompt_message_changed = (
                             latest_acp_prompt_message_id is not None
@@ -2397,14 +2444,7 @@ class LocalConversation(BaseConversation):
                         )
                         break
 
-                    acp_prompt_messages = [
-                        event
-                        for event in self._state.active_branch()
-                        if _is_acp_prompt_message(event)
-                    ]
-                    latest_acp_prompt_message_id = (
-                        acp_prompt_messages[-1].id if acp_prompt_messages else None
-                    )
+                    latest_acp_prompt_message_id = self._latest_acp_prompt_message_id()
                     acp_prompt_message_changed = (
                         latest_acp_prompt_message_id is not None
                         and latest_acp_prompt_message_id
@@ -2540,6 +2580,15 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.confirmation_policy = policy
         logger.info(f"Confirmation policy set to: {policy}")
+
+    @property
+    def on_stream(self) -> StreamProgressCallbackType | None:
+        """Sink for stream-progress frames, or ``None`` if nothing consumes them.
+
+        Read by the agent rather than passed to ``step``: a new ``step``
+        parameter would break every third-party ``AgentBase`` subclass.
+        """
+        return self._on_stream
 
     def set_token_callbacks(
         self, token_callbacks: list[ConversationTokenCallbackType] | None
@@ -2792,7 +2841,7 @@ class LocalConversation(BaseConversation):
             return agent_response
 
         # Import here to avoid circular imports
-        from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+        from openhands.sdk.agent.utils import prepare_llm_messages
 
         template_dir = (
             Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
@@ -2809,7 +2858,7 @@ class LocalConversation(BaseConversation):
         )
 
         messages = prepare_llm_messages(
-            self.state.view, additional_messages=[user_message]
+            self.state.enforced_view_snapshot(), additional_messages=[user_message]
         )
 
         # Get or create the specialized ask-agent LLM
@@ -2823,13 +2872,14 @@ class LocalConversation(BaseConversation):
                     "usage_id": ASK_AGENT_LLM_USAGE_ID,
                     "stream": False,
                 },
-                deep=True,
             )
             self.llm_registry.add(question_llm)
 
         # Pass agent tools so LLM can understand tool_calls in conversation history
-        response = make_llm_completion(
-            question_llm, messages, tools=list(self.agent.tools_map.values())
+        response = question_llm.generate(
+            messages=messages,
+            tools=list(self.agent.tools_map.values()),
+            store=False,
         )
 
         message = response.message

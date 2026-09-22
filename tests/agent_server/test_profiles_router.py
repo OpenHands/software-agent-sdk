@@ -1,6 +1,7 @@
 """Tests for profiles_router endpoints."""
 
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.auth.credentials import OAuthCredentials
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
@@ -1768,7 +1770,7 @@ def test_validate_profile_responses_api(client):
 
     Regression: the endpoint must route through ``aresponses`` for profiles
     where ``uses_responses_api()`` is true, matching the runtime dispatch used
-    by real conversations (`amake_llm_completion`) — otherwise preflight would
+    by real conversations (`LLM.agenerate`) — otherwise preflight would
     validate a different path than the server actually calls.
     """
     from unittest.mock import MagicMock
@@ -2009,3 +2011,100 @@ def test_get_profile_resolve_provider_returns_connection_credentials(client):
     assert resolved["config"]["api_key"] == "sk-provider-resolve-test"
     assert resolved["config"]["base_url"] == "https://api.openai.com/v1"
     assert resolved["config"]["provider_connection_id"] == connection_id
+
+def test_validate_profile_subscription_restores_credentials(client):
+    """Pre-flight resolves OAuth credentials for subscription profiles.
+
+    Regression: ``validate_profile`` deserialized the LLM via plain Pydantic
+    but never called ``create_subscription_llm_from_config``.  The frontend
+    sends ``auth_type=subscription`` without the OAuth access token (it lives
+    in the credential store, not the serialized config), so the pre-flight sent
+    ``api_key=None`` and failed with "Incorrect API key provided: None".
+
+    The fix mirrors ``LLM.from_persisted`` by calling
+    ``create_subscription_llm_from_config`` when ``auth_type == subscription``.
+    """
+    from unittest.mock import MagicMock
+
+    # Patch the credential store so OpenAISubscriptionAuth finds fake (valid)
+    # credentials without hitting the filesystem or OpenAI.  The rest of
+    # ``create_subscription_llm_from_config`` runs with real code, producing
+    # a real LLM whose ``is_subscription`` flag and credentials are set.
+    fake_creds = OAuthCredentials(
+        vendor="openai",
+        access_token="fake-access-token",
+        refresh_token="fake-refresh-token",
+        expires_at=int(time.time() * 1000) + 3_600_000,  # not expired
+    )
+
+    captured: dict = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        # The API key must be resolved from the credential store, not None.
+        api_key = self._get_litellm_api_key_value()
+        captured["api_key"] = api_key
+        captured["is_subscription"] = self.is_subscription
+        return MagicMock()
+
+    with (
+        patch(
+            "openhands.sdk.llm.auth.credentials.CredentialStore.get",
+            return_value=fake_creds,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch("openhands.sdk.llm.llm.LLM.acompletion", fake_acompletion),
+    ):
+        response = client.post(
+            "/api/profiles/sub-profile/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-6-astra",
+                    "auth_type": "subscription",
+                    "subscription_vendor": "openai",
+                    "stream": True,
+                    "native_tool_calling": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["error"] is None
+    assert captured["is_subscription"] is True
+    assert captured["api_key"] == "fake-access-token"
+
+
+def test_validate_profile_subscription_missing_credentials(client):
+    """Pre-flight returns ``valid=False`` when subscription credentials are absent.
+
+    ``create_subscription_llm_from_config`` raises ``ValueError`` when no stored
+    OAuth credentials exist.  The endpoint must catch this and return a
+    structured error instead of a 500.
+    """
+    # CredentialStore.get returns None → refresh_if_needed_sync returns None
+    # → create_subscription_llm_from_config raises ValueError.
+    with (
+        patch(
+            "openhands.sdk.llm.auth.credentials.CredentialStore.get",
+            return_value=None,
+        ),
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+    ):
+        response = client.post(
+            "/api/profiles/sub-profile/validate",
+            json={
+                "llm": {
+                    "model": "openai/gpt-6-astra",
+                    "auth_type": "subscription",
+                    "subscription_vendor": "openai",
+                    "stream": True,
+                    "native_tool_calling": True,
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert "subscription login" in body["error"]["message"].lower()
