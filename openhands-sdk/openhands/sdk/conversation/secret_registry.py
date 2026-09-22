@@ -20,8 +20,14 @@ logger = get_logger(__name__)
 FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
 
 
-def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
-    """Recursively mask every ``str`` reachable from ``value``."""
+def _mask_value(
+    value: Any,
+    mask: Callable[[str], str],
+    *,
+    skip_secret_masking: bool = False,
+    preserve_data_urls: bool = False,
+) -> Any:
+    """Recursively mask strings, respecting opaque payload field metadata."""
     match value:
         case Enum():
             # A str-subclass enum is a str, but masking it would downgrade the
@@ -29,20 +35,56 @@ def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
             # vocabulary is fixed, so it can never hold a secret anyway.
             return value
         case str():
+            if skip_secret_masking:
+                return value
+            if preserve_data_urls and value.startswith("data:") and ";base64," in value:
+                return value
             return mask(value)
         case BaseModel():
             return _mask_model(value, mask)
         case list():
-            return [_mask_value(item, mask) for item in value]
+            return [
+                _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for item in value
+            ]
         case tuple():
-            items = [_mask_value(item, mask) for item in value]
+            items = [
+                _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for item in value
+            ]
             # Rebuild a NamedTuple through its own constructor; tuple(items)
             # would downgrade it the same way masking an Enum member does.
             return type(value)(*items) if hasattr(value, "_fields") else tuple(items)
         case set() | frozenset():
-            return type(value)(_mask_value(item, mask) for item in value)
+            return type(value)(
+                _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for item in value
+            )
         case dict():
-            return {key: _mask_value(item, mask) for key, item in value.items()}
+            return {
+                key: _mask_value(
+                    item,
+                    mask,
+                    skip_secret_masking=skip_secret_masking,
+                    preserve_data_urls=preserve_data_urls,
+                )
+                for key, item in value.items()
+            }
         case _:
             return value
 
@@ -53,10 +95,19 @@ def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) ->
     ``model_copy`` is used rather than a validate round-trip so private
     attributes survive and no field is re-coerced.
     """
-    updates = {
-        name: _mask_value(getattr(model, name), mask)
-        for name in type(model).model_fields
-    }
+    updates = {}
+    for name, field in type(model).model_fields.items():
+        metadata = field.json_schema_extra
+        if not isinstance(metadata, dict):
+            metadata = {}
+        skip_secret_masking = metadata.get("skip_secret_masking") is True
+        preserve_data_urls = metadata.get("preserve_data_urls") is True
+        updates[name] = _mask_value(
+            getattr(model, name),
+            mask,
+            skip_secret_masking=skip_secret_masking,
+            preserve_data_urls=preserve_data_urls,
+        )
     return model.model_copy(update=updates)
 
 

@@ -203,7 +203,7 @@ class TextContent(BaseContent):
 
 class ImageContent(BaseContent):
     type: Literal["image"] = "image"
-    image_urls: list[str]
+    image_urls: list[str] = Field(json_schema_extra={"preserve_data_urls": True})
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""

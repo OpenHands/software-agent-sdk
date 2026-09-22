@@ -61,7 +61,9 @@ class BrowserObservation(Observation):
     """Base observation for browser operations."""
 
     screenshot_data: str | None = Field(
-        default=None, description="Base64 screenshot data if available"
+        default=None,
+        description="Base64 screenshot data if available",
+        json_schema_extra={"skip_secret_masking": True},
     )
     full_output_save_dir: str | None = Field(
         default=None,
