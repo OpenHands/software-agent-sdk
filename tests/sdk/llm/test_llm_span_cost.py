@@ -89,8 +89,11 @@ def test_span_cost_agrees_with_metrics(exporter):
 
 
 def test_cache_buckets_survive_absent_prompt_tokens_details():
-    usage = Usage(prompt_tokens=100, completion_tokens=5)
-    object.__setattr__(usage, "cache_creation_input_tokens", 42)
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        cache_creation_input_tokens=42,
+    )
     assert Telemetry._cache_buckets(usage)[1] == 42
 
 

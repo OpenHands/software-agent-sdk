@@ -1645,6 +1645,36 @@ def test_create_and_list_secrets(client_with_settings):
     assert "value" not in secrets[0]
 
 
+def test_list_secrets_scoped_by_agent_profile(client_with_settings):
+    for name in ("ALLOWED", "EXCLUDED"):
+        client_with_settings.put(
+            "/api/settings/secrets", json={"name": name, "value": "value"}
+        )
+    create = client_with_settings.post(
+        "/api/agent-profiles/scoped",
+        json={"llm_profile_ref": "default", "secret_refs": ["ALLOWED"]},
+    )
+    assert create.status_code == 201
+    profile_id = client_with_settings.get("/api/agent-profiles/scoped").json()[
+        "profile"
+    ]["id"]
+
+    response = client_with_settings.get(
+        "/api/settings/secrets", params={"agent_profile_id": profile_id}
+    )
+
+    assert response.status_code == 200
+    assert [secret["name"] for secret in response.json()["secrets"]] == ["ALLOWED"]
+
+
+def test_list_secrets_rejects_unknown_agent_profile(client_with_settings):
+    response = client_with_settings.get(
+        "/api/settings/secrets", params={"agent_profile_id": "missing"}
+    )
+
+    assert response.status_code == 404
+
+
 def test_get_secret_value(client_with_settings):
     """GET /api/settings/secrets/{name} returns the raw secret value."""
     # Create a secret

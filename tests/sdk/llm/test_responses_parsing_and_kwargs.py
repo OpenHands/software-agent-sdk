@@ -596,3 +596,39 @@ async def test_aresponses_streaming_accepts_async_generator(mock_aresponses):
     assert [chunk.choices[0].delta.content for chunk in received] == [
         "Hello wrapped stream"
     ]
+
+
+def test_stream_delta_chunks_carry_the_output_item_id():
+    """All deltas of one output item must share a chunk id.
+
+    A changed chunk id reads as a retry (``StreamContext._emit_delta``), which
+    resets the slot and drops text the stream masker is holding.
+    """
+    llm = LLM(model="gpt-5-mini", usage_id="test-stream-id")
+
+    ids = []
+    for text in ("one ", "two ", "three"):
+        event = OutputTextDeltaEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+            item_id="msg_abc",
+            output_index=0,
+            content_index=0,
+            delta=text,
+        )
+        _, chunk = llm._process_stream_event(event, emit_deltas=True)
+        assert chunk is not None
+        ids.append(chunk.id)
+
+    assert ids == ["msg_abc"] * 3
+
+    # A different output item is a different stream, so its id must differ.
+    other = OutputTextDeltaEvent(
+        type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+        item_id="msg_def",
+        output_index=1,
+        content_index=0,
+        delta="four",
+    )
+    _, chunk = llm._process_stream_event(other, emit_deltas=True)
+    assert chunk is not None
+    assert chunk.id == "msg_def"
