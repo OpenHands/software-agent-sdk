@@ -247,11 +247,11 @@ ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 # Install base packages and create user
 RUN set -eux; \
     # Install base packages across the most common package managers, since
-    # benchmark base images aren't always Debian-based. `tini` is added on
-    # apt/apk where it's reliably available; on the other paths the kernel-
-    # reaping behaviour falls back to dumb-init's absence (the agent server
-    # is short-lived enough on non-Debian images that PID 1 zombie reaping
-    # has not been observed to matter — revisit if it does).
+    # benchmark base images aren't always Debian-based. `tini` comes from the
+    # distro on apt/apk; the rpm/zypper families have no tini in their base
+    # repos, so those paths fall through to the static-binary install below.
+    # Every path must end with a working `tini` on PATH, because the ENTRYPOINT
+    # of this image invokes it unconditionally.
     if command -v apt-get >/dev/null 2>&1; then \
         apt-get -o Acquire::Retries=5 update; \
         apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
@@ -260,22 +260,39 @@ RUN set -eux; \
     elif command -v apk >/dev/null 2>&1; then \
         apk add --no-cache bash ca-certificates git shadow tini tmux; \
     elif command -v microdnf >/dev/null 2>&1; then \
-        microdnf install -y bash ca-certificates git shadow-utils tmux; \
+        microdnf install -y bash ca-certificates curl git shadow-utils tmux; \
         microdnf clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
-        dnf install -y bash ca-certificates git shadow-utils tmux; \
+        dnf install -y bash ca-certificates curl git shadow-utils tmux; \
         dnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
-        yum install -y bash ca-certificates git shadow-utils tmux; \
+        yum install -y bash ca-certificates curl git shadow-utils tmux; \
         yum clean all; \
     elif command -v zypper >/dev/null 2>&1; then \
         zypper --non-interactive install --no-recommends \
-            bash ca-certificates git shadow tmux; \
+            bash ca-certificates curl git shadow tmux; \
         zypper clean --all; \
     else \
         echo "Unsupported base image: no known package manager found" >&2; \
         exit 1; \
     fi; \
+    # Static tini fallback for the package managers that don't ship it. Pinned
+    # to a release-published sha256 per arch, mirroring the Node payload above.
+    if ! command -v tini >/dev/null 2>&1; then \
+        ARCH=$(uname -m); \
+        case "$ARCH" in \
+          x86_64|amd64) TARCH=amd64; TINI_SHA256=c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee;; \
+          aarch64|arm64) TARCH=arm64; TINI_SHA256=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9;; \
+          *) echo "Unsupported architecture for tini: '$ARCH'" >&2; exit 1;; \
+        esac; \
+        curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+            "https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-${TARCH}" \
+            -o /usr/local/bin/tini; \
+        echo "$TINI_SHA256  /usr/local/bin/tini" | sha256sum -c -; \
+        chmod 755 /usr/local/bin/tini; \
+    fi; \
+    # Fail the build rather than ship an image whose ENTRYPOINT cannot exec.
+    tini --version; \
     grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
     grep -Eq "^${USERNAME}:" /etc/passwd || \
         useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
