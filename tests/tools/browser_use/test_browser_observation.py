@@ -1,5 +1,6 @@
 """Tests for BrowserObservation wrapper behavior."""
 
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.tools.browser_use.definition import BrowserObservation
 
@@ -150,3 +151,37 @@ def test_browser_observation_mime_type_detection():
         assert (
             agent_obs[1].image_urls[0].startswith(f"data:{expected_mime_type};base64,")
         )
+
+
+def test_secret_masker_leaves_screenshot_and_image_urls_alone():
+    """Registered secrets that collide with base64 must not corrupt the blob.
+
+    Regression for issue #5224: ``SecretRegistry.mask_secrets_in_model`` ran a
+    substring ``.replace`` across every string field and spliced
+    ``<secret-hidden>`` into the middle of a screenshot payload, wedging the
+    conversation. Both ``BrowserObservation.screenshot_data`` and the
+    ``data:...;base64,...`` URLs that carry it into ``ImageContent`` must
+    round-trip untouched.
+    """
+    registry = SecretRegistry()
+    # 6-char base64-safe secret guaranteed to collide with realistic payloads.
+    registry.update_secrets({"MY_KEY": "XYZ789"})
+    registry.get_secret_value("MY_KEY")
+
+    payload = f"iVBORw0KGgoAAA{'XYZ789'}SUhEUgAAB4A=="
+    observation = BrowserObservation.from_text(
+        text=f"leaked {'XYZ789'} in prose", screenshot_data=payload
+    )
+
+    masked = registry.mask_secrets_in_model(observation)
+
+    # Opaque blob round-trips byte-for-byte, ordinary text is still masked.
+    assert masked.screenshot_data == payload
+    assert "XYZ789" not in masked.text
+
+    # And the data-URL rendered from that blob is not mutated either.
+    image = next(
+        item for item in masked.to_llm_content if isinstance(item, ImageContent)
+    )
+    masked_image = registry.mask_secrets_in_model(image)
+    assert masked_image.image_urls[0].endswith(payload)

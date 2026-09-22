@@ -1,7 +1,7 @@
 import json
 from abc import abstractmethod
 from collections.abc import Sequence
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from litellm import ChatCompletionMessageToolCall, ResponseFunctionToolCall
 from litellm.types.responses.main import (
@@ -14,7 +14,11 @@ from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
+from openhands.sdk.utils import (
+    DEFAULT_TEXT_CONTENT_LIMIT,
+    SkipSecretMasking,
+    maybe_truncate,
+)
 from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
 
 
@@ -203,7 +207,12 @@ class TextContent(BaseContent):
 
 class ImageContent(BaseContent):
     type: Literal["image"] = "image"
-    image_urls: list[str]
+    # A ``data:...;base64,...`` URL is an opaque payload; substring masking
+    # would splice ``<secret-hidden>`` into the base64 tail and the provider
+    # would reject the whole message as invalid image data. Remote URLs never
+    # legitimately embed a registered secret either, so opting the whole list
+    # out is safe and keeps the rule simple.
+    image_urls: Annotated[list[str], SkipSecretMasking()]
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""

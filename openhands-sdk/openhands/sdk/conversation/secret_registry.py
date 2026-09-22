@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, PrivateAttr, SecretStr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
+from openhands.sdk.utils.masking import SkipSecretMasking
 from openhands.sdk.utils.models import OpenHandsModel
 
 
@@ -18,6 +19,11 @@ logger = get_logger(__name__)
 
 # Back-off before retrying a failed source; a failed lookup masks nothing anyway.
 FAILED_LOOKUP_RETRY_SECONDS: Final[float] = 60.0
+
+
+def _skip_masking(field_info: Any) -> bool:
+    """True when a field is tagged with :class:`SkipSecretMasking`."""
+    return any(isinstance(m, SkipSecretMasking) for m in field_info.metadata)
 
 
 def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
@@ -50,12 +56,16 @@ def _mask_value(value: Any, mask: Callable[[str], str]) -> Any:
 def _mask_model[ModelT: BaseModel](model: ModelT, mask: Callable[[str], str]) -> ModelT:
     """Rebuild ``model`` with every nested string masked.
 
+    Fields annotated with :class:`SkipSecretMasking` are left alone so opaque
+    binary payloads (screenshots, signed blobs) round-trip unchanged.
+
     ``model_copy`` is used rather than a validate round-trip so private
     attributes survive and no field is re-coerced.
     """
     updates = {
         name: _mask_value(getattr(model, name), mask)
-        for name in type(model).model_fields
+        for name, field_info in type(model).model_fields.items()
+        if not _skip_masking(field_info)
     }
     return model.model_copy(update=updates)
 

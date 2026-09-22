@@ -1,11 +1,12 @@
 """Unit tests for SecretRegistry.mask_secrets_in_model (issue #4677)."""
 
 from enum import Enum
-from typing import NamedTuple
+from typing import Annotated, NamedTuple
 
 from pydantic import BaseModel, SecretStr
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.utils import SkipSecretMasking
 
 
 SECRET = "sk-supersecret-value"
@@ -122,3 +123,42 @@ def test_preserves_namedtuple_type():
     assert isinstance(masked.span, Span)
     assert masked.span.label == f"s {MASK}"
     assert masked.span.line == 3
+
+
+class _OpaquePayload(BaseModel):
+    """Model with an opaque field that must round-trip unchanged (issue #5224)."""
+
+    label: str
+    blob: Annotated[str, SkipSecretMasking()] = ""
+    urls: Annotated[list[str], SkipSecretMasking()] = []
+
+
+def test_skip_secret_masking_leaves_annotated_string_field_alone():
+    """A field tagged ``SkipSecretMasking`` must not be scanned for secrets.
+
+    Regression for issue #5224: substring ``.replace`` inside a base64
+    screenshot spliced ``<secret-hidden>`` mid-payload and the provider
+    rejected the whole turn as invalid base64.
+    """
+    payload = f"iVBORw0KGgoAAA{SECRET}SUhEUgAAB4A=="
+    model = _OpaquePayload(label=f"seen {SECRET}", blob=payload)
+
+    masked = _registry().mask_secrets_in_model(model)
+
+    # Untagged sibling is still masked; tagged blob is byte-identical.
+    assert masked.label == f"seen {MASK}"
+    assert masked.blob == payload
+
+
+def test_skip_secret_masking_covers_list_fields():
+    """A tagged ``list[str]`` field is not walked either.
+
+    Matches how ``ImageContent.image_urls`` opts a full data-URL list out of
+    masking, so a ``data:...;base64,...`` tail cannot be corrupted.
+    """
+    data_url = f"data:image/png;base64,iVBORw0KGgo{SECRET}SUhEUg=="
+    model = _OpaquePayload(label="clean", urls=[data_url, f"other {SECRET}"])
+
+    masked = _registry().mask_secrets_in_model(model)
+
+    assert masked.urls == [data_url, f"other {SECRET}"]

@@ -7,6 +7,7 @@ from .deprecation import (
     warn_deprecated,
 )
 from .github import sanitize_openhands_mentions
+from .masking import SkipSecretMasking
 from .paging import page_iterator
 from .truncate import (
     DEFAULT_TEXT_CONTENT_LIMIT,
@@ -24,6 +25,7 @@ __all__ = [
     "utc_now",
     "warn_deprecated",
     "sanitize_openhands_mentions",
+    "SkipSecretMasking",
     "page_iterator",
     "sanitized_env",
 ]
