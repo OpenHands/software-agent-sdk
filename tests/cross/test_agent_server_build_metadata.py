@@ -9,14 +9,13 @@ from openhands.sdk.settings.acp_install_catalog import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "server.yml"
-AGENT_SERVER_DOCKERFILE = (
-    REPO_ROOT
-    / "openhands-agent-server"
-    / "openhands"
-    / "agent_server"
-    / "docker"
-    / "Dockerfile"
+AGENT_SERVER_DOCKER_DIR = (
+    REPO_ROOT / "openhands-agent-server" / "openhands" / "agent_server" / "docker"
 )
+AGENT_SERVER_DOCKERFILE = AGENT_SERVER_DOCKER_DIR / "Dockerfile"
+AGENT_SERVER_FIPS_DOCKERFILE = AGENT_SERVER_DOCKER_DIR / "Dockerfile.fips"
+AGENT_SERVER_FIPS_OPENSSL_CONFIG = AGENT_SERVER_DOCKER_DIR / "openssl-fips.cnf"
+AGENT_SERVER_FIPS_ENTRYPOINT = AGENT_SERVER_DOCKER_DIR / "fips-entrypoint.sh"
 AGENT_SERVER_SPEC = (
     REPO_ROOT
     / "openhands-agent-server"
@@ -151,6 +150,46 @@ def test_python_image_uses_canonical_minimal_runtime() -> None:
     assert "nikolaik/python-nodejs" not in dockerfile_text
     assert "base_image: python-node-runtime" in workflow_text
     assert "nikolaik/python-nodejs" not in workflow_text
+
+
+def test_fips_image_is_separate_and_uses_validated_provider() -> None:
+    dockerfile_text = AGENT_SERVER_FIPS_DOCKERFILE.read_text(encoding="utf-8")
+    openssl_config = AGENT_SERVER_FIPS_OPENSSL_CONFIG.read_text(encoding="utf-8")
+    entrypoint = AGENT_SERVER_FIPS_ENTRYPOINT.read_text(encoding="utf-8")
+
+    assert (
+        "ARG BASE_IMAGE=ghcr.io/openhands/agent-server:latest-python" in dockerfile_text
+    )
+    assert "ARG OPENSSL_FIPS_VERSION=3.1.2" in dockerfile_text
+    assert (
+        "ARG OPENSSL_FIPS_SHA256="
+        "a0ce69b8b97ea6a35b96875235aa453b966ba3cba8af2de23657d8b6767d6539"
+        in dockerfile_text
+    )
+    assert "ARG NODE_VERSION=24.21.0" in dockerfile_text
+    assert (
+        "ARG NODE_SHA256="
+        "a6f54defb6fd7c84f41dba13d61e78e9b4e0961712cf61f29715c05f5ced94fc"
+        in dockerfile_text
+    )
+    assert (
+        'echo "${OPENSSL_FIPS_SHA256}  openssl.tar.gz" | sha256sum -c -'
+        in dockerfile_text
+    )
+    assert 'echo "${NODE_SHA256}  node.tar.xz" | sha256sum -c -' in dockerfile_text
+    assert "./Configure enable-fips" in dockerfile_text
+    assert (
+        "./configure --shared-openssl --openssl-is-fips --with-intl=system-icu "
+        "--without-inspector" in dockerfile_text
+    )
+    assert 'make -j"${BUILD_JOBS}" node' in dockerfile_text
+    assert "FROM ${BASE_IMAGE} AS binary-fips" in dockerfile_text
+    assert "default_properties = fips=yes" in openssl_config
+    assert "default =" not in openssl_config
+    assert "EVP_default_properties_is_fips_enabled" in entrypoint
+    assert 'require("crypto")' in entrypoint
+    assert "c.getFips() !== 1" in entrypoint
+    assert 'c.createHash("sha256")' in entrypoint
 
 
 def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
