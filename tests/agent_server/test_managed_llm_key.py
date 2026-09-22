@@ -154,6 +154,36 @@ def test_empty_served_key_does_not_retry(monkeypatch):
         assert llm._resolve_refreshed_api_key(_auth_error()) is None
 
 
+def test_base_url_match_ignores_trailing_slash(monkeypatch):
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    # Allow-list has no trailing slash, LLM base_url does — must still match.
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    llm = _llm("m", MANAGED_BASE_URL + "/")
+    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+
+
+def test_allowlist_entry_trailing_slash_ignored(monkeypatch):
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    # Allow-list has a trailing slash, LLM base_url does not — must still match.
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL + "/")
+    llm = _llm("m", MANAGED_BASE_URL)
+    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+
+
+def test_non_object_headers_env_is_ignored(monkeypatch):
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    # Valid JSON that isn't an object must be ignored, not crash registration.
+    monkeypatch.setenv(REFRESH_HEADERS_ENV, '["a", "b"]')
+    monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
+    llm = _llm("m", MANAGED_BASE_URL)
+
+    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    with _served_key(REFRESH_URL, "fresh_key"):
+        refreshed = llm._resolve_refreshed_api_key(_auth_error())
+    assert refreshed is not None
+    assert refreshed.get_secret_value() == "fresh_key"
+
+
 def test_bad_headers_env_is_ignored(monkeypatch):
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
     monkeypatch.setenv(REFRESH_HEADERS_ENV, "not-json")
