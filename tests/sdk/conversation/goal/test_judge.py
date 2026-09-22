@@ -1,6 +1,7 @@
 """Tests for judge_goal / GoalVerdict (the goal-completion judge kernel)."""
 
 import pytest
+from pydantic import PrivateAttr
 
 from openhands.sdk.conversation.goal import GoalVerdict, judge_goal
 from openhands.sdk.llm import Message, TextContent
@@ -93,3 +94,43 @@ def test_judge_goal_disables_streaming_on_judge_llm():
     )
     verdict = judge_goal(llm, "build x", [])  # would raise without the fix
     assert verdict.complete
+
+
+class _CapturingJudgeLLM(TestLLM):
+    """TestLLM that records the messages handed to ``completion()``."""
+
+    _captured_messages: list = PrivateAttr(default_factory=list)
+
+    @property
+    def captured_messages(self) -> list:
+        return self._captured_messages
+
+    def completion(self, messages, **kwargs):
+        self._captured_messages = list(messages)
+        return super().completion(messages, **kwargs)
+
+
+def test_judge_goal_sends_system_then_user():
+    """The judge request must open with a system message before the user payload."""
+    llm = _CapturingJudgeLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[
+                    TextContent(
+                        text='{"score": 1.0, "complete": true, "missing": ""}'
+                    )
+                ],
+            )
+        ]
+    )
+
+    judge_goal(llm, "build it", [])
+
+    assert [m.role for m in llm.captured_messages] == ["system", "user"]
+    # Steering/format instructions live in the system message; data in the user.
+    system_text = llm.captured_messages[0].content[0].text
+    user_text = llm.captured_messages[1].content[0].text
+    assert "STRICT JSON" in system_text
+    assert "<objective>" in user_text
+    assert "build it" in user_text

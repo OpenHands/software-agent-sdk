@@ -300,9 +300,20 @@ async def validate_profile(
 
     messages = [
         Message(
+            role="system",
+            content=[
+                TextContent(
+                    text=(
+                        "You are a connectivity-check helper. "
+                        "Reply with a single token."
+                    )
+                )
+            ],
+        ),
+        Message(
             role="user",
             content=[TextContent(text="ping")],
-        )
+        ),
     ]
 
     try:
