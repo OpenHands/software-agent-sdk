@@ -371,23 +371,12 @@ async def delete_agent_profile(
     """Delete a stored profile (idempotent).
 
     If the deleted profile was the active one, ``active_agent_profile_id`` is
-    cleared. If the deleted profile's ``agent_kind`` was not ``"openhands"``,
-    ``agent_settings`` is reset to default OpenHands agent settings to prevent
-    stale ACP configuration from persisting.
+    cleared. If ``agent_settings`` is itself left on a non-OpenHands variant,
+    it is reset to default OpenHands agent settings so stale ACP configuration
+    does not outlive the profile it came from.
     """
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
-
-    # Load the profile before deletion to check its agent_kind
-    deleted_agent_kind = None
-    if deleted_id is not None:
-        try:
-            with store_errors():
-                profile = store.load(name)
-                deleted_agent_kind = profile.agent_kind
-        except Exception:
-            # Profile may not exist or may be corrupted; proceed with deletion
-            pass
 
     with store_errors():
         store.delete(name)
@@ -402,13 +391,16 @@ async def delete_agent_profile(
                 s: PersistedSettings,
             ) -> PersistedSettings:
                 s.active_agent_profile_id = None
-                # Reset agent_settings to default if deleted profile was not
-                # OpenHands
-                if deleted_agent_kind is not None and deleted_agent_kind != "openhands":
+                # Stale non-OpenHands settings outlive their profile. The
+                # variant boundary is a one-way narrowing gate (see
+                # _apply_agent_settings_diff), so reset to a fresh base rather
+                # than carrying fields across it.
+                prior_kind = s.agent_settings.agent_kind
+                if prior_kind != "openhands":
                     s.agent_settings = default_agent_settings()
                     logger.info(
                         f"Reset agent_settings to default "
-                        f"(deleted profile was agent_kind='{deleted_agent_kind}')"
+                        f"(agent_settings was agent_kind='{prior_kind}')"
                     )
                 return s
 
