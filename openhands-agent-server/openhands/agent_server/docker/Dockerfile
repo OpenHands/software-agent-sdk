@@ -8,6 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
+ARG NPM_VERSION=11.19.1
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -38,16 +39,19 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
+ARG NPM_VERSION
 ARG DEBIAN_SNAPSHOT=20260920T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
+RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
+
 RUN set -eux; \
-    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
-    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
-    ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    ln -sfn ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     printf '%s\n' \
         'Types: deb' \
         "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
@@ -173,6 +177,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
+ARG NPM_VERSION
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -212,7 +217,8 @@ RUN set -eux; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
-    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
       # a wrong binary_name is otherwise invisible until someone launches the
