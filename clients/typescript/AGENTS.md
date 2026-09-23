@@ -229,7 +229,7 @@ await conversation.close();
 
 **Factory Functions**:
 
-**Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode/desktop operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.desktop`; ACP-specific operations should be reachable via `manager.acp`.
+**Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.vscode`; ACP-specific operations should be reachable via `manager.acp`.
 
 - `createConversation({ type, agent, workspace, options })` - Explicit type selection
 - `createConversationAuto(agent, workspace, options)` - Auto-detect based on workspace type

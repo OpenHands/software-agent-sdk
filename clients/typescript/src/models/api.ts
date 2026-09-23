@@ -278,10 +278,6 @@ export interface RefreshPluginResponse {
   plugin: InstalledPluginInfo;
 }
 
-export interface DesktopUrlResponse {
-  url: string | null;
-}
-
 export interface VSCodeUrlResponse {
   url: string | null;
 }
