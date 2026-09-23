@@ -18,6 +18,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.llm_convertible import SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -25,6 +26,21 @@ from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
+
+
+def _leading_system_prompt_index(events: Sequence[LLMConvertibleEvent]) -> int | None:
+    """Index of the first ``SystemPromptEvent`` in ``events``, or ``None``.
+
+    The agent loop guarantees the ``SystemPromptEvent`` sits at the head of the
+    view (index 0), so condensation must never forget it -- otherwise the
+    condensed view would open with a non-system message and violate the
+    repo-wide "system before first user" invariant. Returns ``None`` when no
+    system prompt is present (e.g. unit-test views built without one).
+    """
+    for i, event in enumerate(events):
+        if isinstance(event, SystemPromptEvent):
+            return i
+    return None
 
 
 class Reason(Enum):
@@ -326,14 +342,22 @@ class LLMSummarizingCondenser(RollingCondenser):
         the view is too large for the summarizing LLM to handle). In that case, we keep
         trimming down the contents until a summary can be generated.
         """
+        # Preserve the leading SystemPromptEvent: it must stay at the head of the
+        # view so the request still opens with a system message. Summarize the
+        # events *after* it and insert the summary right behind it.
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = (system_idx + 1) if system_idx is not None else 0
+        forgotten_events = view.events[preserve:]
+        summary_offset = preserve
+
         max_event_str_length: int | None = None
         attempts_remaining: int = self.hard_context_reset_max_retries
 
         while attempts_remaining > 0:
             try:
                 return self._generate_condensation(
-                    forgotten_events=view.events,
-                    summary_offset=0,
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
             except Exception as e:
@@ -477,14 +501,20 @@ class LLMSummarizingCondenser(RollingCondenser):
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
         """Async variant of :meth:`hard_context_reset`."""
+        # Preserve the leading SystemPromptEvent (see hard_context_reset).
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = (system_idx + 1) if system_idx is not None else 0
+        forgotten_events = view.events[preserve:]
+        summary_offset = preserve
+
         max_event_str_length: int | None = None
         attempts_remaining: int = self.hard_context_reset_max_retries
 
         while attempts_remaining > 0:
             try:
                 return await self._agenerate_condensation(
-                    forgotten_events=view.events,
-                    summary_offset=0,
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
             except Exception as e:
