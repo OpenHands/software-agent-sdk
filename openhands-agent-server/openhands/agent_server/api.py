@@ -296,7 +296,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 yield
             finally:
-                await api.state.app_backend_session_store.shutdown()
+                session_store = getattr(api.state, "app_backend_session_store", None)
+                if session_store is not None:
+                    await session_store.shutdown()
                 await conversation_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
