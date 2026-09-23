@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import signal
 from pathlib import Path
 
 from openhands.sdk.logger import get_logger
@@ -75,17 +76,30 @@ class VSCodeService:
         """Stop the VSCode server."""
         if self.process:
             try:
-                self.process.terminate()
-                await asyncio.wait_for(self.process.wait(), timeout=5.0)
+                self._signal_process_group(signal.SIGTERM)
+                await asyncio.wait_for(self._wait_for_exit(), timeout=5.0)
                 logger.info("VSCode server stopped successfully")
             except TimeoutError:
                 logger.warning("VSCode server did not stop gracefully, killing process")
-                self.process.kill()
+                self._signal_process_group(signal.SIGKILL)
                 await self.process.wait()
             except Exception as e:
                 logger.error(f"Error stopping VSCode server: {e}")
             finally:
                 self.process = None
+
+    async def set_connection_token(self, connection_token: str) -> None:
+        """Switch to a new connection token, restarting the server if it runs.
+
+        openvscode-server reads its token only at startup, so a running server
+        is stopped and started again with the new one.
+        """
+        if connection_token == self.connection_token:
+            return
+        self.connection_token = connection_token
+        if self.is_running():
+            await self.stop()
+            await self.start()
 
     def get_vscode_url(
         self,
@@ -153,6 +167,29 @@ class VSCodeService:
         except OSError:
             return False
 
+    def _signal_process_group(self, sig: signal.Signals) -> None:
+        """Signal the launcher script and the node server it runs.
+
+        The launcher runs node as a child instead of exec'ing it, so signalling
+        the script alone leaves node running and holding the port. The script
+        leads its own process group (``start_new_session``), so its pid is the
+        group id even after the script itself has exited.
+        """
+        if self.process is None:
+            return
+        try:
+            os.killpg(self.process.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    async def _wait_for_exit(self) -> None:
+        """Wait for the launcher to exit and for node to release the port."""
+        if self.process is None:
+            return
+        await self.process.wait()
+        while not await self._is_port_available():
+            await asyncio.sleep(0.1)
+
     async def _start_vscode_process(self) -> None:
         """Start the VSCode server process."""
         extensions_arg = (
@@ -175,12 +212,14 @@ class VSCodeService:
             f"--disable-workspace-trust\n"
         )
 
-        # Start the process
+        # Start the process in its own process group, so stop() can signal
+        # node along with the launcher script.
         self.process = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=sanitized_env(),
+            start_new_session=True,
         )
 
         # Wait for server to start (look for startup message)
