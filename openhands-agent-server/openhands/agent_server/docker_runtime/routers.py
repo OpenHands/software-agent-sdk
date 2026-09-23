@@ -64,6 +64,39 @@ def _upstream_path(request: Request, path: str) -> str:
     return f"{path}?{query}" if query else path
 
 
+async def _proxy_with_session(
+    registry: DockerConversationRegistry,
+    conversation_id: UUID,
+    container: ConversationContainer,
+    request: Request,
+    *,
+    upstream_path: str,
+    body: bytes | None = None,
+) -> StreamingResponse:
+    """Proxy one request while holding an outer session attachment.
+
+    The attachment is released when the streamed response finishes (or the
+    client disconnects), so a long-lived proxied stream keeps the container
+    from being evicted while a client is still reading from it.
+    """
+    registry.attach_session(conversation_id)
+
+    async def detach() -> None:
+        registry.detach_session(conversation_id)
+
+    try:
+        return await proxy_http(
+            request,
+            container,
+            upstream_path=upstream_path,
+            body=body,
+            on_close=detach,
+        )
+    except BaseException:
+        await detach()
+        raise
+
+
 docker_conversation_router = APIRouter(
     prefix="/conversations", tags=["Docker Conversations"]
 )
@@ -269,16 +302,20 @@ async def proxy_conversation(
         body = UpdateSecretsRequest(secrets=materialized).model_dump(
             mode="json", context={"expose_secrets": "plaintext"}
         )
-        response = await proxy_http(
-            request,
+        response = await _proxy_with_session(
+            registry,
+            conversation_id,
             container,
+            request,
             upstream_path=upstream_path,
             body=json.dumps(body).encode(),
         )
     else:
-        response = await proxy_http(
-            request,
+        response = await _proxy_with_session(
+            registry,
+            conversation_id,
             container,
+            request,
             upstream_path=upstream_path,
         )
     if request.method not in {"GET", "HEAD", "OPTIONS"} and response.status_code < 400:
@@ -297,9 +334,11 @@ async def proxy_workspace_file(
 ) -> StreamingResponse:
     registry = get_registry(request)
     container = await _container(registry, conversation_id)
-    return await proxy_http(
-        request,
+    return await _proxy_with_session(
+        registry,
+        conversation_id,
         container,
+        request,
         upstream_path=_upstream_path(
             request, f"/api/conversations/{conversation_id}/workspace/{file_path}"
         ),
@@ -331,6 +370,9 @@ async def _proxy_socket(
         return
     query = strip_auth_query("?" + websocket.url.query).lstrip("?")
     path = f"/sockets/{socket_name}/{conversation_id}"
+    # Hold the attachment for the whole bridge lifetime so the idle-eviction
+    # loop cannot stop the container under a live events/session websocket.
+    registry.attach_session(conversation_id)
     try:
         await bridge_websocket(
             websocket,
@@ -338,6 +380,7 @@ async def _proxy_socket(
             upstream_path=f"{path}?{query}" if query else path,
         )
     finally:
+        registry.detach_session(conversation_id)
         await websocket.app.state.conversation_service.refresh_persisted_conversation(
             conversation_id
         )

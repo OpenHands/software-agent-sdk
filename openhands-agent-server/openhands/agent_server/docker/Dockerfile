@@ -33,13 +33,12 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # images. The final stage installs only the shared libraries required by Python
 # and Node; developer and package-manager tooling is added by the agent-server
 # stages below when needed. Package upgrades resolve against a dated snapshot so
-# newly published Debian packages have a seven-day observation period.
+# newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
-# Temporary exception to pick up Debian 13.7 before the normal observation period.
-ARG DEBIAN_SNAPSHOT=20260913T000000Z
+ARG DEBIAN_SNAPSHOT=20260920T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
