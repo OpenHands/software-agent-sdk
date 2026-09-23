@@ -101,6 +101,35 @@ VERIFIED_QWEN_MODELS = [
     "qwen3-coder-flash",
 ]
 
+# OpenRouter routes other vendors' models. Entries are the OpenRouter id with
+# the ``openrouter/`` prefix stripped (so ``anthropic/claude-opus-5`` here
+# corresponds to ``openrouter/anthropic/claude-opus-5``). Only the frontier
+# routes the OpenHands proxy itself serves are kept; the long tail stays in the
+# unverified catalog.
+VERIFIED_OPENROUTER_MODELS = [
+    "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-4.5",
+    "openai/gpt-6-astra",
+    "openai/gpt-5.6",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.2-codex",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.8-flash",
+    "google/gemini-3.7-flash",
+    "google/gemini-3.5-flash-lite",
+    "moonshotai/kimi-k3",
+    "moonshotai/kimi-k2.7-code",
+    "mistralai/devstral-2512",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.3-flash",
+    "z-ai/glm-5.2",
+    "minimax/minimax-m3",
+]
+
 # What the ``openhands/`` provider serves. Same rule; every entry must also be in
 # a provider list above, except OpenHands-only models.
 VERIFIED_OPENHANDS_MODELS = [
@@ -164,4 +193,5 @@ VERIFIED_MODELS = {
     "glm": VERIFIED_GLM_MODELS,
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
+    "openrouter": VERIFIED_OPENROUTER_MODELS,
 }

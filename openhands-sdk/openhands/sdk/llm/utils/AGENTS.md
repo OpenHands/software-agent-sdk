@@ -11,3 +11,4 @@ These lists are a curated set of models that work well, not a catalog of everyth
 - When you add a new version, remove the oldest version in the same line, in every list where it appears (the provider list and `VERIFIED_OPENHANDS_MODELS`).
 - Every entry in `VERIFIED_OPENHANDS_MODELS` must also appear in a provider list, unless it is OpenHands-only; `tests/sdk/llm/test_model_list.py` checks this.
 - Do not add a model just because LiteLLM or OpenRouter knows about it. The unverified catalog (`unverified_models.py`) covers that.
+- `openrouter` is a verified provider. Its entries are OpenRouter ids with the `openrouter/` prefix stripped (so `anthropic/claude-opus-5` corresponds to `openrouter/anthropic/claude-opus-5`), because OpenRouter namespaces every model under its upstream vendor. Keep only the frontier routes the OpenHands proxy serves, not OpenRouter's full catalog.
