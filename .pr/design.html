@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SDK #4976 — Typed LLM boundaries</title>
+  <style>
+    body { max-width: 900px; margin: 48px auto; padding: 0 24px;
+      font: 17px/1.6 system-ui, sans-serif; color: #192b3d; background: #fafcfe; }
+    h1, h2 { line-height: 1.2; }
+    h2 { margin-top: 36px; }
+    code, pre { background: #eaf0f6; border-radius: 4px; }
+    code { padding: 2px 5px; }
+    pre { padding: 18px; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    th, td { text-align: left; padding: 12px; border-bottom: 1px solid #ccd7e3; }
+    a { color: #125eaa; }
+  </style>
+</head>
+<body>
+  <h1>Typed LLM boundaries</h1>
+  <p>One SDK PR for <a href="https://github.com/OpenHands/software-agent-sdk/issues/4976">#4976</a>.
+    Provider variability stays at private boundaries; public messages, events,
+    configuration, and return types stay unchanged.</p>
+
+  <h2>Before and after</h2>
+  <table>
+    <thead><tr><th>Boundary</th><th>Before</th><th>After</th></tr></thead>
+    <tbody>
+      <tr><td>Streams</td><td>Repeated optional-attribute probes and Any casts</td>
+        <td>Sync/async iterables, typed event variants, optional completion protocol</td></tr>
+      <tr><td>Completion selection</td><td>A stale wrapper None erases a yielded result</td>
+        <td>Non-null wrapper result wins; otherwise retain the observed result</td></tr>
+      <tr><td>Tokenizers</td><td>Import, loading, shape inspection inside LLM</td>
+        <td>Private capability protocols and counting/loading adapters</td></tr>
+      <tr><td>Provider messages</td><td>Scattered field-name lookup</td>
+        <td>Pydantic attribute/mapping projections with optional-field defaults</td></tr>
+      <tr><td>Authentication</td><td>Probe a declared config field</td>
+        <td>Direct LLM.auth_type access</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Completion rule</h2>
+  <pre>observed = initial wrapper completion, if present
+for each event:
+    retain any yielded completion
+    collect finished output items and dispatch deltas
+final = non-null wrapper completion or observed
+if no final completion: raise LLMNoResponseError</pre>
+  <p>An empty final output can still be reconstructed from finished output items.
+    Raw response identity and per-output-item delta IDs are preserved.
+    The rule follows <a href="https://github.com/OpenHands/software-agent-sdk/pull/4772">alanhuangyoo's #4772</a>.</p>
+
+  <h2>Private modules</h2>
+  <ul>
+    <li><code>_response_stream.py</code>: recognize supported events and select completion state.</li>
+    <li><code>_tokenizer.py</code>: optional loading and supported token-count shapes.</li>
+    <li><code>_message_normalization.py</code>: normalize metadata and Responses output items.</li>
+  </ul>
+  <p>LiteLLM deletes absent reasoning/thinking fields despite declaring them in its
+    message type. A small projection with defaults handles this explicitly.
+    Typed tool-call objects keep their existing validation path; generic objects
+    and dictionaries retain the existing default values.</p>
+
+  <h2>Compatibility and scope</h2>
+  <p>No dependency changes, public schema changes, agent-loop changes, provider routing
+    changes, or retry/telemetry cleanup. Synchronous streams returned to asynchronous
+    callers still drain in the existing executor path. Transformers remains optional.
+    The dynamic-access baseline shrinks by 14 entries (98 to 84).</p>
+
+  <h2>Verification</h2>
+  <p>Regression coverage includes completion precedence, supported wrapper modes,
+    output reconstruction without callbacks, replay IDs, encrypted reasoning,
+    thinking blocks, token-count shapes, and authentication restoration.</p>
+  <p>Six real loopback HTTP/SSE cases pass through SDK and LiteLLM parsing. Optional
+    tokenizer checks pass both without Transformers and with Transformers 5.17.0
+    loading a local tokenizer. See <a href="verification.md">verification.md</a>
+    for exact commands, suite results, and environmental limitations.</p>
+</body>
+</html>
