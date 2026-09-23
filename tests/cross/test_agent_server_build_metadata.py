@@ -159,9 +159,9 @@ def test_agent_server_uses_one_pinned_npm_version_for_both_node_runtimes() -> No
     match = re.search(r"(?m)^ARG NPM_VERSION=(\d+\.\d+\.\d+)$", dockerfile_text)
     assert match
     assert match.group(1) == "11.19.1"
-    assert dockerfile_text.count('ARG NPM_VERSION\n') == 2
+    assert dockerfile_text.count("ARG NPM_VERSION\n") == 2
     assert (
-        'node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global '
+        "node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "
         '"npm@${NPM_VERSION}"' in dockerfile_text
     )
     assert (
