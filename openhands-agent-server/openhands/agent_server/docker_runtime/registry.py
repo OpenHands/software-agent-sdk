@@ -17,12 +17,15 @@ from uuid import UUID, uuid4
 
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
+from openhands.agent_server.conversation_service import _read_execution_status_sync
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.agent_server.utils import safe_rmtree
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
@@ -40,7 +43,12 @@ logger = get_logger(__name__)
 _CONVERSATIONS_DIR = "/var/openhands/conversations"
 _PERSISTENCE_DIR = "/var/openhands/.openhands"
 _WORKSPACE_DIR = "/workspace"
+_SHARED_CACHE_DIR = "/var/openhands/shared-cache"
 _OWNER_LABEL = "ai.openhands.runtime-owner"
+# $HOME/.cache inside the container: uv, pip, npm and friends, all rebuildable.
+_CACHE_DIR = ".cache"
+# Detached caches sit beside, not inside, the bind-mounted persistence dir.
+_PRUNED_CACHE_PREFIX = ".cache-pruned-"
 
 
 @dataclass(slots=True)
@@ -72,6 +80,9 @@ class DockerConversationRegistry(ConversationRegistry):
         )
         self.owner = hashlib.sha256(paths.encode()).hexdigest()[:24]
         self.provisioning = RuntimeProvisioningStore(config)
+        self.shared_cache_dir = _validate_shared_cache_dir(
+            config.conversation_shared_cache_dir
+        )
         self._containers: dict[UUID, ConversationContainer] = {}
         self._starts: dict[UUID, asyncio.Task[ConversationContainer]] = {}
         self._deleting: set[UUID] = set()
@@ -119,6 +130,7 @@ class DockerConversationRegistry(ConversationRegistry):
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
+        await asyncio.to_thread(self.prune_stopped_caches)
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
@@ -279,6 +291,7 @@ class DockerConversationRegistry(ConversationRegistry):
             container = container or started
         if container is not None:
             await asyncio.to_thread(container.stop)
+        await self._prune_cache(conversation_id)
 
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
@@ -348,6 +361,64 @@ class DockerConversationRegistry(ConversationRegistry):
                     conversation_id,
                     ttl_seconds,
                 )
+                await self._prune_cache(conversation_id)
+
+    def prune_stopped_caches(self) -> None:
+        """Prune every runtime's cache; only safe before any container starts."""
+        for runtime_dir in self.provisioning.data_root.iterdir():
+            try:
+                conversation_id = UUID(hex=runtime_dir.name)
+            except ValueError:
+                continue
+            if runtime_dir.is_symlink() or not runtime_dir.is_dir():
+                continue
+            try:
+                for leftover in runtime_dir.glob(f"{_PRUNED_CACHE_PREFIX}*"):
+                    _remove(leftover)
+                if not self._is_running(conversation_id):
+                    _remove(self._detach_cache(conversation_id))
+            except Exception:
+                logger.warning(
+                    "Failed to prune conversation runtime cache %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+
+    async def _prune_cache(self, conversation_id: UUID) -> None:
+        """Drop the rebuildable cache of a stopped runtime that is not running."""
+        try:
+            if await asyncio.to_thread(self._is_running, conversation_id):
+                return
+            async with self._lock:
+                # A resumed runtime may already mount the cache again; detaching
+                # is one rename, so it cannot race a start that follows it.
+                if self.get(conversation_id) or self.is_starting(conversation_id):
+                    return
+                detached = self._detach_cache(conversation_id)
+            await asyncio.to_thread(_remove, detached)
+        except Exception:
+            logger.warning(
+                "Failed to prune conversation runtime cache %s",
+                conversation_id,
+                exc_info=True,
+            )
+
+    def _is_running(self, conversation_id: UUID) -> bool:
+        # The outer service may not be serving yet, and after a stop the
+        # container's final state is on disk; execution_status is plaintext.
+        path = self.conversation_dir(conversation_id) / BASE_STATE
+        status = _read_execution_status_sync(str(path))
+        return status == ConversationExecutionStatus.RUNNING
+
+    def _detach_cache(self, conversation_id: UUID) -> Path | None:
+        runtime_dir = self.provisioning.runtime_dir(conversation_id)
+        persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
+        detached = runtime_dir / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
+        try:
+            (persistence_dir / _CACHE_DIR).rename(detached)
+        except FileNotFoundError:
+            return None
+        return detached
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
@@ -396,6 +467,17 @@ class DockerConversationRegistry(ConversationRegistry):
             (workspace_dir, _WORKSPACE_DIR),
         ):
             flags.extend(("-v", f"{host}:{target}"))
+        if self.shared_cache_dir is not None:
+            env["UV_CACHE_DIR"] = _SHARED_CACHE_DIR
+            # Unlike -v, --mount fails on a missing source instead of creating it.
+            flags.extend(
+                (
+                    "-e",
+                    "UV_CACHE_DIR",
+                    "--mount",
+                    f"type=bind,src={self.shared_cache_dir},dst={_SHARED_CACHE_DIR}",
+                )
+            )
         if self.config.conversation_container_memory:
             flags.extend(("--memory", self.config.conversation_container_memory))
         if self.config.conversation_container_cpus is not None:
@@ -476,3 +558,23 @@ class DockerConversationRegistry(ConversationRegistry):
                 raise RuntimeError("Conversation container stopped during startup")
             time.sleep(1)
         raise RuntimeError("Conversation container failed to become healthy in time")
+
+
+def _validate_shared_cache_dir(path: Path | None) -> Path | None:
+    if path is None:
+        return None
+    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+        raise ValueError(
+            "conversation_shared_cache_dir must be an existing absolute directory "
+            "and not a symlink"
+        )
+    return path.resolve()
+
+
+def _remove(path: Path | None) -> None:
+    if path is None:
+        return
+    if path.is_symlink():
+        path.unlink(missing_ok=True)
+    else:
+        safe_rmtree(path, "conversation runtime cache")

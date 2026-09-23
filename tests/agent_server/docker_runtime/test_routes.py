@@ -15,7 +15,10 @@ from starlette.routing import Match
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
-from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.registry import (
+    ConversationContainer,
+    DockerConversationRegistry,
+)
 from openhands.agent_server.docker_runtime.routers import (
     delete_conversation,
     docker_conversation_router,
@@ -174,6 +177,50 @@ def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
     app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
         conversation_id
     )
+
+
+def test_runtime_release_prunes_cache_but_keeps_conversation_state(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    registry = DockerConversationRegistry(config)
+    conversation_id = uuid4()
+    registry.provisioning.create(conversation_id)
+    conversation_dir = registry.conversation_dir(conversation_id)
+    conversation_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    (conversation_dir / "base_state.json").write_text(
+        json.dumps({"execution_status": "finished"})
+    )
+    runtime_dir = registry.provisioning.runtime_dir(conversation_id)
+    cache = runtime_dir / "persistence" / ".cache" / "uv"
+    cache.mkdir(parents=True)
+    (runtime_dir / "workspace" / "main.py").write_text("print('hi')")
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer, "stop", lambda self: stopped.append(self.container_id)
+    )
+    registry._containers[conversation_id] = ConversationContainer(
+        "http://inner", "inner-key", "inner-container"
+    )
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    with TestClient(app) as client:
+        response = client.delete(f"/api/conversations/{conversation_id}/runtime")
+
+    assert response.status_code == 204
+    assert stopped == ["inner-container"]
+    assert not (runtime_dir / "persistence" / ".cache").exists()
+    assert (runtime_dir / "workspace" / "main.py").read_text() == "print('hi')"
+    assert (conversation_dir / "meta.json").is_file()
+    assert registry.provisioning.manifest_path(conversation_id).is_file()
 
 
 def test_runtime_info_marks_legacy_local_conversation_non_resumable(
