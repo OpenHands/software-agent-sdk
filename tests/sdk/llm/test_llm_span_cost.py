@@ -100,6 +100,18 @@ def test_cache_write_survives_absent_prompt_tokens_details():
     assert snapshot.cache_write_tokens == 42
 
 
+def test_cache_write_survives_details_without_the_attribute():
+    details = PromptTokensDetailsWrapper(cached_tokens=7, cache_creation_tokens=None)
+    usage = Usage(prompt_tokens=100, completion_tokens=5)
+    usage.prompt_tokens_details = details
+
+    snapshot = normalize_usage(usage)
+
+    assert snapshot is not None
+    assert snapshot.cache_write_tokens == 0
+    assert snapshot.cache_read_tokens == 7
+
+
 def test_span_closed_on_error(exporter):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})
