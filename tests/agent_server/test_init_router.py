@@ -21,6 +21,7 @@ from openhands.agent_server.init_router import (
     InitService,
     _build_initialized_config,
 )
+from openhands.agent_server.vscode_service import VSCodeService
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +59,36 @@ def _reset_bash_singleton():
     from openhands.agent_server import bash_service as bash_mod
 
     bash_mod._bash_event_service = None
+
+
+def _vscode_url_after_init(tmp_path: Path) -> str | None:
+    """Boot a dormant app, deliver a session key through /api/init, and read
+    /api/vscode/url with that key."""
+    _reset_conversation_singleton()
+    cfg = Config(
+        deferred_init=True,
+        conversations_path=tmp_path / "convs",
+        bash_events_dir=tmp_path / "bash",
+    )
+    with TestClient(create_app(cfg)) as client:
+        try:
+            resp = client.post(
+                "/api/init",
+                json={
+                    "session_api_keys": ["user-session-key"],
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
+
+            resp = client.get(
+                "/api/vscode/url", headers={"X-Session-API-Key": "user-session-key"}
+            )
+            assert resp.status_code == 200
+            return resp.json()["url"]
+        finally:
+            _reset_conversation_singleton()
 
 
 class TestConfigDefaults:
@@ -521,36 +552,33 @@ class TestEndToEndOverLifespan:
             finally:
                 _reset_conversation_singleton()
 
-    def test_vscode_url_uses_session_key_after_init(self, tmp_path):
+    def test_vscode_url_uses_session_key_after_init(self, tmp_path, monkeypatch):
         """After /api/init the VSCode URL's token is the first session key, so
         an orchestrator holding the key can build the URL itself."""
-        _reset_conversation_singleton()
-        cfg = Config(
-            deferred_init=True,
-            conversations_path=tmp_path / "convs",
-            bash_events_dir=tmp_path / "bash",
-        )
-        app = create_app(cfg)
-        with TestClient(app) as client:
-            try:
-                resp = client.post(
-                    "/api/init",
-                    json={
-                        "session_api_keys": ["user-session-key"],
-                        "conversations_path": str(tmp_path / "u" / "convs"),
-                        "bash_events_dir": str(tmp_path / "u" / "bash"),
-                    },
-                )
-                assert resp.status_code == 200
 
-                resp = client.get(
-                    "/api/vscode/url",
-                    headers={"X-Session-API-Key": "user-session-key"},
-                )
-                assert resp.status_code == 200
-                assert "?tkn=user-session-key&" in resp.json()["url"]
-            finally:
-                _reset_conversation_singleton()
+        async def fake_start(service):
+            # Like start(): a server booted without a session key makes up a
+            # random token.
+            service.connection_token = service.connection_token or "boot-token"
+            return True
+
+        monkeypatch.setattr(VSCodeService, "start", fake_start)
+        monkeypatch.setattr(VSCodeService, "stop", AsyncMock())
+        monkeypatch.setattr(VSCodeService, "is_running", lambda service: True)
+
+        url = _vscode_url_after_init(tmp_path)
+
+        assert url is not None
+        assert "?tkn=user-session-key&" in url
+
+    def test_vscode_url_stays_empty_without_vscode(self, tmp_path, monkeypatch):
+        """Where VSCode never started, as in images that don't ship it,
+        /api/vscode/url still reports no URL after /api/init."""
+        monkeypatch.setattr(
+            VSCodeService, "_check_vscode_available", lambda service: False
+        )
+
+        assert _vscode_url_after_init(tmp_path) is None
 
 
 class TestNonDeferredPathUnchanged:

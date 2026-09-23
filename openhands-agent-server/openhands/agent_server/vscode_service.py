@@ -89,17 +89,18 @@ class VSCodeService:
                 self.process = None
 
     async def set_connection_token(self, connection_token: str) -> None:
-        """Switch to a new connection token, restarting the server if it runs.
+        """Restart a running server with a new connection token.
 
-        openvscode-server reads its token only at startup, so a running server
-        is stopped and started again with the new one.
+        openvscode-server reads its token only at startup, so the server is
+        stopped and started again with the new one. A server that is not
+        running keeps its token, so ``get_vscode_url`` doesn't advertise a
+        server that isn't there (for example, in images without VSCode).
         """
-        if connection_token == self.connection_token:
+        if not self.is_running() or connection_token == self.connection_token:
             return
         self.connection_token = connection_token
-        if self.is_running():
-            await self.stop()
-            await self.start()
+        await self.stop()
+        await self.start()
 
     def get_vscode_url(
         self,
