@@ -304,7 +304,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
-        await api.state.canvas_extension_backend_manager.shutdown()
+        backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
+        if backend_manager is not None:
+            await backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
 
