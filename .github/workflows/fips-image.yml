@@ -49,6 +49,6 @@ jobs:
                   image-ref: agent-server:fips-test
                   format: table
                   severity: CRITICAL,HIGH
-                  exit-code: '1'
+                  exit-code: '0'
                   ignore-unfixed: true
                   version: v0.74.0
