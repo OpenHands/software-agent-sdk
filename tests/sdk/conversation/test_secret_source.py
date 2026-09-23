@@ -302,3 +302,78 @@ def test_lookup_secret_get_value_resolves_relative_url(monkeypatch):
         headers={},
         timeout=30.0,
     )
+
+
+@pytest.fixture
+def local_resolvers_cleared():
+    """Keep the process-wide resolver registry isolated per test."""
+    from openhands.sdk.secret import secrets as secrets_module
+
+    original = list(secrets_module._local_secret_resolvers)
+    secrets_module._local_secret_resolvers.clear()
+    yield secrets_module._local_secret_resolvers
+    secrets_module._local_secret_resolvers[:] = original
+
+
+def test_local_resolver_short_circuits_http(local_resolvers_cleared):
+    """A matching resolver answers without any HTTP request.
+
+    This is the deadlock guard: resolving over loopback from the event loop
+    blocks the loop that would serve the request.
+    """
+    from openhands.sdk.secret import register_local_secret_resolver
+
+    secret = LookupSecret(url="http://127.0.0.1:8000/api/settings/secrets/TOKEN")
+    register_local_secret_resolver(
+        lambda url: "resolved-locally" if url.endswith("/TOKEN") else None
+    )
+
+    with patch("httpx.get", side_effect=AssertionError("HTTP must not be used")):
+        assert secret.get_value() == "resolved-locally"
+
+
+def test_local_resolver_declining_falls_back_to_http(local_resolvers_cleared):
+    """A resolver returning None leaves the URL to HTTP."""
+    from openhands.sdk.secret import register_local_secret_resolver
+
+    secret = LookupSecret(url="https://remote.example/api/settings/secrets/TOKEN")
+    register_local_secret_resolver(lambda url: None)
+
+    response = Mock(text="from-http")
+    response.raise_for_status = Mock()
+    with patch("httpx.get", return_value=response) as http_get:
+        assert secret.get_value() == "from-http"
+    http_get.assert_called_once()
+
+
+def test_local_resolver_raising_falls_back_to_http(local_resolvers_cleared):
+    """A broken resolver must not take secret resolution down with it."""
+    from openhands.sdk.secret import register_local_secret_resolver
+
+    def boom(url: str) -> str | None:
+        raise RuntimeError("resolver is broken")
+
+    secret = LookupSecret(url="https://remote.example/api/settings/secrets/TOKEN")
+    register_local_secret_resolver(boom)
+
+    response = Mock(text="from-http")
+    response.raise_for_status = Mock()
+    with patch("httpx.get", return_value=response):
+        assert secret.get_value() == "from-http"
+
+
+def test_unregister_local_secret_resolver(local_resolvers_cleared):
+    from openhands.sdk.secret import (
+        register_local_secret_resolver,
+        unregister_local_secret_resolver,
+    )
+
+    def resolver(url: str) -> str | None:
+        return "resolved-locally"
+
+    register_local_secret_resolver(resolver)
+    register_local_secret_resolver(resolver)
+    assert len(local_resolvers_cleared) == 1
+
+    unregister_local_secret_resolver(resolver)
+    assert local_resolvers_cleared == []
