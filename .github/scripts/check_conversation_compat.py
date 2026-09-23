@@ -14,9 +14,11 @@ format without any SDK code change (#5251), so this runs on every PR.
 from __future__ import annotations
 
 import argparse
+import getpass
 import importlib.util
 import json
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH_PLACEHOLDER = "/fixture"
+REQUIRED_EVENT_KINDS = frozenset(
+    {
+        "SystemPromptEvent",
+        "MessageEvent",
+        "ActionEvent",
+        "ObservationEvent",
+        "AgentErrorEvent",
+    }
+)
 
 _spec = importlib.util.spec_from_file_location(
     "check_persisted_settings_compat",
@@ -52,25 +63,51 @@ mcp.run()
 '''
 
 _WRITER = """
+import json
 import sys
 import uuid
-from pydantic import SecretStr
-from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk import Agent, Conversation
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool import Tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 root, server, conversation_id = sys.argv[1:4]
+workspace = root + "/workspace"
+
+
+def call(name, arguments):
+    tool_call = MessageToolCall(
+        id=f"call_{name}", name=name, arguments=json.dumps(arguments),
+        origin="completion",
+    )
+    return Message(
+        role="assistant", content=[TextContent(text="")], tool_calls=[tool_call]
+    )
+
+
+llm = TestLLM.from_messages([
+    call(TerminalTool.name, {"command": "echo hello > notes.txt"}),
+    call(FileEditorTool.name, {"command": "view", "path": workspace + "/notes.txt"}),
+    call("read_file", {"path": "notes.txt"}),
+    call("no_such_tool", {}),
+    call("finish", {"message": "done"}),
+])
 agent = Agent(
-    llm=LLM(model="fixture-model", api_key=SecretStr("fixture-key"), usage_id="agent"),
-    tools=[],
+    llm=llm,
+    tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)],
     mcp_config={"files": {"command": sys.executable, "args": [server]}},
 )
 conversation = Conversation(
     agent=agent,
-    workspace=root + "/workspace",
+    workspace=workspace,
     persistence_dir=root + "/conversations",
     conversation_id=uuid.UUID(conversation_id),
     visualizer=None,
 )
 conversation.send_message("hello")
+conversation.run()
 conversation.close()
 """
 
@@ -92,6 +129,7 @@ def write_baseline_conversation(root: Path, sdk_version: str) -> Path:
         settings_compat._uv_run(
             ["uv", "pip", "install", "--python", str(python), "--quiet"]
             + ["--exclude-newer", cutoff, f"openhands-sdk=={sdk_version}"]
+            + [f"openhands-tools=={sdk_version}"]
         )
         settings_compat._uv_run(
             [str(python), "-c", _WRITER, str(root), str(server), conversation_id]
@@ -107,10 +145,12 @@ def write_baseline_conversation(root: Path, sdk_version: str) -> Path:
 
 def resume_conversation(conversation_dir: Path, workspace: Path) -> int:
     """Resume with the current checkout; return the number of events loaded."""
+    import openhands.tools  # noqa: F401  # registers tool kinds, as the server does
     from openhands.sdk.conversation.impl.local_conversation import (
         LocalConversation,
     )
-    from openhands.sdk.event import SystemPromptEvent
+    from openhands.sdk.event import ObservationEvent, SystemPromptEvent
+    from openhands.sdk.mcp.definition import MCPToolObservation
     from openhands.sdk.mcp.tool import MCPToolDefinition
 
     on_disk = len(list((conversation_dir / "events").glob("event-*.json")))
@@ -139,6 +179,15 @@ def resume_conversation(conversation_dir: Path, workspace: Path) -> int:
         raise ConversationCompatError(
             f"Loaded {len(events)} of {on_disk} persisted events."
         )
+    missing = REQUIRED_EVENT_KINDS - {type(event).__name__ for event in events}
+    if missing:
+        raise ConversationCompatError(f"Missing event kinds: {sorted(missing)}")
+    if not any(
+        isinstance(event, ObservationEvent)
+        and isinstance(event.observation, MCPToolObservation)
+        for event in events
+    ):
+        raise ConversationCompatError("No MCP tool observation was persisted.")
     if [tool.name for tool in mcp_tools] != ["read_file"]:
         raise ConversationCompatError(
             f"Expected the persisted MCP tool read_file, got {mcp_tools!r}."
@@ -147,11 +196,24 @@ def resume_conversation(conversation_dir: Path, workspace: Path) -> int:
 
 
 def save_fixture(conversation_dir: Path, root: Path, destination: Path) -> None:
+    """Copy the conversation, replacing paths and identity of this machine."""
     shutil.copytree(
         conversation_dir, destination, ignore=shutil.ignore_patterns(".eventlog*")
     )
+    host = socket.gethostname()
+    # Order matters: the checkout usually lives under the home directory.
+    replacements = {
+        str(root): FIXTURE_PATH_PLACEHOLDER,
+        str(REPO_ROOT): "/repo",
+        str(Path.home()): "/home/fixture",
+        json.dumps(getpass.getuser()): '"fixture-user"',
+        json.dumps(host): '"fixture-host"',
+        json.dumps(host.split(".")[0]): '"fixture-host"',
+    }
     for path in destination.rglob("*.json"):
-        text = path.read_text().replace(str(root), FIXTURE_PATH_PLACEHOLDER)
+        text = path.read_text()
+        for old, new in replacements.items():
+            text = text.replace(old, new)
         path.write_text(json.dumps(json.loads(text), indent=2) + "\n")
 
 

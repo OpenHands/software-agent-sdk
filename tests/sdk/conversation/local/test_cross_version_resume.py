@@ -11,13 +11,22 @@ from pathlib import Path
 
 import pytest
 
+import openhands.tools  # noqa: F401  # registers tool kinds, as the server does
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.event import SystemPromptEvent
+from openhands.sdk.event import ObservationEvent, SystemPromptEvent
+from openhands.sdk.mcp.definition import MCPToolObservation
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "conversations"
 CASES = sorted(p for p in FIXTURES.iterdir() if (p / "events").is_dir())
+REQUIRED_EVENT_KINDS = {
+    "SystemPromptEvent",
+    "MessageEvent",
+    "ActionEvent",
+    "ObservationEvent",
+    "AgentErrorEvent",
+}
 
 
 def test_fixtures_are_discovered():
@@ -43,7 +52,13 @@ def test_persisted_conversation_resumes(fixture: Path, tmp_path: Path):
         conversation.close()
 
     assert len(events) == len(list((fixture / "events").glob("event-*.json")))
+    assert REQUIRED_EVENT_KINDS <= {type(event).__name__ for event in events}
     if fixture.name.endswith("_mcp"):
+        assert any(
+            isinstance(event, ObservationEvent)
+            and isinstance(event.observation, MCPToolObservation)
+            for event in events
+        )
         tools = [
             tool
             for event in events

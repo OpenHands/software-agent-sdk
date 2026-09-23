@@ -1,9 +1,8 @@
 {
-  "id": "51b45f91-d38a-498e-9f7f-718ad9ec1c60",
+  "id": "bad0ed00-7b53-43ea-b00a-b7a7fa856910",
   "agent": {
     "llm": {
-      "model": "fixture-model",
-      "api_key": "**********",
+      "model": "test-model",
       "auth_type": "api_key",
       "openrouter_site_url": "https://docs.all-hands.dev/",
       "openrouter_app_name": "OpenHands",
@@ -26,11 +25,20 @@
       "enable_encrypted_reasoning": true,
       "prompt_cache_retention": "24h",
       "extended_thinking_budget": 200000,
-      "usage_id": "agent",
+      "usage_id": "test-llm",
       "litellm_extra_body": {},
       "is_subscription": false
     },
-    "tools": [],
+    "tools": [
+      {
+        "name": "terminal",
+        "params": {}
+      },
+      {
+        "name": "file_editor",
+        "params": {}
+      }
+    ],
     "mcp_config": {
       "files": {
         "command": "/fixture/venv/bin/python",
@@ -56,10 +64,10 @@
     "working_dir": "/fixture/workspace",
     "kind": "LocalWorkspace"
   },
-  "persistence_dir": "/fixture/conversations/51b45f91d38a498e9f7f718ad9ec1c60",
+  "persistence_dir": "/fixture/conversations/bad0ed007b5343eab00ab7a7fa856910",
   "max_iterations": 500,
   "stuck_detection": true,
-  "execution_status": "idle",
+  "execution_status": "finished",
   "confirmation_policy": {
     "kind": "NeverConfirm"
   },
@@ -68,30 +76,11 @@
   "invoked_skills": [],
   "blocked_actions": {},
   "blocked_messages": {},
-  "last_user_message_id": "f6c4cd01-4e48-4ac3-9624-991a3e68bae4",
-  "leaf_event_id": "f6c4cd01-4e48-4ac3-9624-991a3e68bae4",
+  "last_user_message_id": "a0b6f907-5fe8-489e-978c-d72f6742fafe",
+  "leaf_event_id": "6067c08a-f29b-49d7-a68a-d457be31740b",
   "head_is_empty": false,
   "stats": {
-    "usage_to_metrics": {
-      "agent": {
-        "model_name": "fixture-model",
-        "accumulated_cost": 0.0,
-        "accumulated_token_usage": {
-          "model": "fixture-model",
-          "prompt_tokens": 0,
-          "completion_tokens": 0,
-          "cache_read_tokens": 0,
-          "cache_write_tokens": 0,
-          "reasoning_tokens": 0,
-          "context_window": 0,
-          "per_turn_token": 0,
-          "response_id": ""
-        },
-        "costs": [],
-        "response_latencies": [],
-        "token_usages": []
-      }
-    }
+    "usage_to_metrics": {}
   },
   "secret_registry": {
     "secret_sources": {}
