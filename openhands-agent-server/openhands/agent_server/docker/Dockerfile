@@ -174,7 +174,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # `min_node_version` in ACP_INSTALL_CATALOG (asserted by
 # tests/cross/test_agent_server_build_metadata.py).
 ####################################################################################
-FROM node:22.23.2-bookworm-slim AS acp-node-runtime
+FROM node:22.23.2-trixie-slim AS acp-node-runtime
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
