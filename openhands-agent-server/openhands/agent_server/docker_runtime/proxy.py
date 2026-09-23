@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -81,6 +81,7 @@ async def proxy_http(
     upstream_path: str,
     timeout: float | None = None,
     body: bytes | None = None,
+    on_close: Callable[[], Awaitable[None]] | None = None,
 ) -> StreamingResponse:
     """Forward ``request`` to the per-conversation container.
 
@@ -94,6 +95,10 @@ async def proxy_http(
         timeout: Per-request timeout in seconds. ``None`` (the default) means
             no read timeout — conversation event streams can be long-lived.
         body: Replacement request body. By default the incoming body is streamed.
+        on_close: Awaited once the streamed response is fully consumed or the
+            client disconnects. Callers use this to release a session
+            attachment that must outlive the route handler (see
+            ``DockerConversationRegistry.attach_session``).
 
     Notes:
         A fresh :class:`httpx.AsyncClient` is created per request. We avoid a
@@ -149,6 +154,8 @@ async def proxy_http(
                 yield chunk
         finally:
             await stack.aclose()
+            if on_close is not None:
+                await on_close()
 
     return StreamingResponse(
         _response_body(),
