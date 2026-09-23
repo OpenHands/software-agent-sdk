@@ -10,24 +10,34 @@ overview and the recipe to add a new format.
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
-from openhands.sdk.skills.skill import Skill, load_skills_from_dir
+from openhands.sdk.skills.skill import Skill, SkillResources, load_skills_from_dir
 from openhands.sdk.skills.utils import find_skill_md
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import resolves_within, to_posix_path
 
 
 if TYPE_CHECKING:
     from openhands.sdk.plugin.plugin import Plugin
 
 logger = get_logger(__name__)
+
+_SCHEMAS_DIR = Path(__file__).parent / "schemas"
+
+
+@cache
+def _load_schema(filename: str) -> dict[str, Any]:
+    """Read a vendored schema. Cached; never fetched over the network."""
+    return json.loads((_SCHEMAS_DIR / filename).read_text(encoding="utf-8"))
 
 
 class PluginFormat(ABC):
@@ -95,18 +105,26 @@ class PluginFormat(ABC):
         to support Claude Code plugins which may use different naming conventions.
         """
         skills_dir = plugin_dir / "skills"
-        if skills_dir.is_dir():
+        if skills_dir.exists(follow_symlinks=False):
+            if not resolves_within(skills_dir, plugin_dir):
+                return []
+            if not skills_dir.is_dir():
+                logger.warning(f"Ignoring skills: {skills_dir} is not a directory")
+                return []
             # Non-recursive per Agent Plugins §5: nested .md files are skill
             # resources (e.g. references/), not additional skills.
             repo, knowledge, agent = load_skills_from_dir(
-                skills_dir, strict=False, recursive=False
+                skills_dir, strict=False, recursive=False, root=plugin_dir
             )
             skills = [*repo.values(), *knowledge.values(), *agent.values()]
             # Categorization groups skills by type; restore on-disk order.
-            return sorted(skills, key=lambda s: Path(s.source or ""))
+            return [
+                _without_escaping_resources(skill, plugin_dir)
+                for skill in sorted(skills, key=lambda s: Path(s.source or ""))
+            ]
 
         root_skill_md = find_skill_md(plugin_dir)
-        if root_skill_md is not None:
+        if root_skill_md is not None and resolves_within(root_skill_md, plugin_dir):
             return _load_root_skill(plugin_dir, root_skill_md)
 
         return []
@@ -151,7 +169,7 @@ class PluginFormat(ABC):
         )
 
 
-def _read_hooks_config(root: Path) -> HookConfig | None:
+def _read_hooks_config(root: Path, plugin_dir: Path | None = None) -> HookConfig | None:
     """Read ``hooks/hooks.json`` under ``root``, or None if it is absent.
 
     Shared by the concrete strategies: hooks, agents and commands use the same
@@ -160,7 +178,7 @@ def _read_hooks_config(root: Path) -> HookConfig | None:
     Agent Plugins).
     """
     hooks_json = root / "hooks" / "hooks.json"
-    if not hooks_json.exists():
+    if not hooks_json.exists() or not resolves_within(hooks_json, plugin_dir or root):
         return None
 
     try:
@@ -178,15 +196,18 @@ def _read_hooks_config(root: Path) -> HookConfig | None:
         return None
 
 
-def _read_command_definitions(root: Path) -> list[CommandDefinition]:
+def _read_command_definitions(
+    root: Path, plugin_dir: Path | None = None
+) -> list[CommandDefinition]:
     """Read command definitions from the ``commands/`` directory under ``root``.
 
     Commands have no counterpart to :func:`load_agents_from_dir`, so this is the
     one loader of the three the plugin format still owns. It applies the same
     file predicate, so ``commands/`` and ``agents/`` stay symmetric.
     """
+    plugin_dir = plugin_dir or root
     commands_dir = root / "commands"
-    if not commands_dir.is_dir():
+    if not commands_dir.is_dir() or not resolves_within(commands_dir, plugin_dir):
         return []
 
     commands: list[CommandDefinition] = []
@@ -199,6 +220,7 @@ def _read_command_definitions(root: Path) -> list[CommandDefinition]:
                 "README.md",
                 "readme.md",
             )
+            and resolves_within(item, plugin_dir)
         ):
             try:
                 command = CommandDefinition.load(item)
@@ -208,6 +230,28 @@ def _read_command_definitions(root: Path) -> list[CommandDefinition]:
                 logger.warning(f"Failed to load command from {item}: {e}")
 
     return commands
+
+
+def _without_escaping_resources(skill: Skill, plugin_dir: Path) -> Skill:
+    """Drop resource files (``scripts/`` etc.) that resolve outside the root."""
+    res = skill.resources
+    if res is None:
+        return skill
+    root = Path(res.skill_root)
+
+    def kept(kind: str, files: list[str]) -> list[str]:
+        return [f for f in files if resolves_within(root / kind / f, plugin_dir)]
+
+    contained = SkillResources(
+        skill_root=res.skill_root,
+        scripts=kept("scripts", res.scripts),
+        references=kept("references", res.references),
+        assets=kept("assets", res.assets),
+    )
+    if contained == res:
+        return skill
+    resources = contained if contained.has_resources() else None
+    return skill.model_copy(update={"resources": resources})
 
 
 def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
@@ -224,7 +268,7 @@ def _load_root_skill(plugin_dir: Path, skill_md: Path) -> list[Skill]:
         # Skill.load() discovers resources, no need to do it again
         skill = Skill.load(skill_md, plugin_dir, strict=False, skip_mcp=True)
         logger.debug(f"Loaded single-skill plugin: {skill.name} from {skill_md}")
-        return [skill]
+        return [_without_escaping_resources(skill, plugin_dir)]
     except Exception as e:
         logger.warning(f"Failed to load root skill from {plugin_dir}: {e}")
         return []

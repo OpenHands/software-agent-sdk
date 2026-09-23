@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "full-package-*",
+        "hooks": [{ "type": "command", "command": "echo full-package pre-tool" }]
+      }
+    ]
+  }
+}

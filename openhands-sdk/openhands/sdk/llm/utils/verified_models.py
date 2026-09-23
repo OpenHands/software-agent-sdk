@@ -53,6 +53,7 @@ VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
     "deepseek-v3.2-reasoner",
 ]
 
@@ -81,6 +82,7 @@ VERIFIED_GLM_MODELS = [
 VERIFIED_NVIDIA_MODELS = [
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
+    "nemotron-3-nano-omni-30b-a3b-reasoning",
     "nemotron-3-super-120b-a12b",
     "nemotron-3-ultra-550b-a55b",
 ]
@@ -123,6 +125,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "deepseek-v4-pro",
     "deepseek-v4-flash",
     "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash",
     "deepseek-v3.2-reasoner",
     "kimi-k3",
     "kimi-k2.7-code",

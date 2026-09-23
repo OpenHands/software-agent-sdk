@@ -72,10 +72,10 @@ class DockerConversationRegistry(ConversationRegistry):
         self.provisioning = RuntimeProvisioningStore(config)
         self._containers: dict[UUID, ConversationContainer] = {}
         self._starts: dict[UUID, asyncio.Task[ConversationContainer]] = {}
+        self._deleting: set[UUID] = set()
         self._lock = asyncio.Lock()
 
     def configure_service(self, service: ConversationService) -> None:
-        service.sync_external_catalog = True
         service.runtime_cipher_resolver = self.resolve_persisted_cipher
 
     def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
@@ -177,6 +177,8 @@ class DockerConversationRegistry(ConversationRegistry):
 
     async def get_or_create(self, conversation_id: UUID) -> ConversationContainer:
         async with self._lock:
+            if conversation_id in self._deleting:
+                raise RuntimeError("Conversation is being deleted")
             container = self._containers.get(conversation_id)
 
         if container is not None:
@@ -187,6 +189,8 @@ class DockerConversationRegistry(ConversationRegistry):
                     self._containers.pop(conversation_id)
 
         async with self._lock:
+            if conversation_id in self._deleting:
+                raise RuntimeError("Conversation is being deleted")
             task = self._starts.get(conversation_id)
             if task is None:
                 task = asyncio.create_task(
@@ -214,6 +218,17 @@ class DockerConversationRegistry(ConversationRegistry):
             self._starts.pop(conversation_id, None)
             self._containers[conversation_id] = container
             return container
+
+    async def begin_delete(self, conversation_id: UUID) -> bool:
+        async with self._lock:
+            if conversation_id in self._deleting:
+                return False
+            self._deleting.add(conversation_id)
+            return True
+
+    async def finish_delete(self, conversation_id: UUID) -> None:
+        async with self._lock:
+            self._deleting.discard(conversation_id)
 
     async def stop(self, conversation_id: UUID) -> None:
         async with self._lock:
@@ -299,6 +314,8 @@ class DockerConversationRegistry(ConversationRegistry):
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            "--add-host",
+            "host.docker.internal:host-gateway",
             "--label",
             f"{_OWNER_LABEL}={self.owner}",
             "--name",

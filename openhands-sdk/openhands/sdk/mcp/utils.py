@@ -6,12 +6,15 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+import httpx
 import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
+from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
+from mcp.shared._httpx_utils import create_mcp_http_client
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -114,6 +117,52 @@ def _oauth_auth_from_authentication_config(
     )
 
 
+class _PackageRemoteMCPServer(RemoteMCPServer):
+    """A package-declared remote server whose headers stay on its own origin.
+
+    Agent Plugins §7.2.1: configured headers must not follow a redirect to a
+    different origin. httpx strips only ``Authorization`` there, so this
+    server's HTTP client drops every configured header name from any request
+    that leaves the configured origin.
+    """
+
+    def to_transport(self):  # type: ignore[override]
+        transport = super().to_transport()
+        if isinstance(transport, StreamableHttpTransport) and self.headers:
+            transport.httpx_client_factory = _origin_bound_client_factory(
+                self.url, tuple(self.headers)
+            )
+        return transport
+
+
+def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
+    origin = _origin(httpx.URL(url))
+
+    async def drop_headers_off_origin(request: httpx.Request) -> None:
+        # Request hooks run on every redirect hop, after httpx has copied the
+        # previous request's headers onto the next one.
+        if _origin(request.url) != origin:
+            for name in header_names:
+                request.headers.pop(name, None)
+
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+        **_: object,
+    ) -> httpx.AsyncClient:
+        client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
+        return client
+
+    return factory
+
+
+def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
+    default_port = {"http": 80, "https": 443}.get(url.scheme)
+    return url.scheme, url.host, url.port or default_port
+
+
 def _prepare_mcp_config(
     mcp_config: dict[str, MCPServer],
     *,
@@ -122,6 +171,13 @@ def _prepare_mcp_config(
 ) -> FastMCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
     prepared = FastMCPConfig.model_validate(to_fastmcp_mcp_config(mcp_config))
+
+    for server_name, server_spec in mcp_config.items():
+        server = prepared.mcpServers.get(server_name)
+        if server_spec.literal_values and isinstance(server, RemoteMCPServer):
+            prepared.mcpServers[server_name] = _PackageRemoteMCPServer.model_validate(
+                server.model_dump()
+            )
 
     for server_name, server_spec in mcp_config.items():
         auth = server_spec.auth
