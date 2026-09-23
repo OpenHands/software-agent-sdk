@@ -18,6 +18,7 @@ from openai.types.responses.response_reasoning_item import (
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.chat_options import select_chat_options
@@ -632,3 +633,69 @@ def test_stream_delta_chunks_carry_the_output_item_id():
     _, chunk = llm._process_stream_event(other, emit_deltas=True)
     assert chunk is not None
     assert chunk.id == "msg_def"
+
+
+@pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
+@pytest.mark.parametrize(
+    "completion_source", ["yielded", "wrapper", "both", "initial", "missing"]
+)
+async def test_responses_stream_completion_state(mode, completion_source):
+    events, yielded_response = _make_wrapped_response_stream_events("yielded")
+    wrapper_events, wrapper_response = _make_wrapped_response_stream_events("wrapper")
+
+    class CompletionStream:
+        completed_response = (
+            wrapper_events[-1] if completion_source == "initial" else None
+        )
+
+        def __iter__(self):
+            if completion_source in ("yielded", "both"):
+                yield from events
+            if completion_source in ("wrapper", "both"):
+                self.completed_response = wrapper_events[-1]
+            elif completion_source == "initial":
+                self.completed_response = None
+
+        async def __aiter__(self):
+            for event in self:
+                yield event
+
+    class SyncCompletionStream:
+        def __init__(self):
+            self.inner = CompletionStream()
+
+        @property
+        def completed_response(self):
+            return self.inner.completed_response
+
+        def __iter__(self):
+            return iter(self.inner)
+
+    stream = CompletionStream() if mode == "async" else SyncCompletionStream()
+    llm = LLM(model="gpt-4o", api_key=SecretStr("test_key"), num_retries=0)
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    received = []
+
+    async def invoke():
+        if mode == "sync":
+            with patch("openhands.sdk.llm.llm.litellm_responses", return_value=stream):
+                return llm.responses(messages, stream=True, on_token=received.append)
+        with patch(
+            "openhands.sdk.llm.llm.litellm_aresponses",
+            new_callable=AsyncMock,
+            return_value=stream,
+        ):
+            return await llm.aresponses(messages, stream=True, on_token=received.append)
+
+    if completion_source == "missing":
+        with pytest.raises(LLMNoResponseError, match="without a completed response"):
+            await invoke()
+    else:
+        response = await invoke()
+        expected = (
+            yielded_response if completion_source == "yielded" else wrapper_response
+        )
+        assert response.raw_response is expected
+        assert [chunk.choices[0].delta.content for chunk in received] == (
+            ["yielded"] if completion_source in ("yielded", "both") else []
+        )
