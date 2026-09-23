@@ -51,12 +51,12 @@ MCP_TOOL_TIMEOUT_SECONDS = 300
 # mcp 2.x dumps its snake_case attribute names unless by_alias=True; mcp 1.x
 # only reads the camelCase wire names. Keys inside inputSchema/outputSchema
 # are user JSON Schema and must never be renamed.
-_MCP_TOOL_WIRE_KEYS: Final = {
+_MCP_TOOL_WIRE_KEYS: Final[dict[str, str]] = {
     "input_schema": "inputSchema",
     "output_schema": "outputSchema",
     "meta": "_meta",
 }
-_MCP_NESTED_WIRE_KEYS: Final = {
+_MCP_NESTED_WIRE_KEYS: Final[dict[str, dict[str, str]]] = {
     "annotations": {
         "read_only_hint": "readOnlyHint",
         "destructive_hint": "destructiveHint",
@@ -69,11 +69,7 @@ _MCP_NESTED_WIRE_KEYS: Final = {
 
 
 def _rename_keys(data: dict[str, Any], renames: dict[str, str]) -> dict[str, Any]:
-    out = dict(data)
-    for old, new in renames.items():
-        if old in out and new not in out:
-            out[new] = out.pop(old)
-    return out
+    return {renames.get(k, k): v for k, v in data.items()}
 
 
 def _mcp_tool_to_wire_keys(data: Any) -> Any:

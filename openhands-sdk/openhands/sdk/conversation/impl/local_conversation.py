@@ -2805,9 +2805,9 @@ class LocalConversation(BaseConversation):
         # Always close tool executors — they hold runtime resources
         # (subprocesses, connections, etc.) that must be released regardless
         # of whether the conversation data is preserved (delete_on_close).
-        if first_attempt and agent is not None:
+        if first_attempt:
             with contextlib.suppress(AttributeError, RuntimeError):
-                for tool in agent.tools_map.values():
+                for tool in self.agent.tools_map.values():
                     with contextlib.suppress(NotImplementedError):
                         try:
                             executable_tool = tool.as_executable()
