@@ -1,0 +1,22 @@
+{
+  "id": "6067c08a-f29b-49d7-a68a-d457be31740b",
+  "timestamp": "2026-09-23T09:42:20.031135",
+  "source": "environment",
+  "parent_id": "70a1d8db-d1cf-4fb5-a126-b90213d993a7",
+  "tool_name": "finish",
+  "tool_call_id": "call_finish",
+  "observation": {
+    "content": [
+      {
+        "cache_prompt": false,
+        "type": "text",
+        "text": "done"
+      }
+    ],
+    "is_error": false,
+    "kind": "FinishObservation"
+  },
+  "action_id": "70a1d8db-d1cf-4fb5-a126-b90213d993a7",
+  "extended_content": [],
+  "kind": "ObservationEvent"
+}

@@ -2787,10 +2787,18 @@ class LocalConversation(BaseConversation):
                 self._end_observability_span()
             except AttributeError:
                 pass
+        # __init__ may have raised before assigning self.agent (e.g. a persisted
+        # event failed validation); there is nothing to release in that case.
+        agent: AgentBase | None
+        try:
+            agent = self.agent
+        except AttributeError:
+            agent = None
         # Clean up agent resources (e.g., ACPAgent subprocess)
         agent_error: Exception | None = None
         try:
-            self.agent.close()
+            if agent is not None:
+                agent.close()
         except Exception as e:
             logger.warning(f"Error closing agent: {e}")
             agent_error = e

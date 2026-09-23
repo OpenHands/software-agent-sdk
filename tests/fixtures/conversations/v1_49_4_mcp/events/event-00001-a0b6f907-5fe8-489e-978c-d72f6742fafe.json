@@ -1,0 +1,20 @@
+{
+  "id": "a0b6f907-5fe8-489e-978c-d72f6742fafe",
+  "timestamp": "2026-09-23T09:42:19.468733",
+  "source": "user",
+  "parent_id": "e578ed6a-9b9f-4ff6-ad02-45549bfc38f7",
+  "llm_message": {
+    "role": "user",
+    "content": [
+      {
+        "cache_prompt": false,
+        "type": "text",
+        "text": "hello"
+      }
+    ],
+    "thinking_blocks": []
+  },
+  "activated_skills": [],
+  "extended_content": [],
+  "kind": "MessageEvent"
+}
