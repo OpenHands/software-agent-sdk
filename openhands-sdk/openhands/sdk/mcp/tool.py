@@ -17,7 +17,7 @@ from litellm import ChatCompletionToolParam
 from openai.types.responses import FunctionToolParam
 from pydantic import (
     Field,
-    FieldSerializationInfo,
+    SerializerFunctionWrapHandler,
     ValidationError,
     field_serializer,
     field_validator,
@@ -293,15 +293,14 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     def _read_either_mcp_spelling(cls, v: Any) -> Any:
         return _mcp_tool_to_wire_keys(v)
 
-    @field_serializer("mcp_tool")
+    @field_serializer("mcp_tool", mode="wrap")
     def _write_mcp_wire_spelling(
-        self, v: mcp.types.Tool, info: FieldSerializationInfo
-    ) -> dict[str, Any]:
+        self, v: mcp.types.Tool, handler: SerializerFunctionWrapHandler
+    ):
         # Persisted events outlive the resolved mcp major; always write the
-        # spec's wire names so every mcp version can read them back.
-        return v.model_dump(
-            mode=info.mode, by_alias=True, exclude_none=info.exclude_none
-        )
+        # spec's wire names so every mcp version can read them back. No return
+        # annotation, so the OpenAPI schema keeps referencing mcp.types.Tool.
+        return _mcp_tool_to_wire_keys(handler(v))
 
     @property
     def name(self) -> str:  # type: ignore[override]
