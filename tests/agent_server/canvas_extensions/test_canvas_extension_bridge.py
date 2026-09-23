@@ -230,6 +230,7 @@ async def test_live_http_bootstrap_cookie_scope_and_proxy_security(live_bridge) 
     assert bootstrap.status_code == 200
     assert bootstrap.json()["ingress_url"] == f"{root}/"
     assert "session" not in bootstrap.json()["ingress_url"]
+    assert "allow-same-origin" in bootstrap.json()["iframe_sandbox"]
     set_cookie = bootstrap.headers["set-cookie"]
     assert set_cookie.startswith(f"{APP_BACKEND_SESSION_COOKIE_NAME}=")
     assert f"Path=/app-backends/{APP_NAME}" in set_cookie

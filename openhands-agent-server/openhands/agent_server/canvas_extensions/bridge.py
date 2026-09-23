@@ -43,12 +43,16 @@ class AppBackendSessionResponse(BaseModel):
     """Browser bootstrap result for one running Canvas App backend.
 
     The session credential is delivered only as an HttpOnly cookie. ``ingress_url``
-    contains no credential and must be loaded from a separate browser origin.
+    contains no credential and must be loaded from a separate browser origin. That
+    origin is the isolation boundary, so frames retain their origin for cookies,
+    workers, WebSockets, and Origin-based request validation.
     """
 
     ingress_url: str
     expires_at: datetime
-    iframe_sandbox: str = "allow-forms allow-modals allow-popups allow-scripts"
+    iframe_sandbox: str = (
+        "allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+    )
 
 
 @dataclass(frozen=True, slots=True)
