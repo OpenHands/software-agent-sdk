@@ -47,6 +47,14 @@ def test_get_env_prefers_environment_over_dotenv():
             mock_dotenv.assert_not_called()
 
 
+def test_get_env_empty_env_falls_back_to_dotenv():
+    """Test that an empty (but set) env var falls back to the dotenv lookup."""
+    with patch.dict(os.environ, {"TEST_VAR": ""}, clear=True):
+        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
+            mock_dotenv.return_value = {"TEST_VAR": "dotenv_value"}
+            assert get_env("TEST_VAR") == "dotenv_value"
+
+
 def test_get_env_from_dotenv():
     """Test that get_env can retrieve values from dotenv file."""
     with patch.dict(os.environ, {}, clear=True):
