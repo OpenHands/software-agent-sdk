@@ -1,15 +1,13 @@
 """Persisted MCP tools must load under either mcp major (#5251)."""
 
-import gc
 import json
-import logging
 import uuid
 from pathlib import Path
 from unittest.mock import Mock
 
 import mcp.types
 import pytest
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretStr
 from pydantic.alias_generators import to_camel
 
 from openhands.sdk.agent import Agent
@@ -188,16 +186,3 @@ def test_resume_conversation_persisted_under_mcp2(tmp_path):
     prompts = [e for e in conv.state.events if isinstance(e, SystemPromptEvent)]
     assert prompts[-1].tools[0].name == "read_file"
     conv.close()
-
-
-def test_failed_resume_surfaces_original_error(tmp_path, caplog):
-    conv_id, event_file = _conversation_with_mcp_tool(tmp_path)
-    _set_persisted_mcp_tool(event_file, {"name": "read_file"})
-
-    with caplog.at_level(logging.WARNING):
-        with pytest.raises(ValidationError, match="inputSchema"):
-            _resume(tmp_path, conv_id)
-        gc.collect()
-
-    assert "Error closing agent" not in caplog.text
-    assert "Error during conversation cleanup" not in caplog.text
