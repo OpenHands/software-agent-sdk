@@ -11,7 +11,7 @@ name: Bump chart image tag
 
 on:
     workflow_run:
-        workflows: ["Agent Server"]
+        workflows: [Agent Server]
         types: [completed]
 
 # One in-flight bump per component+repo, so two near-simultaneous releases can't
@@ -143,5 +143,5 @@ jobs:
               env:
                   URL: ${{ steps.cpr.outputs.pull-request-url }}
                   OP: ${{ steps.cpr.outputs.pull-request-operation }}
-              run: |
+              run: |-
                   echo "PR ${OP}: ${URL}" >> "$GITHUB_STEP_SUMMARY"
