@@ -68,22 +68,21 @@ _MCP_NESTED_WIRE_KEYS: Final[dict[str, dict[str, str]]] = {
 }
 
 
-def _rename_keys(data: dict[str, Any], renames: dict[str, str]) -> dict[str, Any]:
-    return {renames.get(k, k): v for k, v in data.items()}
-
-
 def _mcp_tool_to_wire_keys(data: Any) -> Any:
     """Normalize a serialized mcp.types.Tool to the MCP spec's camelCase keys."""
     if not isinstance(data, dict):
         return data
-    out = _rename_keys(data, _MCP_TOOL_WIRE_KEYS)
+    out = {_MCP_TOOL_WIRE_KEYS.get(k, k): v for k, v in data.items()}
     for key, renames in _MCP_NESTED_WIRE_KEYS.items():
         value = out.get(key)
         if isinstance(value, dict):
-            out[key] = _rename_keys(value, renames)
+            out[key] = {renames.get(k, k): v for k, v in value.items()}
         elif isinstance(value, list):
             out[key] = [
-                _rename_keys(v, renames) if isinstance(v, dict) else v for v in value
+                {renames.get(k, k): v for k, v in item.items()}
+                if isinstance(item, dict)
+                else item
+                for item in value
             ]
     return out
 
