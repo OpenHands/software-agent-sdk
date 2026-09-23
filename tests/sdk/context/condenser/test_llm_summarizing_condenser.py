@@ -1128,4 +1128,3 @@ async def test_ahard_context_reset_preserves_leading_system_prompt(
     assert events[0].id not in result.forgotten_event_ids
     messages = _applied_messages(result, view)
     assert messages[0].role == "system"
-
