@@ -59,14 +59,6 @@ class TestHookExecutor:
     def test_null_decision_leaves_a_successful_hook_successful(
         self, executor, sample_event
     ):
-        """`{"decision": null}` on exit 0 is a hook that made no decision.
-
-        Regression test for
-        https://github.com/OpenHands/software-agent-sdk/issues/4766: .lower() on
-        the None raised, and because only JSONDecodeError is caught the
-        AttributeError reached the outer handler and reported exit -1 for a
-        subprocess that had exited 0.
-        """
         hook = HookDefinition(command="""echo '{"decision": null}'""")
 
         result = executor.execute(hook, sample_event)
