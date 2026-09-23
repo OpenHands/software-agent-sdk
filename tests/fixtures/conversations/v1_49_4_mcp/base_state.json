@@ -1,0 +1,101 @@
+{
+  "id": "51b45f91-d38a-498e-9f7f-718ad9ec1c60",
+  "agent": {
+    "llm": {
+      "model": "fixture-model",
+      "api_key": "**********",
+      "auth_type": "api_key",
+      "openrouter_site_url": "https://docs.all-hands.dev/",
+      "openrouter_app_name": "OpenHands",
+      "num_retries": 5,
+      "retry_multiplier": 8.0,
+      "retry_min_wait": 8,
+      "retry_max_wait": 64,
+      "timeout": 300,
+      "max_message_chars": 30000,
+      "api_mode": "auto",
+      "capability_overrides": {},
+      "stream": false,
+      "drop_params": true,
+      "disable_stop_word": false,
+      "caching_prompt": true,
+      "log_completions": false,
+      "log_completions_folder": "logs/completions",
+      "native_tool_calling": true,
+      "reasoning_effort": "high",
+      "enable_encrypted_reasoning": true,
+      "prompt_cache_retention": "24h",
+      "extended_thinking_budget": 200000,
+      "usage_id": "agent",
+      "litellm_extra_body": {},
+      "is_subscription": false
+    },
+    "tools": [],
+    "mcp_config": {
+      "files": {
+        "command": "/fixture/venv/bin/python",
+        "args": [
+          "/fixture/mcp_server.py"
+        ],
+        "enabled": true
+      }
+    },
+    "include_default_tools": [
+      "FinishTool",
+      "ThinkTool"
+    ],
+    "system_prompt_filename": "system_prompt.j2",
+    "security_policy_filename": "security_policy.j2",
+    "system_prompt_kwargs": {
+      "llm_security_analyzer": true
+    },
+    "tool_concurrency_limit": 1,
+    "kind": "Agent"
+  },
+  "workspace": {
+    "working_dir": "/fixture/workspace",
+    "kind": "LocalWorkspace"
+  },
+  "persistence_dir": "/fixture/conversations/51b45f91d38a498e9f7f718ad9ec1c60",
+  "max_iterations": 500,
+  "stuck_detection": true,
+  "execution_status": "idle",
+  "confirmation_policy": {
+    "kind": "NeverConfirm"
+  },
+  "activated_knowledge_skills": [],
+  "activated_path_rules": [],
+  "invoked_skills": [],
+  "blocked_actions": {},
+  "blocked_messages": {},
+  "last_user_message_id": "f6c4cd01-4e48-4ac3-9624-991a3e68bae4",
+  "leaf_event_id": "f6c4cd01-4e48-4ac3-9624-991a3e68bae4",
+  "head_is_empty": false,
+  "stats": {
+    "usage_to_metrics": {
+      "agent": {
+        "model_name": "fixture-model",
+        "accumulated_cost": 0.0,
+        "accumulated_token_usage": {
+          "model": "fixture-model",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        },
+        "costs": [],
+        "response_latencies": [],
+        "token_usages": []
+      }
+    }
+  },
+  "secret_registry": {
+    "secret_sources": {}
+  },
+  "tags": {},
+  "agent_state": {}
+}
