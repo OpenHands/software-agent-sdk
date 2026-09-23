@@ -41,6 +41,13 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm._response_stream import (
+    OutputItemEvent,
+    ResponseStreamEvent,
+    async_response_events,
+    completed_response as get_completed_response,
+    response_events,
+)
 from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
@@ -1270,8 +1277,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     def _process_stream_event(
-        self, event: Any, *, emit_deltas: bool = True
-    ) -> tuple[Any | None, ModelResponseStream | None]:
+        self, event: ResponseStreamEvent, *, emit_deltas: bool = True
+    ) -> tuple[object | None, ModelResponseStream | None]:
         """Extract output item and delta chunk from a Responses stream event.
 
         Args:
@@ -1282,15 +1289,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             (output_item, delta_chunk) — either or both may be ``None``.
         """
-        output_item: Any | None = None
+        output_item: object | None = None
         delta_chunk: ModelResponseStream | None = None
 
         # Collect finished output items
-        evt_type = getattr(event, "type", None)
-        if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
-            item = getattr(event, "item", None)
-            if item is not None:
-                output_item = item
+        if (
+            isinstance(event, OutputItemEvent)
+            and event.type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
+        ):
+            output_item = event.item
 
         if emit_deltas and isinstance(
             event,
@@ -1313,7 +1320,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _finalize_stream_response(
         self,
-        completed_response: Any,
+        completed_response: ResponseCompletedEvent | None,
         collected_output_items: list[Any],
     ) -> ResponsesAPIResponse:
         """Validate and patch the completed response from a Responses stream.
@@ -2099,12 +2106,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response.completed event has output=[].  We
                 # accumulate them here and patch the completed
                 # response if needed.
-                collected_output_items: list[Any] = []
-                completed_response = getattr(ret, "completed_response", None)
-                stream = cast(Iterable[Any], ret)
-                for event in stream:
-                    if event is None:
-                        continue
+                collected_output_items: list[object] = []
+                completed_response = get_completed_response(ret)
+                if not isinstance(ret, Iterable):
+                    raise TypeError(f"Expected a response stream, got {type(ret)}")
+                for event in response_events(ret):
                     if isinstance(event, ResponseCompletedEvent):
                         completed_response = event
                     output_item, delta_chunk = self._process_stream_event(
@@ -2115,9 +2121,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     if stream_callback is not None and delta_chunk is not None:
                         stream_callback(delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                completed_response = get_completed_response(ret, completed_response)
                 return self._finalize_stream_response(
                     completed_response, collected_output_items
                 )
@@ -2276,13 +2280,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response.completed event has output=[].  We
                 # accumulate them here and patch the completed
                 # response if needed.
-                collected_output_items: list[Any] = []
-                completed_response = getattr(ret, "completed_response", None)
-                if hasattr(ret, "__aiter__"):
-                    stream = cast(AsyncIterable[Any], ret)
-                    async for event in self._aiter_with_idle_timeout(stream):
-                        if event is None:
-                            continue
+                collected_output_items: list[object] = []
+                completed_response = get_completed_response(ret)
+                if isinstance(ret, AsyncIterable):
+                    async for event in async_response_events(
+                        self._aiter_with_idle_timeout(ret)
+                    ):
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
@@ -2293,13 +2296,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
                 else:
+                    if not isinstance(ret, Iterable):
+                        raise TypeError(f"Expected a response stream, got {type(ret)}")
                     loop = asyncio.get_running_loop()
-                    events: list[Any] = await loop.run_in_executor(
-                        None, list, cast(Iterable[Any], ret)
+                    events = await loop.run_in_executor(
+                        None, list, response_events(ret)
                     )
                     for event in events:
-                        if event is None:
-                            continue
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
@@ -2310,9 +2313,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                completed_response = get_completed_response(ret, completed_response)
                 return self._finalize_stream_response(
                     completed_response, collected_output_items
                 )
@@ -2561,7 +2562,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             chunks: list[ModelResponseStream] = []
             # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
             # back a plain sync generator from ``litellm_acompletion``
-            if hasattr(ret, "__aiter__"):
+            if isinstance(ret, AsyncIterable):
                 stream = cast(AsyncIterable[ModelResponseStream], ret)
                 async for chunk in self._aiter_with_idle_timeout(stream):
                     await _invoke_token_callback(on_token, chunk)
