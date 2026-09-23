@@ -9,7 +9,8 @@ from unittest.mock import Mock
 
 import mcp.types
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from pydantic.alias_generators import to_camel
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -53,6 +54,17 @@ MCP1_TOOL = {
     "_meta": {"k": 1},
 }
 
+# SDK 1.49.4 (mcp 1.x) dumped by field name: camelCase, but "meta" not "_meta".
+MCP1_BY_NAME_TOOL = {("meta" if k == "_meta" else k): v for k, v in MCP1_TOOL.items()}
+
+
+class _Mcp2StyleAnnotations(BaseModel):
+    """Shape of mcp 2.x ToolAnnotations: snake_case attributes, camelCase aliases."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    read_only_hint: bool | None = None
+    open_world_hint: bool | None = None
+
 
 def _persisted_system_prompt(raw_tool: dict) -> str:
     tool = MCPToolDefinition.create(
@@ -64,7 +76,11 @@ def _persisted_system_prompt(raw_tool: dict) -> str:
     return json.dumps(payload)
 
 
-@pytest.mark.parametrize("raw_tool", [MCP2_TOOL, MCP1_TOOL], ids=["mcp2", "mcp1"])
+@pytest.mark.parametrize(
+    "raw_tool",
+    [MCP2_TOOL, MCP1_BY_NAME_TOOL, MCP1_TOOL],
+    ids=["sdk-1.49.1-mcp2", "sdk-1.49.4-mcp1", "wire"],
+)
 def test_persisted_mcp_tool_loads_in_either_spelling(raw_tool):
     event = Event.model_validate_json(_persisted_system_prompt(raw_tool))
 
@@ -90,10 +106,38 @@ def test_mcp_tool_is_written_in_wire_spelling():
     assert Event.model_validate_json(event.model_dump_json()) == event
 
 
-def test_create_keeps_mcp_annotations():
-    tool = MCPToolDefinition.create(
-        mcp.types.Tool.model_validate(MCP1_TOOL), Mock(spec=MCPClient)
-    )[0]
+def test_minimal_mcp_tool_with_nulls_loads():
+    raw = {
+        "name": "t",
+        "input_schema": {"type": "object"},
+        "output_schema": None,
+        "annotations": None,
+        "icons": None,
+        "execution": None,
+        "meta": None,
+    }
+    event = Event.model_validate_json(_persisted_system_prompt(raw))
+
+    assert isinstance(event, SystemPromptEvent)
+    tool = event.tools[0]
+    assert isinstance(tool, MCPToolDefinition)
+    wire = tool.mcp_tool.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert wire == {"name": "t", "inputSchema": {"type": "object"}}
+
+
+@pytest.mark.parametrize(
+    "annotations",
+    [
+        mcp.types.ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        _Mcp2StyleAnnotations(read_only_hint=True, open_world_hint=False),
+    ],
+    ids=["installed-mcp", "mcp2-shape"],
+)
+def test_create_keeps_mcp_annotations(annotations):
+    mcp_tool = mcp.types.Tool.model_validate(MCP1_TOOL).model_copy(
+        update={"annotations": annotations}
+    )
+    tool = MCPToolDefinition.create(mcp_tool, Mock(spec=MCPClient))[0]
 
     assert tool.annotations is not None
     assert tool.annotations.readOnlyHint is True
