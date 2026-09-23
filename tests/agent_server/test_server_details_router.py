@@ -124,3 +124,9 @@ def test_server_info_advertises_profile_secret_enforcement(client):
     response = client.get("/server_info")
     assert response.status_code == 200
     assert "profile_secret_scope_v1" in response.json()["capabilities"]
+
+
+def test_server_info_advertises_tool_catalog_and_draft_materialize(client):
+    capabilities = client.get("/server_info").json()["capabilities"]
+    assert "tool_catalog_v1" in capabilities
+    assert "agent_profile_draft_materialize_v1" in capabilities

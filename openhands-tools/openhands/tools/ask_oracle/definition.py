@@ -1,7 +1,7 @@
 """Action, observation, and tool definitions for the ask_oracle tool."""
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final, Self
+from typing import TYPE_CHECKING, ClassVar, Final, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -81,6 +81,10 @@ _DESCRIPTION = (
 
 class AskOracleTool(ToolDefinition[AskOracleAction, AskOracleObservation]):
     """Tool for consulting the Oracle (a saved LLM profile named "oracle")."""
+
+    catalog_description: ClassVar[str] = (
+        "Ask a stronger model for a second opinion on hard problems."
+    )
 
     @classmethod
     def create(

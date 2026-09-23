@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 from pydantic import Field
 
@@ -142,6 +142,8 @@ class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
     (e.g., in tests or extensions).
     """
 
+    user_selectable: ClassVar[bool] = False
+
     @classmethod
     def create(
         cls,
@@ -170,6 +172,8 @@ class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
 
 class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
     """Tool set that creates the dynamic workflow tool."""
+
+    catalog_description: ClassVar[str] = "Run the workflows defined for this project."
 
     @classmethod
     def create(

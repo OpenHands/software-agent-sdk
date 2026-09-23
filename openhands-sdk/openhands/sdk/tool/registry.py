@@ -3,6 +3,8 @@ from collections.abc import Callable, Sequence
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolDefinition
@@ -32,6 +34,17 @@ _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
+_TOOL_CLASSES: dict[str, type[ToolDefinition]] = {}
+_CATALOG_NAMES: set[str] | None = None
+
+
+class ToolCatalogEntry(BaseModel):
+    """A registered tool as offered to clients configuring an agent."""
+
+    name: str
+    user_selectable: bool = True
+    usable: bool = True
+    description: str = ""
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -129,21 +142,16 @@ def register_tool(
             ".executor, or (2) a ToolDefinition subclass with .create(**params)"
         )
 
-    # Track the module qualname for this tool
-    module_qualname = None
-    if isinstance(factory, type):
-        module_qualname = factory.__module__
-    elif isinstance(factory, ToolDefinition):
-        module_qualname = factory.__class__.__module__
+    tool_class = factory if isinstance(factory, type) else factory.__class__
 
     with _LOCK:
         # TODO: throw exception when registering duplicate name tools
         if name in _REG:
-            logger.warning(f"Duplicate tool name registerd {name}")
+            logger.warning(f"Duplicate tool name registered: {name}")
         _REG[name] = resolver
         _USABILITY_REG[name] = usability_checker
-        if module_qualname:
-            _MODULE_QUALNAMES[name] = module_qualname
+        _TOOL_CLASSES[name] = tool_class
+        _MODULE_QUALNAMES[name] = tool_class.__module__
 
 
 def resolve_tool(
@@ -153,9 +161,14 @@ def resolve_tool(
         resolver = _REG.get(tool_spec.name)
 
     if resolver is None:
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
+        from openhands.sdk.tool.builtins import (
+            BUILT_IN_TOOL_CLASSES,
+            BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME,
+        )
 
-        tool_class = BUILT_IN_TOOL_CLASSES.get(tool_spec.name)
+        tool_class = BUILT_IN_TOOL_CLASSES.get(
+            tool_spec.name
+        ) or BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME.get(tool_spec.name)
         if tool_class is None:
             raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
         resolver = _resolver_from_subclass(tool_spec.name, tool_class)
@@ -200,6 +213,61 @@ def list_usable_tools() -> list[str]:
         for name in tool_names
         if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
     ]
+
+
+def seal_tool_catalog() -> None:
+    """Freeze the catalog to the tools registered so far.
+
+    A server calls this once it has finished loading its tools. Registrations
+    after it — a conversation's client tools or dynamically imported modules —
+    vanish on restart, so they are never offered for configuring an agent.
+    """
+    global _CATALOG_NAMES
+    with _LOCK:
+        _CATALOG_NAMES = set(_REG)
+
+
+def list_tool_catalog() -> list[ToolCatalogEntry]:
+    """List the tools this process offers for configuring an agent.
+
+    Includes the built-ins a user may select: they are resolved by class name
+    rather than through the registry, but a profile stores them in ``tools``
+    like any other pick.
+    """
+    from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
+
+    with _LOCK:
+        names = [
+            name for name in _REG if _CATALOG_NAMES is None or name in _CATALOG_NAMES
+        ]
+        tool_classes = dict(_TOOL_CLASSES)
+        usability_checkers = dict(_USABILITY_REG)
+
+    entries = [
+        ToolCatalogEntry(
+            name=name,
+            user_selectable=tool_classes[name].user_selectable,
+            usable=_check_tool_usable(name, usability_checkers.get(name, lambda: True)),
+            description=tool_classes[name].catalog_description,
+        )
+        for name in names
+    ]
+    # Built-ins are keyed by class name, but a profile stores the same snake_case
+    # tool name as every other pick.
+    listed = {entry.name for entry in entries}
+    entries.extend(
+        ToolCatalogEntry(
+            name=tool_class.name,
+            user_selectable=tool_class.user_selectable,
+            usable=_check_tool_usable(
+                tool_class.name, _usability_from_subclass(tool_class)
+            ),
+            description=tool_class.catalog_description,
+        )
+        for tool_class in BUILT_IN_TOOL_CLASSES.values()
+        if tool_class.user_selectable and tool_class.name not in listed
+    )
+    return entries
 
 
 def get_tool_module_qualnames() -> dict[str, str]:

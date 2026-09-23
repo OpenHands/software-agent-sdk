@@ -698,12 +698,14 @@ def test_start_conversation_agent_settings_uses_sdk_default_tools(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert "SwitchLLMTool" in request.agent.include_default_tools
+        # `switch_llm` is delivered through `tools` now, not include_default_tools.
+        assert any(tool.name == "switch_llm" for tool in request.agent.tools)
         assert {tool.name for tool in request.agent.tools} == {
             "terminal",
             "file_editor",
             "task_tracker",
             "browser_tool_set",
+            "switch_llm",
         }
     finally:
         client.app.dependency_overrides.clear()

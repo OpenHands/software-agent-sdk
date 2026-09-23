@@ -1,7 +1,7 @@
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -402,6 +402,10 @@ systematic approach and ensures comprehensive requirement fulfillment."""  # noq
 
 class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation]):
     """A ToolDefinition subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
+
+    catalog_description: ClassVar[str] = (
+        "Keep a running task list to organise multi-step work."
+    )
 
     @classmethod
     def create(cls, conv_state: "ConversationState") -> Sequence["TaskTrackerTool"]:

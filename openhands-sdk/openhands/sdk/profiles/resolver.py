@@ -47,6 +47,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.tool.defaults import resolve_tool_specs
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -229,6 +230,8 @@ def _build_openhands_settings(
     llm: LLM,
     mcp_config: dict[str, MCPServer],
     filtered_skills: list[Skill],
+    *,
+    browser_available: bool,
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
@@ -247,8 +250,10 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        # Tri-state passthrough; create_agent materializes None.
-        "tools": profile.tools,
+        "tools": resolve_tool_specs(
+            profile.tools,
+            enable_browser=browser_available,
+        ),
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -257,8 +262,10 @@ def _build_openhands_settings(
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
-        "enable_sub_agents": profile.enable_sub_agents,
-        "enable_switch_llm_tool": profile.enable_switch_llm_tool,
+        # Pinned off so the settings defaults cannot re-add a tool the
+        # profile's ``tools`` did not ask for.
+        "enable_sub_agents": False,
+        "enable_switch_llm_tool": False,
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
@@ -315,6 +322,7 @@ def resolve_agent_profile(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
+    browser_available: bool = False,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
 
@@ -328,6 +336,8 @@ def resolve_agent_profile(
     deployment leaves skill sourcing to the CLI. Unlike the ``mcp_server_refs``
     allow-list, the ``disabled_skills`` deny-list can never dangle, so this
     never raises for skills. ``cipher`` decrypts the referenced LLM profile.
+    ``browser_available`` adds the browser tool set to a default toolset; the
+    caller probes the runtime the agent will run on.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
@@ -347,7 +357,13 @@ def resolve_agent_profile(
             raise ProfileNotFound(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             ) from e
-        return _build_openhands_settings(profile, llm, filtered_mcp, filtered_skills)
+        return _build_openhands_settings(
+            profile,
+            llm,
+            filtered_mcp,
+            filtered_skills,
+            browser_available=browser_available,
+        )
 
     return _build_acp_settings(
         profile, filtered_mcp, _apply_disabled_skills(available_skills, [])
@@ -361,6 +377,7 @@ def resolve_agent_profile_dry_run(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
+    browser_available: bool = False,
 ) -> AgentProfileDiagnostics:
     """Compute :class:`AgentProfileDiagnostics` without raising or side effects.
 
@@ -442,7 +459,11 @@ def resolve_agent_profile_dry_run(
                         "OpenHands profile marked valid without a resolved LLM"
                     )
                 settings = _build_openhands_settings(
-                    profile, llm, filtered_mcp, filtered_skills
+                    profile,
+                    llm,
+                    filtered_mcp,
+                    filtered_skills,
+                    browser_available=browser_available,
                 )
             else:
                 settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)

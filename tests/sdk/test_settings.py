@@ -962,7 +962,9 @@ def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
     assert agent.llm is llm
-    assert agent.tools == tools
+    # `switch_llm` joins from the default-on settings switch; the explicit
+    # selection itself is used verbatim.
+    assert agent.tools == [*tools, Tool(name="switch_llm")]
 
 
 def test_llm_create_agent_defaults_tool_concurrency_limit_to_one() -> None:
@@ -977,7 +979,12 @@ def test_create_agent_defaults_tools_when_none() -> None:
     settings = OpenHandsAgentSettings(llm=LLM(model="test-model"))
     assert settings.tools is None
     agent = settings.create_agent()
-    assert [t.name for t in agent.tools] == ["terminal", "file_editor", "task_tracker"]
+    assert [t.name for t in agent.tools] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "switch_llm",
+    ]
 
 
 def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
@@ -985,12 +992,67 @@ def test_create_agent_default_tools_honor_enable_sub_agents() -> None:
         llm=LLM(model="test-model"), enable_sub_agents=True
     )
     agent = settings.create_agent()
+    # `switch_llm` comes from the default set, so the sub-agent set lands after it.
     assert [t.name for t in agent.tools] == [
         "terminal",
         "file_editor",
         "task_tracker",
+        "switch_llm",
         "task_tool_set",
     ]
+
+
+def test_switch_llm_turned_off_is_honoured_for_the_default_set() -> None:
+    """The default set carries `switch_llm`, so the off switch has to remove it.
+
+    Reported by @rajshah4: an agent_settings with the flag off and `tools`
+    unset was still getting the tool.
+    """
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), enable_switch_llm_tool=False
+    ).create_agent()
+
+    assert "switch_llm" not in [t.name for t in agent.tools]
+
+
+def test_switch_llm_class_name_alias_is_not_duplicated() -> None:
+    """`resolve_tool` takes a built-in under either name, so both select one
+    tool — adding the second spelling would trip the duplicate-name guard."""
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[Tool(name="SwitchLLMTool")]
+    ).create_agent()
+
+    assert [t.name for t in agent.tools] == ["SwitchLLMTool"]
+
+
+def test_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
+    """The switch only ever fed the default set.
+
+    An explicit ``tools`` is used exactly as given, so turning sub-agents on
+    must not append to it — honouring the switch against an explicit list is
+    its own behaviour change (#5157), deliberately not made here.
+    """
+    explicit = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"),
+        tools=[Tool(name="terminal")],
+        enable_sub_agents=True,
+    ).create_agent()
+    assert "task_tool_set" not in [t.name for t in explicit.tools]
+
+    bare = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[], enable_sub_agents=True
+    ).create_agent()
+    assert "task_tool_set" not in [t.name for t in bare.tools]
+
+
+def test_explicitly_selected_switch_llm_is_not_added_twice() -> None:
+    """The catalog offers `switch_llm` as a pick; the default-on switch must
+    not then deliver it a second time and trip the duplicate-name guard."""
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[Tool(name="switch_llm")]
+    ).create_agent()
+
+    assert [t.name for t in agent.tools] == ["switch_llm"]
 
 
 def test_create_agent_empty_tools_stays_bare() -> None:
@@ -998,7 +1060,8 @@ def test_create_agent_empty_tools_stays_bare() -> None:
     compatibility — [] predates the None default and keeps its old meaning)."""
     settings = OpenHandsAgentSettings(llm=LLM(model="test-model"), tools=[])
     agent = settings.create_agent()
-    assert agent.tools == []
+    # Bare of exec tools; `switch_llm` still comes from the default-on switch.
+    assert [t.name for t in agent.tools] == ["switch_llm"]
 
 
 def test_tool_concurrency_limit_defaults_to_one_when_omitted_from_payload() -> None:

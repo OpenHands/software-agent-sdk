@@ -785,6 +785,10 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     when created and automatically installs it if missing.
     """
 
+    catalog_description: ClassVar[str] = (
+        "Browse the web: navigate pages, click, type and read content."
+    )
+
     # Shared executor: reuse a single Chromium/CDP instance across parent
     # and subagents to avoid CDP port conflicts in sandbox containers.
     _shared_executor: ClassVar["BrowserToolExecutor | None"] = None
