@@ -118,7 +118,11 @@ class ConversationCompatError(RuntimeError):
 
 def write_baseline_conversation(root: Path, sdk_version: str) -> Path:
     """Persist a conversation with ``sdk_version``; return its directory."""
-    cutoff = settings_compat.get_pypi_release_cutoff("openhands-sdk", sdk_version)
+    # openhands-tools is uploaded after openhands-sdk; exclude neither.
+    cutoff = max(
+        settings_compat.get_pypi_release_cutoff(distribution, sdk_version)
+        for distribution in ("openhands-sdk", "openhands-tools")
+    )
     venv = root / "venv"
     python = settings_compat._venv_python(venv)
     server = root / "mcp_server.py"

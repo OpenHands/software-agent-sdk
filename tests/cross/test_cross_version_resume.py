@@ -18,7 +18,7 @@ from openhands.sdk.mcp.definition import MCPToolObservation
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
-FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "conversations"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "conversations"
 CASES = sorted(p for p in FIXTURES.iterdir() if (p / "events").is_dir())
 REQUIRED_EVENT_KINDS = {
     "SystemPromptEvent",
