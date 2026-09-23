@@ -39,3 +39,33 @@ export type AgentServerMCPOAuthCallbackRequest =
 export type AgentServerMCPOAuthCallbackResponse =
   SubmitMcpOauthCallbackApiMcpOauthCallbackJobIdPostResponse;
 export type AgentServerMCPToolCallResult = McpToolCallResult;
+
+export interface AgentServerCanvasBackendRevisionRequest {
+  revision: string;
+}
+
+export type AgentServerCanvasBackendState =
+  'missing' | 'stopped' | 'starting' | 'ready' | 'unhealthy' | 'unsupported';
+
+export interface AgentServerCanvasBackendStatus {
+  name: string;
+  state: AgentServerCanvasBackendState;
+  revision?: string | null;
+  prepared_revision?: string | null;
+  pid?: number | null;
+  port?: number | null;
+  detail?: string | null;
+}
+
+export interface AgentServerCanvasBackendLogs {
+  name: string;
+  logs: string;
+  truncated: boolean;
+}
+
+export type AgentServerCanvasBackendStatusResponse = AgentServerCanvasBackendStatus;
+export type AgentServerCanvasBackendPrepareResponse = AgentServerCanvasBackendStatus;
+export type AgentServerCanvasBackendStartResponse = AgentServerCanvasBackendStatus;
+export type AgentServerCanvasBackendStopResponse = AgentServerCanvasBackendStatus;
+export type AgentServerCanvasBackendDataDeleteResponse = AgentServerCanvasBackendStatus;
+export type AgentServerCanvasBackendLogsResponse = AgentServerCanvasBackendLogs;

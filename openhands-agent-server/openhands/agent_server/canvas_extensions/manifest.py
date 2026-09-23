@@ -16,9 +16,9 @@ two security-critical checks around it:
 
 import re
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 
@@ -85,6 +85,80 @@ class CanvasExtensionContributes(BaseModel):
         return v
 
 
+BackendPlatform = Literal["linux-amd64", "linux-arm64"]
+
+
+class CanvasExtensionBackendArtifact(BaseModel):
+    """Immutable backend artifact for one supported platform."""
+
+    path: str = Field(description="Package-relative .tar.gz artifact path")
+    sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$", description="Lowercase SHA-256 checksum"
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        if (
+            not value
+            or value.startswith("/")
+            or ".." in Path(value).parts
+            or not value.endswith(".tar.gz")
+        ):
+            raise ValueError("artifact path must be a relative .tar.gz path")
+        return value
+
+
+class CanvasExtensionBackendHealth(BaseModel):
+    """Loopback HTTP readiness probe for a backend process."""
+
+    path: str = Field(default="/health", pattern=r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$")
+    timeout_seconds: float = Field(default=30, gt=0, le=300)
+    interval_seconds: float = Field(default=0.1, gt=0, le=10)
+
+
+class CanvasExtensionBackend(BaseModel):
+    """Optional trusted backend declaration for schema-1 Canvas Apps."""
+
+    schema_version: Literal[1]
+    artifacts: dict[BackendPlatform, CanvasExtensionBackendArtifact] = Field(
+        min_length=1
+    )
+    argv: list[str] = Field(min_length=1)
+    health: CanvasExtensionBackendHealth = Field(
+        default_factory=CanvasExtensionBackendHealth
+    )
+    inherit_environment: list[str] = Field(default_factory=list)
+
+    @field_validator("argv")
+    @classmethod
+    def _validate_argv(cls, value: list[str]) -> list[str]:
+        allowed = {"{port}", "{data_dir}", "{artifact_dir}"}
+        for argument in value:
+            if not argument or "\x00" in argument:
+                raise ValueError("backend argv entries must be non-empty")
+            placeholders = set(re.findall(r"\{[^{}]+\}", argument))
+            if not placeholders.issubset(allowed):
+                raise ValueError("backend argv contains an unsupported placeholder")
+        return value
+
+    @field_validator("inherit_environment")
+    @classmethod
+    def _validate_environment(cls, value: list[str]) -> list[str]:
+        allowed = {"LANG", "LC_ALL", "LC_CTYPE", "PATH", "TMPDIR", "TZ"}
+        if len(value) != len(set(value)):
+            raise ValueError("inherit_environment entries must be unique")
+        if not set(value).issubset(allowed):
+            raise ValueError("inherit_environment contains a disallowed variable")
+        return value
+
+    @model_validator(mode="after")
+    def _require_artifact_executable(self) -> "CanvasExtensionBackend":
+        if "{artifact_dir}" not in self.argv[0]:
+            raise ValueError("backend argv executable must be inside {artifact_dir}")
+        return self
+
+
 class CanvasExtensionManifest(BaseModel):
     """Canvas extension manifest (``canvas-extension.json``)."""
 
@@ -102,6 +176,18 @@ class CanvasExtensionManifest(BaseModel):
         default_factory=CanvasExtensionContributes,
         description="Contributions this extension makes to the Canvas UI",
     )
+    backend: CanvasExtensionBackend | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Optional explicitly prepared and started backend service",
+    )
+
+    @field_validator("schema_version")
+    @classmethod
+    def _validate_schema_version(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("unsupported canvas extension schema_version")
+        return value
 
     @field_validator("name")
     @classmethod
