@@ -1094,5 +1094,3 @@ def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> 
     assert messages[0].role == "system"
     # The forgotten set must not include the leading system prompt event.
     assert events[0].id not in result.forgotten_event_ids
-
-
