@@ -197,6 +197,31 @@ def test_agent_server_node_pin_clears_every_declared_engine_floor() -> None:
         )
 
 
+def test_agent_server_runtime_dependencies_use_patched_versions() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert dockerfile_text.count("ghcr.io/astral-sh/uv:0.12.18") == 2
+    assert "node-v22.23.2-linux-${NARCH}.tar.xz" in dockerfile_text
+    assert 'ARG RELEASE_TAG="openvscode-server-v1.109.5"' in dockerfile_text
+    assert "install --global npm@12.1.0" in dockerfile_text
+
+
+def test_acp_provider_image_drops_installer_only_package_managers() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+    acp_stage = dockerfile_text.partition("FROM python:3.13-bookworm AS acp-providers")[
+        2
+    ].partition("####")[0]
+
+    for path in (
+        '"$ACP_NODE_DIR/lib/node_modules/npm"',
+        '"$ACP_NODE_DIR/lib/node_modules/corepack"',
+        '"$ACP_NODE_DIR/bin/npm"',
+        '"$ACP_NODE_DIR/bin/npx"',
+        '"$ACP_NODE_DIR/bin/corepack"',
+    ):
+        assert path in acp_stage
+
+
 def test_agent_server_dockerfile_acp_stage_uses_install_catalog() -> None:
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
 
