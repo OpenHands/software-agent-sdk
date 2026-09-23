@@ -25,6 +25,11 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
+from openhands.sdk.conversation.turn_rollback import (
+    build_recovery_message,
+    find_turn_start,
+    summarize_completed_calls,
+)
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
@@ -55,6 +60,7 @@ from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_call
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
+from openhands.sdk.llm.exceptions import LLMHistoryContentRejectedError
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -197,6 +203,7 @@ class LocalConversation(BaseConversation):
     # it must skip re-acquiring the lock the run loop holds while blocked
     # awaiting that tool (#3485).
     _step_holds_state_lock: bool
+    _history_rollback_used: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -311,6 +318,7 @@ class LocalConversation(BaseConversation):
         self._cancel_token = None
         self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
+        self._history_rollback_used = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -1874,6 +1882,56 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._on_event(event)
 
+    def _recover_from_rejected_history_content(
+        self, error: LLMHistoryContentRejectedError
+    ) -> bool:
+        """Roll the poisoned turn out of view so the run can continue.
+
+        Returns False when recovery is not possible or has already been used in
+        this run, in which case the caller lets the error terminate the run as
+        before.
+        """
+        if self._history_rollback_used:
+            logger.warning(
+                "Provider rejected history content again after a rollback; "
+                "surfacing the error instead of unwinding further."
+            )
+            return False
+
+        branch = self._state.events.path_to_root(self._state.leaf_event_id)
+        target_id, actions = find_turn_start(branch)
+        if not actions:
+            logger.warning(
+                "Provider rejected history content but no agent turn was found "
+                "to roll back; surfacing the error."
+            )
+            return False
+
+        completed = summarize_completed_calls(branch, actions)
+        self._history_rollback_used = True
+        logger.warning(
+            "Provider rejected content in the conversation history. Rolling "
+            "back %d tool call(s) from the last turn and asking the agent to "
+            "try a different approach: %s",
+            len(actions),
+            error,
+        )
+
+        self.navigate_to(target_id)
+        self._on_event(
+            MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[
+                        TextContent(text=build_recovery_message(str(error), completed))
+                    ],
+                ),
+            )
+        )
+        self._state.execution_status = ConversationExecutionStatus.RUNNING
+        return True
+
     @contextlib.asynccontextmanager
     async def _released_state_lock_during_io(self):
         """Release the run loop's state lock across an awaited LLM network call.
@@ -1927,6 +1985,9 @@ class LocalConversation(BaseConversation):
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
+        # Rollback recovery is one-shot per run: a repeat failure means the
+        # rollback did not help, so surface it instead of unwinding further.
+        self._history_rollback_used = False
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
@@ -1991,6 +2052,10 @@ class LocalConversation(BaseConversation):
                         self.agent.step(
                             self, on_event=self._on_event, on_token=self._on_token
                         )
+                    except LLMHistoryContentRejectedError as e:
+                        if not self._recover_from_rejected_history_content(e):
+                            raise
+                        continue
                     finally:
                         self._step_holds_state_lock = False
                     iteration += 1
@@ -2129,6 +2194,9 @@ class LocalConversation(BaseConversation):
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
+        # Rollback recovery is one-shot per run: a repeat failure means the
+        # rollback did not help, so surface it instead of unwinding further.
+        self._history_rollback_used = False
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
@@ -2250,6 +2318,10 @@ class LocalConversation(BaseConversation):
                                 on_event=self._on_event,
                                 on_token=self._on_token,
                             )
+                        except LLMHistoryContentRejectedError as e:
+                            if not self._recover_from_rejected_history_content(e):
+                                raise
+                            continue
                         finally:
                             self._step_holds_state_lock = False
                         iteration += 1
