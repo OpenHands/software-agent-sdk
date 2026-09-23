@@ -110,6 +110,34 @@ async def test_litellm_modify_params_is_process_wide_and_calls_overlap(monkeypat
     assert llm_module.litellm.modify_params is True
 
 
+@pytest.mark.parametrize(
+    "reasoning,provider_fields",
+    [(None, None), ("", {}), ("reasoning", {"signature": "provider-signature"})],
+)
+def test_prompt_mock_preserves_reasoning_metadata(reasoning, provider_fields):
+    raw_response = create_mock_response()
+    raw_response.choices[0].message = LiteLLMMessage(
+        role="assistant",
+        content="<function=test_tool><parameter=param>value</parameter></function>",
+        reasoning_content=reasoning,
+        provider_specific_fields=provider_fields,
+    )
+    llm = LLM(model="gpt-4o", native_tool_calling=False, num_retries=0)
+    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=raw_response):
+        result = llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="Run tool")])],
+            tools=list(_MockTool.create()),
+        )
+
+    assert result.message.tool_calls
+    assert result.message.tool_calls[0].name == "test_tool"
+    assert result.message.reasoning_content == (reasoning or None)
+    assert result.raw_response is raw_response
+    output = raw_response.choices[0].message.model_dump()
+    assert output.get("reasoning_content") == (reasoning or None)
+    assert output.get("provider_specific_fields") == (provider_fields or None)
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_completion_basic(mock_completion):
     """Test basic LLM completion functionality."""

@@ -1061,8 +1061,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _build_responses_result(self, resp: ResponsesAPIResponse) -> LLMResponse:
         """Convert a raw :class:`ResponsesAPIResponse` into an :class:`LLMResponse`."""
-        output_seq = cast(Sequence[Any], resp.output or [])
-        message = Message.from_llm_responses_output(output_seq)
+        message = Message.from_llm_responses_output(resp.output)
         return LLMResponse(
             message=message,
             metrics=self.metrics.get_snapshot(),

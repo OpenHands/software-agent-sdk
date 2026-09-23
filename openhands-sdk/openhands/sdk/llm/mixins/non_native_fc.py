@@ -6,6 +6,7 @@ from typing import Protocol, TypeGuard
 from litellm import ChatCompletionToolParam, Message as LiteLLMMessage
 from litellm.types.utils import Choices, ModelResponse, StreamingChoices
 
+from openhands.sdk.llm._message_normalization import ChatMessageMetadata
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.mixins.fn_call_converter import (
     STOP_WORDS,
@@ -97,11 +98,11 @@ class NonNativeToolCallingMixin:
         )
         last: dict = fn_msgs[-1]
 
-        for name in ("reasoning_content", "provider_specific_fields"):
-            val = getattr(orig_msg, name, None)
-            if not val:
-                continue
-            last[name] = val
+        metadata = ChatMessageMetadata.model_validate(orig_msg)
+        if metadata.reasoning_content:
+            last["reasoning_content"] = metadata.reasoning_content
+        if metadata.provider_specific_fields:
+            last["provider_specific_fields"] = metadata.provider_specific_fields
 
         resp.choices[0].message = LiteLLMMessage.model_validate(last)
         return resp

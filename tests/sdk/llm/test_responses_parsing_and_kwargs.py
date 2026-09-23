@@ -1,4 +1,5 @@
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 from litellm.types.llms.openai import (
@@ -699,3 +700,39 @@ async def test_responses_stream_completion_state(mode, completion_source):
         assert [chunk.choices[0].delta.content for chunk in received] == (
             ["yielded"] if completion_source in ("yielded", "both") else []
         )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_responses_reconstructs_output_without_callback(asynchronous):
+    events, completed = _make_wrapped_response_stream_events()
+    output_item = completed.output[0]
+    completed.output = []
+    events.insert(
+        0,
+        SimpleNamespace(
+            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE, item=output_item
+        ),
+    )
+
+    async def async_events():
+        for event in events:
+            yield event
+
+    llm = LLM(model="gpt-4o", num_retries=0)
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    with patch.object(LLM, "requires_streaming", new_callable=PropertyMock) as required:
+        required.return_value = True
+        if asynchronous:
+            with patch(
+                "openhands.sdk.llm.llm.litellm_aresponses",
+                new_callable=AsyncMock,
+                return_value=async_events(),
+            ):
+                result = await llm.aresponses(messages, stream=True)
+        else:
+            with patch(
+                "openhands.sdk.llm.llm.litellm_responses", return_value=iter(events)
+            ):
+                result = llm.responses(messages, stream=True)
+    assert result.raw_response is completed
+    assert result.message.content == [TextContent(text="Hello wrapped stream")]
