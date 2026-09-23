@@ -255,9 +255,7 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
                 window = recent_events[-self.history_limit :]
                 # Re-include the leading system prompt if the tail window dropped it.
                 if recent_events and isinstance(recent_events[0], SystemPromptEvent):
-                    if not any(
-                        isinstance(e, SystemPromptEvent) for e in window
-                    ):
+                    if not any(isinstance(e, SystemPromptEvent) for e in window):
                         recent_events = [recent_events[0], *window]
                     else:
                         recent_events = window

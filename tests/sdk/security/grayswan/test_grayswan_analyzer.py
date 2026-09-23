@@ -365,10 +365,7 @@ class TestGraySwanAnalyzerSecurityRisk:
 
         events = [
             create_mock_system_prompt_event("You are a safe assistant."),
-            *[
-                create_mock_message_event(f"Message {i}", "user")
-                for i in range(5)
-            ],
+            *[create_mock_message_event(f"Message {i}", "user") for i in range(5)],
         ]
         analyzer.set_events(events)
 
