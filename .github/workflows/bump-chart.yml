@@ -1,0 +1,147 @@
+---
+name: Bump chart image tag
+
+# Self-contained bump for the openhands-cloud agent-server chart pin. The
+# `bump-image-tag` reusable workflow in OpenHands/OpenHands-Cloud edits a
+# single chart file per call, but the agent-server tag is pinned in three
+# places; calling it 3x would race on a shared branch (each call checks out
+# main independently) or produce 3 PRs. Instead,this workflow checks out
+# openhands-cloud once, runs its blessed bump_image_tag.py edit script three
+# times,and opens ONE PR.
+
+on:
+    workflow_run:
+        workflows: ["Agent Server"]
+        types: [completed]
+
+# One in-flight bump per component+repo, so two near-simultaneous releases can't
+# clobber each other's branch. Don't cancel:a running bump should finish.
+
+concurrency:
+    group: bump-image-tag-OpenHands-OpenHands-Cloud-agent-server
+    cancel-in-progress: false
+
+jobs:
+
+    bump-chart:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        # Act on the chart repo exclusively via the release App token minted below,
+        # never via GITHUB_TOKEN: the org secrets RELEASE_APP_ID and
+        # RELEASE_APP_PRIVATE_KEY are inherited by all OpenHands repos (the same
+        # shared release App enterprise/agent-canvas use).)
+        permissions: {}
+        if: github.event.workflow_run.conclusion == 'success'
+
+        steps:
+            - name: Validate release tag
+              id: tag
+              env:
+                  HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+              run: |
+                  BRANCH="$HEAD_BRANCH"
+
+                  # Only release tags publish a <version>-python image; skip other runs.
+
+                  if ! [[ "$BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                      echo "Skipping non-release run (branch=$BRANCH)"
+                      echo "valid=false" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  echo "valid=true" >> "$GITHUB_OUTPUT"
+                  echo "version=${BRANCH#v}" >> "$GITHUB_OUTPUT"
+                  echo "image_tag=${BRANCH#v}-python" >> "$GITHUB_OUTPUT"
+
+            - name: Mint GitHub App token (scoped to OpenHands-Cloud)
+              if: steps.tag.outputs.valid == 'true'
+              id: app-token
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: OpenHands-Cloud
+
+            - name: Checkout chart repo
+              if: steps.tag.outputs.valid == 'true'
+              uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+              with:
+                  repository: OpenHands/OpenHands-Cloud
+                  ref: main
+                  token: ${{ steps.app-token.outputs.token }}
+                  persist-credentials: false
+
+            - name: Set up uv
+              if: steps.tag.outputs.valid == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+            - name: Bump image-loader image tag
+              if: steps.tag.outputs.valid == 'true'
+              env:
+                  IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+              run: |
+                  uv run scripts/bump_image_tag/bump_image_tag.py \
+                      --file charts/image-loader/values.yaml \
+                      --path .image.tag \
+                      --tag "$IMAGE_TAG"
+
+            - name: Bump runtime-api image tag
+              if: steps.tag.outputs.valid == 'true'
+              env:
+                  IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+              run: |
+                  uv run scripts/bump_image_tag/bump_image_tag.py \
+                      --file charts/openhands/charts/runtime-api/values.yaml \
+                      --path .global.agentServerImage.tag \
+                      --tag "$IMAGE_TAG"
+
+            - name: Bump openhands image tag
+              if: steps.tag.outputs.valid == 'true'
+              env:
+                  IMAGE_TAG: ${{ steps.tag.outputs.image_tag }}
+              run: |
+                  uv run scripts/bump_image_tag/bump_image_tag.py \
+                      --file charts/openhands/values.yaml \
+                      --path .global.agentServerImage.tag \
+                      --tag "$IMAGE_TAG"
+
+            - name: Create or update pull request
+              id: cpr
+              if: steps.tag.outputs.valid == 'true'
+              uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+              with:
+                  token: ${{ steps.app-token.outputs.token }}
+                  # Commit only the three files we edited.
+                  add-paths: |
+                      charts/image-loader/values.yaml
+                      charts/openhands/charts/runtime-api/values.yaml
+                      charts/openhands/values.yaml
+                  base: main
+                  branch: bump-image-tag/agent-server
+                  delete-branch: true
+                  commit-message: 'feat(agent-server): bump image tag to ${{ steps.tag.outputs.image_tag }}'
+                  title: 'feat(agent-server): bump image tag to ${{ steps.tag.outputs.image_tag }}'
+                  labels: automated,image-bump
+                  body: |
+                      Automated image tag bump for **agent-server** after the Agent
+                      Server image build completed for release **v${{ steps.tag.outputs.version }}**.
+
+                      | File | Path |
+                      | --- | --- |
+                      | `charts/image-loader/values.yaml` | `.image.tag` |
+                      | `charts/openhands/charts/runtime-api/values.yaml` | `.global.agentServerImage.tag` |
+                      | `charts/openhands/values.yaml` | `.global.agentServerImage.tag` |
+
+                      Opened by software-agent-sdk's `bump-chart.yml` workflow after the
+                      Agent Server image build completed for release v${{ steps.tag.outputs.version }}.
+
+
+
+            - name: Summary
+              if: steps.cpr.outputs.pull-request-number != ''
+              env:
+                  URL: ${{ steps.cpr.outputs.pull-request-url }}
+                  OP: ${{ steps.cpr.outputs.pull-request-operation }}
+              run: |
+                  echo "PR ${OP}: ${URL}" >> "$GITHUB_STEP_SUMMARY"
