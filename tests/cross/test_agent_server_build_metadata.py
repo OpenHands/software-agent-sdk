@@ -193,6 +193,23 @@ def test_fips_image_is_separate_and_uses_validated_provider() -> None:
     assert 'NODE_OPTIONS="--enable-fips --openssl-shared-config"' in dockerfile_text
 
 
+def test_agent_server_uses_one_pinned_npm_version_for_both_node_runtimes() -> None:
+    dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
+
+    match = re.search(r"(?m)^ARG NPM_VERSION=(\d+\.\d+\.\d+)$", dockerfile_text)
+    assert match
+    assert match.group(1) == "11.19.1"
+    assert dockerfile_text.count("ARG NPM_VERSION\n") == 2
+    assert (
+        "node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "
+        '"npm@${NPM_VERSION}"' in dockerfile_text
+    )
+    assert (
+        '"$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"'
+        in dockerfile_text
+    )
+
+
 def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:
     """The acp-providers stage must resolve packages/versions from the
     dependency-free catalog at build time, not from Dockerfile-baked arms.
