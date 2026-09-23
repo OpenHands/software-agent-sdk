@@ -255,12 +255,14 @@ async def test_set_connection_token_same_token_keeps_server(vscode_service):
 
 @pytest.mark.asyncio
 async def test_set_connection_token_without_running_server(vscode_service):
-    """A server that is not running only records the token."""
+    """A server that is not running keeps its token, so no URL is advertised
+    for a VSCode that never started."""
     with patch.object(vscode_service, "start") as mock_start:
         await vscode_service.set_connection_token("session-key")
 
     mock_start.assert_not_called()
-    assert vscode_service.connection_token == "session-key"
+    assert vscode_service.connection_token is None
+    assert vscode_service.get_vscode_url() is None
 
 
 def test_get_vscode_url_no_token(vscode_service):
