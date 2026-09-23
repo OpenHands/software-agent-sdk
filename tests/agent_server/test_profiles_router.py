@@ -1765,6 +1765,33 @@ def test_validate_profile_success(client):
     assert body["error"] is None
 
 
+def test_validate_profile_sends_system_first(client):
+    """The pre-flight ping must open with a system message (repo invariant #5146)."""
+    from unittest.mock import MagicMock
+
+    captured: dict[str, object] = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        captured["messages"] = list(messages)
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            new=fake_acompletion,
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/test-profile/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    msgs = captured["messages"]
+    assert [m.role for m in msgs] == ["system", "user"]
+
+
 def test_validate_profile_responses_api(client):
     """Pre-flight uses the Responses API when the profile model requires it.
 
