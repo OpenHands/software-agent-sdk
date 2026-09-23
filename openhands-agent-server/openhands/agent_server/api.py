@@ -24,6 +24,10 @@ from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
 )
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
+from openhands.agent_server.canvas_extensions_bridge_router import (
+    app_backend_bridge_router,
+)
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
     Config,
@@ -292,6 +296,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 yield
             finally:
+                await api.state.app_backend_session_store.shutdown()
                 await conversation_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
@@ -479,6 +484,7 @@ def _add_api_routes(app: FastAPI) -> None:
     app.include_router(workspace_api_router)
     app.include_router(api_router)
 
+    app.include_router(app_backend_bridge_router)
     app.include_router(conversation_registry.sockets_router)
 
 
@@ -709,6 +715,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.config = config
     app.state.conversation_registry = create_conversation_registry(config)
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
+    app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)
     _setup_static_files(app, config)
