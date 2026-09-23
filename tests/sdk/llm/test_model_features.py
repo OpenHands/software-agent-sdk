@@ -55,7 +55,6 @@ def test_model_matches(name, pattern, expected):
         ("gemini-3-flash-preview", True),
         # GPT-5 family
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("gpt-5.4", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
@@ -483,7 +482,6 @@ def test_supports_stop_words_false_models(model):
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("openai/gpt-5-mini", True),
         ("codex-mini-latest", True),
         ("openai/codex-mini-latest", True),
@@ -518,7 +516,6 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5", True),
         # New GPT-5.2 family should support extended retention
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("openai/gpt-5.2-chat-latest", True),
         ("openai/gpt-5.2-pro", True),
         ("openai/gpt-5-mini", False),
