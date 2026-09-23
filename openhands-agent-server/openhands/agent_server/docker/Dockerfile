@@ -174,6 +174,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 # `min_node_version` in ACP_INSTALL_CATALOG (asserted by
 # tests/cross/test_agent_server_build_metadata.py).
 ####################################################################################
+FROM node:22.23.2-bookworm-slim AS acp-node-runtime
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
@@ -183,6 +184,11 @@ ARG INSTALL_ACP_PROVIDERS
 # parent, mirroring /agent-server's own top-level placement in the builder
 # stage above.
 ENV ACP_NODE_DIR=/acp-node
+COPY --from=acp-node-runtime /usr/local/bin/node /acp-node/bin/node
+COPY --from=acp-node-runtime /usr/local/lib/node_modules /acp-node/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /acp-node/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /acp-node/bin/npx \
+ && ln -s ../lib/node_modules/corepack/dist/corepack.js /acp-node/bin/corepack
 # The catalog module is dependency-free (stdlib only), so it can be COPYed
 # into this bare `python` image and run as-is — no pip install, and no need
 # to pull in the rest of the SDK source (which would break the zero-context
@@ -191,29 +197,13 @@ ENV ACP_NODE_DIR=/acp-node
 COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py /tmp/acp_install_catalog.py
 RUN set -eux; \
     ACP_WRAPPER_DIR=/opt/acp-wrappers; \
-    mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
+    mkdir -p "$ACP_WRAPPER_DIR"; \
     PLAN=$(python3 /tmp/acp_install_catalog.py "$INSTALL_ACP_PROVIDERS") || exit 1; \
     eval "$PLAN"; \
     if [ -z "$PACKAGES" ]; then \
       echo "INSTALL_ACP_PROVIDERS is empty; no ACP providers will be installed"; \
       exit 0; \
     fi; \
-    apt-get -o Acquire::Retries=5 update; \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-        ca-certificates curl xz-utils; \
-    rm -rf /var/lib/apt/lists/*; \
-    ARCH=$(uname -m); \
-    case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8;; \
-      *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
-    esac; \
-    NODE_TARBALL="/tmp/node-v22.23.2-linux-${NARCH}.tar.xz"; \
-    curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
-    echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
-    tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
-    rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
     for bin in $WRAPPER_BINS; do \

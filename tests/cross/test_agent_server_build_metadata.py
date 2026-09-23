@@ -183,8 +183,11 @@ def test_agent_server_node_pin_clears_every_declared_engine_floor() -> None:
     and warnings do not fail a build.
     """
     dockerfile_text = AGENT_SERVER_DOCKERFILE.read_text(encoding="utf-8")
-    match = re.search(r"nodejs\.org/dist/v(\d+\.\d+\.\d+)/", dockerfile_text)
-    assert match, f"{AGENT_SERVER_DOCKERFILE}: no pinned Node download URL found"
+    match = re.search(
+        r"FROM node:(\d+\.\d+\.\d+)-bookworm-slim AS acp-node-runtime",
+        dockerfile_text,
+    )
+    assert match, f"{AGENT_SERVER_DOCKERFILE}: no pinned ACP Node image found"
     pinned = tuple(int(part) for part in match.group(1).split("."))
 
     for spec in ACP_INSTALL_CATALOG.values():
@@ -202,7 +205,7 @@ def test_agent_server_runtime_dependencies_use_patched_versions() -> None:
 
     assert dockerfile_text.count("FROM ghcr.io/astral-sh/uv:0.12.18 AS uv-runtime") == 1
     assert dockerfile_text.count("COPY --from=uv-runtime /uv /uvx /bin/") == 2
-    assert "node-v22.23.2-linux-${NARCH}.tar.xz" in dockerfile_text
+    assert "FROM node:22.23.2-bookworm-slim AS acp-node-runtime" in dockerfile_text
     assert 'ARG RELEASE_TAG="openvscode-server-v1.109.5"' in dockerfile_text
     assert "install --global npm@12.1.0" in dockerfile_text
 
