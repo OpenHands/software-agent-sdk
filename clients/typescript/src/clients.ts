@@ -1,6 +1,7 @@
 export { AgentProfilesClient } from './client/agent-profiles-client';
 export { ServerClient } from './client/server-client';
 export { BashClient } from './client/bash-client';
+export { CanvasExtensionsClient } from './client/canvas-extensions-client';
 export { ConversationClient } from './client/conversation-client';
 export { FileClient } from './client/file-client';
 export { HooksClient } from './client/hooks-client';
@@ -37,6 +38,7 @@ export {
 
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
+export type { CanvasExtensionsClientOptions } from './client/canvas-extensions-client';
 export type {
   ConversationClientOptions,
   CreateConversationPayload,
@@ -80,6 +82,15 @@ export type {
 } from './client/workspaces-client';
 export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 export type {
+  AgentServerCanvasBackendDataDeleteResponse,
+  AgentServerCanvasBackendLogs,
+  AgentServerCanvasBackendLogsResponse,
+  AgentServerCanvasBackendPrepareResponse,
+  AgentServerCanvasBackendRevisionRequest,
+  AgentServerCanvasBackendStartResponse,
+  AgentServerCanvasBackendStatus,
+  AgentServerCanvasBackendStatusResponse,
+  AgentServerCanvasBackendStopResponse,
   AgentServerConversationSettingsSchema,
   AgentServerMCPOAuthCallbackRequest,
   AgentServerMCPOAuthCallbackResponse,

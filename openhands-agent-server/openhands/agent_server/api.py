@@ -21,6 +21,9 @@ from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.canvas_extensions.backend import (
+    CanvasExtensionBackendManager,
+)
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
     Config,
@@ -302,6 +305,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
+        await api.state.canvas_extension_backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
 
@@ -704,6 +708,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app = _create_fastapi_instance(config)
     app.state.config = config
     app.state.conversation_registry = create_conversation_registry(config)
+    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
 
     _add_api_routes(app)
     _setup_static_files(app, config)
