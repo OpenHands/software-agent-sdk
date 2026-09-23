@@ -1,5 +1,7 @@
 """Tests for judge_goal / GoalVerdict (the goal-completion judge kernel)."""
 
+from typing import cast
+
 import pytest
 from pydantic import PrivateAttr
 
@@ -105,24 +107,27 @@ class _CapturingJudgeLLM(TestLLM):
     def captured_messages(self) -> list:
         return self._captured_messages
 
-    def completion(self, messages, **kwargs):
+    def completion(self, messages, **kwargs):  # type: ignore[override]
         self._captured_messages = list(messages)
         return super().completion(messages, **kwargs)
 
 
 def test_judge_goal_sends_system_then_user():
     """The judge request must open with a system message before the user payload."""
-    llm = _CapturingJudgeLLM.from_messages(
-        [
-            Message(
-                role="assistant",
-                content=[
-                    TextContent(
-                        text='{"score": 1.0, "complete": true, "missing": ""}'
-                    )
-                ],
-            )
-        ]
+    llm = cast(
+        _CapturingJudgeLLM,
+        _CapturingJudgeLLM.from_messages(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        TextContent(
+                            text='{"score": 1.0, "complete": true, "missing": ""}'
+                        )
+                    ],
+                )
+            ]
+        ),
     )
 
     judge_goal(llm, "build it", [])
