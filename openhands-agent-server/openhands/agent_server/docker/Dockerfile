@@ -8,6 +8,7 @@ ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
+ARG NPM_VERSION=11.19.1
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -33,22 +34,24 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # images. The final stage installs only the shared libraries required by Python
 # and Node; developer and package-manager tooling is added by the agent-server
 # stages below when needed. Package upgrades resolve against a dated snapshot so
-# newly published Debian packages have a seven-day observation period.
+# newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
-# Temporary exception to pick up Debian 13.7 before the normal observation period.
-ARG DEBIAN_SNAPSHOT=20260913T000000Z
+ARG NPM_VERSION
+ARG DEBIAN_SNAPSHOT=20260920T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
+RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
+
 RUN set -eux; \
-    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
-    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
-    ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    ln -sfn ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     printf '%s\n' \
         'Types: deb' \
         "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
@@ -112,9 +115,9 @@ ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.11.6 (latest at time of
+# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -174,6 +177,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
+ARG NPM_VERSION
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -202,18 +206,19 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=0b2d9f564b6594222a62c82e1df2efe119dd4a4aff29644f4dd325bf360b6bcc;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.19.0-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v22.23.2-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
-    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
       # a wrong binary_name is otherwise invisible until someone launches the
@@ -395,7 +400,7 @@ RUN set -eux; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Keep uv as part of the full development environment, but not binary-minimal.
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so
@@ -418,7 +423,7 @@ ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
     OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
-ARG RELEASE_TAG="openvscode-server-v1.98.2"
+ARG RELEASE_TAG="openvscode-server-v1.109.5"
 ARG RELEASE_ORG="gitpod-io"
 # The --mount=from=builder on the extensions RUN below is unconditional at
 # the Dockerfile level, so BuildKit still builds the full `builder` stage

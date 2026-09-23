@@ -483,6 +483,13 @@ def test_supports_stop_words_false_models(model):
         ("gpt-5", True),
         ("gpt-5.2", True),
         ("openai/gpt-5-mini", True),
+        # GPT-6 family rejects function tools + reasoning_effort on
+        # /v1/chat/completions; route via /v1/responses (saas-deploy #1144).
+        ("gpt-6-sol", True),
+        ("gpt-6-luna", True),
+        ("gpt-6-astra", True),
+        ("openai/gpt-6-sol", True),
+        ("litellm_proxy/gpt-6-luna", True),
         ("codex-mini-latest", True),
         ("openai/codex-mini-latest", True),
         ("gpt-4o", False),

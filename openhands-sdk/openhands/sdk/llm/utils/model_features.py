@@ -189,9 +189,15 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
 ]
 
 # Models that should use the OpenAI Responses API path by default
+# NOTE: model_matches uses case-insensitive substring matching, so a bare family
+# token like "gpt-5" / "gpt-6" covers all variants (mini, sol, luna, astra, ...).
 RESPONSES_API_MODELS: list[str] = [
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
+    # OpenAI GPT-6 family (gpt-6-sol, gpt-6-luna, gpt-6-astra, ...). These reject
+    # function tools + reasoning_effort on /v1/chat/completions; /v1/responses
+    # supports both. See saas-deploy #1144.
+    "gpt-6",
     # OpenAI Codex (uses Responses API)
     "codex-mini-latest",
 ]
