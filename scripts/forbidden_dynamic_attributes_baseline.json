@@ -252,21 +252,6 @@
     {
         "file": "openhands-sdk/openhands/sdk/llm/llm.py",
         "name": "getattr",
-        "hash": "1d0d7334f8d3cbf5ce405a9ebeeee696ee3cd6ab1f3f3a3ec090281e87c26a0e"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "5a80cf21fe817b05c844205796ac76fed3a6a1d042f5c4367d5c39b388457dc6"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "9672c13062337d7dfb0a64e85dae4a6047b9b472f81aa8c63731b2dd3ccc1897"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
         "hash": "d4ddba252ea12924b2dd05cb4fb5ebcbf7b22685fc0a9b6ce305015b9cdd81d0"
     },
     {
