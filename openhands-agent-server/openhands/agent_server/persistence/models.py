@@ -30,6 +30,10 @@ from openhands.sdk.settings import (
     default_agent_settings,
     validate_agent_settings,
 )
+from openhands.sdk.settings.model import (
+    PersistedSettingsMigrator,
+    _apply_persisted_migrations,
+)
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -142,7 +146,64 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 3
+PERSISTED_SETTINGS_SCHEMA_VERSION = 4
+
+
+def _migrate_persisted_settings_v0_to_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Establish v1: agent_settings + conversation_settings + active_profile.
+
+    Older files with no schema_version simply get one; no shape change.
+    """
+    migrated = dict(payload)
+    migrated["schema_version"] = 1
+    return migrated
+
+
+def _migrate_persisted_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """v2: add the opaque ``misc_settings`` container as an empty default."""
+    migrated = dict(payload)
+    migrated.setdefault("misc_settings", {})
+    migrated["schema_version"] = 2
+    return migrated
+
+
+def _migrate_persisted_settings_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """v3: nested ``agent_settings`` advanced to schema v6.
+
+    The nested payload is migrated separately by ``_normalize_inputs`` via
+    ``validate_agent_settings``; the top-level bump only records that the
+    file was written by a v3-aware release.
+    """
+    migrated = dict(payload)
+    migrated["schema_version"] = 3
+    return migrated
+
+
+def _migrate_persisted_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    """v4: schema-version slot reserved for the #5205 orphaned-ACP repair.
+
+    The repair itself lives in the startup helper
+    :func:`~openhands.agent_server.persistence.store.apply_startup_settings_migrations`
+    because a safe repair predicate needs cross-store awareness (the agent
+    profile store) that a payload-only migrator cannot express — an ACP
+    ``agent_settings`` without an active pointer is a bug state when the
+    user's ACP profile was deleted, but a legitimate state when the user
+    configured ACP directly via ``PATCH /api/settings`` without ever creating
+    a profile. Bumping the version here anchors the once-per-user contract
+    so the startup repair runs once and its outcome is durably recorded on
+    disk; the migrator itself is a version-only no-op.
+    """
+    migrated = dict(payload)
+    migrated["schema_version"] = 4
+    return migrated
+
+
+_PERSISTED_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
+    0: _migrate_persisted_settings_v0_to_v1,
+    1: _migrate_persisted_settings_v1_to_v2,
+    2: _migrate_persisted_settings_v2_to_v3,
+    3: _migrate_persisted_settings_v3_to_v4,
+}
 
 
 class PersistedSettings(BaseModel):
@@ -327,32 +388,34 @@ class PersistedSettings(BaseModel):
     ) -> PersistedSettings:
         """Load persisted settings.
 
+        Runs top-level migrations via ``_apply_persisted_migrations`` before
+        validation, so per-version migrators (including one-time data
+        repairs) get a chance to normalize the payload. Nested
+        ``agent_settings`` / ``conversation_settings`` payloads still flow
+        through their own migrators in ``_normalize_inputs``.
+
         Schema-version history:
 
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
         - **v2**: adds the opaque ``misc_settings`` container.
-        - **v3** (current): nested ``agent_settings`` advanced to schema v6
-          (dropped the removed ``llm.modify_params`` field). Nested payloads
-          are migrated through ``validate_agent_settings`` in
-          ``_normalize_inputs``; the top-level bump keeps the file schema in
-          step with the nested shape change.
+        - **v3**: nested ``agent_settings`` advanced to schema v6
+          (dropped the removed ``llm.modify_params`` field).
+        - **v4** (current): version-only bump anchoring the once-per-user
+          contract for the #5205 orphaned-ACP startup repair. The repair
+          itself lives in
+          :func:`~openhands.agent_server.persistence.store.apply_startup_settings_migrations`
+          because a safe predicate needs cross-store awareness.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
 
-        payload = dict(data)
-        version = payload.get("schema_version", 0) or 0
-        if type(version) is not int:
-            raise ValueError("PersistedSettings schema_version must be an integer")
-        if version > PERSISTED_SETTINGS_SCHEMA_VERSION:
-            raise ValueError(
-                "PersistedSettings schema_version "
-                f"{version} is newer than supported version "
-                f"{PERSISTED_SETTINGS_SCHEMA_VERSION}"
-            )
-
-        payload["schema_version"] = PERSISTED_SETTINGS_SCHEMA_VERSION
+        payload = _apply_persisted_migrations(
+            data,
+            current_version=PERSISTED_SETTINGS_SCHEMA_VERSION,
+            migrations=_PERSISTED_SETTINGS_MIGRATIONS,
+            payload_name="PersistedSettings",
+        )
         return cls.model_validate(payload, context=context)
 
     @field_serializer("agent_settings")
