@@ -17,7 +17,6 @@ from uuid import UUID, uuid4
 
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
-from openhands.agent_server.conversation_service import _read_execution_status_sync
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
@@ -25,7 +24,6 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.agent_server.utils import safe_rmtree
-from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
@@ -91,6 +89,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
+        self._reclaims: set[asyncio.Task[None]] = set()
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service
@@ -130,7 +129,7 @@ class DockerConversationRegistry(ConversationRegistry):
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
-        await asyncio.to_thread(self.prune_stopped_caches)
+        self._reclaim(await asyncio.to_thread(self.detach_stopped_caches))
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
@@ -301,6 +300,11 @@ class DockerConversationRegistry(ConversationRegistry):
             self._eviction_task = None
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
+        # Last, so it also covers the stops above; the next start sweeps them.
+        reclaims = list(self._reclaims)
+        for task in reclaims:
+            task.cancel()
+        await asyncio.gather(*reclaims, return_exceptions=True)
 
     async def _evict_idle_runtimes_loop(self) -> None:
         ttl = self.config.conversation_idle_ttl_seconds
@@ -363,8 +367,9 @@ class DockerConversationRegistry(ConversationRegistry):
                 )
                 await self._prune_cache(conversation_id)
 
-    def prune_stopped_caches(self) -> None:
-        """Prune every runtime's cache; only safe before any container starts."""
+    def detach_stopped_caches(self) -> list[Path]:
+        """Detach every runtime's cache; only safe before any container starts."""
+        detached: list[Path] = []
         for runtime_dir in self.provisioning.data_root.iterdir():
             try:
                 conversation_id = UUID(hex=runtime_dir.name)
@@ -373,42 +378,58 @@ class DockerConversationRegistry(ConversationRegistry):
             if runtime_dir.is_symlink() or not runtime_dir.is_dir():
                 continue
             try:
-                for leftover in runtime_dir.glob(f"{_PRUNED_CACHE_PREFIX}*"):
-                    _remove(leftover)
-                if not self._is_running(conversation_id):
-                    _remove(self._detach_cache(conversation_id))
+                detached.extend(runtime_dir.glob(f"{_PRUNED_CACHE_PREFIX}*"))
+                if cache := self._detach_cache(conversation_id):
+                    detached.append(cache)
             except Exception:
                 logger.warning(
                     "Failed to prune conversation runtime cache %s",
                     conversation_id,
                     exc_info=True,
                 )
+        return detached
 
     async def _prune_cache(self, conversation_id: UUID) -> None:
-        """Drop the rebuildable cache of a stopped runtime that is not running."""
-        try:
-            if await asyncio.to_thread(self._is_running, conversation_id):
-                return
-            async with self._lock:
-                # A resumed runtime may already mount the cache again; detaching
-                # is one rename, so it cannot race a start that follows it.
-                if self.get(conversation_id) or self.is_starting(conversation_id):
-                    return
-                detached = self._detach_cache(conversation_id)
-            await asyncio.to_thread(_remove, detached)
-        except Exception:
-            logger.warning(
-                "Failed to prune conversation runtime cache %s",
-                conversation_id,
-                exc_info=True,
-            )
+        """Drop the rebuildable cache of a runtime whose container is gone.
 
-    def _is_running(self, conversation_id: UUID) -> bool:
-        # The outer service may not be serving yet, and after a stop the
-        # container's final state is on disk; execution_status is plaintext.
-        path = self.conversation_dir(conversation_id) / BASE_STATE
-        status = _read_execution_status_sync(str(path))
-        return status == ConversationExecutionStatus.RUNNING
+        Nothing is running without a container, so a persisted RUNNING status
+        is stale here; live runs are protected by eviction skipping them.
+        """
+        async with self._lock:
+            # A resumed runtime may already mount the cache again; detaching
+            # is one rename, so it cannot race a start that follows it.
+            if self.get(conversation_id) or self.is_starting(conversation_id):
+                return
+            try:
+                detached = self._detach_cache(conversation_id)
+            except Exception:
+                logger.warning(
+                    "Failed to prune conversation runtime cache %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+                return
+        if detached is not None:
+            self._reclaim([detached])
+
+    def _reclaim(self, paths: list[Path]) -> None:
+        """Delete detached caches without holding up a request or startup."""
+        if paths:
+            task = asyncio.create_task(self._delete(paths))
+            self._reclaims.add(task)
+            task.add_done_callback(self._reclaims.discard)
+
+    @staticmethod
+    async def _delete(paths: list[Path]) -> None:
+        for path in paths:
+            try:
+                await asyncio.to_thread(_remove, path)
+            except Exception:
+                logger.warning(
+                    "Failed to delete conversation runtime cache %s",
+                    path,
+                    exc_info=True,
+                )
 
     def _detach_cache(self, conversation_id: UUID) -> Path | None:
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
@@ -571,9 +592,7 @@ def _validate_shared_cache_dir(path: Path | None) -> Path | None:
     return path.resolve()
 
 
-def _remove(path: Path | None) -> None:
-    if path is None:
-        return
+def _remove(path: Path) -> None:
     if path.is_symlink():
         path.unlink(missing_ok=True)
     else:
