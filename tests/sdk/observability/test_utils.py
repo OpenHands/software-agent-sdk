@@ -3,62 +3,32 @@
 import os
 from unittest.mock import patch
 
+import openhands.sdk.observability.utils as utils
 from openhands.sdk.observability.utils import get_env
 
 
 def test_get_env_from_environment():
-    """Test that get_env returns value from environment variables."""
+    """get_env returns the value from the process environment."""
     with patch.dict(os.environ, {"TEST_VAR": "test_value"}):
         assert get_env("TEST_VAR") == "test_value"
 
 
 def test_get_env_not_found():
-    """Test that get_env returns None when variable is not found."""
+    """get_env returns None when the variable is not set."""
     with patch.dict(os.environ, {}, clear=True):
-        result = get_env("NONEXISTENT_VAR")
-        assert result is None
+        assert get_env("NONEXISTENT_VAR") is None
 
 
-def test_get_env_handles_dotenv_assertion_error():
-    """Test that get_env handles AssertionError from find_dotenv gracefully."""
-    with patch.dict(os.environ, {}, clear=True):
-        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
-            mock_dotenv.side_effect = AssertionError("Frame stack exhausted")
-            result = get_env("TEST_VAR")
-            assert result is None
+def test_get_env_does_not_use_python_dotenv():
+    """Regression guard for issue #1325.
 
+    The crash came from python-dotenv's ``find_dotenv()``, which walks the
+    call stack and executes ``assert frame.f_back is not None``. That fails in
+    deployments whose frames have no on-disk source file (packaged/frozen
+    builds, a deleted CWD, threads running exec'd code). Loading ``.env`` is
+    now the host application's responsibility, so ``get_env`` must read solely
+    from ``os.environ`` and must not import or call python-dotenv.
 
-def test_get_env_handles_dotenv_os_error():
-    """Test that get_env handles OSError from dotenv gracefully."""
-    with patch.dict(os.environ, {}, clear=True):
-        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
-            mock_dotenv.side_effect = OSError("File not found")
-            result = get_env("TEST_VAR")
-            assert result is None
-
-
-def test_get_env_prefers_environment_over_dotenv():
-    """Test that environment variables take precedence over dotenv."""
-    with patch.dict(os.environ, {"TEST_VAR": "env_value"}):
-        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
-            mock_dotenv.return_value = {"TEST_VAR": "dotenv_value"}
-            result = get_env("TEST_VAR")
-            assert result == "env_value"
-            mock_dotenv.assert_not_called()
-
-
-def test_get_env_empty_env_falls_back_to_dotenv():
-    """Test that an empty (but set) env var falls back to the dotenv lookup."""
-    with patch.dict(os.environ, {"TEST_VAR": ""}, clear=True):
-        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
-            mock_dotenv.return_value = {"TEST_VAR": "dotenv_value"}
-            assert get_env("TEST_VAR") == "dotenv_value"
-
-
-def test_get_env_from_dotenv():
-    """Test that get_env can retrieve values from dotenv file."""
-    with patch.dict(os.environ, {}, clear=True):
-        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
-            mock_dotenv.return_value = {"TEST_VAR": "dotenv_value"}
-            result = get_env("TEST_VAR")
-            assert result == "dotenv_value"
+    Reverting ``get_env`` to a ``dotenv_values()`` call makes this fail.
+    """
+    assert not hasattr(utils, "dotenv_values")

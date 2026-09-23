@@ -1,19 +1,19 @@
 import os
 
-from dotenv import dotenv_values
-
 from openhands.sdk.event import ActionEvent
 
 
 def get_env(key: str) -> str | None:
-    """Get an environment variable from the environment or the dotenv file."""
-    env_value = os.getenv(key)
-    if env_value:
-        return env_value
-    try:
-        return dotenv_values().get(key)
-    except (AssertionError, OSError):
-        return None
+    """Get an environment variable from the process environment.
+
+    Loading a ``.env`` file is intentionally left to the host application (for
+    example, the CLI calls ``load_dotenv()`` once at startup). Reading straight
+    from ``os.environ`` avoids python-dotenv's ``find_dotenv()`` call-stack
+    walk, which executes ``assert frame.f_back is not None`` and raises an
+    ``AssertionError`` in execution contexts whose frames have no on-disk file
+    (threads running exec'd/embedded code, some async paths). See issue #1325.
+    """
+    return os.getenv(key)
 
 
 def extract_action_name(action_event: ActionEvent) -> str:
