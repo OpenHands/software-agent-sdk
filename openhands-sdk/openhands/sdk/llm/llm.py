@@ -117,6 +117,7 @@ from openhands.sdk.llm.utils.image_inline import (
     maybe_inline_image_urls,
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
+from openhands.sdk.llm.utils.image_validation import drop_undecodable_images
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
@@ -514,6 +515,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "If None (default), auto-detect based on model. "
             "Useful for providers that do not support list content, "
             "like HuggingFace and Groq."
+        ),
+        json_schema_extra=field_meta(),
+    )
+    drop_undecodable_images: bool = Field(
+        default=True,
+        description=(
+            "Silently replace image URLs whose base64 payload does not decode "
+            "with a text placeholder before sending, instead of letting the "
+            "provider 400 and forcing the run loop to roll the turn back. "
+            "Set False if a downstream validator is doing this work or if a "
+            "false-positive would be worse than the rollback."
         ),
         json_schema_extra=field_meta(),
     )
@@ -2790,6 +2802,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         without duplicating the boilerplate.
         """
         messages = copy.deepcopy(messages)
+        if self.drop_undecodable_images:
+            messages = drop_undecodable_images(messages)
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
         return messages, self.vision_is_active()
@@ -2862,6 +2876,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _prepare_responses_messages(self, messages: list[Message]) -> list[Message]:
         """Detach messages and optionally strip reasoning items."""
         msgs = copy.deepcopy(messages)
+        if self.drop_undecodable_images:
+            msgs = drop_undecodable_images(msgs)
 
         # Subscription mode (store=false): strip reasoning items from prior
         # assistant turns. The Codex endpoint doesn't persist items, so
