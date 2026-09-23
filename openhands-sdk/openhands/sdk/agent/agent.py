@@ -65,6 +65,7 @@ from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
+    LLMInvalidToolResultContentError,
     LLMMalformedConversationHistoryError,
 )
 from openhands.sdk.llm.router.base import RouterLLM
@@ -766,6 +767,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
             )
             return
+        except LLMInvalidToolResultContentError as e:
+            self._recover_from_invalid_tool_result_content(state, on_event, e)
+            return
         except LLMMalformedConversationHistoryError as e:
             # The provider rejected the current message history as structurally
             # invalid (for example, broken tool_use/tool_result pairing). Route
@@ -973,6 +977,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     ),
                 )
             )
+            return
+        except LLMInvalidToolResultContentError as e:
+            self._recover_from_invalid_tool_result_content(state, on_event, e)
             return
         except LLMMalformedConversationHistoryError as e:
             # The provider rejected the current message history as
@@ -1459,6 +1466,40 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ]["token_ids"],
             )
             on_event(token_event)
+
+    def _recover_from_invalid_tool_result_content(
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        error: LLMInvalidToolResultContentError,
+    ) -> None:
+        """Route provider content rejections into condensation recovery.
+
+        The offending content lives in a persisted event, so a bare retry
+        rebuilds the identical request. Condensation is the repository's
+        established way to reshape the view without mutating source events;
+        with no condenser there is nothing left to try, so the error is
+        re-raised rather than silently looping.
+        """
+        if (
+            self.condenser is not None
+            and self.condenser.handles_condensation_requests()
+        ):
+            logger.warning(
+                "LLM provider rejected content in the conversation history, "
+                "triggering condensation retry with condensed history: %s",
+                error,
+            )
+            state.rebuild_view()
+            on_event(CondensationRequest())
+            return
+        logger.warning(
+            "LLM provider rejected content in the conversation history but no "
+            "condenser can handle condensation requests, so the offending turn "
+            "cannot be dropped: %s",
+            error,
+        )
+        raise error
 
     def _log_context_window_exceeded_warning(self) -> None:
         """Log a helpful warning when context window is exceeded without a condenser."""

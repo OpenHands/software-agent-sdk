@@ -4,6 +4,7 @@ from .classifier import (
     is_prompt_cache_too_small,
     is_quota_exhaustion_error,
     looks_like_auth_error,
+    looks_like_invalid_tool_result_content_error,
     looks_like_malformed_conversation_history_error,
 )
 from .mapping import map_provider_exception
@@ -17,6 +18,7 @@ from .types import (
     LLMContextWindowExceedError,
     LLMContextWindowTooSmallError,
     LLMError,
+    LLMInvalidToolResultContentError,
     LLMMalformedActionError,
     LLMMalformedConversationHistoryError,
     LLMNoActionError,
@@ -44,6 +46,7 @@ __all__ = [
     "LLMMalformedConversationHistoryError",
     "LLMContextWindowTooSmallError",
     "LLMContentPolicyViolationError",
+    "LLMInvalidToolResultContentError",
     "LLMAuthenticationError",
     "LLMRateLimitError",
     "LLMTimeoutError",
@@ -57,6 +60,7 @@ __all__ = [
     "is_prompt_cache_too_small",
     "is_quota_exhaustion_error",
     "looks_like_auth_error",
+    "looks_like_invalid_tool_result_content_error",
     "looks_like_malformed_conversation_history_error",
     "map_provider_exception",
 ]

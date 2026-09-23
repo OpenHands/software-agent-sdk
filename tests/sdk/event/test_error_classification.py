@@ -39,6 +39,7 @@ from openhands.sdk.event.llm_convertible import AgentErrorEvent
         # Context-window errors are recoverable via condensation.
         ("LLMContextWindowExceedError", "", "agent_action"),
         ("LLMMalformedConversationHistoryError", "", "agent_action"),
+        ("LLMInvalidToolResultContentError", "", "agent_action"),
     ],
 )
 def test_conversation_error_classifies_sensitive_detail_without_serializing_it(

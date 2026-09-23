@@ -11,6 +11,7 @@ from openhands.sdk.llm.exceptions import (
     is_prompt_cache_too_small,
     is_quota_exhaustion_error,
     looks_like_auth_error,
+    looks_like_invalid_tool_result_content_error,
     looks_like_malformed_conversation_history_error,
 )
 
@@ -129,6 +130,41 @@ def test_looks_like_malformed_conversation_history_error_anthropic_first_sentenc
 
     assert looks_like_malformed_conversation_history_error(error) is True
     assert is_context_window_exceeded(error) is False
+
+
+def test_looks_like_invalid_tool_result_content_error_anthropic():
+    error = BadRequestError(
+        (
+            "messages.148.content.0.tool_result.content.1.image.source.base64: "
+            "invalid base64 data"
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert looks_like_invalid_tool_result_content_error(error) is True
+    assert looks_like_malformed_conversation_history_error(error) is False
+    assert is_context_window_exceeded(error) is False
+
+
+def test_looks_like_invalid_tool_result_content_error_openai():
+    error = BadRequestError("Invalid image data in message", MODEL, PROVIDER)
+
+    assert looks_like_invalid_tool_result_content_error(error) is True
+
+
+def test_looks_like_invalid_tool_result_content_error_gemini():
+    error = BadRequestError(
+        "INVALID_ARGUMENT: Unable to process input image", MODEL, PROVIDER
+    )
+
+    assert looks_like_invalid_tool_result_content_error(error) is True
+
+
+def test_looks_like_invalid_tool_result_content_error_negative():
+    error = BadRequestError("Unsupported parameter: temperature", MODEL, PROVIDER)
+
+    assert looks_like_invalid_tool_result_content_error(error) is False
 
 
 def test_is_context_window_exceeded_negative():

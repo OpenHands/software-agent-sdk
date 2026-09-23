@@ -11,6 +11,7 @@ from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
     LLMBadRequestError,
     LLMContentPolicyViolationError,
+    LLMInvalidToolResultContentError,
     LLMMalformedConversationHistoryError,
     map_provider_exception,
 )
@@ -67,6 +68,22 @@ def test_map_malformed_tool_history_bad_request():
     )
     mapped = map_provider_exception(e)
     assert isinstance(mapped, LLMMalformedConversationHistoryError)
+
+
+def test_map_invalid_tool_result_content_bad_request():
+    e = BadRequestError(
+        (
+            'AnthropicException - {"type":"error","error":{"type":'
+            '"invalid_request_error","message":"messages.148.content.0.'
+            'tool_result.content.1.image.source.base64: invalid base64 data"}}'
+        ),
+        MODEL,
+        PROVIDER,
+    )
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMInvalidToolResultContentError)
+    # Subclassing keeps existing LLMBadRequestError handlers working.
+    assert isinstance(mapped, LLMBadRequestError)
 
 
 def test_map_openai_tool_argument_parse_internal_server_error():

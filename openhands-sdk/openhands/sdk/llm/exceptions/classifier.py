@@ -15,6 +15,7 @@ from litellm.exceptions import (
 
 from .types import (
     LLMContextWindowExceedError,
+    LLMInvalidToolResultContentError,
     LLMMalformedConversationHistoryError,
 )
 
@@ -55,6 +56,20 @@ MALFORMED_HISTORY_PATTERNS: Final[list[str]] = [
     # OpenAI-compatible providers may reject replayed assistant tool calls whose
     # arguments are not valid JSON.
     "failed to parse tool call arguments as json",
+]
+
+# A message already in the history carries content the provider refuses to
+# read — in practice an image whose bytes are not decodable. Retrying the same
+# history reproduces it, so these are tracked separately from generic bad
+# requests and routed into condensation-based recovery.
+INVALID_TOOL_RESULT_CONTENT_PATTERNS: Final[list[str]] = [
+    # Anthropic
+    "image.source.base64: invalid base64 data",
+    "could not process image",
+    # OpenAI
+    "invalid image data",
+    # Gemini
+    "unable to process input image",
 ]
 
 # Vertex AI (Gemini) rejects context-caching requests when the cached content
@@ -120,6 +135,20 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
 
     s = str(exception).lower()
     return any(p in s for p in MALFORMED_HISTORY_PATTERNS)
+
+
+def looks_like_invalid_tool_result_content_error(exception: Exception) -> bool:
+    if isinstance(exception, LLMInvalidToolResultContentError):
+        return True
+
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
+        return False
+
+    s = str(exception).lower()
+    return any(p in s for p in INVALID_TOOL_RESULT_CONTENT_PATTERNS)
 
 
 def is_prompt_cache_too_small(exception: Exception) -> bool:

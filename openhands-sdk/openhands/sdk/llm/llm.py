@@ -117,6 +117,7 @@ from openhands.sdk.llm.utils.image_inline import (
     maybe_inline_image_urls,
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
+from openhands.sdk.llm.utils.image_validation import drop_undecodable_images
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
@@ -2789,7 +2790,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         callers can plug in their own (sync or async) inline-image pass
         without duplicating the boilerplate.
         """
-        messages = copy.deepcopy(messages)
+        messages = drop_undecodable_images(copy.deepcopy(messages))
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
         return messages, self.vision_is_active()
@@ -2861,7 +2862,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _prepare_responses_messages(self, messages: list[Message]) -> list[Message]:
         """Detach messages and optionally strip reasoning items."""
-        msgs = copy.deepcopy(messages)
+        msgs = drop_undecodable_images(copy.deepcopy(messages))
 
         # Subscription mode (store=false): strip reasoning items from prior
         # assistant turns. The Codex endpoint doesn't persist items, so
