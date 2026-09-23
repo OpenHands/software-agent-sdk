@@ -1,18 +1,20 @@
 import json
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Annotated, Any, ClassVar, Literal
 
 from litellm import ChatCompletionMessageToolCall, ResponseFunctionToolCall
-from litellm.types.responses.main import (
-    GenericResponseOutputItem,
-    OutputFunctionToolCall,
-)
+from litellm.types.responses.main import OutputFunctionToolCall
 from litellm.types.utils import Message as LiteLLMMessage
-from openai.types.responses.response_output_message import ResponseOutputMessage
-from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openhands.sdk.llm._message_normalization import (
+    ChatMessageMetadata,
+    FunctionOutput,
+    MessageOutput,
+    ReasoningOutput,
+    normalize_response_output,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
@@ -489,19 +491,13 @@ class Message(BaseModel):
         """
         assert message.role != "function", "Function role is not supported"
 
-        rc = getattr(message, "reasoning_content", None)
-        thinking_blocks = getattr(message, "thinking_blocks", None)
-
-        # Convert to list of ThinkingBlock or RedactedThinkingBlock
-        if thinking_blocks is not None:
-            thinking_blocks = [
-                ThinkingBlock(**tb)
-                if tb.get("type") == "thinking"
-                else RedactedThinkingBlock(**tb)
-                for tb in thinking_blocks
-            ]
-        else:
-            thinking_blocks = []
+        metadata = ChatMessageMetadata.model_validate(message)
+        thinking_blocks = [
+            ThinkingBlock.model_validate(block)
+            if block.get("type") == "thinking"
+            else RedactedThinkingBlock.model_validate(block)
+            for block in metadata.thinking_blocks or []
+        ]
 
         tool_calls = None
 
@@ -534,14 +530,14 @@ class Message(BaseModel):
             if isinstance(message.content, str)
             else [],
             tool_calls=tool_calls,
-            reasoning_content=rc,
+            reasoning_content=metadata.reasoning_content,
             thinking_blocks=thinking_blocks,
         )
 
     @classmethod
     def from_llm_responses_output(
         cls,
-        output: Any,
+        output: Iterable[object] | None,
     ) -> "Message":
         """Convert OpenAI Responses API output items into a single assistant Message.
 
@@ -553,66 +549,32 @@ class Message(BaseModel):
         tool_calls: list[MessageToolCall] = []
         responses_reasoning_item: ReasoningItemModel | None = None
 
-        # Helper to access fields from typed Pydantic objects, generic
-        # litellm base objects (BaseLiteLLMOpenAIResponseObject), or dicts.
-        def _get(obj: Any, key: str, default: Any = None) -> Any:
-            if isinstance(obj, dict):
-                return obj.get(key, default)
-            return getattr(obj, key, default)
-
-        for item in output or []:
-            item_type = _get(item, "type")
-
-            if (
-                isinstance(item, (GenericResponseOutputItem, ResponseOutputMessage))
-                or item_type == "message"
-            ) and item_type == "message":
-                content = _get(item, "content")
-                for part in content or []:
-                    part_type = _get(part, "type")
-                    part_text = _get(part, "text")
-                    if part_type == "output_text" and part_text:
-                        assistant_text_parts.append(part_text)
-            elif (
-                isinstance(item, (OutputFunctionToolCall, ResponseFunctionToolCall))
-                and item_type == "function_call"
-            ):
+        for raw_item in output or []:
+            item = normalize_response_output(raw_item)
+            if isinstance(item, MessageOutput):
+                for part in item.content or []:
+                    if part.type == "output_text" and part.text:
+                        assistant_text_parts.append(part.text)
+            elif isinstance(item, (OutputFunctionToolCall, ResponseFunctionToolCall)):
                 tc = MessageToolCall.from_responses_function_call(item)
                 tool_calls.append(tc)
-            elif item_type == "function_call":
-                # Handle generic objects (e.g., BaseLiteLLMOpenAIResponseObject
-                # from streaming) or dicts with function_call type
-                raw_item_id = _get(item, "id")
+            elif isinstance(item, FunctionOutput):
                 tc = MessageToolCall(
-                    id=_get(item, "call_id") or raw_item_id or "",
-                    responses_item_id=str(raw_item_id) if raw_item_id else None,
-                    name=_get(item, "name", ""),
-                    arguments=_get(item, "arguments", ""),
+                    id=item.call_id or item.id or "",
+                    responses_item_id=item.id or None,
+                    name=item.name,
+                    arguments=item.arguments,
                     origin="responses",
                 )
                 tool_calls.append(tc)
-            elif item_type == "reasoning":
-                if isinstance(item, ResponseReasoningItem):
-                    # Typed path: preserves type narrowing for standard API
-                    responses_reasoning_item = ReasoningItemModel(
-                        id=item.id,
-                        summary=[s.text for s in (item.summary or [])],
-                        content=[c.text for c in (item.content or [])] or None,
-                        encrypted_content=item.encrypted_content,
-                        status=item.status,
-                    )
-                else:
-                    # Generic fallback for BaseLiteLLMOpenAIResponseObject
-                    # or dicts (e.g., streaming items from Codex subscription)
-                    summaries = _get(item, "summary") or []
-                    contents = _get(item, "content") or []
-                    responses_reasoning_item = ReasoningItemModel(
-                        id=_get(item, "id"),
-                        summary=[_get(s, "text", "") for s in summaries],
-                        content=[_get(c, "text", "") for c in contents] or None,
-                        encrypted_content=_get(item, "encrypted_content"),
-                        status=_get(item, "status"),
-                    )
+            elif isinstance(item, ReasoningOutput):
+                responses_reasoning_item = ReasoningItemModel(
+                    id=item.id,
+                    summary=[part.text for part in item.summary or []],
+                    content=[part.text for part in item.content or []] or None,
+                    encrypted_content=item.encrypted_content,
+                    status=item.status,
+                )
 
         assistant_text = "\n".join(assistant_text_parts).strip()
         return Message(
