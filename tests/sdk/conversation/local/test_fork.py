@@ -1,17 +1,21 @@
 """Tests for Conversation.fork() primitive."""
 
 import tempfile
+import threading
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Self
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
 
 
 def _agent() -> Agent:
@@ -27,6 +31,43 @@ def _msg(event_id: str, text: str = "hi") -> MessageEvent:
         llm_message=Message(role="user", content=[TextContent(text=text)]),
         source="user",
     )
+
+
+class ForkCopyMockAction(Action):
+    command: str = "test"
+
+
+class ForkCopyMockObservation(Observation):
+    pass
+
+
+class ForkCopyNonPicklableExecutor(
+    ToolExecutor[ForkCopyMockAction, ForkCopyMockObservation]
+):
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def __call__(
+        self,
+        action: ForkCopyMockAction,
+        conversation: LocalConversation | None = None,
+    ) -> ForkCopyMockObservation:
+        return ForkCopyMockObservation.from_text(action.command)
+
+
+class ForkCopyNonPicklableTool(
+    ToolDefinition[ForkCopyMockAction, ForkCopyMockObservation]
+):
+    @classmethod
+    def create(cls, *args, **kwargs) -> Sequence[Self]:
+        return [
+            cls(
+                description="test tool with a non-picklable executor",
+                action_type=ForkCopyMockAction,
+                observation_type=ForkCopyMockObservation,
+                executor=ForkCopyNonPicklableExecutor(),
+            )
+        ]
 
 
 def test_fork_creates_new_id():
@@ -62,6 +103,29 @@ def test_fork_copies_events():
         fork_ids = [e.id for e in fork.state.events]
         assert "evt-1" in fork_ids
         assert "evt-2" in fork_ids
+
+
+def test_fork_copies_system_prompt_event_with_non_picklable_executor():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        source_tool = ForkCopyNonPicklableTool.create()[0]
+        src.state.events.append(
+            SystemPromptEvent(
+                system_prompt=TextContent(text="test system prompt"),
+                tools=[source_tool],
+            )
+        )
+
+        fork = src.fork()
+
+        source_event = src.state.events[0]
+        fork_event = fork.state.events[0]
+        assert isinstance(source_event, SystemPromptEvent)
+        assert isinstance(fork_event, SystemPromptEvent)
+        assert fork_event is not source_event
+        assert source_event.tools[0].executor is not None
+        assert fork_event.tools[0].executor is None
+        assert fork_event.tools[0].action_type is ForkCopyMockAction
 
 
 def test_fork_source_unmodified():
@@ -256,23 +320,34 @@ def test_fork_default_does_not_clobber_source_cache_key():
     """Default fork() must leave the source's prompt_cache_key intact (#2917)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        src_key_before = src.agent.llm._prompt_cache_key
+        src_key_before = src.agent.llm._call_context.prompt_cache_key
 
         fork = src.fork()
 
-        assert src.agent.llm._prompt_cache_key == src_key_before == str(src.id)
-        assert fork.agent.llm._prompt_cache_key == str(fork.id)
-        assert fork.agent.llm._prompt_cache_key != src.agent.llm._prompt_cache_key
+        assert (
+            src.agent.llm._call_context.prompt_cache_key
+            == src_key_before
+            == str(src.id)
+        )
+        assert fork.agent.llm._call_context.prompt_cache_key == str(fork.id)
+        assert (
+            fork.agent.llm._call_context.prompt_cache_key
+            != src.agent.llm._call_context.prompt_cache_key
+        )
 
 
 def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
     """fork(agent=source.agent) must not repin the source LLM's cache key (#2917)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
-        src_key_before = src.agent.llm._prompt_cache_key
+        src_key_before = src.agent.llm._call_context.prompt_cache_key
 
         fork = src.fork(agent=src.agent)
 
-        assert src.agent.llm._prompt_cache_key == src_key_before == str(src.id)
-        assert fork.agent.llm._prompt_cache_key == str(fork.id)
+        assert (
+            src.agent.llm._call_context.prompt_cache_key
+            == src_key_before
+            == str(src.id)
+        )
+        assert fork.agent.llm._call_context.prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm

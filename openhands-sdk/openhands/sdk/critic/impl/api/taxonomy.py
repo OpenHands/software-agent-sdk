@@ -47,18 +47,6 @@ CATEGORY_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
-def get_category(feature_name: str) -> str | None:
-    """Get the category for a feature.
-
-    Args:
-        feature_name: Name of the feature
-
-    Returns:
-        Category name or None if not found
-    """
-    return FEATURE_CATEGORIES.get(feature_name)
-
-
 def _softmax_normalize(probs: dict[str, float]) -> dict[str, float]:
     """Apply softmax normalization to convert logits to probabilities.
 

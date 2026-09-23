@@ -6,10 +6,12 @@ in conftest) because it's plain Python — easier to import from test files
 without fixture indirection.
 """
 
+from __future__ import annotations
+
 import asyncio
 import time
 from collections.abc import Sequence
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import httpx
@@ -26,6 +28,10 @@ from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
 
 
 class SlowTestLLM(TestLLM):
@@ -47,9 +53,9 @@ class SlowTestLLM(TestLLM):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         if self._latency_s > 0:
@@ -57,9 +63,9 @@ class SlowTestLLM(TestLLM):
         return super().completion(
             messages,
             tools,
-            _return_metrics,
             add_security_risk_prediction,
             on_token,
+            call_context=call_context,
             **kwargs,
         )
 

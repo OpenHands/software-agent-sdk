@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from abc import abstractmethod
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import (
     Field,
@@ -13,6 +16,10 @@ from openhands.sdk.llm.message import Message
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
 
 
 logger = get_logger(__name__)
@@ -51,9 +58,9 @@ class RouterLLM(LLM):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -63,7 +70,6 @@ class RouterLLM(LLM):
         Args:
             messages: List of conversation messages
             tools: Optional list of tools available to the model
-            return_metrics: Whether to return usage metrics
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming tokens
             **kwargs: Additional arguments passed to the LLM API
@@ -78,13 +84,13 @@ class RouterLLM(LLM):
 
         logger.info(f"RouterLLM routing to {selected_model}...")
 
-        # Delegate to selected LLM
+        # Delegate to selected LLM.
         return self.active_llm.completion(
             messages=messages,
             tools=tools,
-            _return_metrics=return_metrics,
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
+            call_context=call_context,
             **kwargs,
         )
 

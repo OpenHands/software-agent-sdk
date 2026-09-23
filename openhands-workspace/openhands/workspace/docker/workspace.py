@@ -13,7 +13,6 @@ from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
@@ -88,12 +87,12 @@ class DockerWorkspace(RemoteWorkspace):
         description="Port to bind the container to. If None, finds available port.",
     )
     forward_env: list[str] = Field(
-        default_factory=lambda: ["DEBUG"],
-        description="Environment variables to forward to the container.",
-    )
-    mount_dir: str | None = Field(
-        default=None,
-        description="Optional host directory to mount into the container.",
+        default_factory=lambda: ["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"],
+        description=(
+            "Environment variables to forward to the container. The session "
+            "API key variables are forwarded so the sandboxed agent server can "
+            "authenticate network-bound requests when it binds 0.0.0.0."
+        ),
     )
     volumes: list[str] = Field(
         default_factory=list,
@@ -107,7 +106,7 @@ class DockerWorkspace(RemoteWorkspace):
     )
     extra_ports: bool = Field(
         default=False,
-        description="Whether to expose additional ports (VSCode, VNC).",
+        description="Whether to expose the additional VSCode port.",
     )
     enable_gpu: bool = Field(
         default=False,
@@ -132,23 +131,21 @@ class DockerWorkspace(RemoteWorkspace):
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_mount_dir(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "mount_dir" in data:
+            raise ValueError(
+                "DockerWorkspace.mount_dir has been removed; use "
+                "volumes=['/host/dir:/workspace'] instead."
+            )
+        return data
+
     @model_validator(mode="after")
     def _validate_server_image(self):
         """Ensure server_image is set when using DockerWorkspace directly."""
         if self.__class__ is DockerWorkspace and self.server_image is None:
             raise ValueError("server_image must be provided")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_mount_dir(self):
-        if self.mount_dir:
-            warn_deprecated(
-                "DockerWorkspace.mount_dir",
-                deprecated_in="1.10.0",
-                removed_in=None,
-                details="Use DockerWorkspace.volumes instead",
-            )
-            self.volumes.append(f"{self.mount_dir}:/workspace")
         return self
 
     def model_post_init(self, context: Any) -> None:
@@ -199,10 +196,6 @@ class DockerWorkspace(RemoteWorkspace):
                 raise RuntimeError(
                     f"Port {self.host_port + 1} is not available for VSCode"
                 )
-            if not check_port_available(self.host_port + 2):
-                raise RuntimeError(
-                    f"Port {self.host_port + 2} is not available for VNC"
-                )
 
         # Ensure docker is available
         docker_ver = execute_command(["docker", "version"]).returncode
@@ -227,8 +220,6 @@ class DockerWorkspace(RemoteWorkspace):
             ports += [
                 "-p",
                 f"{self.host_port + 1}:8001",  # VSCode
-                "-p",
-                f"{self.host_port + 2}:8002",  # Desktop VNC
             ]
         flags += ports
 
@@ -361,6 +352,10 @@ class DockerWorkspace(RemoteWorkspace):
 
     def __del__(self) -> None:
         """Clean up the Docker container when the workspace is destroyed."""
+        try:
+            object.__getattribute__(self, "__pydantic_private__")
+        except AttributeError:
+            return
         self.cleanup()
 
     def cleanup(self) -> None:

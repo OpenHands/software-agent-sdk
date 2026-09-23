@@ -108,7 +108,6 @@ def test_event_loss_race_condition_with_ws_delay(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):

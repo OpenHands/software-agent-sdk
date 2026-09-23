@@ -6,6 +6,7 @@ without dependencies on the openhands.sdk module.
 """
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +14,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from openhands.agent_server.config import WebhookSpec
 from openhands.agent_server.conversation_service import (
@@ -22,8 +23,10 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
+from openhands.agent_server.pub_sub import PubSub
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, Event
+from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.workspace import LocalWorkspace
@@ -45,15 +48,15 @@ def mock_event_service():
             service = EventService(
                 stored=StoredConversation(
                     id=uuid4(),
-                    agent=Agent(
-                        llm=LLM(
-                            usage_id="test-llm",
-                            model="test-model",
-                            api_key=SecretStr("test-key"),
-                        ),
-                        tools=[],
-                    ),
                     workspace=LocalWorkspace(working_dir="workspace/project"),
+                ),
+                agent=Agent(
+                    llm=LLM(
+                        usage_id="test-llm",
+                        model="test-model",
+                        api_key=SecretStr("test-key"),
+                    ),
+                    tools=[],
                 ),
                 conversations_dir=temp_path / "conversations_dir",
             )
@@ -337,7 +340,7 @@ class TestWebhookSubscriberPostEvents:
         mock_client.request.assert_called_once_with(
             method="POST",
             url=expected_url,
-            json=[event.model_dump() for event in sample_events[:3]],
+            json=[event.model_dump(mode="json") for event in sample_events[:3]],
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer token",
@@ -388,10 +391,60 @@ class TestWebhookSubscriberPostEvents:
         mock_client.request.assert_called_once_with(
             method="POST",
             url=expected_url,
-            json=[event.model_dump() for event in sample_events[:2]],
+            json=[event.model_dump(mode="json") for event in sample_events[:2]],
             headers=expected_headers,
             timeout=30.0,
         )
+
+    @pytest.mark.asyncio
+    @patch("httpx.AsyncClient")
+    async def test_post_events_serializes_set_and_secretstr(
+        self,
+        mock_client_class,
+        mock_event_service,
+        webhook_spec,
+        sample_conversation_id,
+    ):
+        """Regression: events containing set / SecretStr must serialize.
+
+        Plain model_dump() leaves set and SecretStr as Python objects that
+        httpx's JSON encoder cannot serialize ("Object of type set/SecretStr is
+        not JSON serializable"), failing every retry and dropping the events.
+        model_dump(mode="json") makes them JSON-safe.
+        """
+        import json as _json
+
+        # Test event with types that model_dump() leaves non-JSON-serializable.
+        # Note: deliberately not a ConversationEvent; we only care about serialization
+        # of pydantic models with tricky field types for the webhook POST payload.
+        class _EventWithTrickyTypes(BaseModel):
+            tags: set[str]
+            secret: SecretStr
+
+        mock_client = AsyncMock()
+        mock_response = AsyncMock()
+        mock_response.raise_for_status.return_value = None
+        mock_client.request.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=webhook_spec,
+        )
+        # Deliberately assign non-ConversationEvent for regression test.
+        subscriber.queue = [
+            _EventWithTrickyTypes(tags={"a", "b"}, secret=SecretStr("shh"))  # type: ignore[assignment]
+        ]
+
+        await subscriber._post_events()
+
+        posted_json = mock_client.request.call_args.kwargs["json"]
+        # httpx serializes this internally; it must not raise TypeError.
+        _json.dumps(posted_json)
+        assert isinstance(posted_json[0]["tags"], list)
+        # SecretStr is masked, not leaked, in JSON mode.
+        assert posted_json[0]["secret"] != "shh"
 
     @pytest.mark.asyncio
     async def test_post_events_empty_queue(
@@ -442,18 +495,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify queue is cleared after success
         assert subscriber.queue == []
@@ -487,17 +540,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify all retries were attempted (num_retries + 1 = 3 total attempts)
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2
@@ -735,6 +789,144 @@ class TestWebhookSubscriberIntegration:
         assert mock_client.request.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_concurrent_event_delivery_has_one_request_in_flight(
+    mock_event_service, sample_event, sample_conversation_id
+):
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=5,
+        flush_delay=3600,
+        num_retries=0,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+
+    request_started = asyncio.Event()
+    release_requests = asyncio.Event()
+    active_requests = 0
+    peak_active_requests = 0
+    batches: list[list[dict]] = []
+
+    async def blocked_request(*args, **kwargs):
+        nonlocal active_requests, peak_active_requests
+        active_requests += 1
+        peak_active_requests = max(peak_active_requests, active_requests)
+        batches.append(kwargs["json"])
+        request_started.set()
+        await release_requests.wait()
+        active_requests -= 1
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        return response
+
+    with patch("httpx.AsyncClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.request = blocked_request
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        tasks = [asyncio.create_task(subscriber(sample_event)) for _ in range(40)]
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        await asyncio.sleep(0.05)
+        try:
+            assert peak_active_requests == 1
+        finally:
+            release_requests.set()
+            await asyncio.gather(*tasks)
+
+        await subscriber.close()
+
+    assert peak_active_requests == 1
+    assert sum(len(batch) for batch in batches) == 40
+    assert all(len(batch) <= spec.event_buffer_size for batch in batches)
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient")
+async def test_post_events_splits_batches_by_serialized_bytes(
+    mock_client_class, mock_event_service, sample_conversation_id
+):
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=100,
+        flush_delay=3600,
+        num_retries=0,
+        max_batch_bytes=4096,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+    subscriber.queue = [
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="x" * 3000)]),
+        )
+        for _ in range(3)
+    ]
+
+    mock_client = AsyncMock()
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    mock_client.request.return_value = response
+    mock_client_class.return_value.__aenter__.return_value = mock_client
+
+    await subscriber._post_events()
+
+    batches = [call.kwargs["json"] for call in mock_client.request.call_args_list]
+    assert len(batches) == 3
+    for batch in batches:
+        payload_bytes = len(
+            json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode()
+        )
+        assert payload_bytes <= spec.max_batch_bytes or len(batch) == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_drops_oldest_events_past_serialized_byte_limit(
+    mock_event_service, sample_conversation_id
+):
+    events = [
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text=f"{i}" * 1000)]),
+        )
+        for i in range(2)
+    ]
+    event_size = len(
+        json.dumps(
+            events[0].model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    )
+    spec = WebhookSpec(
+        base_url="https://example.com",
+        event_buffer_size=100,
+        flush_delay=3600,
+        max_batch_bytes=1024 * 1024,
+        max_queue_bytes=event_size + 1,
+    )
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=spec,
+    )
+
+    try:
+        await subscriber(events[0])
+        await subscriber(events[1])
+
+        assert subscriber.queue == [events[1]]
+        assert subscriber._queue_bytes <= spec.max_queue_bytes
+        assert subscriber._dropped_events == 1
+    finally:
+        subscriber._cancel_flush_timer()
+
+
 class TestWebhookSubscriberErrorHandling:
     """Test cases for error handling in WebhookSubscriber."""
 
@@ -762,12 +954,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:2]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3  # num_retries + 1
-        assert mock_sleep.call_count == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 2
@@ -796,12 +994,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:1]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3
-        assert mock_sleep.call_count == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 1
@@ -1053,7 +1257,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1101,7 +1305,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1142,7 +1346,7 @@ class TestConversationWebhookSubscriber:
         # Create sample conversation info
         conversation_info = ConversationInfo(
             id=uuid4(),
-            agent=mock_event_service.stored.agent,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -1168,18 +1372,18 @@ class TestConversationWebhookSubscriber:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber.post_conversation_info(conversation_info)
+            await subscriber.post_conversation_info(conversation_info)
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
 
 class TestWebhookSubscriberTimerBehavior:
@@ -1355,3 +1559,27 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
                 usage_id="webhook-error",
                 initial_text=None,
             )
+
+
+@pytest.mark.asyncio
+async def test_streaming_deltas_never_reach_webhook(
+    mock_event_service, webhook_spec, sample_conversation_id
+):
+    """No StreamingDeltaEvent is enqueued or POSTed (regression for #4672)."""
+    subscriber = WebhookSubscriber(
+        conversation_id=sample_conversation_id,
+        service=mock_event_service,
+        spec=webhook_spec,
+    )
+    pub_sub: PubSub[Event] = PubSub()
+    pub_sub.subscribe(subscriber)
+
+    with patch.object(subscriber, "_post_events", new_callable=AsyncMock) as post:
+        # Past event_buffer_size: an unfiltered queue would flush here.
+        for _ in range(webhook_spec.event_buffer_size + 2):
+            await pub_sub(StreamingDeltaEvent(content="tok"))
+
+        assert subscriber.queue == []
+        post.assert_not_called()
+
+    subscriber._cancel_flush_timer()

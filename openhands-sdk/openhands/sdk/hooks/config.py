@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = logging.getLogger(__name__)
@@ -40,40 +41,81 @@ class HookType(StrEnum):
     """Types of hooks that can be executed."""
 
     COMMAND = "command"  # Shell command executed via subprocess
-    PROMPT = "prompt"  # LLM-based evaluation (future)
+    PROMPT = "prompt"  # Single-completion LLM evaluation
+    AGENT = "agent"  # Agent-based evaluation with tool access
 
 
 class HookDefinition(BaseModel):
     """A single hook definition."""
 
     type: HookType = HookType.COMMAND
-    command: str
+    name: str | None = None
+    # `command` is kept a non-nullable string that is always present in the
+    # serialized output and reported as required in the JSON schema (see
+    # __get_pydantic_json_schema__). This preserves the published REST response
+    # contract for ConversationInfo.hook_config: making it optional/nullable
+    # would be flagged as a breaking change by the oasdiff REST API check.
+    # Command-less hook types (PROMPT/AGENT) simply leave it as "".
+    command: str = ""
     prompt: str | None = None
+    system_prompt: str | None = None
+    tools: list[str] = Field(default_factory=list)
     timeout: int = 60
+    max_iterations: int = 3
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input
     }
 
-    @model_validator(mode="before")
     @classmethod
-    def _set_command_for_prompt_hooks(cls, data: Any) -> Any:
-        if (
-            isinstance(data, dict)
-            and data.get("type") == "prompt"
-            and "command" not in data
-        ):
-            data["command"] = ""
-        return data
+    def __get_pydantic_json_schema__(cls, core_schema, handler):  # type: ignore[override]
+        # Report `command` as a required, non-defaulted string to keep the
+        # published REST response contract identical to releases where the field
+        # had no default. The runtime default ("") only eases construction of
+        # command-less hook types; it never surfaces as null in responses.
+        json_schema = handler(core_schema)
+        json_schema = handler.resolve_ref_schema(json_schema)
+        command_schema = json_schema.get("properties", {}).get("command")
+        if command_schema is not None:
+            command_schema.pop("default", None)
+        required = json_schema.setdefault("required", [])
+        if "command" not in required:
+            required.append("command")
+        return json_schema
 
     @model_validator(mode="after")
-    def _check_required_fields(self) -> "HookDefinition":
+    def _validate_type_fields(self) -> "HookDefinition":
         if self.type == HookType.COMMAND and not self.command:
             raise ValueError("'command' is required when type is 'command'")
         if self.type == HookType.PROMPT and not self.prompt:
             raise ValueError("'prompt' is required when type is 'prompt'")
+        if self.type == HookType.PROMPT and self.command:
+            raise ValueError("'command' must not be set when type is 'prompt'")
+        if self.type == HookType.PROMPT and self.async_:
+            raise ValueError("'async' is not supported for prompt hooks")
+        if self.type == HookType.AGENT and self.command:
+            raise ValueError(
+                "'command' must not be set when type is 'agent'; "
+                "use 'system_prompt' instead"
+            )
+        if self.type == HookType.AGENT and self.async_:
+            raise ValueError("'async' is not supported for agent hooks")
         return self
+
+    @property
+    def display_command(self) -> str:
+        """Human-readable label for this hook used in logs and events."""
+        if self.command:
+            return self.command
+        prefix = f"{self.type.value}-hook"
+        if self.name is not None:
+            return f"{prefix}:{self.name}"
+        if self.type == HookType.PROMPT and self.prompt:
+            return f"{prefix}:{self.prompt[:20]}"
+        if self.type == HookType.AGENT and self.system_prompt:
+            return f"{prefix}:{self.system_prompt[:20]}"
+        return f"{prefix}:{self.type.value}"
 
 
 class HookMatcher(BaseModel):
@@ -251,7 +293,7 @@ class HookConfig(BaseModel):
             base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
                 base_dir / ".openhands" / "hooks.json",
-                Path.home() / ".openhands" / "hooks.json",
+                get_user_persistence_dir() / "hooks.json",
             ]
             for search_path in search_paths:
                 if search_path.exists():

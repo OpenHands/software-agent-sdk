@@ -17,11 +17,21 @@ See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policie
 
 ## Coding Style & Naming Conventions
 
-- Python target is 3.12; keep code Ruff-compliant (line length 88).
+- Packages support Python 3.12 and later; repository tooling targets Python 3.13. Keep code Ruff-compliant (line length 88).
 - Prefer explicit, accurate type annotations; use Pyright for type checking (do not add mypy).
 - Avoid `# type: ignore` unless there is no reasonable typing fix.
 - Keep imports at the top of files; avoid `sys.path` hacks and in-line imports unless required for circular dependencies.
 - When changing Pydantic models or serialized event shapes, preserve backward compatibility so older persisted data can still load.
+
+## Adding a persisted settings field
+
+When changing a persisted settings model (for example `AgentSettings`, `ConversationSettings`, or agent-server `PersistedSettings` payloads that embed them), keep backward compatibility explicit:
+
+1. Bump the relevant `schema_version` constant when the persisted JSON shape changes incompatibly.
+2. Add the corresponding `_migrate_*_vN_to_vN+1` function and register it in the appropriate migrations table.
+3. Add or update a golden fixture under `tests/sdk/persisted_settings_baselines/vN/` covering the historical payload shape. If the fixture relies on sentinel values surviving migration, record them in the fixture's top-level `__expected__` dotted-path map so the checker catches silent data loss.
+4. Run `.github/scripts/check_persisted_settings_compat.py` (or the `Persisted settings compatibility checks` workflow) to verify both the golden fixtures and the latest published PyPI baseline still load through `from_persisted()`. The PyPI baseline environment is installed with `uv` using the baseline release upload timestamp as an `exclude-newer` cutoff.
+
 
 ## Testing Guidelines
 
@@ -36,6 +46,19 @@ See the [project root AGENTS.md](../../../AGENTS.md) for repository-wide policie
   `Invalid API Key format: Must start with pre-defined prefix`.
 - If you need Bedrock bearer-token auth, set `AWS_BEARER_TOKEN_BEDROCK` in the environment
   (instead of using `LLM_API_KEY`).
+- Prefer `openhands.sdk.llm.utils.litellm_provider.LLMProvider` for LiteLLM-facing runtime
+  logic instead of manually splitting `LLM.model`. Accept the full model string at the SDK
+  boundary, then normalize immediately into LiteLLM's parsed `provider` + `model` view.
+- Do not duplicate multiple provider objects for transport versus capabilities. Initialize
+  the LiteLLM-facing transport provider once during `LLM` setup, and keep
+  capability/feature lookups on the canonical model string (`LLM.model_canonical_name` or
+  `LLM.model`).
+- Avoid per-call provider cache-refresh logic in `LLM`. If the provider/model changes,
+  construct a new `LLM` instance rather than trying to mutate transport provider state in
+  place.
+- Keep `unverified_models` conservative for UI bucketing: LiteLLM inference is useful for
+  transport behavior, but it can classify ambiguous raw IDs (for example regional Bedrock IDs)
+  more aggressively than the UI should.
 
 ## Event Type Deprecation Policy
 
@@ -120,15 +143,15 @@ Documentation lives in **github.com/OpenHands/docs** under the `sdk/` folder. Wh
 
 ### Workflow
 
-1. Clone docs repo: `git clone https://github.com/OpenHands/docs.git /workspace/project/openhands-docs`
+1. Clone docs repo next to this repository: `git clone https://github.com/OpenHands/docs.git ../openhands-docs`
 2. Create matching branch in both repos
 3. Update documentation in `openhands-docs/sdk/` folder
-4. **If you are creating a PR to `OpenHands/agent-sdk`**, you must also create a corresponding PR to `OpenHands/docs` with documentation updates in the `sdk/` folder
+4. **If you are creating a PR to `OpenHands/software-agent-sdk`**, you must also create a corresponding PR to `OpenHands/docs` with documentation updates in the `sdk/` folder
 5. Cross-reference both PRs in their descriptions
 
 Example:
 ```bash
-cd /workspace/project/openhands-docs
+cd ../openhands-docs
 git checkout -b <feature-name>
 # Edit files in sdk/ folder
 git add sdk/

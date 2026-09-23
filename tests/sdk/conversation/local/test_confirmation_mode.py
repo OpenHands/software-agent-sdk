@@ -94,11 +94,6 @@ class ConfirmationTestTool(
         ]
 
 
-def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-    """Factory function for creating test tools."""
-    return ConfirmationTestTool.create(conv_state, **params)
-
-
 class TestConfirmationMode:
     """Test suite for confirmation mode functionality."""
 
@@ -132,7 +127,7 @@ class TestConfirmationMode:
         )
         self.mock_llm.metrics.get_snapshot.return_value = mock_metrics_snapshot
 
-        register_tool("test_tool", _make_tool)
+        register_tool("test_tool", ConfirmationTestTool)
 
         self.agent: Agent = Agent(
             llm=self.llm,

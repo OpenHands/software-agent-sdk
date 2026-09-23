@@ -146,13 +146,8 @@ class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
         ]
 
 
-def _make_sleep_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-    """Create sleep tool for testing."""
-    return SleepTool.create(conv_state, **kwargs)
-
-
 # Register the tool
-register_tool("SleepTool", _make_sleep_tool)
+register_tool("SleepTool", SleepTool)
 
 
 class TestMessageWhileFinishing:

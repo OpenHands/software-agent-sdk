@@ -18,6 +18,10 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/gemini-2.5-flash",
         "litellm_proxy/gemini-3.1-pro-preview",
+        "kimi-k3",
+        "moonshot/kimi-k3",
+        "litellm_proxy/moonshot/kimi-k3",
+        "openhands/kimi-k3",
     ],
 )
 def test_vision_is_active_supported_models(model):
@@ -25,6 +29,23 @@ def test_vision_is_active_supported_models(model):
     # vision_is_active detection (prefix stripping + model_info fallback) against
     # LiteLLM's current knowledge base, without provider calls.
     llm = LLM(model=model, api_key=SecretStr("k"), usage_id="t")
+    assert llm.vision_is_active() is True
+
+
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": True},
+)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
+def test_proxy_model_info_can_enable_vision(_mock_sv, _mock_model_info):
+    llm = LLM(
+        model="litellm_proxy/custom-vision-model",
+        api_key=SecretStr("k"),
+        usage_id="t",
+    )
     assert llm.vision_is_active() is True
 
 
@@ -81,7 +102,10 @@ def test_chat_serializes_images_when_vision_supported(model):
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
-@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
 def test_message_with_image_does_not_enable_vision_for_text_only_model(
     mock_sv, _mock_model_info
 ):
@@ -150,7 +174,10 @@ def test_disable_vision_overrides_litellm_detection():
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
-@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
 def test_message_with_image_in_responses_does_not_include_input_image(
     mock_sv, _mock_model_info
 ):

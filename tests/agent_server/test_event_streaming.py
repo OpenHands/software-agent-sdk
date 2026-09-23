@@ -1,6 +1,7 @@
 """Tests for the token streaming callback wiring in EventService."""
 
 import asyncio
+import time
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -8,11 +9,14 @@ import pytest
 from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 from pydantic import SecretStr
 
+from openhands.agent_server import server_details_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event
-from openhands.sdk.agent import Agent
+from openhands.sdk.agent import ACPAgent, Agent
+from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
+from openhands.sdk.agent.stream_context import StreamProgress, StreamStarted
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
@@ -33,7 +37,9 @@ def _make_chunk(
 
 
 class _CollectorSubscriber(Subscriber):
-    """Subscriber that collects events for assertions."""
+    """Subscriber that opts into deltas and collects events for assertions."""
+
+    receives_streaming_deltas = True
 
     def __init__(self):
         self.events: list[Event] = []
@@ -45,6 +51,12 @@ class _CollectorSubscriber(Subscriber):
         pass
 
 
+class _PlainSubscriber(_CollectorSubscriber):
+    """Collector that keeps the default: it must never observe a delta."""
+
+    receives_streaming_deltas = False
+
+
 @pytest.fixture
 def event_service(tmp_path):
     with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
@@ -52,16 +64,16 @@ def event_service(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="test-llm",
-                        model="test-model",
-                        api_key=SecretStr("test-key"),
-                        stream=True,
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(
+                    usage_id="test-llm",
+                    model="test-model",
+                    api_key=SecretStr("test-key"),
+                    stream=True,
+                ),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
@@ -192,16 +204,16 @@ async def test_token_callbacks_not_wired_when_stream_disabled(tmp_path):
         service = EventService(
             stored=StoredConversation(
                 id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        usage_id="test-llm",
-                        model="test-model",
-                        api_key=SecretStr("test-key"),
-                        stream=False,
-                    ),
-                    tools=[],
-                ),
                 workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            ),
+            agent=Agent(
+                llm=LLM(
+                    usage_id="test-llm",
+                    model="test-model",
+                    api_key=SecretStr("test-key"),
+                    stream=False,
+                ),
+                tools=[],
             ),
             conversations_dir=tmp_path / "conversations",
         )
@@ -216,6 +228,64 @@ async def test_token_callbacks_not_wired_when_stream_disabled(tmp_path):
 
             await service.start()
             assert MockConv.call_args.kwargs["token_callbacks"] == []
+
+
+@pytest.mark.asyncio
+async def test_acp_agents_wire_token_callback_without_llm_streaming(tmp_path):
+    """ACP AgentMessageChunk text should stream even though ACPAgent has no LLM."""
+    service = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        ),
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        conversations_dir=tmp_path / "conversations",
+    )
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+
+    with _mock_local_conversation() as MockConv:
+        mock_conv = MagicMock()
+        mock_conv.state = MagicMock(execution_status="idle")
+        mock_conv._state = MagicMock()
+        mock_conv._on_event = MagicMock()
+        MockConv.return_value = mock_conv
+
+        await service.start()
+        assert len(MockConv.call_args.kwargs["token_callbacks"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_acp_string_token_callback_publishes_delta(tmp_path):
+    """ACPAgent invokes token callbacks with plain text chunks."""
+    service = EventService(
+        stored=StoredConversation(
+            id=uuid4(),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+        ),
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        conversations_dir=tmp_path / "conversations",
+    )
+    collector = _CollectorSubscriber()
+    service._pub_sub.subscribe(collector)
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+
+    with _mock_local_conversation() as MockConv:
+        mock_conv = MagicMock()
+        mock_conv.state = MagicMock(execution_status="idle")
+        mock_conv._state = MagicMock()
+        mock_conv._on_event = MagicMock()
+        MockConv.return_value = mock_conv
+
+        await service.start()
+        callback = MockConv.call_args.kwargs["token_callbacks"][0]
+
+    callback("ACP live text")
+    await asyncio.sleep(0.05)
+
+    delta_events = [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
+    assert len(delta_events) == 1
+    assert delta_events[0].content == "ACP live text"
+    assert delta_events[0].reasoning_content is None
 
 
 @pytest.mark.asyncio
@@ -234,3 +304,110 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
     delta_events = [e for e in collector.events if isinstance(e, StreamingDeltaEvent)]
     assert len(delta_events) == 4
     assert [e.content for e in delta_events] == words
+
+
+@pytest.mark.asyncio
+async def test_deltas_only_reach_subscribers_that_opted_in(event_service, tmp_path):
+    """Deltas reach only subscribers that opted in, never the rest of the bus."""
+    streaming = _CollectorSubscriber()
+    plain = _PlainSubscriber()
+    event_service._pub_sub.subscribe(streaming)
+    event_service._pub_sub.subscribe(plain)
+
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+    callback(_make_chunk(content="Hello"))
+    await asyncio.sleep(0.05)
+
+    assert [e for e in streaming.events if isinstance(e, StreamingDeltaEvent)]
+    assert not [e for e in plain.events if isinstance(e, StreamingDeltaEvent)]
+
+
+# The runtime-api reaps a managed pod once /server_info reports this much
+# idle time; the value it injects is ~20 min.
+_IDLE_THRESHOLD = 20 * 60.0
+
+
+@pytest.mark.asyncio
+async def test_deltas_keep_idle_time_below_the_threshold(
+    event_service, tmp_path, monkeypatch
+):
+    """A completion that streams past the idle threshold keeps the pod alive.
+
+    Deltas are never persisted, so nothing on the durable-event path refreshes
+    the idle clock for the length of a single streamed completion.
+    """
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+
+    # Where a stream longer than the idle threshold, emitting no durable
+    # event, leaves the server: one reap away from losing the completion.
+    monkeypatch.setattr(
+        server_details_router,
+        "_last_event_time",
+        time.time() - 2 * _IDLE_THRESHOLD,
+    )
+
+    callback(_make_chunk(content="tok"))
+
+    assert server_details_router.build_server_info().idle_time < _IDLE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_delta_idle_signal_is_throttled(event_service, tmp_path, monkeypatch):
+    """The first delta touches the idle timer; the rest of the interval does not."""
+    callback = await _start_and_capture_callback(event_service, tmp_path)
+
+    stale = time.time() - 2 * ACTIVITY_SIGNAL_INTERVAL
+    monkeypatch.setattr(server_details_router, "_last_event_time", stale)
+
+    # A service that has never signalled must not throttle its own first
+    # delta, however long the process clock has been running.
+    callback(_make_chunk(content="first"))
+    assert server_details_router._last_event_time > stale
+
+    monkeypatch.setattr(server_details_router, "_last_event_time", stale)
+    callback(_make_chunk(content="second"))
+    assert server_details_router._last_event_time == stale
+
+
+async def _start_and_capture_stream_callback(event_service, tmp_path):
+    """Start the service and return the wired stream-progress callback."""
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+
+    with _mock_local_conversation() as MockConv:
+        mock_conv = MagicMock()
+        mock_conv.state = MagicMock()
+        mock_conv.state.execution_status = "idle"
+        mock_conv._state = MagicMock()
+        mock_conv._on_event = MagicMock()
+        MockConv.return_value = mock_conv
+
+        await event_service.start()
+        return MockConv.call_args.kwargs["stream_callbacks"][0]
+
+
+class _ProgressCollector(Subscriber[StreamProgress]):
+    def __init__(self):
+        self.frames: list[StreamProgress] = []
+
+    async def __call__(self, frame: StreamProgress):
+        self.frames.append(frame)
+
+    async def close(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stream_progress_reaches_its_own_subscribers(event_service, tmp_path):
+    """Progress rides a separate fan-out, so no event-bus consumer sees it."""
+    callback = await _start_and_capture_stream_callback(event_service, tmp_path)
+
+    progress = _ProgressCollector()
+    event_service._stream_pub_sub.subscribe(progress)
+    on_the_event_bus = _CollectorSubscriber()
+    event_service._pub_sub.subscribe(on_the_event_bus)
+
+    callback(StreamStarted(item_id="item-1", attempt=1, anchor_seq=3))
+    await asyncio.sleep(0.05)
+
+    assert progress.frames == [StreamStarted("item-1", 1, 3)]
+    assert on_the_event_bus.events == []

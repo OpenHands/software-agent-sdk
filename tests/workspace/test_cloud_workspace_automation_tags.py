@@ -120,6 +120,50 @@ class TestDefaultConversationTags:
             assert "skills" not in tags
 
 
+class TestRemoteWorkspaceDefaultConversationTags:
+    """Tests for automation tags on the base RemoteWorkspace.
+
+    Local-mode automation runs use a plain RemoteWorkspace against the local
+    agent server, so the base class itself must derive the automation tags
+    from the dispatcher-injected env vars (the derivation edge cases are
+    covered above through the OpenHandsCloudWorkspace subclass, which
+    inherits this implementation).
+    """
+
+    @pytest.fixture
+    def workspace(self):
+        """Create a plain RemoteWorkspace (constructing makes no requests)."""
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        return RemoteWorkspace(host="http://localhost:1", working_dir="/tmp")
+
+    def test_empty_tags_when_no_env_vars(self, workspace):
+        """Should return empty dict when no automation env vars are set."""
+        with patch.dict(os.environ, {}, clear=True):
+            assert workspace.default_conversation_tags == {}
+
+    def test_derives_automation_tags_from_env_vars(self, workspace):
+        """Should stamp all four automation tags from the dispatcher env vars."""
+        payload = {
+            "trigger": "cron",
+            "automation_id": "auto-abc",
+            "automation_name": "Nightly Audit",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "AUTOMATION_EVENT_PAYLOAD": json.dumps(payload),
+                "AUTOMATION_RUN_ID": "run-xyz",
+            },
+        ):
+            assert workspace.default_conversation_tags == {
+                "automationtrigger": "cron",
+                "automationid": "auto-abc",
+                "automationname": "Nightly Audit",
+                "automationrunid": "run-xyz",
+            }
+
+
 class TestConversationTagMerging:
     """Tests for automatic tag merging in Conversation factory."""
 
@@ -374,6 +418,32 @@ class TestPluginsTagInConversation:
                 "https://github.com/OpenHands/security-skill/tree/v1.0.0" in plugin_urls
             )
             assert "https://github.com/OpenHands/review-skill" in plugin_urls
+
+    def test_credentials_redacted_in_plugins_tag(self):
+        """Inline creds must not reach the persisted plugins tag; ${VAR} survives."""
+        from unittest.mock import MagicMock
+
+        from openhands.sdk.conversation.conversation import Conversation
+        from openhands.sdk.plugin import PluginSource
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        mock_workspace = MagicMock(spec=RemoteWorkspace)
+        mock_workspace.default_conversation_tags = {}
+
+        plugins = [
+            PluginSource(source="https://oauth2:SUPER_SECRET@github.com/org/repo.git"),
+            PluginSource(source="https://x-token-auth:${MY_TOKEN}@host/org/ext.git"),
+        ]
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
+        ) as mock_convo_class:
+            mock_convo_class.return_value = MagicMock()
+            Conversation(agent=MagicMock(), workspace=mock_workspace, plugins=plugins)
+            tag = mock_convo_class.call_args.kwargs["tags"]["plugins"]
+
+        assert "SUPER_SECRET" not in tag
+        assert "https://****@github.com/org/repo.git" in tag.split(",")
+        assert "https://x-token-auth:${MY_TOKEN}@host/org/ext.git" in tag.split(",")
 
     def test_local_plugins_not_included_in_tags(self):
         """Should not include local path plugins in tags."""

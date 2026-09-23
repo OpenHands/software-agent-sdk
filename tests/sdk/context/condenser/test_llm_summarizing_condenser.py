@@ -1,8 +1,14 @@
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from litellm.types.utils import ModelResponse
+from litellm.types.utils import (
+    Choices,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    Usage,
+)
+from pydantic import SecretStr
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
@@ -51,9 +57,12 @@ def mock_llm() -> LLM:
         raw_response.id = "mock-llm-response-id"
         return LLMResponse(message=message, metrics=metrics, raw_response=raw_response)
 
-    mock_llm.completion.return_value = create_completion_result(
+    mock_llm.generate.return_value = create_completion_result(
         "Summary of forgotten events"
     )
+    mock_llm.agenerate = AsyncMock(return_value=mock_llm.generate.return_value)
+    mock_llm.uses_responses_api = lambda: False
+    mock_llm.requires_streaming = False
     mock_llm.format_messages_for_llm = lambda messages: messages
 
     # Mock the required attributes that the LLM validator reads
@@ -76,6 +85,9 @@ def mock_llm() -> LLM:
     mock_llm.reasoning_effort = None
     mock_llm.litellm_extra_body = {}
     mock_llm.temperature = 0.0
+    # Streaming is off by default (matches LLM.stream's default), so the
+    # condenser uses this LLM directly without copying it.
+    mock_llm.stream = False
 
     # Explicitly set pricing attributes required by LLM -> Telemetry wiring
     mock_llm.input_cost_per_token = None
@@ -86,7 +98,9 @@ def mock_llm() -> LLM:
 
     # Helper method to set mock response content
     def set_mock_response_content(content: str):
-        mock_llm.completion.return_value = create_completion_result(content)
+        result = create_completion_result(content)
+        mock_llm.generate.return_value = result
+        mock_llm.agenerate = AsyncMock(return_value=result)
 
     mock_llm.set_mock_response_content = set_mock_response_content
 
@@ -142,7 +156,7 @@ def test_condense_returns_view_when_no_condensation_needed(mock_llm: LLM) -> Non
     assert isinstance(result, View)
     assert result == view
     # LLM should not be called
-    cast(MagicMock, mock_llm.completion).assert_not_called()
+    cast(MagicMock, mock_llm.generate).assert_not_called()
 
 
 def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
@@ -171,7 +185,7 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
     assert len(result.forgotten_event_ids) > 0
 
     # LLM should be called once
-    cast(MagicMock, mock_llm.completion).assert_called_once()
+    cast(MagicMock, mock_llm.generate).assert_called_once()
 
 
 def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
@@ -212,7 +226,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     assert result.summary == "Updated summary"
 
     # Verify that the LLM was called with the previous summary
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     completion_mock.assert_called_once()
     call_args = completion_mock.call_args
     messages = call_args[1]["messages"]  # Get keyword arguments
@@ -242,7 +256,7 @@ def test_invalid_config(mock_llm: LLM) -> None:
 
 
 def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
-    """Condenser should not pass extra_body to llm.completion.
+    """Condenser should not pass extra_body to llm.generate.
 
     This prevents providers like 1p Anthropic from rejecting the request with
     "extra_body: Extra inputs are not permitted".
@@ -257,7 +271,7 @@ def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Ensure completion was called without an explicit extra_body kwarg
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
 
@@ -268,6 +282,7 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     # Prepare a view that triggers condensation
     events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
@@ -278,11 +293,11 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Verify the condenser still uses its own LLM for summarization
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
     # Agent LLM should not be called for completion (condenser uses its own LLM)
-    assert not agent_llm.completion.called
+    assert not agent_llm.generate.called
     _, kwargs = completion_mock.call_args
     assert "extra_body" not in kwargs
 
@@ -298,9 +313,10 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     # Mock get_token_count to return predictable values based on message content length
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         # Simple heuristic: count characters in all text content
         # Each character = 0.25 tokens (roughly 4 chars per token)
         total_chars = 0
@@ -310,7 +326,7 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create events that exceed token limit
     # Each event has 40 chars = 10 tokens
@@ -329,11 +345,66 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Verify the condenser used its own LLM for summarization
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
     # Verify forgotten events were calculated based on token reduction
     assert len(result.forgotten_event_ids) > 0
+
+
+@pytest.mark.parametrize(
+    ("configured_limit", "agent_limit", "token_count", "expected_trigger"),
+    [(500, 100, 200, True), (100, 500, 200, True), (100, 500, 50, False)],
+)
+def test_token_limit_uses_stricter_configured_or_agent_limit(
+    mock_llm: LLM,
+    configured_limit: int,
+    agent_limit: int,
+    token_count: int,
+    expected_trigger: bool,
+) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=configured_limit, keep_first=2
+    )
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = agent_limit
+    agent_llm.get_token_count.return_value = token_count
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+
+    assert (Reason.TOKENS in reasons) is expected_trigger
+
+
+def test_token_limit_inherits_agent_effective_input_limit(
+    mock_llm: LLM,
+) -> None:
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=1000, keep_first=2)
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = 100
+    agent_llm.get_token_count.return_value = 200
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+
+    assert Reason.TOKENS in reasons
+
+
+def test_token_reduction_uses_agent_effective_input_limit(mock_llm: LLM) -> None:
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=500, keep_first=2
+    )
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.effective_max_input_tokens = 100
+    agent_llm.get_token_count.return_value = 200
+
+    view = View.from_events([message_event("event") for _ in range(10)])
+
+    forgotten_events, _ = condenser._get_forgotten_events(view, agent_llm=agent_llm)
+
+    assert forgotten_events
 
 
 def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
@@ -396,9 +467,10 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
     # Mock get_token_count to return predictable values
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         total_chars = 0
         for msg in messages:
             for content in msg.content:
@@ -406,7 +478,7 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create 20 events with 40 chars each = 10 tokens each = 200 total tokens
     # This exceeds max_tokens of 100 (triggers TOKENS)
@@ -444,8 +516,9 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         total_chars = 0
         for msg in messages:
             for content in msg.content:
@@ -453,7 +526,7 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create 20 events (exceeds max_size of 15) with 40 chars each
     # 20 events * 10 tokens = 200 tokens (exceeds max_tokens of 100)
@@ -490,8 +563,9 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     # Create a separate mock for the agent's LLM with token counting
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
+    agent_llm.effective_max_input_tokens = None
 
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         total_chars = 0
         for msg in messages:
             for content in msg.content:
@@ -499,7 +573,7 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create 20 events (exceeds max_size of 15) with 40 chars each
     # 20 events * 10 tokens = 200 tokens (exceeds max_tokens of 100)
@@ -523,7 +597,7 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     assert len(result.forgotten_event_ids) > 0
 
     # Verify the condenser used its own LLM for summarization
-    completion_mock = cast(MagicMock, mock_llm.completion)
+    completion_mock = cast(MagicMock, mock_llm.generate)
     assert completion_mock.call_count == 1
 
 
@@ -582,7 +656,7 @@ def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
         )
 
     # Verify the LLM was never called
-    cast(MagicMock, mock_llm.completion).assert_not_called()
+    cast(MagicMock, mock_llm.generate).assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -610,9 +684,7 @@ def test_condensation_requirement_returns_none(
 @pytest.mark.parametrize(
     "reasons",
     [
-        {Reason.TOKENS},
         {Reason.EVENTS},
-        {Reason.TOKENS, Reason.EVENTS},
     ],
 )
 def test_condensation_requirement_returns_soft(
@@ -631,6 +703,28 @@ def test_condensation_requirement_returns_soft(
     ):
         result = condenser.condensation_requirement(view)
         assert result == CondensationRequirement.SOFT
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        {Reason.TOKENS},
+        {Reason.TOKENS, Reason.EVENTS},
+    ],
+)
+def test_condensation_requirement_returns_hard_for_token_pressure(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Token pressure should trigger before the next LLM request can overflow."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result == CondensationRequirement.HARD
 
 
 @pytest.mark.parametrize(
@@ -714,7 +808,7 @@ def test_condense_with_soft_requirement_and_no_condensation_available(
         assert isinstance(result, View)
         assert result == view
         # LLM should not be called
-        cast(MagicMock, mock_llm.completion).assert_not_called()
+        cast(MagicMock, mock_llm.generate).assert_not_called()
 
 
 def test_minimum_progress_default_value(mock_llm: LLM) -> None:
@@ -800,3 +894,161 @@ def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
+
+
+def test_generate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
+    """LLM failures in _generate_condensation raise NoCondensationAvailableException."""  # noqa: E501
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(MagicMock, mock_llm.generate).side_effect = RuntimeError("boom")
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    with pytest.raises(NoCondensationAvailableException, match="boom"):
+        condenser.get_condensation(view)
+
+
+@pytest.mark.asyncio
+async def test_agenerate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
+    """Async variant: LLM failures surface as NoCondensationAvailableException."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(MagicMock, mock_llm.agenerate).side_effect = RuntimeError("boom")
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    with pytest.raises(NoCondensationAvailableException, match="boom"):
+        await condenser.aget_condensation(view)
+
+
+def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
+    """A summarizer LLM failure during condense() triggers hard_context_reset."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Force a HARD condensation requirement via a CondensationRequest
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # First call (get_condensation path) fails; second call
+    # (hard_context_reset path) succeeds.
+    success_response = cast(Any, mock_llm).generate.return_value
+    cast(MagicMock, mock_llm.generate).side_effect = [
+        RuntimeError("context window exceeded"),
+        success_response,
+    ]
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary of forgotten events"
+    assert cast(MagicMock, mock_llm.generate).call_count == 2
+
+
+def _streaming_llm() -> LLM:
+    """A real LLM with streaming enabled, as a long-running conversation has."""
+    return LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="summarizer-test",
+        stream=True,
+    )
+
+
+def _summary_response(content: str = "A summary") -> ModelResponse:
+    return ModelResponse(
+        id="resp-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_summarization_disables_streaming_when_llm_streams(mock_transport) -> None:
+    """Regression test for issue #3902: a ``stream=True`` LLM must still summarize
+    even though the condenser passes no ``on_token`` callback."""
+    mock_transport.return_value = _summary_response("A summary")
+
+    llm = _streaming_llm()
+    condenser = LLMSummarizingCondenser(llm=llm, max_size=10, keep_first=3)
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(11)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "A summary"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on a copy, not the agent's own LLM (autospec =>
+    # self is the first positional arg).
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    summarizing_llm = mock_transport.call_args.args[0]
+    assert summarizing_llm is not llm
+    assert summarizing_llm.stream is False
+    assert llm.stream is True  # original untouched (model_copy is non-mutating)
+    # Token usage is still counted: the copy shares the original's metrics.
+    usage = llm.metrics.accumulated_token_usage
+    assert usage is not None
+    assert usage.prompt_tokens == 10
+    assert usage.completion_tokens == 5
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.LLM._atransport_call", new_callable=AsyncMock)
+async def test_async_summarization_disables_streaming_when_llm_streams(
+    mock_atransport,
+) -> None:
+    """Async variant of the issue #3902 regression test (aget_condensation)."""
+    mock_atransport.return_value = _summary_response("A summary")
+
+    llm = _streaming_llm()
+    condenser = LLMSummarizingCondenser(llm=llm, max_size=10, keep_first=3)
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(11)]
+    view = View.from_events(events)
+
+    result = await condenser.aget_condensation(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "A summary"
+    mock_atransport.assert_awaited_once()
+    assert mock_atransport.call_args.kwargs["enable_streaming"] is False
+    assert mock_atransport.call_args.kwargs["on_token"] is None
+    assert llm.stream is True
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_summarization_uses_llm_as_is_when_not_streaming(mock_transport) -> None:
+    """When streaming is off, the condenser summarizes with the LLM unchanged."""
+    mock_transport.return_value = _summary_response("A summary")
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="summarizer-test",
+        stream=False,
+    )
+    condenser = LLMSummarizingCondenser(llm=llm, max_size=10, keep_first=3)
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(11)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "A summary"
+    # The exact same LLM instance is used (no copy when not streaming).
+    assert mock_transport.call_args.args[0] is llm

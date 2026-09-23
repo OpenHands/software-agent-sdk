@@ -1,7 +1,7 @@
 import json
 from abc import abstractmethod
 from collections.abc import Sequence
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from litellm import ChatCompletionMessageToolCall, ResponseFunctionToolCall
 from litellm.types.responses.main import (
@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import handle_deprecated_model_fields
+from openhands.sdk.utils.masking import PreserveDataUrls
 
 
 logger = get_logger(__name__)
@@ -203,7 +204,7 @@ class TextContent(BaseContent):
 
 class ImageContent(BaseContent):
     type: Literal["image"] = "image"
-    image_urls: list[str]
+    image_urls: Annotated[list[str], PreserveDataUrls()]
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""
@@ -310,6 +311,8 @@ class Message(BaseModel):
         if self.role == "assistant" and self.tool_calls:
             message_dict["tool_calls"] = [tc.to_chat_dict() for tc in self.tool_calls]
             self._remove_content_if_empty(message_dict)
+        else:
+            self._normalize_empty_assistant_content(message_dict)
 
         # Tool result (observation) threading
         if self.role == "tool" and self.tool_call_id is not None:
@@ -432,6 +435,14 @@ class Message(BaseModel):
             return
 
         # Any other content shape is left as-is
+
+    def _normalize_empty_assistant_content(self, message_dict: dict[str, Any]) -> None:
+        """Normalize empty plain assistant content for Chat Completions."""
+        if self.role != "assistant":
+            return
+
+        if message_dict.get("content") == []:
+            message_dict["content"] = ""
 
     def to_responses_value(self, *, vision_enabled: bool) -> str | list[dict[str, Any]]:
         """Return serialized form.

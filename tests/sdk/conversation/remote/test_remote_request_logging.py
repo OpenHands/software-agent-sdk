@@ -66,11 +66,11 @@ class TestSanitizeDict:
     def test_redacts_all_values_in_environment_keys(self):
         data = {
             "environment": {"VAR1": "val1", "VAR2": "val2"},
-            "acp_env": {"NESTED": {"deep": "value"}},
+            "env": {"NESTED": {"deep": "value"}},
         }
         result = sanitize_dict(data)
         assert result["environment"] == {"VAR1": "<redacted>", "VAR2": "<redacted>"}
-        assert result["acp_env"] == {"NESTED": {"deep": "<redacted>"}}
+        assert result["env"] == {"NESTED": {"deep": "<redacted>"}}
 
     def test_preserves_structure_in_lists(self):
         data = [{"api_key": "secret"}, {"name": "test"}]
@@ -123,7 +123,7 @@ def test_send_request_redacts_structured_error_content(caplog):
                     "input": {
                         "agent": {
                             "llm": {"api_key": "secret-api-key"},
-                            "acp_env": {"OPENAI_API_KEY": "secret-openai-key"},
+                            "env": {"OPENAI_API_KEY": "secret-openai-key"},
                         },
                         "environment": {
                             "LMNR_PROJECT_API_KEY": "secret-lmnr-key",

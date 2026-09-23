@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
@@ -101,6 +102,61 @@ def test_install_from_local_path(
 
     metadata = InstallationMetadata.load_from_dir(installation_dir)
     assert mock_extension.name in metadata.extensions
+
+
+def test_install_records_requested_ref(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+):
+    """Test that the ref passed to install() is recorded as requested_ref,
+    separately from the resolved commit SHA."""
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        return_value=(mock_extension_dir, "abc123"),
+    ):
+        info = manager.install(source="github:org/repo", ref="v1.0.0")
+
+    assert info.requested_ref == "v1.0.0"
+    assert info.resolved_ref == "abc123"
+
+
+def test_install_without_ref_leaves_requested_ref_none(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+):
+    """Test that omitting ref leaves requested_ref unset, even though a
+    resolved_ref is still recorded (tracking a moving ref)."""
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        return_value=(mock_extension_dir, "abc123"),
+    ):
+        info = manager.install(source="github:org/repo")
+
+    assert info.requested_ref is None
+    assert info.resolved_ref == "abc123"
+
+
+def test_update_reclones_with_credentialed_source(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+    mock_extension: MockExtension,
+):
+    """update() re-clones using the real credential recorded in .installed.json.
+
+    Extensions have no ${VAR} mechanism and the extensions layer has no cipher,
+    so the source is kept intact at rest; redacting it here would make a private
+    extension fail to re-clone on update (regression guard for issue #3752)."""
+    cred = "https://oauth2:SUPER_SECRET@github.com/org/repo.git"
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        return_value=(mock_extension_dir, "abc123"),
+    ) as mock_fetch:
+        manager.install(source=cred, force=True)  # records cred in .installed.json
+        mock_fetch.reset_mock()
+        manager.update(mock_extension.name)  # re-fetch from the stored source
+
+    assert mock_fetch.call_count == 1
+    assert mock_fetch.call_args.kwargs["source"] == cred
 
 
 def test_install_already_exist_raises_error(
@@ -455,3 +511,24 @@ def test_update_nonexistent_extension(
     """Test updating an extension that doesn't exist."""
     info = manager.update("nonexistent")
     assert info is None
+
+
+def test_update_clears_requested_ref_to_track_latest(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+):
+    """update() re-fetches with ref=None, so a previously pinned requested_ref
+    is cleared to reflect that the extension now tracks the latest version."""
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        return_value=(mock_extension_dir, "abc123"),
+    ) as mock_fetch:
+        info = manager.install(source="github:org/repo", ref="v1.0.0")
+        assert info.requested_ref == "v1.0.0"
+
+        mock_fetch.return_value = (mock_extension_dir, "def456")
+        updated = manager.update("mock-extension")
+
+    assert updated is not None
+    assert updated.requested_ref is None
+    assert updated.resolved_ref == "def456"

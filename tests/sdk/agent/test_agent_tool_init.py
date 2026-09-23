@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 from unittest.mock import patch
 
+import pytest
 from pydantic import Field
 from rich.text import Text
 
@@ -48,13 +49,9 @@ class _UpperTool(ToolDefinition[_Action, _Obs]):
         ]
 
 
-def _make_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-    return _UpperTool.create(conv_state, **kwargs)
-
-
 def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
     # Register a simple local tool via registry
-    register_tool("upper", _make_tool)
+    register_tool("upper", _UpperTool)
 
     llm = LLM(model="test-model", usage_id="test-llm")
     agent = Agent(llm=llm, tools=[Tool(name="upper")])
@@ -121,6 +118,18 @@ def test_agent_disable_all_default_tools():
         assert "think" not in runtime_tools
 
 
+def test_runtime_tools_cannot_replace_existing_tool():
+    register_tool("upper", _UpperTool)
+    llm = LLM(model="test-model", usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[Tool(name="upper")], include_default_tools=[])
+    conv = Conversation(agent=agent, visualizer=None)
+    conv._ensure_agent_ready()
+
+    runtime_tool = _UpperTool.create()[0]
+    with pytest.raises(ValueError, match="Duplicate tool names"):
+        agent.add_runtime_tools([runtime_tool])
+
+
 # Custom finish tool for testing replacement
 class _CustomFinishAction(Action):
     result: str = Field(description="The result of the task.")
@@ -161,13 +170,9 @@ class _CustomFinishTool(ToolDefinition[_CustomFinishAction, _CustomFinishObs]):
         ]
 
 
-def _make_custom_finish_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-    return _CustomFinishTool.create(conv_state, **kwargs)
-
-
 def test_agent_replace_finish_with_custom_tool():
     """Test that the finish tool can be replaced with a custom implementation."""
-    register_tool("custom_finish", _make_custom_finish_tool)
+    register_tool("custom_finish", _CustomFinishTool)
 
     llm = LLM(model="test-model", usage_id="test-llm")
     agent = Agent(

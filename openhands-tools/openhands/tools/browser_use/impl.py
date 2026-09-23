@@ -8,11 +8,12 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
+import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypeVar
+from uuid import uuid4
 
 
 if TYPE_CHECKING:
@@ -20,7 +21,6 @@ if TYPE_CHECKING:
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
-from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import (
     BROWSER_RECORDING_OUTPUT_DIR,
@@ -224,34 +224,6 @@ def _format_browser_operation_error(
     return f"Browser operation failed: {error_detail}"
 
 
-def _install_chromium() -> bool:
-    """Attempt to install Chromium via uvx playwright install."""
-    try:
-        # Check if uvx is available
-        if not shutil.which("uvx"):
-            logger.warning("uvx not found - cannot auto-install Chromium")
-            return False
-
-        logger.info("Attempting to install Chromium via uvx...")
-        result = subprocess.run(
-            ["uvx", "playwright", "install", "chromium", "--with-deps", "--no-shell"],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes timeout for installation
-            env=sanitized_env(),
-        )
-
-        if result.returncode == 0:
-            logger.info("Chromium installation completed successfully")
-            return True
-        else:
-            logger.error(f"Chromium installation failed: {result.stderr}")
-            return False
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.error(f"Error during Chromium installation: {e}")
-        return False
-
-
 def _get_chromium_error_message() -> str:
     """Get the error message for when Chromium is not available."""
     return (
@@ -276,6 +248,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+    _close_lock: threading.Lock
     _action_timeout_seconds: float
 
     @staticmethod
@@ -349,16 +322,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             **config: Additional configuration options
         """
 
+        self._close_lock = threading.Lock()
+
         def init_logic():
-            nonlocal headless
             executable_path = self._ensure_chromium_available()
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )
-            if os.getenv("OH_ENABLE_VNC", "false").lower() in {"true", "1", "yes"}:
-                headless = False  # Force headless off if VNC is enabled
-                logger.info("VNC is enabled - running browser in non-headless mode")
-
             # Configure scripts to inject
             if inject_scripts:
                 self._server.set_inject_scripts(inject_scripts)
@@ -382,6 +352,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 "allowed_domains": allowed_domains or [],
                 "executable_path": executable_path,
                 "chromium_sandbox": not running_as_root,
+                "user_data_dir": str(
+                    Path.home() / ".config" / "browseruse" / "profiles" / uuid4().hex
+                ),
                 **config,
             }
 
@@ -705,24 +678,69 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def close(self):
         """Close the browser executor and cleanup resources."""
-        if self._cleanup_initiated:
-            return
-        self._cleanup_initiated = True
-        try:
-            # Run cleanup in the async executor with a shorter timeout
-            self._async_executor.run_async(self.cleanup, timeout=30.0)
-        except Exception as e:
-            logger.warning(f"Error during browser cleanup: {e}")
-        finally:
-            # Always close the async executor
-            self._async_executor.close()
-            # Release the shared executor reference so the class variable
-            # doesn't keep a stale reference that could prevent process exit.
-            from openhands.tools.browser_use.definition import BrowserToolSet
+        with self._close_lock:
+            shared_close_lock_acquired = self._detach_shared_executor_for_close()
+            if self._cleanup_initiated:
+                if shared_close_lock_acquired:
+                    self._release_shared_executor_creation_lock()
+                return
+            self._cleanup_initiated = True
+            try:
+                # Run cleanup in the async executor with a shorter timeout
+                self._async_executor.run_async(self.cleanup, timeout=30.0)
+            except Exception as e:
+                logger.warning(f"Error during browser cleanup: {e}")
+            finally:
+                # Remove the browser profile directory to avoid disk accumulation.
+                # browser_use doesn't clean up the user_data_dir on shutdown.
+                user_data_dir = self._config.get("user_data_dir")
+                if user_data_dir and "browseruse/profiles/" in user_data_dir:
+                    try:
+                        shutil.rmtree(user_data_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                try:
+                    # Always close the async executor
+                    self._async_executor.close()
+                finally:
+                    if shared_close_lock_acquired:
+                        self._release_shared_executor_creation_lock()
+                    else:
+                        self._release_shared_executor_reference()
 
-            with BrowserToolSet._shared_executor_lock:
-                if BrowserToolSet._shared_executor is self:
-                    BrowserToolSet._shared_executor = None
+    def _detach_shared_executor_for_close(self) -> bool:
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        if BrowserToolSet._shared_executor is not self:
+            return False
+
+        BrowserToolSet._shared_executor_creation_lock.acquire()
+        with BrowserToolSet._shared_executor_lock:
+            if BrowserToolSet._shared_executor is self:
+                BrowserToolSet._shared_executor = None
+                return True
+
+        BrowserToolSet._shared_executor_creation_lock.release()
+        return False
+
+    @staticmethod
+    def _release_shared_executor_creation_lock() -> None:
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        BrowserToolSet._shared_executor_creation_lock.release()
+
+    def _release_shared_executor_reference(self):
+        # Avoid taking the shared executor lock for ordinary/stale executors.
+        # __del__ can run while BrowserToolSet.create() is creating a new shared
+        # executor; a stale executor finalizer trying to acquire the same lock can
+        # deadlock that create path, especially on Windows.
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        if BrowserToolSet._shared_executor is not self:
+            return
+        with BrowserToolSet._shared_executor_lock:
+            if BrowserToolSet._shared_executor is self:
+                BrowserToolSet._shared_executor = None
 
     def __del__(self):
         """Cleanup on deletion."""

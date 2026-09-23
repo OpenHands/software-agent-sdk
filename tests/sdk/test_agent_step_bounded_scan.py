@@ -16,6 +16,10 @@ from openhands.sdk.workspace.local import LocalWorkspace
 class _LimitedIterEvents(EventLog):
     def __init__(self, events, max_iter: int):
         self._events = list(events)
+        # Mirror EventLog's id/index maps so id-based lookups (get_index,
+        # path_to_root, active_branch) work without touching __iter__.
+        self._id_to_idx = {e.id: i for i, e in enumerate(self._events)}
+        self._idx_to_id = {i: e.id for i, e in enumerate(self._events)}
         self._max_iter = max_iter
         self._iter_count = 0
 
@@ -31,13 +35,18 @@ class _LimitedIterEvents(EventLog):
             raise AssertionError("events iterated too many times")
         return iter(self._events)
 
-    def append(self, event) -> None:  # type: ignore[override]
+    def append(self, event) -> int:  # type: ignore[override]
         self._events.append(event)
+        return len(self._events) - 1
 
 
 class _FailingIterEvents(EventLog):
     def __init__(self, events):
         self._events = list(events)
+        # Mirror EventLog's id/index maps so id-based lookups (get_index,
+        # path_to_root, active_branch) work without touching __iter__.
+        self._id_to_idx = {e.id: i for i, e in enumerate(self._events)}
+        self._idx_to_id = {i: e.id for i, e in enumerate(self._events)}
 
     def __len__(self) -> int:  # type: ignore[override]
         return len(self._events)
@@ -48,8 +57,9 @@ class _FailingIterEvents(EventLog):
     def __iter__(self) -> Iterator:  # type: ignore[override]
         raise AssertionError("events iterated unexpectedly")
 
-    def append(self, event) -> None:  # type: ignore[override]
+    def append(self, event) -> int:  # type: ignore[override]
         self._events.append(event)
+        return len(self._events) - 1
 
 
 def test_agent_step_latest_user_message_scan_is_bounded(tmp_path):

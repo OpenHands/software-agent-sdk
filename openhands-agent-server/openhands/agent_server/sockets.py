@@ -28,15 +28,21 @@ from fastapi import (
 )
 from starlette.websockets import WebSocketState
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import (
+    BashEventService,
+    get_default_bash_event_service,
+)
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
+    ConversationService,
+    CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import (
     BashError,
     BashEventBase,
+    BashOutput,
     ExecuteBashRequest,
     ServerErrorEvent,
 )
@@ -45,7 +51,8 @@ from openhands.sdk import Event, Message
 from openhands.sdk.utils.paging import page_iterator
 
 
-sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
+conversation_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
+bash_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 conversation_service = get_default_conversation_service()
 bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
@@ -62,6 +69,38 @@ def _get_config(websocket: WebSocket) -> Config:
     if isinstance(config, Config):
         return config
     return get_default_config()
+
+
+def _get_conversation_service(websocket: WebSocket) -> ConversationService:
+    """Return the ConversationService for this FastAPI app instance.
+
+    Looks up ``app.state.conversation_service`` at request time so that the
+    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
+    is used instead of the module-level default captured at import. When
+    ``app.state`` is not configured (e.g. when sockets.py is imported as a
+    library without a lifespan), falls back to the module-level singleton,
+    which keeps the behaviour of existing tests that patch the module-level
+    variable.
+    """
+    service = getattr(websocket.app.state, "conversation_service", None)
+    if isinstance(service, ConversationService):
+        return service
+    return conversation_service
+
+
+def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
+    """Return the BashEventService for this FastAPI app instance.
+
+    Looks up ``app.state.bash_event_service`` at request time so that the
+    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
+    is used instead of the module-level default captured at import. When
+    ``app.state`` is not configured (e.g. when sockets.py is imported as a
+    library without a lifespan), falls back to the module-level singleton.
+    """
+    service = getattr(websocket.app.state, "bash_event_service", None)
+    if isinstance(service, BashEventService):
+        return service
+    return bash_event_service
 
 
 def _resolve_websocket_session_api_key(
@@ -185,7 +224,7 @@ async def _accept_authenticated_websocket(
     return True
 
 
-@sockets_router.websocket("/events/{conversation_id}")
+@conversation_sockets_router.websocket("/events/{conversation_id}")
 async def events_socket(
     conversation_id: UUID,
     websocket: WebSocket,
@@ -242,7 +281,15 @@ async def events_socket(
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    event_service = await conversation_service.get_event_service(conversation_id)
+    conv_service = _get_conversation_service(websocket)
+    try:
+        event_service = await conv_service.get_event_service(conversation_id)
+    except CredentialBindingActivationRequired:
+        await websocket.close(
+            code=1013,
+            reason="credential_binding_activation_required",
+        )
+        return
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
@@ -322,7 +369,7 @@ async def events_socket(
                         code=e.__class__.__name__,
                         detail=str(e),
                     )
-                    dumped = error_event.model_dump(mode="json")
+                    dumped = error_event.model_dump(mode="json", exclude_none=True)
                     await websocket.send_json(dumped)
                     # Log after - if send event raises an error logging is handled
                     # in the except block
@@ -337,7 +384,7 @@ async def events_socket(
         await event_service.unsubscribe_from_events(subscriber_id)
 
 
-@sockets_router.websocket("/bash-events")
+@bash_sockets_router.websocket("/bash-events")
 async def bash_events_socket(
     websocket: WebSocket,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
@@ -372,9 +419,10 @@ async def bash_events_socket(
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
+    bash_service = _get_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
     try:
-        subscriber_id = await bash_event_service.subscribe_to_events(
+        subscriber_id = await bash_service.subscribe_to_events(
             _BashWebSocketSubscriber(websocket)
         )
     except MaxSubscribersError:
@@ -392,21 +440,22 @@ async def bash_events_socket(
         # Resend all existing events if requested
         if effective_mode == "all":
             logger.info("Resending bash events")
-            async for event in page_iterator(bash_event_service.search_bash_events):
+            async for event in page_iterator(bash_service.search_bash_events):
                 await _send_bash_event(event, websocket)
 
         while True:
             try:
                 # Keep the connection alive and handle any incoming messages
                 data = await websocket.receive_json()
+                if _is_auth_control_message(data):
+                    continue
                 logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
-                await bash_event_service.start_bash_command(request)
+                await bash_service.start_bash_command(request)
             except WebSocketDisconnect:
                 logger.info("Bash websocket disconnected")
                 return
             except Exception as e:
-                # Something went wrong - Tell the client so they can handle it
                 try:
                     error_event = BashError(
                         code=e.__class__.__name__,
@@ -414,21 +463,21 @@ async def bash_events_socket(
                     )
                     dumped = error_event.model_dump(mode="json")
                     await websocket.send_json(dumped)
-                    # Log after - if send event raises an error logging is handled
-                    # in the except block
-                    logger.exception(
-                        "error_in_bash_event_subscription", stack_info=True
+                    logger.error(
+                        "error_in_bash_event_subscription (error_type=%s)",
+                        type(e).__name__,
                     )
-                except Exception:
-                    # Sending the error event failed - likely a closed socket
-                    logger.info("Base websocket disconnected")
+                except Exception as send_error:
+                    logger.info("Bash websocket disconnected")
                     logger.debug(
-                        "error_sending_bash_error", exc_info=True, stack_info=True
+                        "error_sending_bash_error (error_type=%s, send_error_type=%s)",
+                        type(e).__name__,
+                        type(send_error).__name__,
                     )
                     await _safe_close_websocket(websocket)
                     return
     finally:
-        await bash_event_service.unsubscribe_from_events(subscriber_id)
+        await bash_service.unsubscribe_from_events(subscriber_id)
 
 
 async def _send_event(event: Event, websocket: WebSocket):
@@ -438,8 +487,7 @@ async def _send_event(event: Event, websocket: WebSocket):
         logger.debug("skip_sending_event_socket_disconnected: %r", event)
         return
     try:
-        dumped = event.model_dump(mode="json")
-        await websocket.send_json(dumped)
+        await websocket.send_json(event.model_dump(mode="json", exclude_none=True))
     except (RuntimeError, WebSocketDisconnect) as e:
         # Expected race: client disconnected between our state check and send.
         logger.debug("error_sending_event_disconnected: %r (%s)", event, e)
@@ -448,14 +496,12 @@ async def _send_event(event: Event, websocket: WebSocket):
 
 
 def _is_auth_control_message(data: object) -> bool:
-    """Return True for ``{"type": "auth", ...}`` first-message-auth frames.
-
-    Clients that handle both legacy and first-message auth may send this
-    frame even after legacy (query/header) auth has already succeeded.
-    The post-auth receive loops must ignore it instead of validating it
-    as a regular message payload.
-    """
-    return isinstance(data, dict) and data.get("type") == "auth"
+    """Match redundant auth frames left unread after legacy authentication."""
+    return (
+        isinstance(data, dict)
+        and data.get("type") == "auth"
+        and set(data) <= {"type", "session_api_key"}
+    )
 
 
 async def _safe_close_websocket(
@@ -494,6 +540,9 @@ def _is_websocket_connected(websocket: WebSocket) -> bool:
 class _WebSocketSubscriber(Subscriber):
     """WebSocket subscriber for conversation events."""
 
+    # The live socket is what token streaming is for.
+    receives_streaming_deltas = True
+
     websocket: WebSocket
 
     async def __call__(self, event: Event):
@@ -501,16 +550,39 @@ class _WebSocketSubscriber(Subscriber):
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
+    metadata: dict[str, str | int | None] = {
+        "kind": event.kind,
+        "event_id": str(event.id),
+        "command_id": None,
+        "order": None,
+        "exit_code": None,
+    }
+    if isinstance(event, BashOutput):
+        metadata.update(
+            command_id=str(event.command_id),
+            order=event.order,
+            exit_code=event.exit_code,
+        )
+
     if not _is_websocket_connected(websocket):
-        logger.debug("skip_sending_bash_event_socket_disconnected: %r", event)
+        logger.debug("skip_sending_bash_event_socket_disconnected: %s", metadata)
         return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
     except (RuntimeError, WebSocketDisconnect) as e:
-        logger.debug("error_sending_bash_event_disconnected: %r (%s)", event, e)
-    except Exception:
-        logger.exception("error_sending_bash_event: %r", event, stack_info=True)
+        logger.debug(
+            "error_sending_bash_event_disconnected: %s (error_type=%s)",
+            metadata,
+            type(e).__name__,
+        )
+    except Exception as e:
+        logger.error(
+            "error_sending_bash_event: %s (error_type=%s)",
+            metadata,
+            type(e).__name__,
+            stack_info=True,
+        )
 
 
 @dataclass

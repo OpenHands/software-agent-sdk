@@ -83,7 +83,7 @@ conversation = Conversation(
 )
 
 # ── Part 1: single URL image ──────────────────────────────────────────────
-IMAGE_URL = "https://github.com/OpenHands/docs/raw/main/openhands/static/img/logo.png"
+IMAGE_URL = "https://www.python.org/static/opengraph-icon-200x200.png"
 
 conversation.send_message(
     Message(

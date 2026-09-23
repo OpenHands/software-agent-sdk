@@ -2,7 +2,7 @@
 
 import asyncio
 import inspect
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client as AsyncMCPClient
@@ -13,6 +13,12 @@ from openhands.sdk.utils.async_executor import AsyncExecutor
 
 if TYPE_CHECKING:
     from openhands.sdk.mcp.tool import MCPToolDefinition
+
+
+ToolsReconciledCallback = Callable[
+    ["MCPClient", Sequence["MCPToolDefinition"]],
+    None,
+]
 
 
 class MCPClient(AsyncMCPClient):
@@ -35,12 +41,14 @@ class MCPClient(AsyncMCPClient):
     _executor: AsyncExecutor
     _closed: bool
     _tools: "list[MCPToolDefinition]"
+    _tools_reconciled_callback: ToolsReconciledCallback | None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._executor = AsyncExecutor()
         self._closed = False
         self._tools = []
+        self._tools_reconciled_callback = None
 
     @property
     def tools(self) -> "list[MCPToolDefinition]":

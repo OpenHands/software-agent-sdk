@@ -10,9 +10,10 @@ This module provides the unified API for working with skills:
 - `load_user_skills` - Load skills from ~/.openhands/skills/
 - `load_public_skills` - Load skills from the public OpenHands extensions repo
 - `load_available_skills` - Load and merge skills from multiple sources
+- `merge_skills_by_name` - Merge two skill collections by name (primary wins)
 
 **Triggers:**
-- `BaseTrigger`, `KeywordTrigger`, `TaskTrigger` - Skill activation triggers
+- `BaseTrigger`, `KeywordTrigger`, `TaskTrigger`, `PathTrigger` - activation triggers
 
 **Installed Skills Management:**
 - `install_skill` - Install a skill from a source
@@ -49,6 +50,7 @@ from openhands.sdk.skills.installed import (
     install_skills_from_marketplace,
     list_installed_skills,
     load_installed_skills,
+    load_marketplace_standalone_skills,
     uninstall_skill,
     update_skill,
 )
@@ -63,6 +65,7 @@ from openhands.sdk.skills.skill import (
     load_public_skills,
     load_skills_from_dir,
     load_user_skills,
+    merge_skills_by_name,
     to_prompt,
 )
 
@@ -70,6 +73,7 @@ from openhands.sdk.skills.skill import (
 from openhands.sdk.skills.trigger import (
     BaseTrigger,
     KeywordTrigger,
+    PathTrigger,
     TaskTrigger,
 )
 
@@ -100,6 +104,7 @@ __all__ = [
     "InstalledSkillInfo",
     "install_skill",
     "install_skills_from_marketplace",
+    "load_marketplace_standalone_skills",
     "uninstall_skill",
     "list_installed_skills",
     "load_installed_skills",
@@ -117,10 +122,12 @@ __all__ = [
     "load_user_skills",
     "load_public_skills",
     "load_available_skills",
+    "merge_skills_by_name",
     "to_prompt",
     # Triggers
     "BaseTrigger",
     "KeywordTrigger",
+    "PathTrigger",
     "TaskTrigger",
     # Types
     "SkillKnowledge",

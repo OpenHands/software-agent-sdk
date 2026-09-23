@@ -1,6 +1,6 @@
 [project]
 name = "openhands-workspace"
-version = "1.22.1"
+version = "1.49.4"
 description = "OpenHands Workspace - Docker and container-based workspace implementations"
 
 requires-python = ">=3.12"
@@ -10,6 +10,12 @@ dependencies = [
     "pydantic>=2.11.7",
 ]
 
+[project.optional-dependencies]
+# AgentSandboxWorkspace: run the agent server in a kubernetes-sigs/agent-sandbox pod.
+agent-sandbox = [
+    "k8s-agent-sandbox>=0.5.0",
+]
+
 [project.urls]
 Source = "https://github.com/OpenHands/software-agent-sdk"
 Homepage = "https://github.com/OpenHands/software-agent-sdk"
@@ -17,7 +23,7 @@ Documentation = "https://docs.openhands.dev/sdk"
 "Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-dir]

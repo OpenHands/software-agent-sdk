@@ -1,6 +1,7 @@
 import os
 from collections.abc import Sequence
 from enum import Enum
+from typing import Final
 
 from pydantic import Field, model_validator
 
@@ -79,8 +80,42 @@ class LLMSummarizingCondenser(RollingCondenser):
             )
         return self
 
+    @model_validator(mode="after")
+    def _disable_streaming_for_summary(self):
+        # Summaries are consumed whole with no on_token callback, which a
+        # streaming LLM requires. Disable streaming once so every summary path
+        # is covered. model_copy is non-mutating and shares usage_id/metrics,
+        # so summary tokens stay attributed to the conversation.
+        # Providers that require streaming are exempt: the Codex API requires
+        # stream=True, and the responses() method drains the stream internally
+        # without an on_token callback.
+        if self.llm.stream and not self.llm.requires_streaming:
+            self.llm = self.llm.model_copy(update={"stream": False})
+        return self
+
     def handles_condensation_requests(self) -> bool:
         return True
+
+    def _effective_max_tokens(self, agent_llm: LLM | None) -> int | None:
+        """Return the effective token cap that triggers token-based condensation.
+
+        Takes the stricter (i.e. smaller) of the condenser's configured
+        ``max_tokens`` and the agent LLM's effective input limit. ``agent_llm``
+        is optional throughout the public API -- callers that only assess
+        request/event-count pressure may pass ``None`` -- in which case only the
+        condenser's own ``max_tokens`` applies.
+
+        Returns ``None`` when no limit is configured.
+        """
+        limits = [
+            limit
+            for limit in (
+                self.max_tokens,
+                agent_llm.effective_max_input_tokens if agent_llm is not None else None,
+            )
+            if limit is not None
+        ]
+        return min(limits) if limits else None
 
     def get_condensation_reasons(
         self, view: View, agent_llm: LLM | None = None
@@ -102,9 +137,17 @@ class LLMSummarizingCondenser(RollingCondenser):
             reasons.add(Reason.REQUEST)
 
         # Reason 2: Token limit is provided and exceeded.
-        if self.max_tokens and agent_llm:
+        max_tokens = self._effective_max_tokens(agent_llm)
+        if max_tokens is not None and agent_llm is not None:
             total_tokens = get_total_token_count(view.events, agent_llm)
-            if total_tokens > self.max_tokens:
+            if total_tokens > max_tokens:
+                logger.info(
+                    "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
+                    "events=%d",
+                    total_tokens,
+                    max_tokens,
+                    len(view),
+                )
                 reasons.add(Reason.TOKENS)
 
         # Reason 3: View exceeds maximum size in number of events.
@@ -122,12 +165,17 @@ class LLMSummarizingCondenser(RollingCondenser):
         if reasons == set():
             return None
 
-        # If the reasons are for resource constraints, we can treat it as a soft
-        # requirement. We want to condense when we can, but there's still space in the
-        # context window or we'd also see Reason.REQUEST. That means we can delay the
-        # condensation if there isn't one available (based on the view's manipulation
-        # indices).
-        resource_reasons = {Reason.TOKENS, Reason.EVENTS}
+        # Token pressure is a hard requirement in benchmark runs that use a fixed
+        # local model context: sending the next request can fail before the recovery
+        # path has a chance to run. Treat event-count pressure as soft because that
+        # threshold is only a history-management heuristic.
+        if Reason.TOKENS in reasons:
+            return CondensationRequirement.HARD
+
+        # If the remaining reasons are for resource constraints, we can treat them as
+        # a soft requirement. We want to condense when we can, but there's still space
+        # in the context window or we'd also see Reason.REQUEST.
+        resource_reasons = {Reason.EVENTS}
         if reasons.issubset(resource_reasons):
             return CondensationRequirement.SOFT
 
@@ -177,9 +225,13 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
-        llm_response = self.llm.completion(
-            messages=messages,
-        )
+        try:
+            llm_response = self.llm.generate(messages=messages, store=False)
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
+
         # Extract summary from the LLMResponse message
         summary = None
         if llm_response.message.content:
@@ -225,19 +277,21 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         if Reason.TOKENS in reasons:
             # Compute the number of tokens we need to eliminate to be under half the
-            # max_tokens value. We know max_tokens and the agent LLM are not None here
-            # because we can't have Reason.TOKENS without them.
-            assert self.max_tokens is not None
+            # effective max_tokens value. We know both are not None here because we
+            # cannot have Reason.TOKENS without them.
+            max_tokens = self._effective_max_tokens(agent_llm)
+            assert max_tokens is not None
             assert agent_llm is not None
 
             total_tokens = get_total_token_count(view.events, agent_llm)
-            tokens_to_reduce = total_tokens - (self.max_tokens // 2)
+            tokens_to_reduce = total_tokens - (max_tokens // 2)
 
             suffix_events_to_keep.add(
                 get_suffix_length_for_token_reduction(
                     events=view.events[self.keep_first :],
                     llm=agent_llm,
                     token_reduction=tokens_to_reduce,
+                    base_events=view.events[: self.keep_first],
                 )
             )
 
@@ -364,7 +418,13 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
-        llm_response = await self.llm.acompletion(messages=messages)
+
+        try:
+            llm_response = await self.llm.agenerate(messages=messages, store=False)
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
 
         summary = None
         if llm_response.message.content:
@@ -442,3 +502,16 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         logger.error("Hard context reset summarization failed after multiple attempts.")
         return None
+
+
+# Sizing for the standard summarizing condenser. Kept here so the default agent and
+# spawned sub-agents stay in sync.
+_DEFAULT_MAX_SIZE: Final[int] = 80
+_DEFAULT_KEEP_FIRST: Final[int] = 4
+
+
+def default_condenser(llm: LLM) -> LLMSummarizingCondenser:
+    """Standard summarizing condenser used by the default agent and sub-agents."""
+    return LLMSummarizingCondenser(
+        llm=llm, max_size=_DEFAULT_MAX_SIZE, keep_first=_DEFAULT_KEEP_FIRST
+    )

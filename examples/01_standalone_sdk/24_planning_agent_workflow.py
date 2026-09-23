@@ -33,6 +33,7 @@ def get_event_content(event):
 
 # Create a temporary workspace
 workspace_dir = Path(tempfile.mkdtemp())
+plan_path = workspace_dir / ".agents_tmp" / "PLAN.md"
 print(f"Working in: {workspace_dir}")
 
 # Configure LLM
@@ -82,7 +83,7 @@ planning_conversation.run()
 print("\n" + "=" * 80)
 print("PLANNING COMPLETE")
 print("=" * 80)
-print(f"Implementation plan saved to: {workspace_dir}/PLAN.md")
+print(f"Implementation plan saved to: {plan_path}")
 
 print("\n" + "=" * 80)
 print("PHASE 2: EXECUTION")
@@ -101,9 +102,10 @@ execution_conversation = Conversation(
 execution_prompt = f"""
 Please implement the web scraping project according to the implementation plan.
 
-The detailed implementation plan has been created and saved at: {workspace_dir}/PLAN.md
+The detailed implementation plan has been created and saved at: {plan_path}
 
-Please read the plan from PLAN.md and implement all components according to it.
+Please read the plan from .agents_tmp/PLAN.md and implement all components
+according to it.
 
 Create all necessary files, implement the functionality, and ensure everything
 works together properly.

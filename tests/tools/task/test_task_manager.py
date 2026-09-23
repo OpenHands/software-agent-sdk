@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +8,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -330,6 +332,7 @@ class TestTaskManager:
         conv = manager._get_conversation(
             description="quiz",
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             max_iteration_per_run=500,
             conversation_id=conversation_id,
@@ -347,6 +350,7 @@ class TestTaskManager:
             description=None,
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             conversation_id=conversation_id,
         )
@@ -366,6 +370,7 @@ class TestTaskManager:
             description="test",
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
         )
@@ -375,7 +380,7 @@ class TestTaskManager:
         """Sibling sub-agents share the parent's OpenAI prefix-cache shard."""
         manager, parent = _manager_with_parent(tmp_path)
         register_builtins_agents()
-        parent_key = parent.agent.llm._prompt_cache_key
+        parent_key = str(parent.state.id)
 
         sub_keys = []
         for _ in range(2):
@@ -385,17 +390,147 @@ class TestTaskManager:
                 description=None,
                 max_iteration_per_run=500,
                 task_id=task_id,
+                subagent_type="default",
                 conversation_id=conversation_id,
                 worker_agent=agent,
             )
-            sub_keys.append(conv.agent.llm._prompt_cache_key)
+            sub_keys.append(conv.get_llm_call_context().prompt_cache_key)
 
         assert sub_keys == [parent_key, parent_key]
+
+    def test_marks_conversation_as_delegate_with_linking_metadata(self, tmp_path):
+        """A sub-agent conversation must be built inside a detached trace,
+        tagged with the originating task_id/subagent_type (software-agent-sdk#4365).
+        Exercises the real `detached_delegate_context`, not a mock of it."""
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = None
+            lam._observability_enabled = True
+            try:
+                manager._get_conversation(
+                    description="test",
+                    max_iteration_per_run=500,
+                    task_id=task_id,
+                    subagent_type="general-purpose",
+                    conversation_id=conversation_id,
+                    worker_agent=agent,
+                )
+            finally:
+                lam._observability_enabled = False
+
+        mock_start_root_span.assert_called_once()
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["tags"] == ["delegate"]
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task_id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+        }
+
+    def test_resume_task_marks_conversation_as_delegate(self, tmp_path):
+        """Resuming a task must also build a detached, delegate-tagged trace."""
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        manager._evict_task(task)
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = None
+            lam._observability_enabled = True
+            try:
+                manager._resume_task(resume=task.id, subagent_type="general-purpose")
+            finally:
+                lam._observability_enabled = False
+
+        mock_start_root_span.assert_called_once()
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["tags"] == ["delegate"]
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task.id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+        }
+
+    def test_delegate_metadata_includes_parent_span_link(self, tmp_path):
+        """When a parent span is active, its trace_id/span_id/tool_call_id must
+        be merged into the delegate's observability metadata."""
+        from types import SimpleNamespace
+
+        from openhands.sdk.observability import laminar as lam
+
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        parent_ctx = SimpleNamespace(
+            trace_id="11111111-1111-1111-1111-111111111111",
+            span_id="22222222-2222-2222-2222-222222222222",
+            metadata={"tool_call_id": "call_abc123"},
+        )
+
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.conversation.base.start_root_span",
+                return_value=None,
+            ) as mock_start_root_span,
+        ):
+            mock_laminar.get_laminar_span_context.return_value = parent_ctx
+            lam._observability_enabled = True
+            try:
+                manager._get_conversation(
+                    description="test",
+                    max_iteration_per_run=500,
+                    task_id=task_id,
+                    subagent_type="general-purpose",
+                    conversation_id=conversation_id,
+                    worker_agent=agent,
+                )
+            finally:
+                lam._observability_enabled = False
+
+        kwargs = mock_start_root_span.call_args.kwargs
+        assert kwargs["metadata"] == {
+            "is_delegate": True,
+            "task_id": task_id,
+            "subagent_type": "general-purpose",
+            "parent_session_id": str(parent.state.id),
+            "delegate.parent_trace_id": str(parent_ctx.trace_id),
+            "delegate.parent_span_id": str(parent_ctx.span_id),
+            "tool_call_id": "call_abc123",
+        }
 
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
     """Create a Task with a MagicMock conversation, bypassing Pydantic validation."""
     mock_conv = MagicMock(**conv_kwargs)
+    # Default to a FINISHED run; a non-FINISHED status is now surfaced as an error,
+    # so override state.execution_status to test stuck/paused paths.
+    mock_conv.state.execution_status = ConversationExecutionStatus.FINISHED
     return Task.model_construct(
         id=task_id,
         conversation_id=uuid.uuid4(),
@@ -485,6 +620,24 @@ class TestRunTask:
         assert result.error is not None
         assert "agent exploded" in result.error
         assert result.result is None
+
+    def test_non_finished_status_surfaced_as_error(self, tmp_path):
+        """A sub-agent that ends non-FINISHED (e.g. STUCK) is surfaced as an error,
+        not reported as an empty success."""
+        manager, _ = _manager_with_parent(tmp_path)
+
+        task = _make_task_with_mock_conv("task_00000001")
+        assert task.conversation is not None
+        mock_conv = cast(Any, task.conversation)
+        mock_conv.state.execution_status = ConversationExecutionStatus.STUCK
+        mock_conv.state.events = []
+        manager._tasks[task.id] = task
+
+        result = manager._run_task(task=task, prompt="do something")
+
+        assert result.status == TaskStatus.ERROR
+        assert result.result is None
+        assert "stuck" in (result.error or "").lower()
 
     def test_run_evicts_conversation_after_error(self, tmp_path):
         """Even on error, the task's conversation should be evicted (finally block)."""
@@ -835,6 +988,7 @@ class TestTaskManagerHooks:
             description="test",
             max_iteration_per_run=100,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
             hook_config=hook_config,
@@ -856,6 +1010,7 @@ class TestTaskManagerHooks:
             description="test",
             max_iteration_per_run=100,
             task_id=task_id,
+            subagent_type="default",
             conversation_id=conversation_id,
             worker_agent=agent,
         )
@@ -935,6 +1090,7 @@ class TestTaskManagerPersistence:
             description=None,
             max_iteration_per_run=500,
             task_id=task_id,
+            subagent_type="default",
             worker_agent=agent,
             conversation_id=conversation_id,
         )
@@ -942,3 +1098,70 @@ class TestTaskManagerPersistence:
         conv_persistence = conv.state.persistence_dir
         assert conv_persistence is not None
         assert str(conv_persistence).startswith(str(manager._persistence_dir))
+
+
+class TestTaskManagerBudget:
+    """The per-subagent cost budget flows from the agent definition / parent
+    into the spawned sub-conversation."""
+
+    def test_budget_from_agent_definition(self, tmp_path):
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        agent_def = AgentDefinition(
+            name="budgeted", model="inherit", tools=[], max_budget_per_run=4.0
+        )
+        register_agent(
+            name="budgeted",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(subagent_type="budgeted", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 4.0
+
+    def test_budget_inherits_from_parent(self, tmp_path):
+        register_builtins_agents()
+        agent = Agent(llm=_make_llm(), tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_budget_per_run=7.0,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 7.0
+
+
+class TestRunErrorSurfacing:
+    """A sub-agent run that ends in a non-FINISHED status (stuck, paused, run-limit,
+    ...) is surfaced to the parent task rather than reported as an empty success."""
+
+    def test_run_stop_detail_returns_last_error(self):
+        from types import SimpleNamespace
+
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+        err = ConversationErrorEvent(
+            source="environment",
+            code="MaxIterationsReached",
+            detail="Agent reached the maximum iteration limit.",
+        )
+        conv = SimpleNamespace(state=SimpleNamespace(events=[err]))
+        detail = TaskManager._run_stop_detail(
+            cast(LocalConversation, conv), ConversationExecutionStatus.ERROR
+        )
+        assert err.detail in detail
+
+    def test_run_stop_detail_default_mentions_status(self):
+        from types import SimpleNamespace
+
+        conv = SimpleNamespace(state=SimpleNamespace(events=[]))
+        detail = TaskManager._run_stop_detail(
+            cast(LocalConversation, conv), ConversationExecutionStatus.STUCK
+        )
+        assert "stuck" in detail.lower()

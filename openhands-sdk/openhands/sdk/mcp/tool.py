@@ -1,8 +1,12 @@
 """Utility functions for MCP integration."""
 
+import copy
+import json
 import re
+import threading
+from collections import OrderedDict
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 
 if TYPE_CHECKING:
@@ -10,12 +14,22 @@ if TYPE_CHECKING:
 
 import mcp.types
 from litellm import ChatCompletionToolParam
-from pydantic import Field, ValidationError
+from openai.types.responses import FunctionToolParam
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.security import risk
+from openhands.sdk.skills.utils import expand_variable_references
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -23,14 +37,54 @@ from openhands.sdk.tool import (
     ToolDefinition,
     ToolExecutor,
 )
-from openhands.sdk.tool.schema import Schema
+from openhands.sdk.tool.schema import Schema, _process_schema_node
+from openhands.sdk.tool.tool import _prioritize_schema_fields
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 logger = get_logger(__name__)
 
+
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
+
+# mcp 2.x dumps its snake_case attribute names unless by_alias=True; mcp 1.x
+# only reads the camelCase wire names. Keys inside inputSchema/outputSchema
+# are user JSON Schema and must never be renamed.
+_MCP_TOOL_WIRE_KEYS: Final[dict[str, str]] = {
+    "input_schema": "inputSchema",
+    "output_schema": "outputSchema",
+    "meta": "_meta",
+}
+_MCP_NESTED_WIRE_KEYS: Final[dict[str, dict[str, str]]] = {
+    "annotations": {
+        "read_only_hint": "readOnlyHint",
+        "destructive_hint": "destructiveHint",
+        "idempotent_hint": "idempotentHint",
+        "open_world_hint": "openWorldHint",
+    },
+    "execution": {"task_support": "taskSupport"},
+    "icons": {"mime_type": "mimeType"},
+}
+
+
+def _mcp_tool_to_wire_keys(data: Any) -> Any:
+    """Normalize a serialized mcp.types.Tool to the MCP spec's camelCase keys."""
+    if not isinstance(data, dict):
+        return data
+    out = {_MCP_TOOL_WIRE_KEYS.get(k, k): v for k, v in data.items()}
+    for key, renames in _MCP_NESTED_WIRE_KEYS.items():
+        value = out.get(key)
+        if isinstance(value, dict):
+            out[key] = {renames.get(k, k): v for k, v in value.items()}
+        elif isinstance(value, list):
+            out[key] = [
+                {renames.get(k, k): v for k, v in item.items()}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+    return out
 
 
 # NOTE: We don't define MCPToolAction because it
@@ -62,12 +116,38 @@ class MCPToolExecutor(ToolExecutor):
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
-        """Execute the MCP tool call using the already-connected client."""
+        """Execute the MCP tool call using the already-connected client.
+
+        If the client's session has been lost (e.g., due to a transient
+        server error such as HTTP 503), attempt to reconnect once before
+        failing. This prevents a single transient error from permanently
+        disabling all MCP tools for the remainder of the conversation.
+        """
         if not self.client.is_connected():
-            raise RuntimeError(
-                f"MCP client not connected for tool '{self.tool_name}'. "
-                "The connection may have been closed or failed to establish."
+            if self.client._closed:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        "The client has been closed and cannot be reconnected."
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
+            logger.info(
+                f"MCP client not connected for tool '{self.tool_name}'; "
+                "attempting reconnection before failing."
             )
+            try:
+                await self.client.connect()
+            except Exception as exc:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        f"Reconnection attempt failed: {exc}"
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
         try:
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
@@ -90,13 +170,38 @@ class MCPToolExecutor(ToolExecutor):
     def __call__(
         self,
         action: MCPToolAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,
     ) -> MCPToolObservation:
-        """Execute an MCP tool call."""
+        """Execute an MCP tool call.
+
+        If a conversation is provided, secret references in the action data
+        (e.g., $VAR, ${VAR}, ${VAR:-default}) are expanded using the
+        conversation's secret registry before calling the MCP server.
+        """
+        # Expand secret references (e.g. $VAR, ${VAR}, ${VAR:-default}) in the
+        # action data, mirroring how terminal commands resolve secrets before
+        # execution. Reuses the same expander as MCP config expansion.
+        expanded_action = action
+        if conversation is not None:
+            try:
+                secret_registry = conversation.state.secret_registry
+                expanded_data = expand_variable_references(
+                    action.data,
+                    get_secret=secret_registry.get_secret_value,
+                    check_env=False,  # secrets only — never expand host env vars
+                    support_unbraced=True,  # also resolve $VAR like the shell
+                )
+                expanded_action = action.model_copy(update={"data": expanded_data})
+            except Exception as e:
+                logger.warning(f"Failed to expand secrets in MCP tool action: {e}")
+                # Fall back to original action if expansion fails
+
         try:
-            return self.client.call_async_from_sync(
-                self.call_tool, action=action, timeout=self.timeout
+            observation = self.client.call_async_from_sync(
+                self.call_tool, action=expanded_action, timeout=self.timeout
             )
+            # Mask secrets in observation output
+            return self._mask_observation(observation, conversation)
         except TimeoutError:
             error_msg = (
                 f"MCP tool '{self.tool_name}' timed out after {self.timeout} seconds. "
@@ -110,11 +215,39 @@ class MCPToolExecutor(ToolExecutor):
                 tool_name=self.tool_name,
             )
 
+    def _mask_observation(
+        self,
+        observation: MCPToolObservation,
+        conversation: "LocalConversation | None" = None,
+    ) -> MCPToolObservation:
+        """Apply automatic secrets masking to observation content."""
+        if conversation is None:
+            return observation
+
+        try:
+            secret_registry = conversation.state.secret_registry
+            # Mask secrets in text blocks; pass image blocks through untouched.
+            masked_content = [
+                TextContent(text=secret_registry.mask_secrets_in_output(block.text))
+                if isinstance(block, TextContent) and block.text
+                else block
+                for block in observation.content
+            ]
+            return observation.model_copy(update={"content": masked_content})
+        except Exception as e:
+            logger.warning(f"Failed to mask secrets in MCP observation: {e}")
+            return observation
+
     def close(self) -> None:
         self.client.sync_close()
 
 
-_mcp_dynamic_action_type: dict[str, type[Schema]] = {}
+_MCP_ACTION_TYPE_CACHE_MAX: Final[int] = 512
+# LRU-bounded: keyed by (name, schema), so a tool whose schema keeps changing
+# no longer grows this cache without limit. Guarded by a lock since MCP tool
+# calls can validate concurrently through the parallel tool executor.
+_mcp_dynamic_action_type: OrderedDict[tuple[str, str], type[Schema]] = OrderedDict()
+_mcp_dynamic_action_type_lock = threading.Lock()
 
 
 def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
@@ -132,21 +265,42 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     to openai tool schema.
     """
 
-    # Tool.name should be unique, so we can cache the created types.
-    mcp_action_type = _mcp_dynamic_action_type.get(action_type.name)
-    if mcp_action_type:
-        return mcp_action_type
+    cache_key = (
+        action_type.name,
+        json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
+    )
+    with _mcp_dynamic_action_type_lock:
+        mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
+        if mcp_action_type:
+            _mcp_dynamic_action_type.move_to_end(cache_key)
+            return mcp_action_type
 
-    model_name = f"MCP{to_camel_case(action_type.name)}Action"
-    mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
-    _mcp_dynamic_action_type[action_type.name] = mcp_action_type
-    return mcp_action_type
+        model_name = f"MCP{to_camel_case(action_type.name)}Action"
+        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
+        _mcp_dynamic_action_type[cache_key] = mcp_action_type
+        if len(_mcp_dynamic_action_type) > _MCP_ACTION_TYPE_CACHE_MAX:
+            _mcp_dynamic_action_type.popitem(last=False)
+        return mcp_action_type
 
 
 class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     """MCP Tool that wraps an MCP client and provides tool functionality."""
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
+
+    @field_validator("mcp_tool", mode="before")
+    @classmethod
+    def _read_either_mcp_spelling(cls, v: Any) -> Any:
+        return _mcp_tool_to_wire_keys(v)
+
+    @field_serializer("mcp_tool", mode="wrap")
+    def _write_mcp_wire_spelling(
+        self, v: mcp.types.Tool, handler: SerializerFunctionWrapHandler
+    ):
+        # Persisted events outlive the resolved mcp major; always write the
+        # spec's wire names so every mcp version can read them back. No return
+        # annotation, so the OpenAPI schema keeps referencing mcp.types.Tool.
+        return _mcp_tool_to_wire_keys(handler(v))
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -206,9 +360,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         Raises:
             ValidationError: If the arguments do not conform to the tool schema.
         """
-        # Drop None-valued keys before validation to avoid type errors
-        # on optional fields
-        prefiltered_args = {k: v for k, v in (arguments or {}).items() if v is not None}
+        tool_arguments, structured_output = self._split_response_arguments(arguments)
+        prefiltered_args = {
+            key: value for key, value in tool_arguments.items() if value is not None
+        }
         # Validate against the dynamically created action type (from MCP schema)
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
@@ -218,8 +373,14 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys()) | set(
             DiscriminatedUnionMixin.model_computed_fields.keys()
         )
-        sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
-        return MCPToolAction(data=sanitized)
+        sanitized = validated.model_dump(
+            by_alias=True,  # Use MCP arg names (e.g. "kind"), not internal fields.
+            exclude_none=True,
+            exclude=exclude_fields,
+        )
+        action = MCPToolAction(data=sanitized)
+        action._structured_output = structured_output
+        return action
 
     @classmethod
     def create(
@@ -230,7 +391,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         try:
             annotations = (
                 ToolAnnotations.model_validate(
-                    mcp_tool.annotations.model_dump(exclude_none=True)
+                    mcp_tool.annotations.model_dump(exclude_none=True, by_alias=True)
                 )
                 if mcp_tool.annotations
                 else None
@@ -270,6 +431,62 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             else None,
         )
 
+    def _get_tool_schema(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,  # noqa: ARG002
+    ) -> dict[str, Any]:
+        """Build the LLM-facing schema from the raw MCP inputSchema.
+
+        The parent implementation round-trips through a dynamically created
+        Pydantic model whose ``py_type()`` maps ``"type": "object"`` to
+        ``dict[str, Any]``, losing nested ``properties`` and ``required``
+        fields.  For MCP tools the authoritative schema is already provided
+        by the MCP server, so we start from a deep copy of it and inject
+        OpenHands-specific fields (``security_risk``, ``summary``) directly.
+
+        See: https://github.com/OpenHands/software-agent-sdk/issues/3955
+        """
+        schema = copy.deepcopy(self.mcp_tool.inputSchema)
+        # Resolve any $ref / anyOf nodes (unlikely in raw MCP schemas but
+        # keeps the contract consistent with the parent implementation).
+        schema = _process_schema_node(schema, schema.get("$defs", {}))
+
+        schema.setdefault("properties", {})
+
+        # Inject security_risk when applicable (same guard as parent).
+        add_security_risk_prediction = add_security_risk_prediction and (
+            self.annotations is None or (not self.annotations.readOnlyHint)
+        )
+        if add_security_risk_prediction:
+            schema["properties"]["security_risk"] = {
+                "type": "string",
+                "description": (
+                    "The LLM's assessment of the safety risk of this action."
+                ),
+                "enum": [e.value for e in risk.SecurityRisk],
+            }
+
+        # Inject summary unless the MCP tool already declares one.
+        if "summary" not in schema["properties"]:
+            schema["properties"]["summary"] = {
+                "type": "string",
+                "description": (
+                    "A concise summary (approximately 10 words) "
+                    "describing what this specific action does. "
+                    "Focus on the key operation and target. "
+                    "Example: 'List all Python files in current "
+                    "directory'"
+                ),
+            }
+
+        schema = self._merge_response_schema(schema)
+        _prioritize_schema_fields(
+            schema=schema,
+            priority=("security_risk", "summary"),
+        )
+        return schema
+
     def to_openai_tool(
         self,
         add_security_risk_prediction: bool = False,
@@ -277,10 +494,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     ) -> ChatCompletionToolParam:
         """Convert a Tool to an OpenAI tool.
 
-        For MCP, we dynamically create the action_type (type: Schema)
-        from the MCP tool input schema, and pass it to the parent method.
-        It will use the .model_fields from this pydantic model to
-        generate the OpenAI-compatible tool schema.
+        Schema generation is handled by :meth:`_get_tool_schema`, which
+        builds the LLM-facing schema directly from the raw MCP
+        ``inputSchema`` to preserve nested object structure.  The dynamic
+        Pydantic model is still used for runtime validation in
+        :meth:`__call__` / :meth:`action_from_arguments`.
 
         Args:
             add_security_risk_prediction: Whether to add a `security_risk` field
@@ -294,8 +512,33 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             )
 
         assert self.name == self.mcp_tool.name
-        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_openai_tool(
             add_security_risk_prediction=add_security_risk_prediction,
-            action_type=mcp_action_type,
+        )
+
+    def to_responses_tool(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,
+    ) -> FunctionToolParam:
+        """Convert a Tool to a Responses API function tool.
+
+        Schema generation is handled by :meth:`_get_tool_schema`, which
+        builds the LLM-facing schema directly from the raw MCP
+        ``inputSchema`` to preserve nested object structure.
+
+        Args:
+            add_security_risk_prediction: Whether to add a `security_risk` field
+                to the action schema for LLM to predict. This is useful for
+                tools that may have safety risks, so the LLM can reason about
+                the risk level before calling the tool.
+        """
+        if action_type is not None:
+            raise ValueError(
+                "MCPTool.to_responses_tool does not support overriding action_type"
+            )
+
+        assert self.name == self.mcp_tool.name
+        return super().to_responses_tool(
+            add_security_risk_prediction=add_security_risk_prediction,
         )

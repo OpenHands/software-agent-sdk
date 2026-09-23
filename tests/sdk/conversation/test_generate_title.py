@@ -1,5 +1,9 @@
 """Tests for the generate_title method in Conversation class."""
 
+import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,8 +14,11 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.title_utils import generate_title_with_llm
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
+from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
+from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 
 
 def create_test_agent() -> Agent:
@@ -125,6 +132,22 @@ def test_generate_title_llm_error_fallback(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_with_llm_invokes_on_error(mock_completion):
+    """generate_title_with_llm reports the swallowed LLM error via on_error
+    (the opt-in seam used to surface it to clients — issue #16686) while still
+    returning None so callers fall back to truncation."""
+    custom_llm = LLM(model="gpt-4o-mini", api_key=SecretStr("key"), usage_id="err")
+    mock_completion.side_effect = Exception("model does not exist")
+
+    seen: list[Exception] = []
+    result = generate_title_with_llm("Fix the bug", custom_llm, on_error=seen.append)
+
+    assert result is None
+    assert len(seen) == 1
+    assert str(seen[0]) == "model does not exist"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_generate_title_truncation_respects_max_length(mock_completion):
     """When LLM fails, truncation fallback respects max_length."""
     agent = create_test_agent()
@@ -220,3 +243,230 @@ def test_generate_title_empty_llm_response_fallback(mock_completion):
 
     # Verify fallback title was generated
     assert title == "Help with testing"
+
+
+def create_mock_model_response(content: str) -> ModelResponse:
+    """A raw litellm ModelResponse, as returned by ``LLM._transport_call``."""
+    return ModelResponse(
+        id="test-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o-mini",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_generate_title_disables_streaming_when_llm_streams(mock_transport):
+    """Regression test (sibling of PR #3901): a ``stream=True`` agent LLM must
+    still generate a title even though title generation passes no ``on_token``
+    callback. Patching ``_transport_call`` keeps the real streaming guard in
+    ``completion()`` live, so the bug reproduces without the fix.
+    """
+    streaming_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="title-stream-test",
+        stream=True,
+    )
+    agent = Agent(llm=streaming_llm, tools=[])
+    conv = Conversation(agent=agent, visualizer=None)
+
+    user_message = create_user_message_event("Help me create a Python script")
+    conv.state.events.append(user_message)
+
+    mock_transport.return_value = create_mock_model_response("Create Python Script")
+
+    title = conv.generate_title()
+
+    # The title came from the LLM, not the truncation fallback.
+    assert title == "Create Python Script"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on a copy; the agent's own LLM is untouched.
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    assert streaming_llm.stream is True
+
+
+@pytest.fixture
+def title_http_server():
+    requests = []
+    title = "Fix title transport"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, body))
+            if self.path == "/v1/responses":
+                response = {
+                    "id": "resp_title",
+                    "object": "response",
+                    "created_at": 1,
+                    "status": "completed",
+                    "model": "gpt-5.6-luna",
+                    "output": [
+                        {
+                            "id": "msg_title",
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": title,
+                                    "annotations": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 4,
+                        "total_tokens": 14,
+                    },
+                }
+                if body.get("stream"):
+                    payload = (
+                        "event: response.completed\ndata: "
+                        + json.dumps(
+                            {
+                                "type": "response.completed",
+                                "sequence_number": 1,
+                                "response": response,
+                            }
+                        )
+                        + "\n\n"
+                    ).encode()
+                    content_type = "text/event-stream"
+                else:
+                    payload = json.dumps(response).encode()
+                    content_type = "application/json"
+            else:
+                payload = json.dumps(
+                    {
+                        "id": "chat_title",
+                        "object": "chat.completion",
+                        "created": 1,
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "finish_reason": "stop",
+                                "message": {"role": "assistant", "content": title},
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 4,
+                            "total_tokens": 14,
+                        },
+                    }
+                ).encode()
+                content_type = "application/json"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("mode", ["chat", "responses", "subscription"])
+def test_title_uses_real_http_transport(title_http_server, tmp_path, mode):
+    base_url, requests = title_http_server
+    if mode == "subscription":
+        auth = OpenAISubscriptionAuth(
+            credential_store=CredentialStore(tmp_path / "auth")
+        )
+        llm = auth.create_llm(
+            model="gpt-5.6-luna",
+            credentials=OAuthCredentials(
+                vendor="openai",
+                access_token="local-test-token",
+                refresh_token="unused-test-token",
+                expires_at=int(time.time() * 1000) + 3600000,
+            ),
+        )
+        llm = llm.model_copy(update={"base_url": base_url, "num_retries": 0})
+    else:
+        llm = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("local-test-key"),
+            base_url=base_url,
+            api_mode=mode,
+            stream=True,
+            num_retries=0,
+        )
+    errors = []
+    assert (
+        generate_title_with_llm("Fix the title", llm, on_error=errors.append)
+        == "Fix title transport"
+    )
+    assert not errors
+    assert len(requests) == 1
+    path, body = requests[0]
+    assert path == ("/v1/chat/completions" if mode == "chat" else "/v1/responses")
+    assert bool(body.get("stream")) == (mode == "subscription")
+    if mode != "chat":
+        assert body["store"] is False
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_inline_reasoning(mock_completion):
+    """Guards #4530.
+
+    Providers that do not split chain-of-thought into `reasoning_content` return it
+    inline as `<think>...</think>`. The title is consumed verbatim, so without
+    stripping, truncation to `max_length` keeps the reasoning and discards the title.
+    """
+    llm = LLM(model="qwen3-32b", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response(
+        "<think>The user wants a CSV summary script. I will pick the features "
+        "emoji and keep it short.</think>✨ Summarise a CSV in Python"
+    )
+
+    title = generate_title_with_llm("Help me summarise a CSV", llm)
+
+    assert title == "✨ Summarise a CSV in Python"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_unterminated_reasoning(mock_completion):
+    """An unterminated block means the response was cut mid-thought, so there is no
+    title to salvage and the caller falls back to a truncated message title."""
+    llm = LLM(model="qwen3-32b", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response(
+        "<think>Let me consider what this conversation is really about"
+    )
+
+    assert generate_title_with_llm("Help me summarise a CSV", llm) is None
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_keeps_text_without_reasoning(mock_completion):
+    """A normal response is unaffected."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response("✨ Create Python Script")
+
+    assert generate_title_with_llm("Help me write a script", llm) == (
+        "✨ Create Python Script"
+    )

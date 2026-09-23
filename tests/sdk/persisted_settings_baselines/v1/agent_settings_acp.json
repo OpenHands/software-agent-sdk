@@ -1,0 +1,11 @@
+{
+  "__expected__": {
+    "agent_kind": "acp",
+    "acp_server": "claude-code",
+    "acp_model": "claude-opus-4-6"
+  },
+  "schema_version": 1,
+  "agent_kind": "acp",
+  "acp_server": "claude-code",
+  "acp_model": "claude-opus-4-6"
+}

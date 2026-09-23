@@ -13,7 +13,7 @@ def test_mcp_observation_with_list_json():
     """Test that MCPToolObservation can handle JSON lists without crashing.
 
     This test reproduces and verifies the fix for the bug where
-    display_dict() would crash when MCP tools returned lists.
+    the JSON renderer would crash when MCP tools returned lists.
     """
     # Create a list that would cause the original bug
     list_data = ["item1", "item2", 42, True, None]

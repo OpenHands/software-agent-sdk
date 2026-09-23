@@ -40,6 +40,7 @@ from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import get_user_persistence_dir, resolves_within
 
 
 logger = get_logger(__name__)
@@ -91,8 +92,19 @@ def load_user_agents() -> list[AgentDefinition]:
         A list of ``AgentDefinition`` objects, or an empty list if no
         directories exist.
     """
-    home = Path.home()
-    return _load_agents_from_dirs([home / d for d in _FILE_BASED_AGENTS_DIR])
+    return _load_agents_from_dirs([_user_agents_dir(d) for d in _FILE_BASED_AGENTS_DIR])
+
+
+def _user_agents_dir(relative: str) -> Path:
+    """Map a file-based agents dir onto its user-level base.
+
+    ``.openhands/agents`` goes under the persistence dir, which replaces the
+    ``~/.openhands`` base; every other entry stays home-relative.
+    """
+    base, _, rest = relative.partition("/")
+    if base == ".openhands":
+        return get_user_persistence_dir() / rest
+    return Path.home() / relative
 
 
 def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
@@ -115,7 +127,54 @@ def _load_agents_from_dirs(dirs: list[Path]) -> list[AgentDefinition]:
     return result
 
 
-def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
+def discover_agents(
+    project_dir: str | Path | None,
+    *,
+    include_project: bool = True,
+    include_user: bool = True,
+) -> list[AgentDefinition]:
+    """Discover project/user file-based agents without registering them.
+
+    Non-mutating counterpart to ``register_file_agents``: returns the discovered
+    definitions with ``level``/``source`` set, leaving the global registry
+    untouched (registry mutation stays conversation-scoped). Built-ins live in
+    ``openhands-tools`` (not an SDK dependency), so callers wanting them add
+    ``discover_builtin_agents`` separately.
+
+    Precedence matches ``register_file_agents``: project wins over user.
+
+    Args:
+        project_dir: Project directory to scan, or None to skip project agents.
+        include_project: Include project-level agents.
+        include_user: Include user-level agents.
+
+    Returns:
+        Definitions de-duplicated by name (first wins).
+    """
+    discovered: list[AgentDefinition] = []
+    if include_project and project_dir is not None:
+        discovered.extend(
+            agent_def.model_copy(update={"level": "project"})
+            for agent_def in load_project_agents(project_dir)
+        )
+    if include_user:
+        discovered.extend(
+            agent_def.model_copy(update={"level": "user"})
+            for agent_def in load_user_agents()
+        )
+
+    seen_names: set[str] = set()
+    result: list[AgentDefinition] = []
+    for agent_def in discovered:
+        if agent_def.name not in seen_names:
+            seen_names.add(agent_def.name)
+            result.append(agent_def)
+    return result
+
+
+def load_agents_from_dir(
+    agents_dir: Path, root: Path | None = None
+) -> list[AgentDefinition]:
     """Scans a directory for Markdown-based agent definitions.
 
     Iterates through the top-level of the provided directory, attempting to load
@@ -124,6 +183,8 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
 
     Args:
         agents_dir: The filesystem path to the directory containing agent files.
+        root: If given, files that resolve outside this directory (e.g. through
+            a symlink) are skipped. Plugins pass their root here.
 
     Returns:
         A list of successfully instantiated AgentDefinition objects.
@@ -145,6 +206,8 @@ def load_agents_from_dir(agents_dir: Path) -> list[AgentDefinition]:
             or md_file.suffix.lower() != ".md"
             or md_file.name in _SKIP_FILES
         ):
+            continue
+        if root is not None and not resolves_within(md_file, root):
             continue
 
         try:

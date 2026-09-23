@@ -10,6 +10,172 @@ from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher, 
 from openhands.sdk.hooks.types import HookEventType
 
 
+def test_command_hook_requires_command():
+    with pytest.raises(ValidationError, match="'command' is required"):
+        HookDefinition(type=HookType.COMMAND)
+
+
+def test_command_hook_valid():
+    h = HookDefinition(command="echo hi")
+    assert h.type == HookType.COMMAND
+    assert h.command == "echo hi"
+
+
+def test_prompt_hook_valid():
+    hook = HookDefinition(type=HookType.PROMPT, prompt="Block destructive commands")
+    assert hook.type == HookType.PROMPT
+    assert hook.command == ""
+
+
+def test_prompt_hook_preserves_command_rest_contract():
+    hook = HookDefinition(type=HookType.PROMPT, prompt="Block destructive commands")
+    schema = HookDefinition.model_json_schema()
+
+    assert "command" in schema["required"]
+    assert schema["properties"]["command"] == {"title": "Command", "type": "string"}
+    assert hook.model_dump()["command"] == ""
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"type": "agent", "system_prompt": "Block writes to /etc"},
+        {"type": "agent"},
+    ],
+    ids=["with-system-prompt", "without-system-prompt"],
+)
+def test_agent_hook_valid(kwargs):
+    h = HookDefinition(**kwargs)
+    assert h.type == HookType.AGENT
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({"command": "block.sh"}, "block.sh"),
+        (
+            {
+                "type": "agent",
+                "name": "block-deletions",
+                "system_prompt": "Block rm -rf",
+            },
+            "agent-hook:block-deletions",
+        ),
+        (
+            {"type": "agent", "system_prompt": "Block network calls to external IPs"},
+            "agent-hook:Block network calls ",
+        ),
+        ({"type": "agent", "system_prompt": "A" * 100}, f"agent-hook:{'A' * 20}"),
+        ({"type": "agent"}, "agent-hook:agent"),
+        (
+            {
+                "type": "prompt",
+                "name": "block-deletions",
+                "prompt": "Block rm -rf",
+            },
+            "prompt-hook:block-deletions",
+        ),
+        (
+            {"type": "prompt", "prompt": "Block destructive shell commands"},
+            "prompt-hook:Block destructive sh",
+        ),
+    ],
+    ids=[
+        "command",
+        "agent-named",
+        "agent-prompt-prefix",
+        "agent-prompt-truncated",
+        "agent-fallback",
+        "prompt-named",
+        "prompt-policy-prefix",
+    ],
+)
+def test_display_command(kwargs, expected):
+    h = HookDefinition(**kwargs)
+    assert h.display_command == expected
+
+
+def test_multiple_agent_hooks_are_distinguishable():
+    hooks = [
+        HookDefinition(
+            type=HookType.AGENT,
+            name="block-deletions",
+            system_prompt="Block rm -rf",
+        ),
+        HookDefinition(
+            type=HookType.AGENT,
+            system_prompt="Block network calls to external IPs",
+        ),
+        HookDefinition(
+            type=HookType.AGENT,
+            system_prompt="Verify all tasks are complete",
+        ),
+    ]
+    assert len({h.display_command for h in hooks}) == 3
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (
+            {"type": "agent", "command": "echo hi"},
+            "'command' must not be set when type is 'agent'",
+        ),
+        (
+            {
+                "type": "prompt",
+                "prompt": "Evaluate this event",
+                "command": "echo hi",
+            },
+            "'command' must not be set when type is 'prompt'",
+        ),
+        ({"type": "command"}, "'command' is required"),
+    ],
+    ids=[
+        "agent-rejects-command",
+        "prompt-rejects-command",
+        "command-requires-command",
+    ],
+)
+def test_hook_definition_validation_errors(kwargs, match):
+    with pytest.raises(Exception, match=match):
+        HookDefinition(**kwargs)
+
+
+def test_agent_hook_rejects_async():
+    with pytest.raises(Exception, match="not supported for agent hooks"):
+        HookDefinition.model_validate({"type": "agent", "async": True})
+
+
+def test_prompt_hook_rejects_async():
+    with pytest.raises(Exception, match="not supported for prompt hooks"):
+        HookDefinition.model_validate(
+            {"type": "prompt", "prompt": "Evaluate this event", "async": True}
+        )
+
+
+def test_agent_hook_from_json():
+    data = {
+        "stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "agent",
+                        "system_prompt": "Verify all tasks are done",
+                        "timeout": 30,
+                    }
+                ]
+            }
+        ]
+    }
+    config = HookConfig.from_dict(data)
+    hooks = config.get_hooks_for_event(HookEventType.STOP)
+    assert len(hooks) == 1
+    assert hooks[0].type == HookType.AGENT
+    assert hooks[0].system_prompt == "Verify all tasks are done"
+    assert hooks[0].timeout == 30
+
+
 class TestHookMatcher:
     """Tests for HookMatcher pattern matching."""
 

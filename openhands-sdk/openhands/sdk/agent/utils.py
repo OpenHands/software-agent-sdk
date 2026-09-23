@@ -10,9 +10,8 @@ import shutil
 import subprocess
 import textwrap
 import types
-from collections.abc import Collection, Sequence
+from collections.abc import Collection
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -21,17 +20,13 @@ from typing import (
     overload,
 )
 
+from pydantic import BaseModel
+
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.conversation.types import ConversationTokenCallbackType
-from openhands.sdk.event.base import Event, LLMConvertibleEvent
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
-from openhands.sdk.llm import LLM, LLMResponse, Message
-from openhands.sdk.tool import Action, ToolDefinition
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.llm.streaming import AnyTokenCallbackType
+from openhands.sdk.llm import LLM, Message
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -72,13 +67,69 @@ def sanitize_json_control_chars(raw: str) -> str:
     return _CONTROL_CHAR_RE.sub(_escape_control_char, raw)
 
 
-def fix_malformed_tool_arguments(
-    arguments: dict[str, Any], action_type: type[Action]
-) -> dict[str, Any]:
-    """Fix malformed tool arguments by decoding JSON strings for list/dict fields.
+def _is_chunked_str_field(value: Any, expected_origins: list[Any]) -> bool:
+    """Return True if a str-only field was given a list of string chunks.
 
-    This function handles cases where certain LLMs (such as GLM 4.6) incorrectly
-    encode array/object parameters as JSON strings when using native function calling.
+    Some models (e.g. minimax-m2.5) split a single string argument such as
+    file_editor's old_str/new_str into a JSON array of chunks. Such a list is
+    rejoined into one string by the caller. ``str | list[str]`` fields are
+    excluded so a genuinely-valid list is never collapsed, and lists holding
+    non-strings are rejected so they fail validation instead of being silently
+    mangled.
+    """
+    return (
+        isinstance(value, list)
+        and str in expected_origins
+        and not any(exp in (list, dict) for exp in expected_origins)
+        and all(isinstance(part, str) for part in value)
+    )
+
+
+def _json_schema_expected_types(
+    schema: dict[str, Any], defs: dict[str, Any]
+) -> list[Any]:
+    ref = schema.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        target = defs.get(ref.rsplit("/", 1)[-1])
+        if isinstance(target, dict):
+            return _json_schema_expected_types(target, defs)
+
+    expected: list[Any] = []
+    for key in ("anyOf", "oneOf"):
+        for option in schema.get(key, []):
+            if isinstance(option, dict):
+                expected.extend(_json_schema_expected_types(option, defs))
+
+    json_types = schema.get("type")
+    if isinstance(json_types, str):
+        json_types = [json_types]
+    if isinstance(json_types, list):
+        type_map = {
+            "array": list,
+            "boolean": bool,
+            "integer": int,
+            "number": float,
+            "object": dict,
+            "string": str,
+        }
+        expected.extend(
+            type_map[json_type] for json_type in json_types if json_type in type_map
+        )
+    return expected
+
+
+def fix_malformed_tool_arguments(
+    arguments: dict[str, Any], action_type: type[BaseModel] | dict[str, Any]
+) -> dict[str, Any]:
+    """Fix malformed tool arguments emitted by some LLMs under native fn calling.
+
+    Two malformations are repaired:
+
+    1. list/dict parameters encoded as JSON strings (e.g. GLM 4.6), which are
+       decoded back into native arrays/objects (see example below).
+    2. str-only parameters emitted as a JSON array of string chunks (e.g.
+       minimax-m2.5 chunking file_editor's old_str/new_str), which are joined
+       back into a single string.
 
     Example raw LLM output from GLM 4.6:
     {
@@ -107,7 +158,7 @@ def fix_malformed_tool_arguments(
 
     Args:
         arguments: The parsed arguments dict from json.loads(tool_call.arguments).
-        action_type: The action type that defines the expected schema.
+        action_type: The model or JSON Schema defining expected arguments.
 
     Returns:
         The arguments dict with JSON strings decoded where appropriate.
@@ -117,36 +168,44 @@ def fix_malformed_tool_arguments(
 
     fixed_arguments = arguments.copy()
 
-    # Use model_fields to properly handle aliases and inherited fields
-    for field_name, field_info in action_type.model_fields.items():
-        # Check both the field name and its alias (if any)
-        data_key = field_info.alias if field_info.alias else field_name
+    if isinstance(action_type, dict):
+        defs = action_type.get("$defs", {})
+        field_types = [
+            (field_name, _json_schema_expected_types(field_schema, defs))
+            for field_name, field_schema in action_type.get("properties", {}).items()
+            if isinstance(field_schema, dict)
+        ]
+    else:
+        field_types = []
+        for field_name, field_info in action_type.model_fields.items():
+            data_key = field_info.alias if field_info.alias else field_name
+            expected_type = field_info.annotation
+            if get_origin(expected_type) is Annotated:
+                type_args = get_args(expected_type)
+                expected_type = type_args[0] if type_args else expected_type
+
+            origin = get_origin(expected_type)
+            if origin is Union or origin is types.UnionType:
+                type_args = get_args(expected_type)
+                expected_origins = [get_origin(arg) or arg for arg in type_args]
+            else:
+                expected_origins = [origin or expected_type]
+            field_types.append((data_key, expected_origins))
+
+    for data_key, expected_origins in field_types:
         if data_key not in fixed_arguments:
             continue
 
         value = fixed_arguments[data_key]
-        # Skip if value is not a string
-        if not isinstance(value, str):
+
+        # Rejoin a str-only field that a model chunked into a JSON array.
+        if _is_chunked_str_field(value, expected_origins):
+            fixed_arguments[data_key] = "".join(value)
             continue
 
-        expected_type = field_info.annotation
-
-        # Unwrap Annotated types - only the first arg is the actual type
-        if get_origin(expected_type) is Annotated:
-            type_args = get_args(expected_type)
-            expected_type = type_args[0] if type_args else expected_type
-
-        # Get the origin of the expected type (e.g., list from list[str])
-        origin = get_origin(expected_type)
-
-        # For Union types, we need to check all union members
-        if origin is Union or origin is types.UnionType:
-            # For Union types, check each union member
-            type_args = get_args(expected_type)
-            expected_origins = [get_origin(arg) or arg for arg in type_args]
-        else:
-            # For non-Union types, just check the origin
-            expected_origins = [origin or expected_type]
+        # Skip non-strings — the JSON decoding below only works on strings.
+        if not isinstance(value, str):
+            continue
 
         # Check if any of the expected types is list or dict
         if any(exp in (list, dict) for exp in expected_origins):
@@ -186,13 +245,40 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "command": "terminal",
     "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
     "str_replace_editor": "file_editor",
 }
 
+# Regex to detect malformed tool names (e.g., "str_replace </parameter"
+# or "str_replace</function>"). These occur when LLMs emit XML/HTML
+# tag fragments in tool names. The leading identifier is extracted and
+# used as the lookup key.
+_MALFORMED_TOOL_NAME_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _extract_tool_name_base(tool_name: str) -> str:
+    """Return the leading identifier of ``tool_name``.
+
+    This is used to recover from malformed tool names like
+    ``"str_replace </parameter"`` or ``"str_replace</function>"`` that LLMs
+    sometimes emit by appending XML/HTML tag fragments. If ``tool_name``
+    has no valid leading identifier, return it unchanged.
+    """
+    match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
+    return match.group(1) if match else tool_name
+
+
+# Terminal aliases that prepend the tool name to the command argument.
+# Unlike 'bash' which passes through the command directly, these tools
+# (e.g., 'git', 'reset') are themselves commands that should be combined
+# with their arguments (e.g., 'git status', 'reset clear').
+_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
+
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
-_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "git", "ls", "pwd"})
 
 # Typo normalization for common mistakes in security_risk field
 _SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
@@ -408,9 +494,34 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        alias_target = TOOL_NAME_ALIASES.get(tool_name)
-        if alias_target and alias_target in available_tools:
+        # Extract the leading identifier so we can recover from malformed names
+        # like "str_replace </parameter" (the LLM appended an XML fragment).
+        # For clean names like "git" this is a no-op.
+        base_name = _extract_tool_name_base(tool_name)
+        alias_target = TOOL_NAME_ALIASES.get(base_name)
+        if base_name != tool_name and base_name in available_tools:
+            normalized_tool_name = base_name
+        elif alias_target and alias_target in available_tools:
             normalized_tool_name = alias_target
+            # For terminal alias with prefix, combine tool name with command
+            if (
+                alias_target == "terminal"
+                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+            ):
+                original_command = arguments.get("command")
+                normalized_arguments = {
+                    key: value
+                    for key, value in arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                if not original_command:
+                    normalized_arguments["command"] = base_name
+                elif str(original_command).split(maxsplit=1)[:1] == [base_name]:
+                    # Already carries the executable, e.g. git(command="git status").
+                    # Comparing whole tokens keeps "github status" prefixed.
+                    normalized_arguments["command"] = original_command
+                else:
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,
@@ -451,7 +562,7 @@ def normalize_tool_call(
 
 @overload
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -460,7 +571,7 @@ def prepare_llm_messages(
 
 @overload
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -468,19 +579,25 @@ def prepare_llm_messages(
 
 
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
 ) -> list[Message] | Condensation:
-    """Prepare LLM messages from conversation context.
+    """Prepare LLM messages from a conversation view.
 
     This utility function extracts the common logic for preparing conversation
     context that is shared between agent.step() and ask_agent() methods.
     It handles condensation internally and calls the callback when needed.
 
+    Callers should pass the cached `ConversationState.view`, which is
+    maintained incrementally as events are appended. This avoids paying the
+    O(n) `View.from_events` (with `enforce_properties`) cost on every step.
+    See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+
     Args:
-        events: Sequence of events to prepare messages from
+        view: A `View` of the conversation history. The view is treated as
+            read-only — see `CondenserBase.condense` for the same contract.
         condenser: Optional condenser for handling context window limits
         additional_messages: Optional additional messages to append
         llm: Optional LLM instance from the agent, passed to condenser for
@@ -489,12 +606,7 @@ def prepare_llm_messages(
     Returns:
         List of messages ready for LLM completion, or a Condensation event
         if condensation is needed
-
-    Raises:
-        RuntimeError: If condensation is needed but no callback is provided
     """
-
-    view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     # If a condenser is registered, we need to give it an
@@ -521,60 +633,13 @@ def prepare_llm_messages(
     return messages
 
 
-def make_llm_completion(
-    llm: LLM,
-    messages: list[Message],
-    tools: list[ToolDefinition] | None = None,
-    on_token: ConversationTokenCallbackType | None = None,
-) -> LLMResponse:
-    """Make an LLM completion call with the provided messages and tools.
-
-    Args:
-        llm: The LLM instance to use for completion
-        messages: The messages to send to the LLM
-        tools: Optional list of tools to provide to the LLM
-        on_token: Optional callback for streaming token updates
-
-    Returns:
-        LLMResponse from the LLM completion call
-
-    Note:
-        Always exposes a 'security_risk' parameter in tool schemas via
-        add_security_risk_prediction=True. This ensures the schema remains
-        consistent, even if the security analyzer is disabled. Validation of
-        this field happens dynamically at runtime depending on the analyzer
-        configured. This allows weaker models to omit risk field and bypass
-        validation requirements when analyzer is disabled. For detailed logic,
-        see `_extract_security_risk` method in agent.py.
-
-        Summary field is always added to tool schemas for transparency and
-        explainability of agent actions.
-    """
-    if llm.uses_responses_api():
-        return llm.responses(
-            messages=messages,
-            tools=tools or [],
-            include=None,
-            store=False,
-            add_security_risk_prediction=True,
-            on_token=on_token,
-        )
-    else:
-        return llm.completion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Async variants
 # ---------------------------------------------------------------------------
 
 
 async def aprepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -584,7 +649,6 @@ async def aprepare_llm_messages(
     Calls ``condenser.acondense()`` so that condensers backed by an LLM can
     use async completions without blocking the event loop.
     """
-    view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     if condenser is not None:
@@ -602,28 +666,3 @@ async def aprepare_llm_messages(
         messages.extend(additional_messages)
 
     return messages
-
-
-async def amake_llm_completion(
-    llm: LLM,
-    messages: list[Message],
-    tools: list[ToolDefinition] | None = None,
-    on_token: AnyTokenCallbackType | None = None,
-) -> LLMResponse:
-    """Async variant of :func:`make_llm_completion`."""
-    if llm.uses_responses_api():
-        return await llm.aresponses(
-            messages=messages,
-            tools=tools or [],
-            include=None,
-            store=False,
-            add_security_risk_prediction=True,
-            on_token=on_token,
-        )
-    else:
-        return await llm.acompletion(
-            messages=messages,
-            tools=tools or [],
-            add_security_risk_prediction=True,
-            on_token=on_token,
-        )
