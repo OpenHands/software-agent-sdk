@@ -190,6 +190,7 @@ def test_fips_image_is_separate_and_uses_validated_provider() -> None:
     assert 'require("crypto")' in entrypoint
     assert "c.getFips() !== 1" in entrypoint
     assert 'c.createHash("sha256")' in entrypoint
+    assert 'NODE_OPTIONS="--enable-fips --openssl-shared-config"' in dockerfile_text
 
 
 def test_agent_server_dockerfile_has_no_hardcoded_acp_packages() -> None:

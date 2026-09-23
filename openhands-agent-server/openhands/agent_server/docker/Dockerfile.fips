@@ -67,7 +67,7 @@ RUN apt-get update \
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-fips.cnf
 ENV OPENSSL_MODULES=/usr/local/lib/ossl-modules
-ENV NODE_OPTIONS=--enable-fips
+ENV NODE_OPTIONS="--enable-fips --openssl-shared-config"
 
 USER openhands
 ENTRYPOINT ["fips-entrypoint"]
