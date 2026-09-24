@@ -24,6 +24,8 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import execute_command, sanitized_env
@@ -280,6 +282,41 @@ class DockerConversationRegistry(ConversationRegistry):
         if container is not None:
             await asyncio.to_thread(container.stop)
 
+    def cleanup_worktree(self, conversation_id: UUID) -> None:
+        """Unregister a Docker conversation worktree from its host repository."""
+        identity = self.provisioning.load_optional(conversation_id)
+        if identity is None:
+            return
+
+        repo_root = identity.worktree_repository_path
+        if repo_root is None:
+            try:
+                validate_git_repository(identity.workspace_path)
+                repo_root = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                        identity.workspace_path,
+                    )
+                ).resolve()
+            except (GitCommandError, GitRepositoryError):
+                return
+
+        worktrees_dir = self.provisioning.direct_child(
+            self.provisioning.runtime_dir(conversation_id), "worktrees"
+        )
+        worktree_root = worktrees_dir / str(conversation_id) / repo_root.name
+        if worktree_root.exists():
+            run_git_command(
+                ["git", "worktree", "remove", "--force", str(worktree_root)],
+                repo_root,
+            )
+        else:
+            run_git_command(["git", "worktree", "prune"], repo_root)
+
+        branch = f"openhands/{conversation_id}"
+        if run_git_command(["git", "branch", "--list", branch], repo_root):
+            run_git_command(["git", "branch", "-D", branch], repo_root)
+
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
             self._eviction_task.cancel()
@@ -353,9 +390,18 @@ class DockerConversationRegistry(ConversationRegistry):
         identity = self.provisioning.load(conversation_id)
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
         persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
+        # Git records absolute links in both directions, so the repository and
+        # conversation worktrees need identical host/container paths. Keep the
+        # /workspace alias for compatibility with non-worktree conversations.
+        worktrees_dir = self.provisioning.direct_child(runtime_dir, "worktrees")
         conversation_dir = self.conversation_dir(conversation_id)
         workspace_dir = self.workspace_dir(conversation_id)
-        for directory in (persistence_dir, conversation_dir, workspace_dir):
+        for directory in (
+            persistence_dir,
+            worktrees_dir,
+            conversation_dir,
+            workspace_dir,
+        ):
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
 
         env = sanitized_env()
@@ -365,6 +411,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 "OH_CONVERSATIONS_PATH": _CONVERSATIONS_DIR,
                 "OH_PERSISTENCE_DIR": _PERSISTENCE_DIR,
                 "OH_CONVERSATION_RUNTIME": "local",
+                "OH_CONVERSATION_WORKTREE_ROOT": str(worktrees_dir),
                 "OH_SECRET_KEY": identity.encryption_key.get_secret_value(),
                 V1_SESSION_API_KEY_ENV: identity.api_key.get_secret_value(),
                 "OH_RUNTIME_LAUNCHED_PROFILE": (
@@ -383,6 +430,7 @@ class DockerConversationRegistry(ConversationRegistry):
             "OH_CONVERSATIONS_PATH",
             "OH_PERSISTENCE_DIR",
             "OH_CONVERSATION_RUNTIME",
+            "OH_CONVERSATION_WORKTREE_ROOT",
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",
@@ -390,11 +438,21 @@ class DockerConversationRegistry(ConversationRegistry):
         ):
             if name in env:
                 flags.extend(("-e", name))
-        for host, target in (
+        mounts = [
             (conversation_dir, f"{_CONVERSATIONS_DIR}/{conversation_id.hex}"),
             (persistence_dir, _PERSISTENCE_DIR),
             (workspace_dir, _WORKSPACE_DIR),
+            (worktrees_dir, str(worktrees_dir)),
+        ]
+        repo_mount = identity.worktree_repository_path
+        if repo_mount is not None and str(repo_mount) != _WORKSPACE_DIR:
+            mounts.append((repo_mount, str(repo_mount)))
+        git_common_dir_mount = identity.worktree_git_common_dir_path
+        if git_common_dir_mount is not None and (
+            repo_mount is None or not git_common_dir_mount.is_relative_to(repo_mount)
         ):
+            mounts.append((git_common_dir_mount, str(git_common_dir_mount)))
+        for host, target in mounts:
             flags.extend(("-v", f"{host}:{target}"))
         if self.config.conversation_container_memory:
             flags.extend(("--memory", self.config.conversation_container_memory))
