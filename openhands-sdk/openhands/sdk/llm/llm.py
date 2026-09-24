@@ -1020,10 +1020,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Return a configured retry decorator using this LLM's retry settings.
 
-        Hard quota/usage-limit errors are excluded from retries so that, when a
-        :class:`~openhands.sdk.llm.FallbackStrategy` is configured, fallback to an
-        alternate model happens immediately instead of after the full retry
-        backoff — such errors will not recover until the limit resets or is raised.
+        Exhausted allowances skip backoff. Provider quota errors may fall back;
+        explicit budget denials stop without trying another model.
         """
         retry_condition = retry_if_exception_type(LLM_RETRY_EXCEPTIONS) & (
             retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
@@ -2262,6 +2260,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "drop_params": self.drop_params,
             "seed": self.seed,
             "messages": messages,
+            # The SDK owns retries so budget denials reach its classifier immediately.
+            "max_retries": 0,
             **self._aws_kwargs(),
             **kwargs,
         }
