@@ -15,7 +15,9 @@ AI agents: you must not edit this section.
 ---
 
 AGENT:
-Implemented on `feat/notes-history-storage-safety`. A real-provider strict test passed all eight post-reset retrieval checks; a paired live evaluation completed 18/18 trials. Offline fault injection and real HTTP/WebSocket tests cover persistence and recovery. The supplementary live challenge suite is paused after provider HTTP 503, with no completed trials; it is not reported as passing.
+Prepared with Codex assistance on `feat/notes-history-storage-safety`. A real-provider strict test passed all eight post-reset retrieval checks; a paired live evaluation completed 18/18 trials. Offline fault injection and real HTTP/WebSocket tests cover persistence and recovery. The supplementary live challenge suite is paused after provider HTTP 503, with no completed trials; it is not reported as passing.
+
+[Design preview](https://htmlpreview.github.io/?https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/design.html) · [Validation evidence](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/validation.md)
 
 ## Why
 
@@ -39,13 +41,13 @@ uv run pytest -q tests/sdk/tool/test_context_memory_tools.py tests/sdk/agent/tes
 uv run pytest -q tests/cross/test_remote_conversation_live_server.py -k storage_admission_and_recovery_over_real_http
 ```
 
-[Validation details](validation.md) include reproduction commands, reports, and limitations:
+[Validation details](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/validation.md) include reproduction commands, reports, and limitations:
 
 - Broad Python regression: **1,970 passed**, 70 skipped, 6 deselected; later affected-scope runs also passed. Full TypeScript suite: **336 passed**. Pre-commit, persisted-settings compatibility, and OpenAPI checks passed.
-- [Strict live test](evidence/strict-notes/run-528nrz0g/report.json): **8/8 checks passed**, including actual notes read and search/read of a hidden source after reset. Its old all-zero usage fields are invalid metrics and are not used as cost evidence.
-- [Live paired evaluation](evidence/notes-comparison/report.json): **18/18 exact matches**, six samples per strategy, 162 provider attempts. All three strategies scored 6/6; history was searched once and never read. This does not demonstrate a retrieval advantage or token savings.
-- [Live challenge suite](evidence/notes-challenge/report.json): **0/9 completed**, paused after eight attempts because of HTTP 503. Its offline scripted counterpart passed 9/9 and validates the harness only.
-- Actual temporary-file, partial-result, and state-snapshot failures are covered without automatically repeating uncertain tools. [Offline example output](evidence/offline-example.log) confirms persisted reopen.
+- [Strict live test](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/strict-notes/run-528nrz0g/report.json): **8/8 checks passed**, including actual notes read and search/read of a hidden source after reset. Its old all-zero usage fields are invalid metrics and are not used as cost evidence.
+- [Live paired evaluation](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/notes-comparison/report.json): **18/18 exact matches**, six samples per strategy, 162 provider attempts. All three strategies scored 6/6; history was searched once and never read. This does not demonstrate a retrieval advantage or token savings.
+- [Live challenge suite](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/notes-challenge/report.json): **0/9 completed**, paused after eight attempts because of HTTP 503. Its offline scripted counterpart passed 9/9 and validates the harness only.
+- Actual temporary-file, partial-result, and state-snapshot failures are covered without automatically repeating uncertain tools. [Offline example output](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/offline-example.log) confirms persisted reopen.
 
 The repository integration/benchmark workflows have not run for this PR. Maintainer review should determine any additional benchmark requirements.
 
@@ -55,7 +57,7 @@ SDK/server change with no UI changes. Reproduction commands and logs are provide
 
 ## Design Doc
 
-[Self-contained design and before/after diagrams](design.html). This local draft will receive the actual head-repository preview link when published.
+[Rendered design and before/after diagrams](https://htmlpreview.github.io/?https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/design.html) · [HTML source](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/design.html). The preview uses this public fork and feature branch; implementation source links are pinned to the tested revision.
 
 ## Type
 
@@ -71,4 +73,4 @@ The condenser and storage protection both default to disabled; existing settings
 
 The guard is an admission policy, not an OS quota. It preserves committed content, reports uncommitted outputs, and neither deletes history nor resumes execution automatically. Recovery APIs require a server containing this feature.
 
-Request the `integration-test` label for prompt/agent decision coverage. Companion docs PR: pending publication; the reviewed changes are preserved in [docs.patch](docs.patch). Merge implementation before docs. Remove temporary `.pr/` artifacts before merging a fork PR.
+Request the `integration-test` label for prompt/agent decision coverage. Companion docs PR will be linked after creation; [reviewed docs branch](https://github.com/cbinhan/docs/tree/feat/notes-history-storage-safety). The same changes are preserved in [docs.patch](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/docs.patch). Merge implementation before docs. Remove temporary `.pr/` artifacts before merging a fork PR.
