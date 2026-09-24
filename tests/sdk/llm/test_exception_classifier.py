@@ -3,11 +3,13 @@ from litellm.exceptions import (
     BadRequestError,
     ContextWindowExceededError,
     InternalServerError,
+    RateLimitError,
 )
 
 from openhands.sdk.llm.exceptions import (
     is_context_window_exceeded,
     is_prompt_cache_too_small,
+    is_quota_exhaustion_error,
     looks_like_auth_error,
     looks_like_malformed_conversation_history_error,
 )
@@ -180,3 +182,49 @@ def test_is_prompt_cache_too_small_context_window_not_cache_too_small():
     )
     assert is_prompt_cache_too_small(ctx_error) is False
     assert is_context_window_exceeded(ctx_error) is True
+
+
+def test_is_quota_exhaustion_error_usage_limit_reached():
+    """OpenAI's ``usage_limit_reached`` is a hard quota outcome, not a transient 429."""
+    error = RateLimitError(
+        message=(
+            'RateLimitError: OpenAIException - {"error":{"type":"usage_limit_reached",'
+            '"message":"The usage limit has been reached","plan_type":"team"}}'
+        ),
+        llm_provider="openai",
+        model="gpt-5.6-sol",
+    )
+    assert is_quota_exhaustion_error(error) is True
+
+
+def test_is_quota_exhaustion_error_insufficient_quota():
+    error = RateLimitError(
+        message=(
+            'RateLimitError: OpenAIException - {"error":{"type":"insufficient_quota",'
+            '"message":"You exceeded your current quota"}}'
+        ),
+        llm_provider="openai",
+        model="gpt-5.6-sol",
+    )
+    assert is_quota_exhaustion_error(error) is True
+
+
+def test_is_quota_exhaustion_error_transient_rate_limit():
+    """A plain transient 429 is NOT a quota exhaustion error."""
+    error = RateLimitError(
+        message="RateLimitError: Rate limit exceeded",
+        llm_provider="openai",
+        model="gpt-5.6-sol",
+    )
+    assert is_quota_exhaustion_error(error) is False
+
+
+def test_is_quota_exhaustion_error_transient_quota_metric():
+    error = RateLimitError(
+        message=(
+            "Quota exceeded for quota metric Generate Content API requests per minute"
+        ),
+        llm_provider="vertex_ai",
+        model="gemini-test",
+    )
+    assert is_quota_exhaustion_error(error) is False

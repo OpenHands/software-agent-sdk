@@ -37,6 +37,30 @@ The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript`
 
 All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
 
+## Review-Facing Implementation Checklist
+
+Code should satisfy the repository review checkpoints before the PR is opened:
+
+- Trace cross-layer changes through every affected public entry point, including
+  factories, constructors, registries, serialization, REST/WebSocket transport,
+  `clients/typescript/`, and create/resume/fork paths. Do not add a field or
+  option at one layer while another supported path drops or ignores it.
+- Treat public Python and server APIs, defaults, serialized events, persisted
+  settings, and stored conversations as compatibility surfaces. Use the
+  deprecation, schema-version migration, and golden-fixture mechanisms described
+  below instead of one-off shims.
+- Give tasks, processes, connections, plugins, event loops, and persistent
+  artifacts an owner. Cancellation must stop underlying work; close and rollback
+  paths must cover success, failure, and cancellation; shared conversation state
+  must use its existing synchronization mechanism.
+- Route credentials through `openhands.sdk.utils.pydantic_secrets` and verify the
+  full input, serialization, persistence, logging, resume, and delivery path.
+  Never introduce a parallel redaction or secret-sentinel implementation.
+- Verify imports, executables, dependency installation, paths, and process
+  cleanup in every affected production artifact, including the packaged Agent
+  Server, Docker images, and relevant host platforms. A mocked unit test alone
+  does not validate a packaging or installation change.
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
@@ -148,7 +172,9 @@ consult each relevant package-level AGENTS.md.
 
 The `.pr/` directory is intentionally temporary by repository policy: the
 `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
-PR-only reviewer context and automatically removes it after PR approval.
+PR-only reviewer context. It removes the directory after approval for
+same-repository PRs. If artifacts reach `main`, the workflow opens or updates a
+cleanup PR against `main`.
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
 
@@ -170,14 +196,14 @@ mkdir -p .pr
 ## How It Works
 
 1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
-2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
-3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+2. **Approval cleanup**: For same-repository PRs, approval removes `.pr/` from the PR branch via commit
+3. **Post-merge cleanup**: If `.pr/` reaches `main`, including through a fork PR, the workflow opens or updates a cleanup PR against `main`
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+- Cleanup PRs follow the normal review and required-check protections for `main`
 
 ## When to Use
 

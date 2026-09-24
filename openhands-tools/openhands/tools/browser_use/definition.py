@@ -7,7 +7,7 @@ import os
 import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
 from pydantic import Field
 
@@ -20,6 +20,7 @@ from openhands.sdk.tool import (
     register_tool,
 )
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
+from openhands.sdk.utils.masking import SkipSecretMasking
 
 
 _logger = logging.getLogger(__name__)
@@ -60,8 +61,9 @@ def detect_image_mime_type(base64_data: str) -> str:
 class BrowserObservation(Observation):
     """Base observation for browser operations."""
 
-    screenshot_data: str | None = Field(
-        default=None, description="Base64 screenshot data if available"
+    screenshot_data: Annotated[str | None, SkipSecretMasking()] = Field(
+        default=None,
+        description="Base64 screenshot data if available",
     )
     full_output_save_dir: str | None = Field(
         default=None,
