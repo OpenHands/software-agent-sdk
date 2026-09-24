@@ -13,15 +13,19 @@ callable, so it cannot be serialized and shipped into the sandbox with the
 LLM — it must be registered here, in the process where the LLM actually runs.
 
 This module wires that hook to a re-resolution source supplied by the control
-plane. It is a **no-op unless** the control plane sets
-``OH_LLM_API_KEY_REFRESH_URL`` in the sandbox environment, so conversations that
-do not opt in keep their exact current behaviour.
+plane. It is a **no-op unless** the control plane sets both
+``OH_LLM_API_KEY_REFRESH_URL`` and ``OH_LLM_API_KEY_REFRESH_BASE_URLS`` in the
+sandbox environment, so conversations that do not opt in keep their exact
+current behaviour.
 
 What the control plane must expose (see ``register_managed_llm_key_refresh``):
 
 * ``OH_LLM_API_KEY_REFRESH_URL`` — a URL the sandbox can GET to obtain the
-  *current* managed key as the plain-text response body. This is the only
-  required piece; without it the feature is off.
+  *current* managed key as the plain-text response body.
+* ``OH_LLM_API_KEY_REFRESH_BASE_URLS`` — comma-separated allow-list of LLM
+  ``base_url`` values the managed key applies to. Required: the operator must
+  enumerate the managed proxies explicitly, so the hook can never be registered
+  on a user's BYOK LLM (whose 401 must not be retried with the managed key).
 * ``OH_LLM_API_KEY_REFRESH_HEADERS`` — optional JSON object of request headers
   used to authenticate the refresh call (e.g. the sandbox session key). Header
   values may reference environment variables with ``$VAR`` / ``${VAR}`` syntax,
@@ -29,10 +33,6 @@ What the control plane must expose (see ``register_managed_llm_key_refresh``):
   header at ``${OH_SESSION_API_KEYS_0}`` without knowing the per-sandbox key when
   it builds the environment (the remote runtime assigns that key inside the
   sandbox).
-* ``OH_LLM_API_KEY_REFRESH_BASE_URLS`` — optional comma-separated allow-list of
-  LLM ``base_url`` values the managed key applies to. Strongly recommended so
-  the hook is registered only on managed-proxy LLMs and never on a user's
-  BYOK LLM (whose 401 must not be retried with the managed key).
 """
 
 from __future__ import annotations
@@ -72,19 +72,16 @@ def _load_headers(raw: str | None) -> dict[str, str]:
     return {str(k): os.path.expandvars(str(v)) for k, v in data.items()}
 
 
-def _managed_base_urls(raw: str | None) -> set[str] | None:
+def _managed_base_urls(raw: str | None) -> set[str]:
     if not raw:
-        return None
+        return set()
     return {u.strip().rstrip("/") for u in raw.split(",") if u.strip()}
 
 
-def _llm_is_in_scope(llm: LLM, managed_base_urls: set[str] | None) -> bool:
+def _llm_is_in_scope(llm: LLM, managed_base_urls: set[str]) -> bool:
     # Subscription auth isn't a refreshable API key (the SDK resolver skips it too).
     if llm.auth_type != "api_key":
         return False
-    if managed_base_urls is None:
-        # Without an allow-list, every api_key LLM matches — including BYOK keys.
-        return True
     base_url = (llm.base_url or "").rstrip("/")
     return base_url in managed_base_urls
 
@@ -98,14 +95,25 @@ def register_managed_llm_key_refresh(agent: AgentBase) -> int:
 
     Returns the number of LLMs a hook was registered on (``0`` means the feature
     is off or no LLM matched). Safe to call unconditionally: it does nothing
-    unless the control plane opted in via ``OH_LLM_API_KEY_REFRESH_URL``.
+    unless the control plane opted in via both ``OH_LLM_API_KEY_REFRESH_URL``
+    and ``OH_LLM_API_KEY_REFRESH_BASE_URLS``.
     """
     url = os.environ.get(REFRESH_URL_ENV)
     if not url:
         return 0
 
-    headers = _load_headers(os.environ.get(REFRESH_HEADERS_ENV))
     managed_base_urls = _managed_base_urls(os.environ.get(REFRESH_BASE_URLS_ENV))
+    if not managed_base_urls:
+        # Fail closed: an absent allow-list would otherwise match BYOK LLMs too.
+        logger.warning(
+            "%s is set but %s is empty; managed LLM key refresh stays off. "
+            "Enumerate the managed proxy base_url(s) to enable it.",
+            REFRESH_URL_ENV,
+            REFRESH_BASE_URLS_ENV,
+        )
+        return 0
+
+    headers = _load_headers(os.environ.get(REFRESH_HEADERS_ENV))
 
     def _refresh() -> str | None:
         # Fresh LookupSecret per call so a rotated key isn't served from a cached one.
