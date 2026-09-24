@@ -566,9 +566,10 @@ class HookExecutor:
                 try:
                     output_data = json.loads(result.stdout)
                     if isinstance(output_data, dict):
-                        # Parse decision
-                        if "decision" in output_data:
-                            decision_str = output_data["decision"].lower()
+                        # Non-string values represent no decision.
+                        decision_value = output_data.get("decision")
+                        if isinstance(decision_value, str):
+                            decision_str = decision_value.lower()
                             if decision_str == "allow":
                                 hook_result.decision = HookDecision.ALLOW
                             elif decision_str == "deny":
