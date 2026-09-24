@@ -580,6 +580,7 @@ def _probe_mcp_server(
         with create_mcp_tools(
             mcp_config,
             timeout=request.timeout,
+            strict=True,
             **create_tools_kwargs,
         ) as client:
             tool_names = [tool.name for tool in client.tools]

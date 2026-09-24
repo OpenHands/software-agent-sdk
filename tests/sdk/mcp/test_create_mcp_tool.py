@@ -900,7 +900,7 @@ def test_create_mcp_tools_timeout_error_message():
         mock_client.call_async_from_sync.side_effect = TimeoutError()
 
         with pytest.raises(MCPTimeoutError) as exc_info:
-            create_mcp_tools(native_mcp_config(config), timeout=30.0)
+            create_mcp_tools(native_mcp_config(config), timeout=30.0, strict=True)
 
         error_message = str(exc_info.value)
         assert "30" in error_message
@@ -912,3 +912,31 @@ def test_create_mcp_tools_timeout_error_message():
 
         assert exc_info.value.timeout == 30.0
         assert exc_info.value.config is not None
+
+
+def test_create_mcp_tools_timeout_is_skipped_by_default(caplog):
+    config = {
+        "mcpServers": {
+            "slow_server": {
+                "transport": "stdio",
+                "command": "python",
+                "args": ["./slow_server.py"],
+            },
+        }
+    }
+
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client.tools = []
+        mock_client_class.return_value = mock_client
+        mock_client.call_async_from_sync.side_effect = TimeoutError()
+
+        with caplog.at_level(logging.WARNING):
+            client = create_mcp_tools(native_mcp_config(config), timeout=30.0)
+
+    assert client is mock_client
+    assert client.tools == []
+    mock_client.sync_close.assert_called_once()
+    assert "slow_server" in caplog.text
+    assert "Continuing without MCP tools" in caplog.text
+    assert "strict=True" in caplog.text

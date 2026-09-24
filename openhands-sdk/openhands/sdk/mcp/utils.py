@@ -418,9 +418,15 @@ def create_mcp_tools(
             "  2. Check if the MCP server is running and responding\n"
             "  3. Verify network connectivity to the MCP server\n"
         )
-        raise MCPTimeoutError(
-            error_msg, timeout=timeout, config=config.model_dump()
-        ) from e
+        if strict:
+            raise MCPTimeoutError(
+                error_msg, timeout=timeout, config=config.model_dump()
+            ) from e
+        logger.warning(
+            "%s. Continuing without MCP tools; pass strict=True to fail fast.",
+            error_msg,
+        )
+        return client
     except (MCPError, ConnectionError) as e:
         error_msg = _connection_failure_message(mcp_config, e)
         _close_client_quietly(client)
