@@ -705,6 +705,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
 
+    @staticmethod
+    def _normalize_oci_inputs(data: dict[str, Any]) -> None:
+        model = data["model"]
+        if not is_oci_genai_model(model):
+            return
+
+        oci_genai_model_name(model)
+        region, project_id = normalize_oci_genai_config(
+            data.get("oci_region"), data.get("oci_project_id")
+        )
+        data["oci_region"] = region
+        data["oci_project_id"] = project_id
+        data["base_url"] = None
+        data["api_mode"] = "responses"
+
     @model_validator(mode="before")
     @classmethod
     def _coerce_inputs(cls, data):
@@ -727,15 +742,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if base == "https://api.openai.com" or base == "https://api.openai.com/":
                 d["base_url"] = None  # Let LiteLLM use its default which includes /v1
 
-        if is_oci_genai_model(model_val):
-            oci_genai_model_name(model_val)
-            region, project_id = normalize_oci_genai_config(
-                d.get("oci_region"), d.get("oci_project_id")
-            )
-            d["oci_region"] = region
-            d["oci_project_id"] = project_id
-            d["base_url"] = None
-            d["api_mode"] = "responses"
+        cls._normalize_oci_inputs(d)
 
         return d
 
@@ -806,12 +813,50 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         deep: bool = False,
     ) -> Self:
         # Pydantic copies private attrs without re-running validators, even for
-        # deep copies, so routing-field updates must rebuild derived metadata.
-        copied = super().model_copy(update=update, deep=deep)
-        route_changed = update is not None and any(
-            k in update
-            for k in ("model", "base_url", "oci_region", "litellm_extra_body")
-        )
+        # deep copies, so routing-field updates must re-derive provider routing
+        # before rebuilding metadata.
+        copy_update = dict(update) if update is not None else None
+        route_fields = {
+            "model",
+            "base_url",
+            "api_mode",
+            "oci_region",
+            "oci_project_id",
+            "litellm_extra_body",
+        }
+        route_changed = False
+        if copy_update is not None:
+            route_changed = not route_fields.isdisjoint(copy_update)
+
+        if copy_update is not None and route_changed:
+            target_model = copy_update.get("model", self.model)
+            if is_oci_genai_model(target_model):
+                normalized: dict[str, Any] = {
+                    "model": target_model,
+                    "base_url": copy_update.get("base_url", self.base_url),
+                    "api_mode": copy_update.get("api_mode", self.api_mode),
+                    "oci_region": copy_update.get("oci_region", self.oci_region),
+                    "oci_project_id": copy_update.get(
+                        "oci_project_id", self.oci_project_id
+                    ),
+                }
+                self._normalize_oci_inputs(normalized)
+                copy_update.update(
+                    {
+                        key: normalized[key]
+                        for key in (
+                            "base_url",
+                            "api_mode",
+                            "oci_region",
+                            "oci_project_id",
+                        )
+                    }
+                )
+            elif is_oci_genai_model(self.model) and target_model != self.model:
+                copy_update.setdefault("base_url", None)
+                copy_update.setdefault("api_mode", "auto")
+
+        copied = super().model_copy(update=copy_update, deep=deep)
         if route_changed:
             copied._refresh_litellm_metadata()
             copied._reset_runtime_metadata_for_key()

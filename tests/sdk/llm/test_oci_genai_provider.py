@@ -181,6 +181,43 @@ def test_oci_genai_model_copy_refreshes_region_route() -> None:
     )
 
 
+def test_model_copy_to_oci_genai_rederives_provider_route() -> None:
+    llm = LLM(
+        model="openai/gpt-5-mini",
+        base_url="https://stale.example/v1",
+    )
+
+    copied = llm.model_copy(
+        update={
+            "model": OCI_MODEL,
+            "oci_region": OCI_REGION,
+            "oci_project_id": OCI_PROJECT_ID,
+        }
+    )
+
+    assert copied.api_mode == "responses"
+    assert copied.base_url is None
+    assert copied.uses_responses_api() is True
+    assert copied._litellm_call_kwargs()["api_base"] == OCI_BASE_URL
+
+
+def test_model_copy_to_oci_genai_validates_provider_config() -> None:
+    llm = LLM(model="openai/gpt-5-mini")
+
+    with pytest.raises(ValueError, match="oci_region"):
+        llm.model_copy(update={"model": OCI_MODEL})
+
+
+def test_model_copy_from_oci_genai_clears_derived_route() -> None:
+    copied = _oci_llm().model_copy(
+        update={"model": "anthropic/claude-3-5-sonnet-20241022"}
+    )
+
+    assert copied.api_mode == "auto"
+    assert copied.base_url is None
+    assert copied.uses_responses_api() is False
+
+
 def test_oci_genai_respects_explicit_canonical_model_for_capabilities() -> None:
     llm = _oci_llm(model_canonical_name="openai/gpt-5-mini")
 
