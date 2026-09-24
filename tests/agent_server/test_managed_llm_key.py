@@ -115,27 +115,40 @@ def test_scopes_to_managed_base_url(monkeypatch):
 
 def test_skips_subscription_auth(monkeypatch):
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
-    monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     sub = _llm("sub", MANAGED_BASE_URL, auth_type="subscription")
     agent = _agent(sub)
 
     assert register_managed_llm_key_refresh(agent) == 0
 
 
-def test_without_allowlist_applies_to_all_api_key_llms(monkeypatch):
+def test_without_allowlist_feature_stays_off(monkeypatch):
+    # Fail closed: the operator must enumerate the managed proxies explicitly,
+    # otherwise the hook would also attach to BYOK LLMs.
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
     monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
 
-    assert register_managed_llm_key_refresh(agent) == 1
+    assert register_managed_llm_key_refresh(agent) == 0
+    with _served_key(REFRESH_URL, "fresh_key"):
+        assert llm._resolve_refreshed_api_key(_auth_error()) is None
+
+
+def test_blank_allowlist_feature_stays_off(monkeypatch):
+    # A set-but-empty allow-list is as unconfigured as an absent one.
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, " , ")
+    llm = _llm("m", MANAGED_BASE_URL)
+
+    assert register_managed_llm_key_refresh(_agent(llm)) == 0
 
 
 def test_hook_failure_surfaces_original_error(monkeypatch):
     # Unreachable address, no local resolver: the fetch fails, and the hook must
     # swallow it (return None) rather than mask the original 401.
     monkeypatch.setenv(REFRESH_URL_ENV, "http://127.0.0.1:1/managed-llm-key")
-    monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
     assert register_managed_llm_key_refresh(agent) == 1
@@ -145,7 +158,7 @@ def test_hook_failure_surfaces_original_error(monkeypatch):
 
 def test_empty_served_key_does_not_retry(monkeypatch):
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
-    monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
     assert register_managed_llm_key_refresh(agent) == 1
@@ -175,7 +188,7 @@ def test_non_object_headers_env_is_ignored(monkeypatch):
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
     # Valid JSON that isn't an object must be ignored, not crash registration.
     monkeypatch.setenv(REFRESH_HEADERS_ENV, '["a", "b"]')
-    monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
 
     assert register_managed_llm_key_refresh(_agent(llm)) == 1
@@ -188,7 +201,7 @@ def test_non_object_headers_env_is_ignored(monkeypatch):
 def test_bad_headers_env_is_ignored(monkeypatch):
     monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
     monkeypatch.setenv(REFRESH_HEADERS_ENV, "not-json")
-    monkeypatch.delenv(REFRESH_BASE_URLS_ENV, raising=False)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
     llm = _llm("m", MANAGED_BASE_URL)
     agent = _agent(llm)
 

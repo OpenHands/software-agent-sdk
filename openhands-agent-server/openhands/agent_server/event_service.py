@@ -1176,7 +1176,8 @@ class EventService:
                 )
         self._conversation._state.set_write_guard(self._write_guard)
 
-        # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL); see #5189.
+        # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL plus
+        # OH_LLM_API_KEY_REFRESH_BASE_URLS); see #5189.
         register_managed_llm_key_refresh(self._conversation.agent)
 
         if not self._external_lease_renewal:
