@@ -7,7 +7,7 @@ Document the opt-in `NotesRetrievalCondenser`, native context notes/history tool
 
 Add the guide to SDK navigation and link it from the existing condenser guide. Distinguish ordinary low-space retry from write-failure recovery and explicit branch selection after an ambiguous restart.
 
-Companion SDK PR: <!-- Add the coordinated software-agent-sdk PR URL before publishing. Merge the implementation before these docs. -->
+Companion SDK PR: https://github.com/OpenHands/software-agent-sdk/pull/5312. Merge the implementation before these docs.
 
 **Validation**
 
@@ -17,3 +17,5 @@ Companion SDK PR: <!-- Add the coordinated software-agent-sdk PR URL before publ
 - Python setup and read-only EventLog inspection executed against the companion SDK with `TestLLM`; all three Python snippets parsed and no LLM API was called.
 - TypeScript recovery snippet passed strict `tsc` against the companion client sources.
 - The guide appears exactly once in SDK navigation; linked documentation targets and `git diff --check` passed.
+
+_Prepared with Codex assistance on behalf of cbinhan._
