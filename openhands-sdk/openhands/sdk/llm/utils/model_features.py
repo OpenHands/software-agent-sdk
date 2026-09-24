@@ -109,7 +109,6 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
 
 
 REASONING_EFFORT_MODEL_OVERRIDES = {
-    "gpt-5.2-codex": "gpt-5.2-codex",
     "kimi-k3": "moonshot/kimi-k3",
 }
 
