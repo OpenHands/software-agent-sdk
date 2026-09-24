@@ -6,6 +6,18 @@ also includes optional SDK tools that are resolved by name from agent setup.
 Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.context_notes import (
+    ContextNotesAction,
+    ContextNotesExecutor,
+    ContextNotesObservation,
+    ContextNotesTool,
+)
+from openhands.sdk.tool.builtins.conversation_history import (
+    ConversationHistoryAction,
+    ConversationHistoryExecutor,
+    ConversationHistoryObservation,
+    ConversationHistoryTool,
+)
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishExecutor,
@@ -17,6 +29,12 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillExecutor,
     InvokeSkillObservation,
     InvokeSkillTool,
+)
+from openhands.sdk.tool.builtins.new_context import (
+    NewContextAction,
+    NewContextExecutor,
+    NewContextObservation,
+    NewContextTool,
 )
 from openhands.sdk.tool.builtins.switch_llm import (
     SwitchLLMAction,
@@ -48,7 +66,10 @@ BUILT_IN_TOOLS = [FinishTool, ThinkTool]
 # conditional wiring in `Agent._initialize`.
 BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
+    ContextNotesTool.__name__: ContextNotesTool,
+    ConversationHistoryTool.__name__: ConversationHistoryTool,
     InvokeSkillTool.__name__: InvokeSkillTool,
+    NewContextTool.__name__: NewContextTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
 }
@@ -56,6 +77,18 @@ BUILT_IN_TOOL_CLASSES = {
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "ContextNotesAction",
+    "ContextNotesExecutor",
+    "ContextNotesObservation",
+    "ContextNotesTool",
+    "ConversationHistoryAction",
+    "ConversationHistoryExecutor",
+    "ConversationHistoryObservation",
+    "ConversationHistoryTool",
+    "NewContextAction",
+    "NewContextExecutor",
+    "NewContextObservation",
+    "NewContextTool",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

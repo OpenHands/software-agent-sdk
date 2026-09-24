@@ -1,3 +1,4 @@
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, cast
@@ -10,6 +11,7 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.io.storage_safety import StorageSafetyConfig, StorageSafetyError
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     register_agent,
@@ -56,6 +58,40 @@ def _manager_with_parent(
     parent = _make_parent_conversation(tmp_path, persistence_dir=persistence_dir)
     manager._ensure_parent(parent)
     return manager, parent
+
+
+def test_subagent_inherits_disk_protection(tmp_path, monkeypatch):
+    parent = LocalConversation(
+        agent=Agent(llm=_make_llm(), tools=[]),
+        workspace=str(tmp_path),
+        persistence_dir=tmp_path / "state",
+        storage_safety=StorageSafetyConfig(),
+        visualizer=None,
+    )
+    manager = TaskManager()
+    manager._ensure_parent(parent)
+    child = manager._get_conversation(
+        description="storage probe",
+        max_iteration_per_run=1,
+        task_id="storage-probe",
+        subagent_type="storage-probe",
+        conversation_id=uuid.uuid4(),
+        worker_agent=Agent(llm=_make_llm(), tools=[]),
+    )
+    usage = shutil.disk_usage(tmp_path)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "openhands.sdk.io.storage_safety.shutil.disk_usage",
+                lambda _: usage._replace(free=usage.total // 100),
+            )
+            with pytest.raises(StorageSafetyError):
+                child.send_message("Do not accept work on a full disk")
+        assert not child.state.events
+    finally:
+        child.close()
+        manager.close()
+        parent.close()
 
 
 class TestTaskStatusEnum:

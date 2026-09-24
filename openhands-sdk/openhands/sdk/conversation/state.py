@@ -2,7 +2,7 @@
 import json
 import threading
 from collections.abc import Callable, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -31,6 +31,7 @@ from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
+from openhands.sdk.io.storage_safety import StorageSafetyController, StorageSafetyError
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -80,6 +81,9 @@ class ConversationExecutionStatus(str, Enum):
 
 
 class ConversationState(OpenHandsModel):
+    _storage_safety: StorageSafetyController | None = PrivateAttr(default=None)
+    _persistence_suspended: bool = PrivateAttr(default=False)
+
     # ===== Public, validated fields =====
     id: ConversationID = Field(description="Unique conversation ID")
 
@@ -434,6 +438,8 @@ class ConversationState(OpenHandsModel):
         If a cipher is configured, secrets will be encrypted. Otherwise, they
         will be redacted (serialized as '**********').
         """
+        if self._persistence_suspended:
+            return
         context = {"cipher": self._cipher} if self._cipher else None
         # Warn if secrets exist but no cipher is configured
         if not self._cipher and self.secret_registry.secret_sources:
@@ -444,11 +450,27 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        if self._write_guard is None:
-            fs.write(BASE_STATE, payload)
-        else:
-            with self._write_guard():
+        reserve = (
+            self._storage_safety.use_shutdown_reserve()
+            if self._storage_safety is not None
+            and (
+                self._storage_safety.error is not None
+                or self.execution_status
+                in (
+                    ConversationExecutionStatus.PAUSED,
+                    ConversationExecutionStatus.ERROR,
+                )
+            )
+            else nullcontext()
+        )
+        guard = self._write_guard() if self._write_guard is not None else nullcontext()
+        try:
+            with reserve, guard:
                 fs.write(BASE_STATE, payload)
+        except StorageSafetyError as exc:
+            if exc.code == "StorageWriteFailed":
+                self._persistence_suspended = True
+            raise
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -606,7 +628,9 @@ class ConversationState(OpenHandsModel):
         autosave_enabled = getattr(self, "_autosave_enabled", False)
         fs = getattr(self, "_fs", None)
 
-        if not (autosave_enabled and is_field and fs is not None):
+        if self._persistence_suspended or not (
+            autosave_enabled and is_field and fs is not None
+        ):
             return
 
         if old is _sentinel or old != value:
@@ -753,6 +777,9 @@ class ConversationState(OpenHandsModel):
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit — flushes any deferred save."""
         try:
+            if isinstance(exc_val, StorageSafetyError):
+                if exc_val.code == "StorageWriteFailed":
+                    self._persistence_suspended = True
             self._save_depth -= 1
             if self._save_depth == 0 and self._dirty:
                 fs = getattr(self, "_fs", None)

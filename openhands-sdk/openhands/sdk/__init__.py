@@ -10,6 +10,7 @@ from openhands.sdk.banner import _print_banner
 from openhands.sdk.context import AgentContext, load_memory
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
+    NotesRetrievalCondenser,
 )
 from openhands.sdk.conversation import (
     BaseConversation,
@@ -23,6 +24,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
+from openhands.sdk.io.storage_safety import StorageSafetyConfig, StorageSafetyError
 from openhands.sdk.llm import (
     LLM,
     LLM_PROFILE_SCHEMA_VERSION,
@@ -119,6 +121,9 @@ _print_banner(__version__)
 
 
 __all__ = [
+    "NotesRetrievalCondenser",
+    "StorageSafetyConfig",
+    "StorageSafetyError",
     "LLM",
     "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",

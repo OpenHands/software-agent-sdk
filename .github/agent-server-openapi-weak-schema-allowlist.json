@@ -204,6 +204,18 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/ContextNotesTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/ConversationHistoryTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/components/schemas/ConversationInfo/properties/agent_state/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
@@ -355,6 +367,12 @@
   },
   {
     "pointer": "/components/schemas/MCPToolDefinition/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/NewContextTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
     "owner": "OpenHands OSS"

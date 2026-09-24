@@ -130,3 +130,75 @@ class CondensationSummaryEvent(LLMConvertibleEvent):
             role="user",
             content=[TextContent(text=self.summary)],
         )
+
+
+class ContextWindowReminderEvent(LLMConvertibleEvent):
+    """A durable, once-per-window request to save progress before condensation."""
+
+    window_id: EventID | None = None
+    source: SourceType = "environment"
+
+    @property
+    def visualize(self) -> Text:
+        return Text("Save progress in context_notes before the next context reset.")
+
+    def to_llm_message(self) -> Message:
+        return Message(
+            role="user",
+            content=[
+                TextContent(
+                    text=(
+                        "The context window is approaching its limit. Use "
+                        "context_notes to save your progress, open decisions, next "
+                        "steps, and relevant event IDs before continuing. Earlier "
+                        "events remain available through conversation_history."
+                    )
+                )
+            ],
+        )
+
+
+class HistoryIndexEvent(LLMConvertibleEvent):
+    """Replace active history with retrieval pointers without an LLM summary."""
+
+    forgotten_event_ids: set[EventID] = Field(default_factory=set)
+    index_offset: int = Field(default=0, ge=0)
+    previous_window_id: EventID | None = None
+    notes_event_id: EventID | None = None
+    first_forgotten_event_id: EventID
+    last_forgotten_event_id: EventID
+    source: SourceType = "environment"
+
+    @property
+    def visualize(self) -> Text:
+        return Text(
+            f"Started context window {self.id}; "
+            f"{len(self.forgotten_event_ids)} earlier events remain retrievable."
+        )
+
+    def to_llm_message(self) -> Message:
+        notes = (
+            f" Latest notes update: {self.notes_event_id}."
+            if self.notes_event_id is not None
+            else " No notes update was recorded before this reset."
+        )
+        return Message(
+            role="user",
+            content=[
+                TextContent(
+                    text=(
+                        f"Context window {self.id}: older events remain in this "
+                        "conversation's history. Use context_notes(command='read') "
+                        "to recover saved progress, and conversation_history to "
+                        "search or read original events when details are needed."
+                        f"{notes} Hidden range: {self.first_forgotten_event_id} "
+                        f"through {self.last_forgotten_event_id}."
+                    )
+                )
+            ],
+        )
+
+    def apply(self, events: list[LLMConvertibleEvent]) -> list[LLMConvertibleEvent]:
+        output = [event for event in events if event.id not in self.forgotten_event_ids]
+        output.insert(self.index_offset, self)
+        return output

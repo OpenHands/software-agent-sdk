@@ -367,6 +367,47 @@ async def run_conversation(
 
 
 @conversation_router.post(
+    "/{conversation_id}/storage/recover",
+    responses={
+        404: {"description": "Conversation not found"},
+        409: {"description": "Recovery requires review or the run is still active"},
+        507: {"description": "Storage is still unavailable"},
+    },
+)
+async def recover_conversation_storage(
+    conversation_id: UUID,
+    acknowledge_unknown_outcomes: Annotated[
+        bool,
+        Body(
+            embed=True,
+            description="Confirm that uncommitted tool outcomes have been inspected.",
+        ),
+    ] = False,
+    head_event_id: Annotated[
+        str | None,
+        Body(
+            description=(
+                "An inspected event ID to restore when crash history is ambiguous."
+            ),
+        ),
+    ] = None,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Reconcile stored events after disk failure, without restarting the agent."""
+    service = await conversation_service.get_event_service(conversation_id)
+    if service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        await service.recover_storage(
+            acknowledge_unknown_outcomes=acknowledge_unknown_outcomes,
+            head_event_id=head_event_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return Success()
+
+
+@conversation_router.post(
     "/{conversation_id}/goal",
     responses={
         404: {"description": "Item not found"},

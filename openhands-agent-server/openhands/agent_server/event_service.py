@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -77,6 +78,11 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io.storage_safety import (
+    StorageSafetyConfig,
+    StorageSafetyError,
+    check_storage_safety_paths,
+)
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -136,6 +142,9 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    storage_safety: StorageSafetyConfig | None = None
+    _storage_error: StorageSafetyError | None = field(default=None, init=False)
+    _storage_file_store: LocalFileStore | None = field(default=None, init=False)
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -180,6 +189,31 @@ class EventService:
     def conversation_dir(self):
         return self.conversations_dir / self.stored.id.hex
 
+    def _check_storage(self, required_bytes: int = 0) -> None:
+        if self.storage_safety is not None:
+            try:
+                check_storage_safety_paths(
+                    [self.conversation_dir, self.stored.workspace.working_dir],
+                    self.storage_safety,
+                    required_bytes=required_bytes,
+                )
+            except StorageSafetyError as exc:
+                self._on_storage_error(exc)
+                raise
+
+    def _on_storage_error(self, error: StorageSafetyError) -> None:
+        self._storage_error = error
+        self._rerun_requested = False
+        self._acp_internal_rerun_requested = False
+        if self._main_loop is not None and self._main_loop.is_running():
+            event = ConversationErrorEvent(
+                source="environment",
+                code=error.code,
+                detail=json.dumps(error.to_dict()),
+            )
+            with suppress(RuntimeError):
+                asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+
     async def load_meta(self):
         meta_file = self.conversation_dir / "meta.json"
         self.stored = StoredConversation.model_validate_json(
@@ -192,13 +226,25 @@ class EventService:
     async def save_meta(self):
         with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
-            meta_file.write_text(
-                self.stored.model_dump_json(
-                    context={
-                        "cipher": self.cipher,
-                    }
+            payload = self.stored.model_dump_json(context={"cipher": self.cipher})
+            if self._storage_file_store is not None:
+                self._storage_file_store.write("meta.json", payload)
+                return
+            self._check_storage(len(payload.encode("utf-8")))
+            try:
+                atomic_write_text(meta_file, payload)
+            except OSError as exc:
+                if self.storage_safety is None:
+                    raise
+                error = StorageSafetyError(
+                    "StorageWriteFailed",
+                    str(meta_file),
+                    min_free_ratio=self.storage_safety.min_free_ratio,
+                    errno=exc.errno,
+                    detail=f"Conversation metadata could not be saved: {exc}",
                 )
-            )
+                self._on_storage_error(error)
+                raise error from exc
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
         # meta.json (StoredConversation) no longer carries the agent, so there is
@@ -685,7 +731,7 @@ class EventService:
         run-loop backstop and auto-title generation (issue #16686). Best-effort:
         never raises (the caller is an error handler).
         """
-        if not self._conversation:
+        if not self._conversation or self._storage_error is not None:
             return
         try:
             error_event = ConversationErrorEvent(
@@ -1020,6 +1066,8 @@ class EventService:
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
 
+        await asyncio.to_thread(self._check_storage)
+
         # self.stored contains an Agent configuration we can instantiate
         self.conversation_dir.mkdir(parents=True, exist_ok=True)
         # lease_ttl_seconds=0 disables leasing for single-instance deployments
@@ -1130,6 +1178,8 @@ class EventService:
                     reasoning_content=reasoning if isinstance(reasoning, str) else None,
                 )
 
+        if self.storage_safety is not None:
+            self._storage_file_store = LocalFileStore(str(self.conversation_dir))
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -1151,6 +1201,9 @@ class EventService:
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
             mcp_tool_provider=self.mcp_tool_provider,
+            storage_safety=self.storage_safety,
+            storage_safety_callback=self._on_storage_error,
+            file_store=self._storage_file_store,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
@@ -1257,6 +1310,8 @@ class EventService:
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")
 
+        await asyncio.to_thread(self._check_storage)
+
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
             if (
@@ -1278,6 +1333,7 @@ class EventService:
 
             # Capture conversation reference for the closure
             conversation = self._conversation
+            self._storage_error = None
 
             # Start run in background
             loop = asyncio.get_running_loop()
@@ -1310,6 +1366,9 @@ class EventService:
                         await conversation.arun()
                     else:
                         await loop.run_in_executor(self._run_executor, conversation.run)
+                except StorageSafetyError as exc:
+                    if self._storage_error is not exc:
+                        self._on_storage_error(exc)
                 except Exception as exc:
                     logger.exception("Error during conversation run")
                     # Backstop: a run that raised before reaching its own error
@@ -1361,7 +1420,7 @@ class EventService:
                     rerun_generation = self._explicit_interrupt_generation
                     self._rerun_requested = False
                     self._acp_internal_rerun_requested = False
-                    if rerun_requested:
+                    if rerun_requested and self._storage_error is None:
                         status = await self._get_execution_status()
                         rerun_generation_still_valid = (
                             self._explicit_interrupt_generation == rerun_generation
@@ -1396,6 +1455,27 @@ class EventService:
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
+
+    async def recover_storage(
+        self,
+        *,
+        acknowledge_unknown_outcomes: bool,
+        head_event_id: str | None = None,
+    ) -> None:
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        async with self._run_lock:
+            if self._run_task is not None and not self._run_task.done():
+                raise ValueError("conversation_already_running")
+            await asyncio.to_thread(
+                self._conversation.recover_storage,
+                acknowledge_unknown_outcomes=acknowledge_unknown_outcomes,
+                head_event_id=head_event_id,
+            )
+            if self.storage_safety is not None:
+                await self.save_meta()
+            self._storage_error = None
+        await self._publish_state_update()
 
     async def wait_for_run_completion(
         self, timeout: float | None = None
@@ -1478,6 +1558,7 @@ class EventService:
         def _snapshot_and_judge() -> GoalStep:
             # Snapshot events under the conversation lock, then judge (an LLM
             # call) with the lock released -- both on this worker thread.
+            conversation.check_storage_safety()
             with conversation._state:
                 events = list(conversation._state.events)
             return controller.on_run_finished(events)
@@ -1525,6 +1606,8 @@ class EventService:
                 run_task = self._run_task
                 if run_task is not None:
                     await asyncio.wait({run_task})
+                if self._storage_error is not None:
+                    return
                 status = await self._get_execution_status()
                 if status in (
                     ConversationExecutionStatus.PAUSED,
@@ -1563,6 +1646,8 @@ class EventService:
                 await self.send_message(
                     _user(step.followup), run=False, _from_goal_loop=True
                 )
+        except StorageSafetyError as exc:
+            self._on_storage_error(exc)
         except asyncio.CancelledError:
             logger.info("Goal loop cancelled")
             # Explicit stop or user interjection: record a resumable

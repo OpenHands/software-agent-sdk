@@ -21,7 +21,11 @@ from openhands.sdk import (
     validate_agent_settings,
 )
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
+from openhands.sdk.context.condenser import (
+    LLMSummarizingCondenser,
+    NoOpCondenser,
+    NotesRetrievalCondenser,
+)
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
@@ -33,6 +37,7 @@ from openhands.sdk.settings import (
     CondenserSettings,
     LLMSummarizingCondenserSettings,
     NoOpCondenserSettings,
+    NotesRetrievalCondenserSettings,
     VerificationSettings,
 )
 from openhands.sdk.settings.model import ACPServerKind
@@ -131,7 +136,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert condenser_fields["condenser.condenser_kind"].default == "llm_summarizing"
     assert [
         choice.value for choice in condenser_fields["condenser.condenser_kind"].choices
-    ] == ["llm_summarizing", "no_op"]
+    ] == ["llm_summarizing", "no_op", "notes_retrieval"]
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
     assert condenser_fields["condenser.max_tokens"].default is None
@@ -2638,3 +2643,21 @@ def test_create_subscription_llm_from_config_preserves_non_auth_options(
     assert "api_key" not in captured
     assert "base_url" not in captured
     assert "is_subscription" not in captured
+
+
+def test_notes_retrieval_settings_roundtrip_and_create_agent() -> None:
+    settings = OpenHandsAgentSettings(
+        condenser=NotesRetrievalCondenserSettings(max_size=40, keep_recent=2),
+        tools=[Tool(name="ConversationHistoryTool"), Tool(name="ContextNotesTool")],
+    )
+    restored = validate_agent_settings(settings.model_dump(mode="json"))
+    assert isinstance(restored, OpenHandsAgentSettings)
+    agent = restored.create_agent()
+    assert isinstance(agent.condenser, NotesRetrievalCondenser)
+    assert agent.condenser.max_size == 40
+    assert agent.condenser.keep_recent == 2
+    assert agent.tools == settings.tools
+    assert (
+        NotesRetrievalCondenserSettings(enabled=False).build_condenser(agent.llm)
+        is None
+    )

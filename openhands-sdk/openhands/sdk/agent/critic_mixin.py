@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import ActionEvent, LLMConvertibleEvent, MessageEvent
+from openhands.sdk.io.storage_safety import StorageSafetyError
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Action
 from openhands.sdk.tool.builtins import FinishAction
@@ -61,6 +62,7 @@ class CriticMixin:
             ]
 
             # Evaluate without git_patch for now
+            conversation.check_storage_safety()
             critic_result = self.critic.evaluate(
                 events=llm_convertible_events, git_patch=None
             )
@@ -69,6 +71,9 @@ class CriticMixin:
                 f"success={critic_result.success}"
             )
             return critic_result
+        except StorageSafetyError:
+            # Preserve the primary response; the run loop handles the latched stop.
+            return None
         except Exception as e:
             logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
             return None

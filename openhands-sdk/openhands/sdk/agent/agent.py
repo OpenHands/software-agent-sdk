@@ -48,6 +48,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
+    HistoryIndexEvent,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.llm import (
@@ -91,6 +92,7 @@ from openhands.sdk.tool.builtins import (
     FinishTool,
     ThinkAction,
 )
+from openhands.sdk.tool.builtins.new_context import NewContextObservation
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 
@@ -354,6 +356,14 @@ class _ActionBatch:
         """
         # Nothing to finalise: no FinishTool, or it was blocked by a hook.
         if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+            if any(
+                isinstance(event, ObservationEvent)
+                and isinstance(event.observation, NewContextObservation)
+                and not event.observation.is_error
+                for events in self.results_by_id.values()
+                for event in events
+            ):
+                on_event(CondensationRequest())
             return
 
         should_continue, followup = check_iterative_refinement(self.action_events[-1])
@@ -455,6 +465,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         event history during initialization.
         """
         self._initialize(state)
+        if self.condenser is not None:
+            missing_tools = self.condenser.required_tools() - self.tools_map.keys()
+            if missing_tools:
+                raise ValueError(
+                    "The selected condenser requires these tools: "
+                    + ", ".join(sorted(missing_tools))
+                )
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
@@ -574,12 +591,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Prepare a batch, emit results, and handle finish."""
+        conversation.check_storage_safety()
         state = conversation.state
         batch = _ActionBatch.prepare(
             action_events,
             state=state,
             executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tool_runner=lambda ae: conversation.run_admitted_tool(
+                ae, lambda: self._execute_action_event(conversation, ae)
+            ),
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
             span_owner=conversation,
@@ -609,12 +629,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         :meth:`ParallelToolExecutor.aexecute_batch`, giving the event
         loop an ``await`` boundary between every tool invocation.
         """
+        conversation.check_storage_safety()
         state = conversation.state
         batch = await _ActionBatch.aprepare(
             action_events,
             state=state,
             executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tool_runner=lambda ae: conversation.run_admitted_tool(
+                ae, lambda: self._execute_action_event(conversation, ae)
+            ),
             tools=self.tools_map,
             cancel_token=conversation.cancel_token,
             span_owner=conversation,
@@ -648,6 +671,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         stream: StreamContext,
     ) -> None:
+        conversation.check_storage_safety()
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
@@ -683,6 +707,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # real endpoint limit drives condensation on the first step.
         self.llm.resolve_runtime_metadata()
 
+        if self.condenser is not None:
+            reminder = self.condenser.get_reminder(state.view, self.llm)
+            if reminder is not None:
+                on_event(reminder)
+                return
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = prepare_llm_messages(
@@ -690,7 +720,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         # Process condensation event before agent sampels another action
-        if isinstance(_messages_or_condensation, Condensation):
+        if isinstance(_messages_or_condensation, (Condensation, HistoryIndexEvent)):
             on_event(_messages_or_condensation)
             return
 
@@ -724,6 +754,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
         )
 
+        conversation.check_storage_safety()
         try:
             llm_response = self.llm.generate(
                 messages=_messages,
@@ -858,6 +889,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         stream: StreamContext,
     ) -> None:
+        conversation.check_storage_safety()
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
@@ -888,13 +920,19 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # real endpoint limit drives condensation on the first step.
         await self.llm.aresolve_runtime_metadata()
 
+        if self.condenser is not None:
+            reminder = self.condenser.get_reminder(state.view, self.llm)
+            if reminder is not None:
+                on_event(reminder)
+                return
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = await aprepare_llm_messages(
             state.view, condenser=self.condenser, llm=self.llm
         )
 
-        if isinstance(_messages_or_condensation, Condensation):
+        if isinstance(_messages_or_condensation, (Condensation, HistoryIndexEvent)):
             on_event(_messages_or_condensation)
             return
 
@@ -928,6 +966,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
         )
 
+        conversation.check_storage_safety()
         try:
             # Release the state lock for just the network wait so send_message()
             # and state snapshots aren't blocked for the whole response. No-op

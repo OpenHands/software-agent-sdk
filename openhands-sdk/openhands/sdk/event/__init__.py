@@ -4,6 +4,8 @@ from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
     CondensationSummaryEvent,
+    ContextWindowReminderEvent,
+    HistoryIndexEvent,
 )
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.hook_execution import HookExecutionEvent
@@ -47,6 +49,8 @@ __all__ = [
     "Condensation",
     "CondensationRequest",
     "CondensationSummaryEvent",
+    "ContextWindowReminderEvent",
+    "HistoryIndexEvent",
     "ConversationStateUpdateEvent",
     "HookExecutionEvent",
     "LLMCompletionLogEvent",

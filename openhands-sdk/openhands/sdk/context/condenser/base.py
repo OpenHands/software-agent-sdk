@@ -3,7 +3,11 @@ from enum import Enum
 from logging import getLogger
 
 from openhands.sdk.context.view import View
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import (
+    Condensation,
+    ContextWindowReminderEvent,
+    HistoryIndexEvent,
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -30,7 +34,9 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
     """
 
     @abstractmethod
-    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
+    def condense(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> View | Condensation | HistoryIndexEvent:
         """Condense a sequence of events into a potentially smaller list.
 
         New condenser strategies should override this method to implement their own
@@ -47,19 +53,30 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
                 counting purposes. Defaults to None.
 
         Returns:
-            View | Condensation: A condensed view of the events or an event indicating
-            the history has been condensed.
+            A condensed view, or an event indicating that history was condensed.
         """
 
     async def acondense(
         self, view: View, agent_llm: LLM | None = None
-    ) -> View | Condensation:
+    ) -> View | Condensation | HistoryIndexEvent:
         """Async variant of :meth:`condense`.
 
         Default implementation delegates to the synchronous ``condense()``.
         Subclasses that perform async I/O (e.g. LLM calls) should override this.
         """
         return self.condense(view, agent_llm=agent_llm)
+
+    def get_reminder(
+        self,
+        view: View,  # noqa: ARG002
+        agent_llm: LLM | None = None,  # noqa: ARG002
+    ) -> ContextWindowReminderEvent | None:
+        """Return a progress reminder before condensation, when supported."""
+        return None
+
+    def required_tools(self) -> frozenset[str]:
+        """Names of tools needed by this condenser's context strategy."""
+        return frozenset()
 
     def handles_condensation_requests(self) -> bool:
         """Whether this condenser handles explicit condensation requests.
@@ -121,7 +138,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
         self,
         view: View,  # noqa: ARG002
         agent_llm: LLM | None = None,  # noqa: ARG002
-    ) -> Condensation | None:
+    ) -> Condensation | HistoryIndexEvent | None:
         """Perform a hard context reset, if supported by the condenser.
 
         By default, rolling condensers do not support hard context resets. Override this
@@ -153,10 +170,12 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
     @abstractmethod
     def get_condensation(
         self, view: View, agent_llm: LLM | None = None
-    ) -> Condensation:
+    ) -> Condensation | HistoryIndexEvent:
         """Get the condensation from a view."""
 
-    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
+    def condense(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> View | Condensation | HistoryIndexEvent:
         # If we trigger the condenser-specific condensation threshold, compute and
         # return the condensation.
         request = self.condensation_requirement(view, agent_llm=agent_llm)
@@ -199,7 +218,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
 
     async def acondense(
         self, view: View, agent_llm: LLM | None = None
-    ) -> View | Condensation:
+    ) -> View | Condensation | HistoryIndexEvent:
         """Async variant of :meth:`condense`.
 
         Delegates to :meth:`aget_condensation` when condensation is required,
@@ -233,7 +252,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
 
     async def aget_condensation(
         self, view: View, agent_llm: LLM | None = None
-    ) -> Condensation:
+    ) -> Condensation | HistoryIndexEvent:
         """Async variant of :meth:`get_condensation`.
 
         Default delegates to the sync version.
@@ -244,7 +263,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
         self,
         view: View,
         agent_llm: LLM | None = None,
-    ) -> Condensation | None:
+    ) -> Condensation | HistoryIndexEvent | None:
         """Async variant of :meth:`hard_context_reset`.
 
         Default delegates to the sync version.
