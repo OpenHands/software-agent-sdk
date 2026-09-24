@@ -13,6 +13,7 @@ from .classifier import (
     is_content_policy_violation,
     is_context_window_exceeded,
     looks_like_auth_error,
+    looks_like_history_content_rejected_error,
     looks_like_malformed_conversation_history_error,
 )
 from .types import (
@@ -20,6 +21,7 @@ from .types import (
     LLMBadRequestError,
     LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
+    LLMHistoryContentRejectedError,
     LLMMalformedConversationHistoryError,
     LLMRateLimitError,
     LLMServiceUnavailableError,
@@ -62,6 +64,12 @@ def map_provider_exception(exception: Exception) -> Exception:
     # bad requests so the agent can recover softly instead of hard-erroring.
     if is_content_policy_violation(exception):
         return LLMContentPolicyViolationError(str(exception))
+
+    # Content already in the history that the provider refuses to read.
+    # Deterministic like a content-policy block, but recoverable by
+    # dropping the turn that introduced it rather than rephrasing.
+    if looks_like_history_content_rejected_error(exception):
+        return LLMHistoryContentRejectedError(str(exception))
 
     # Generic client-side 4xx errors
     if isinstance(exception, BadRequestError):

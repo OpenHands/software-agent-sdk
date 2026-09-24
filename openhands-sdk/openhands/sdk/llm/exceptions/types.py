@@ -131,6 +131,27 @@ class LLMBadRequestError(LLMError):
         super().__init__(message)
 
 
+class LLMHistoryContentRejectedError(LLMBadRequestError):
+    """Provider rejected content carried by a message already in the history.
+
+    Distinct from a configuration bad request: the offending content is
+    persisted, so re-sending the same history reproduces the failure exactly
+    and the conversation cannot progress. Recovery requires dropping the turn
+    that introduced the content rather than changing a setting.
+
+    Subclasses LLMBadRequestError so existing handlers keep working.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Model provider rejected content in the conversation history "
+            "(for example, an unreadable image in a tool result)."
+        ),
+    ) -> None:
+        super().__init__(message)
+
+
 class LLMContentPolicyViolationError(LLMBadRequestError):
     """Provider blocked the request/response via its content filter.
 

@@ -11,6 +11,7 @@ from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
     LLMBadRequestError,
     LLMContentPolicyViolationError,
+    LLMHistoryContentRejectedError,
     LLMMalformedConversationHistoryError,
     map_provider_exception,
 )
@@ -118,3 +119,24 @@ def test_passthrough_unknown_exception():
     e = MyCustom("random")
     mapped = map_provider_exception(e)
     assert mapped is e
+
+
+def test_map_rejected_history_content_bad_request():
+    """#5225: an offset into a message means the history is at fault, so the
+    error must be recoverable rather than a terminal config failure."""
+    e = BadRequestError(
+        (
+            "AnthropicException - messages.148.content.0.tool_result.content.1."
+            "image.source.base64: invalid base64 data"
+        ),
+        MODEL,
+        PROVIDER,
+    )
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMHistoryContentRejectedError)
+
+
+def test_map_config_bad_request_stays_generic():
+    e = BadRequestError("Unsupported parameter: 'temperature'", MODEL, PROVIDER)
+    mapped = map_provider_exception(e)
+    assert not isinstance(mapped, LLMHistoryContentRejectedError)

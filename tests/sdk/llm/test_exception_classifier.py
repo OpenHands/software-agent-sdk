@@ -1,3 +1,4 @@
+import pytest
 from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
@@ -11,6 +12,7 @@ from openhands.sdk.llm.exceptions import (
     is_prompt_cache_too_small,
     is_quota_exhaustion_error,
     looks_like_auth_error,
+    looks_like_history_content_rejected_error,
     looks_like_malformed_conversation_history_error,
 )
 
@@ -228,3 +230,51 @@ def test_is_quota_exhaustion_error_transient_quota_metric():
         model="gemini-test",
     )
     assert is_quota_exhaustion_error(error) is False
+
+
+class TestHistoryContentRejectedClassifier:
+    """#5225: distinguish provider rejections of persisted content from
+    configuration errors, which rollback cannot fix."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "messages.148.content.0.tool_result.content.1.image.source.base64: "
+            "invalid base64 data",
+            "Invalid value at 'messages.3.content.1.image_url'",
+            "MESSAGES.12.CONTENT: unsupported media type",
+        ],
+    )
+    def test_history_indicting_messages_are_recognized(self, message):
+        assert looks_like_history_content_rejected_error(
+            BadRequestError(message, "m", "p")
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Unsupported parameter: 'temperature' is not supported with this model",
+            "The model `gpt-9` does not exist",
+            "Invalid API key provided",
+        ],
+    )
+    def test_configuration_errors_are_left_alone(self, message):
+        assert not looks_like_history_content_rejected_error(
+            BadRequestError(message, "m", "p")
+        )
+
+    def test_malformed_history_keeps_its_own_recovery(self):
+        """Malformed tool_use pairing cites an offset too, but has a dedicated
+        handler; claiming it here would divert it to the wrong recovery."""
+        message = (
+            "messages.134: `tool_use` ids were found without `tool_result` "
+            "blocks immediately after: toolu_01Aye4s5HrR2uXwXFYgtQi4H."
+        )
+        assert not looks_like_history_content_rejected_error(
+            BadRequestError(message, "m", "p")
+        )
+
+    def test_non_provider_exceptions_are_ignored(self):
+        assert not looks_like_history_content_rejected_error(
+            ValueError("messages.1.content is bad")
+        )

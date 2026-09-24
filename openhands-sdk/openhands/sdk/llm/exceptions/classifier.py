@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Final
 
 from litellm.exceptions import (
@@ -15,7 +16,17 @@ from litellm.exceptions import (
 
 from .types import (
     LLMContextWindowExceedError,
+    LLMHistoryContentRejectedError,
     LLMMalformedConversationHistoryError,
+)
+
+
+# Provider path into a specific message, e.g.
+# "messages.148.content.0.tool_result.content.1.image.source.base64".
+# Present when the provider is rejecting conversation content rather than
+# request configuration.
+MESSAGE_OFFSET_RE: Final[re.Pattern[str]] = re.compile(
+    r"messages\.\d+\.[A-Za-z0-9_.\[\]]*content", re.IGNORECASE
 )
 
 
@@ -120,6 +131,32 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
 
     s = str(exception).lower()
     return any(p in s for p in MALFORMED_HISTORY_PATTERNS)
+
+
+def looks_like_history_content_rejected_error(exception: Exception) -> bool:
+    """Whether the provider is indicting the message history, not the request.
+
+    Providers point at the offending message with a JSON-ish path
+    (``messages.148.content.0.tool_result.content.1.image.source.base64``).
+    That shape is the signal: it only appears when the rejection is about
+    content already in the conversation, so configuration errors (unsupported
+    parameter, unknown model) keep their own non-retryable classification.
+    """
+    if isinstance(exception, LLMHistoryContentRejectedError):
+        return True
+
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
+        return False
+
+    # Malformed tool_use/tool_result pairing also cites a message offset but
+    # has its own dedicated recovery; leave it to that handler.
+    if looks_like_malformed_conversation_history_error(exception):
+        return False
+
+    return bool(MESSAGE_OFFSET_RE.search(str(exception)))
 
 
 def is_prompt_cache_too_small(exception: Exception) -> bool:

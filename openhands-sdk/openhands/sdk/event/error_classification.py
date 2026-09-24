@@ -81,7 +81,11 @@ def classify_error(code: str, detail: str = "") -> ErrorClassification:
         return _failure(FailureKind.CONFIG, user_action="settings")
     # Context-window / conversation-history errors are recoverable via
     # condensation, so classify them as agent outcomes, not diagnostics.
-    if code in {"LLMContextWindowExceedError", "LLMMalformedConversationHistoryError"}:
+    if code in {
+        "LLMContextWindowExceedError",
+        "LLMMalformedConversationHistoryError",
+        "LLMHistoryContentRejectedError",
+    }:
         return _failure(FailureKind.AGENT_ACTION, retryable=True, user_action="retry")
     # Run-limit and ownership-loss are known product outcomes, not diagnostics.
     if code in {"MaxIterationsReached", "ConversationOwnershipLostError"}:
