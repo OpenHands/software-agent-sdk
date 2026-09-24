@@ -218,10 +218,6 @@ class TmuxTerminal(TerminalInterface):
         # Before building env, so the shell gets the same locale as tmux.
         ensure_utf8_locale()
         env = build_terminal_env(self._env)
-        # Disable interactive pagers (git, man, systemctl, ...) so commands that
-        # auto-launch `less` on a TTY don't capture the pane and wedge the session.
-        env.setdefault("GIT_PAGER", "cat")
-        env.setdefault("PAGER", "cat")
         shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
