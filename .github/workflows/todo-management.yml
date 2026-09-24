@@ -60,7 +60,7 @@ jobs:
                   fetch-depth: 0 # Full history for better context
 
             - name: Set up Python
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v7
               with:
                   python-version: '3.13'
 
@@ -141,7 +141,7 @@ jobs:
                   git pull origin openhands/todo-management-example
 
             - name: Set up Python
-              uses: actions/setup-python@v6
+              uses: actions/setup-python@v7
               with:
                   python-version: '3.13'
 

@@ -6,6 +6,12 @@ also includes optional SDK tools that are resolved by name from agent setup.
 Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.classify_and_switch_llm import (
+    ClassifyAndSwitchLLMAction,
+    ClassifyAndSwitchLLMExecutor,
+    ClassifyAndSwitchLLMObservation,
+    ClassifyAndSwitchLLMTool,
+)
 from openhands.sdk.tool.builtins.context_notes import (
     ContextNotesAction,
     ContextNotesExecutor,
@@ -72,11 +78,16 @@ BUILT_IN_TOOL_CLASSES = {
     NewContextTool.__name__: NewContextTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
+    ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
 
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "ClassifyAndSwitchLLMTool",
+    "ClassifyAndSwitchLLMAction",
+    "ClassifyAndSwitchLLMObservation",
+    "ClassifyAndSwitchLLMExecutor",
     "ContextNotesAction",
     "ContextNotesExecutor",
     "ContextNotesObservation",
