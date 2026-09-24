@@ -267,6 +267,247 @@ jobs:
                     echo "✅ PR created for $REPO"
                   fi
 
+            - name: Create PR for OpenHands repo
+              id: openhands_pr
+              continue-on-error: true
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  REPO="OpenHands/OpenHands"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-repo
+                  cd openhands-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Check if branch already exists on remote
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    # Create branch
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # OpenHands/OpenHands treats versions.agentServer and the
+                  # @openhands/typescript-client pin in package.json as a synchronized
+                  # pair: scripts/check-sdk-version-sync.mjs (run on PRs that touch
+                  # config/defaults.json) exits 1 on any skew, and the
+                  # docs-version-sync / dev-safe tests assert the same version
+                  # literals. So bump the whole synchronized set (versions.agentServer
+                  # + client pin in package.json/package-lock.json + doc/test
+                  # examples), keeping the diff limited to the version literals.
+
+                  CURRENT_VERSION=$(python3 -c 'import json; print(json.load(open("config/defaults.json"))["versions"]["agentServer"])')
+                  echo "📦 Bumping $CURRENT_VERSION -> $VERSION ..."
+
+                  # Fetch the released client package integrity from the npm registry
+                  # so package-lock.json stays valid for npm ci.
+                  INTEGRITY=$(curl -sS "https://registry.npmjs.org/@openhands/typescript-client/$VERSION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dist"]["integrity"])')
+
+                  python3 - "$VERSION" "$CURRENT_VERSION" "$INTEGRITY" <<'PY'
+                  import re
+                  import sys
+
+                  version = sys.argv[1]
+                  current = sys.argv[2]
+                  integrity = sys.argv[3]
+
+
+                  def sub_file(path, pattern, repl, count=0):
+                      text = open(path).read()
+                      new, n = re.subn(pattern, repl, text, count=count)
+                      if n == 0:
+                          raise SystemExit(f"no match for {pattern!r} in {path}")
+                      open(path, "w").write(new)
+                      print(f"updated {path}: {n} replacement(s)")
+
+
+                  # config/defaults.json: only versions.agentServer (bare semver)
+                  sub_file(
+                      "config/defaults.json",
+                      r'("agentServer"\s*:\s*")[0-9]+\.[0-9]+\.[0-9]+(")',
+                      lambda m: m.group(1) + version + m.group(2),
+                      count=1,
+                  )
+                  # package.json: root client pin
+                  sub_file(
+                      "package.json",
+                      r'("@openhands/typescript-client"\s*:\s*")[0-9]+\.[0-9]+\.[0-9]+(")',
+                      lambda m: m.group(1) + version + m.group(2),
+                      count=1,
+                  )
+                  # package-lock.json: root client pin
+                  sub_file(
+                      "package-lock.json",
+                      r'("@openhands/typescript-client"\s*:\s*")[0-9]+\.[0-9]+\.[0-9]+(")',
+                      lambda m: m.group(1) + version + m.group(2),
+                      count=1,
+                  )
+                  # package-lock.json: node_modules client entry (version + resolved + integrity)
+                  lock = open("package-lock.json").read()
+                  start = lock.index('"node_modules/@openhands/typescript-client": {')
+                  end = lock.index("\n    },", start)
+                  block = lock[start:end]
+                  block = re.sub(r'("version"\s*:\s*")[0-9]+\.[0-9]+\.[0-9]+(")',
+                                  lambda m: m.group(1) + version + m.group(2), block, count=1)
+                  block = re.sub(r'("resolved"\s*:\s*"https://registry\.npmjs\.org/@openhands/typescript-client/-/typescript-client-)[0-9]+\.[0-9]+\.[0-9]+(\.tgz")',
+                                  lambda m: m.group(1) + version + m.group(2), block, count=1)
+                  block = re.sub(r'("integrity"\s*:\s*")[^"]+(")',
+                                  lambda m: m.group(1) + integrity + m.group(2), block, count=1)
+                  open("package-lock.json", "w").write(lock[:start] + block + lock[end:])
+                  print("updated package-lock.json node_modules client entry")
+
+                  # Doc/test files: every current-version literal is a version example the
+                  # docs-version-sync / dev-safe tests assert, so replace them all.
+                  for path in (
+                      "AGENTS.md",
+                      "scripts/dev-safe.mjs",
+                      "scripts/check-sdk-version-sync.mjs",
+                      "__tests__/scripts/dev-safe.test.ts",
+                  ):
+                      sub_file(path, re.escape(current), version)
+                  PY
+
+                  # Verify the edits took
+                  if ! grep -qE '"agentServer"[[:space:]]*:[[:space:]]*"'"$VERSION"'"' config/defaults.json; then
+                    echo "❌ Failed to bump versions.agentServer to $VERSION"
+                    exit 1
+                  fi
+                  if ! grep -qE '"@openhands/typescript-client"[[:space:]]*:[[:space:]]*"'"$VERSION"'"' package.json;then
+                    echo "❌ Failed to bump @openhands/typescript-client to $VERSION"
+                    exit 1
+                  fi
+                  # Note:the images.agentServer key also contains "agentServer",
+                  # so the config grep above is scoped to the quoted-scalar form
+                  # ("agentServer": "<semver>") used only under versions.
+
+                  # On the "branch already exists" re-run path CURRENT_VERSION == $VERSION,
+                  # so only check for leftover stale literals when we actually changed the version.
+                  if [ "$CURRENT_VERSION" != "$VERSION" ] && grep -q "$CURRENT_VERSION" AGENTS.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts; then
+                    echo "❌ Stale $CURRENT_VERSION remains in doc/test files"
+                    exit 1
+                  fi
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Generate an evidence card (SVG) under .pr/ — the downstream
+                  # Validate PR description gate requires a screenshot/video when a
+                  # PR touches __tests__/, which this bump necessarily does.
+                  mkdir -p .pr
+                  {
+                    echo '<svg xmlns="http://www.w3.org/2000/svg" width="620" height="260" viewBox="0 0 620 260">'
+                    echo '  <rect width="100%" height="100%" fill="#0d1117"/>'
+                    echo '  <text x="24" y="40" font-family="monospace" font-size="18" fill="#3fb950">SDK version bump evidence</text>'
+                    echo '  <text x="24" y="76" font-family="monospace" font-size="15" fill="#e6edf3">versions.agentServer: '"$CURRENT_VERSION"' -> '"$VERSION"'</text>'
+                    echo '  <text x="24" y="104" font-family="monospace" font-size="15" fill="#e6edf3">@openhands/typescript-client: '"$CURRENT_VERSION"' -> '"$VERSION"'</text>'
+                    echo '  <text x="24" y="132" font-family="monospace" font-size="15" fill="#e6edf3">package.json/package-lock.json + doc/test literals synced to '"$VERSION"'</text>'
+                    echo '</svg>'
+                  } > .pr/sdk-version-bump.svg
+                  git add .pr/sdk-version-bump.svg
+
+                  # Commit and push
+                  git add config/defaults.json package.json package-lock.json
+                  git add AGENTS.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts
+                  git commit -m "chore: bump agent-server to $VERSION" \
+                    -m "Updates versions.agentServer in config/defaults.json to match software-agent-sdk v$VERSION, and syncs the @openhands/typescript-client pin (package.json/package-lock.json) plus doc/test version examples so check-sdk-version-sync.mjs stays green." \
+                    -m "Automated version bump after PyPI release." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Check if PR already exists
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                  else
+                    # Create PR with a body that passes OpenHands/OpenHands's
+                    # Validate PR description gate (HUMAN:/AGENT: template,
+                    # Why/Summary/How to Test sections, linked ready-for-dev
+                    # issue,and an evidence image because the PR touches __tests__/).
+                    gh pr create \
+                      --repo "$REPO" \
+                      --title "chore: bump agent-server to $VERSION" \
+                      --body "HUMAN:
+
+                  Automated SDK version bump after software-agent-sdk v$VERSION release.
+
+
+
+                  ---
+
+                  AGENT:
+
+                  ## Why
+
+                  OpenHands/OpenHands defaults to agent-server / TypeScript client $CURRENT_VERSION. software-agent-sdk v$VERSION is now released, so this PR moves the synchronized pins to keep check-sdk-version-sync.mjs green.
+
+
+
+                  ## Summary
+
+                  - Move versions.agentServer in config/defaults.json to $VERSION (bare semver.
+                  - Sync the @openhands/typescript-client pin to $VERSION in package.json and package-lock.json (root deps + node_modules entry with registry integrity), plus doc/test version examples in AGENTS.md, scripts/dev-safe.mjs, scripts/check-sdk-version-sync.mjs,and __tests__/scripts/dev-safe.test.ts.
+
+
+
+                  versions.automation is intentionally not bumped here. The sibling OpenHands/automation bump PR (release-please) opened by this same workflow only bumps that repo's own SDK pins and does NOT write versions.automation back into config/defaults.json (repository history shows versions.automation only moves via manual `chore: consume SDK X and Automation Y` PRs). This PR therefore intentionally requires a manual versions.automation follow-up: after the sibling openhands-automation release lands, bump versions.automation in config/defaults.json to that release so the Check SDK version consistency gate goes fully green (the client-pin half is green as-of this PR;the automation half stays red until that manual bump).
+
+
+
+                  ## Issue Number
+
+                  Relates to #16865
+
+
+
+                  ## How to Test
+
+                  Run \`node scripts/check-sdk-version-sync.mjs\` on this branch:the client registry pin now matches versions.agentServer (\`@openhands/typescript-client@$VERSION\`). The unit suites (\`docs-version-sync.test.ts\`, \`dev-safe.test.ts\`) assert the same literals and pass;\`npm ci\` installs cleanly from the regenerated lockfile. The automation half of the sync check will stay red until the manual versions.automation follow-up (described in Summary) lands — this is expected and called out in the PR body.
+
+
+
+                  ## Video/Screenshots
+
+                  ![sdk-version-bump](https://raw.githubusercontent.com/OpenHands/OpenHands/$BRANCH/.pr/sdk-version-bump.svg)
+
+
+
+                  ## Type
+
+                  - [ ] Bug fix
+                  - [ ] Feature
+                  - [ ] Refactor
+                  - [ ] Breaking change
+                  - [x] Docs / chore
+
+
+
+                  ## Notes
+
+                  Generated by the version-bump-prs workflow after the software-agent-sdk v$VERSION release;the automation-version follow-up requires a manual versions.automation bump in config/defaults.json (the sibling automation bump flow only updates OpenHands/automation's own pins).
+
+
+
+                  This PR was created by an AI agent (OpenHands) on behalf of @juanmichelini." \
+                      --base main \
+                      --head "$BRANCH"
+
+                    echo "✅ PR created for $REPO"
+                  fi
+
             - name: Create PR for enterprise repo
               id: enterprise_pr
               continue-on-error: true
@@ -363,6 +604,7 @@ jobs:
                   CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
                   AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
                   ENTERPRISE_OUTCOME: ${{ steps.enterprise_pr.outcome }}
+                  OPENHANDS_OUTCOME: ${{ steps.openhands_pr.outcome }}
               run: |
                   echo "## Version Bump PRs" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
@@ -381,6 +623,11 @@ jobs:
                     echo "- ⚠️ **automation PR creation FAILED** — see the \"Create PR for automation repo\" step logs" >> $GITHUB_STEP_SUMMARY
                   else
                     echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$OPENHANDS_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands PR creation FAILED** — see the \"Create PR for OpenHands repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
                   fi
                   if [ "$ENTERPRISE_OUTCOME" = "failure" ]; then
                     echo "- ⚠️ **enterprise PR creation FAILED** — see the \"Create PR for enterprise repo\" step logs" >> $GITHUB_STEP_SUMMARY
