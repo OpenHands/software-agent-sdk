@@ -22,6 +22,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.defense_in_depth.utils import (
     _extract_exec_segments,
+    _has_rm_recursive_force,
     _normalize,
 )
 from openhands.sdk.security.risk import SecurityRisk
@@ -84,14 +85,7 @@ def _evaluate_rail_segments(segments: list[str]) -> RailDecision:
                 ci,
             )
         )
-        has_recursive_force = bool(
-            re.search(
-                r"\brm\s+(?:-[frR]{2,}|-[rR]\s+-f|-f\s+-[rR]"
-                r"|--recursive\s+--force|--force\s+--recursive)\b",
-                seg,
-                ci,
-            )
-        )
+        has_recursive_force = _has_rm_recursive_force(seg)
 
         # Rule 1: fetch-to-exec -- download piped to shell/interpreter
         if has_fetch and has_pipe_to_exec:
