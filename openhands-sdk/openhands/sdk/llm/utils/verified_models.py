@@ -22,11 +22,10 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5.5, 5 and 4.8. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
 VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
-    "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
@@ -109,7 +108,6 @@ VERIFIED_QWEN_MODELS = [
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
-    "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-fable-5-1",
