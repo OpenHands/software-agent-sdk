@@ -53,6 +53,15 @@ def _is_encodable(text: str, encoding: str) -> bool:
     return True
 
 
+# Control bytes that never appear in ordinary text files.
+_BINARY_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
+
+
+def _decodes_as_text(text: str) -> bool:
+    """Return True if decoded content contains no binary control bytes."""
+    return _BINARY_CONTROL_CHARS.search(text) is None
+
+
 class FileEditor:
     """
     An filesystem editor tool that allows the agent to
@@ -722,6 +731,12 @@ class FileEditor:
         # Check file type - allow image files
         file_extension = path.suffix.lower()
         if is_binary(str(path)) and file_extension not in IMAGE_EXTENSIONS:
+            # binaryornot samples only the first chunk, so a non-UTF-8 (e.g.
+            # cp1251) or non-ASCII text file can be misclassified as binary.
+            # Decode the whole file with the encoding the editor will use and
+            # accept it if it is clean text.
+            if self._is_decodable_text(path):
+                return
             raise FileValidationError(
                 path=str(path),
                 reason=(
@@ -729,6 +744,20 @@ class FileEditor:
                     "or edited by this tool."
                 ),
             )
+
+    def _is_decodable_text(self, path: Path) -> bool:
+        """Return True if the file decodes as clean text in a known encoding.
+
+        Used to override binaryornot misclassification of non-UTF-8 text files.
+        """
+        for encoding in (self._encoding_manager.get_encoding(path), "utf-8"):
+            try:
+                text = path.read_text(encoding=encoding)
+            except (UnicodeDecodeError, LookupError):
+                continue
+            if _decodes_as_text(text):
+                return True
+        return False
 
     @with_encoding
     def read_file(
