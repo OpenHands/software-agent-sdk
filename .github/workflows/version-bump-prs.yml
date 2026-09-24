@@ -387,10 +387,13 @@ jobs:
                     echo "❌ Failed to bump @openhands/typescript-client to $VERSION"
                     exit 1
                   fi
-                  # Note: the images.agentServer key also contains "agentServer",
+                  # Note:the images.agentServer key also contains "agentServer",
                   # so the config grep above is scoped to the quoted-scalar form
-                  # ("agentServer": "<semver>") used only under versions​.
-                  if grep -q "$CURRENT_VERSION" AGENTS.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts; then
+                  # ("agentServer": "<semver>") used only under versions.
+
+                  # On the "branch already exists" re-run path CURRENT_VERSION == $VERSION,
+                  # so only check for leftover stale literals when we actually changed the version.
+                  if [ "$CURRENT_VERSION" != "$VERSION" ] && grep -q "$CURRENT_VERSION" AGENTS.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts; then
                     echo "❌ Stale $CURRENT_VERSION remains in doc/test files"
                     exit 1
                   fi
