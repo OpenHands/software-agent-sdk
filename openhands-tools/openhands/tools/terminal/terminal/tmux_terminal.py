@@ -118,10 +118,6 @@ class TmuxTerminal(TerminalInterface):
             return
 
         env = build_terminal_env(self._env)
-        # Disable interactive pagers (git, man, systemctl, ...) so commands that
-        # auto-launch `less` on a TTY don't capture the pane and wedge the session.
-        env.setdefault("GIT_PAGER", "cat")
-        env.setdefault("PAGER", "cat")
         # Never reuse a socket: tmux numeric IDs restart at zero after server exit.
         self.server = libtmux.Server(
             socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}", environment=env
