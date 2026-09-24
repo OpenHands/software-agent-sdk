@@ -1,0 +1,50 @@
+{
+  "passed": true,
+  "offline": true,
+  "offline_case": "normal",
+  "model": "TestLLM",
+  "checks": {
+    "notes_committed_without_history_answer": true,
+    "source_events_hidden": true,
+    "answers_absent_from_active_context": true,
+    "reset_completed_before_retrieval": true,
+    "notes_read_after_reset": true,
+    "hidden_history_search_after_reset": true,
+    "hidden_history_read_after_reset": true,
+    "answer_exact_match": true
+  },
+  "scope": "Post-reset native tool retrieval; no quality comparison or restart test",
+  "expected": {
+    "note_value": "NOTE-e8952e5865d4d1cf",
+    "history_value": "HIST-6b5b90679160478f"
+  },
+  "conversation_id": "b3ddadbc-dd28-4804-8433-4fc43f20bb78",
+  "source_event_ids": [
+    "7ff44462-f29d-4e53-96ea-4ed104c58fa8",
+    "67fd22fc-f409-4bc5-8a0b-0ff0c4573498"
+  ],
+  "notes_version_id": "e9e82d32-f14e-41bf-b21e-a668791eb50f",
+  "reset_event_id": "4c9edae6-e6a6-4d40-ad26-b6c8f6e9976a",
+  "answer": "{\"note_value\": \"NOTE-e8952e5865d4d1cf\", \"history_value\": \"HIST-6b5b90679160478f\"}",
+  "execution_status": "finished",
+  "runtime_error_codes": [],
+  "metrics": {
+    "model_name": "default",
+    "accumulated_cost": 0.0,
+    "max_budget_per_task": null,
+    "accumulated_token_usage": {
+      "model": "default",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 0,
+      "context_window": 0,
+      "per_turn_token": 0,
+      "response_id": ""
+    },
+    "costs": [],
+    "response_latencies": [],
+    "token_usages": []
+  }
+}

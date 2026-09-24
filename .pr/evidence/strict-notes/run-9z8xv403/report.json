@@ -1,0 +1,43 @@
+{
+  "passed": false,
+  "offline": true,
+  "offline_case": "skip-reset",
+  "model": "TestLLM",
+  "checks": {
+    "notes_committed_without_history_answer": true,
+    "source_events_hidden": false
+  },
+  "scope": "Post-reset native tool retrieval; no quality comparison or restart test",
+  "expected": {
+    "note_value": "NOTE-f3e10bc63df24e8c",
+    "history_value": "HIST-50dd3852d64b745c"
+  },
+  "conversation_id": "993521d0-e84b-41c7-894c-cecc6cd31e20",
+  "source_event_ids": [
+    "104f86e7-07ab-463a-ac8e-84eb0a4a0a89",
+    "eae3b9d5-31fe-4c62-b218-5a2fa77a616d"
+  ],
+  "notes_version_id": "e1b9d992-8de7-4ecb-ad6c-2bb907ba5501",
+  "error_type": "AssertionError",
+  "execution_status": "idle",
+  "runtime_error_codes": [],
+  "metrics": {
+    "model_name": "default",
+    "accumulated_cost": 0.0,
+    "max_budget_per_task": null,
+    "accumulated_token_usage": {
+      "model": "default",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 0,
+      "context_window": 0,
+      "per_turn_token": 0,
+      "response_id": ""
+    },
+    "costs": [],
+    "response_latencies": [],
+    "token_usages": []
+  }
+}

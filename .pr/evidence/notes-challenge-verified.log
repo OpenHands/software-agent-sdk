@@ -1,0 +1,77 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.49.2                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[09/24/26 03:00:57] INFO     Created new conversation               state.py:614
+                             3a8e43ae-ac2f-45a6-8ab6-5c32745b8b33               
+[09/24/26 03:00:57] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+1/9 summary multi_reset: COMPLETE eligible=True match=True
+[09/24/26 03:00:57] INFO     Created new conversation               state.py:614
+                             981539d4-e821-4ed4-98c4-d83f9403a2e8               
+[09/24/26 03:00:57] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+2/9 notes_only multi_reset: COMPLETE eligible=True match=True
+[09/24/26 03:00:57] INFO     Created new conversation               state.py:614
+                             240bb63f-332e-4e75-93ab-821fdd9b0ef5               
+[09/24/26 03:00:57] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+[09/24/26 03:00:57] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+3/9 notes_history multi_reset: COMPLETE eligible=True match=True
+[09/24/26 03:00:57] INFO     Created new conversation               state.py:614
+                             56b65dbe-7b46-45ff-b27a-0334e06b7823               
+[09/24/26 03:00:57] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:58] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+4/9 notes_only delayed_question: COMPLETE eligible=True match=True
+[09/24/26 03:00:58] INFO     Created new conversation               state.py:614
+                             454ad9af-8163-4dc0-bbdf-618e4e25f42f               
+[09/24/26 03:00:58] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:58] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+5/9 notes_history delayed_question: COMPLETE eligible=True match=True
+[09/24/26 03:00:58] INFO     Created new conversation               state.py:614
+                             8edadd37-aecf-4bc4-9361-de0d357ba872               
+[09/24/26 03:00:58] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:58] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+6/9 summary delayed_question: COMPLETE eligible=True match=True
+[09/24/26 03:00:58] INFO     Created new conversation               state.py:614
+                             83287848-7147-4cb0-825f-610119e9ed2d               
+[09/24/26 03:00:58] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:58] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+7/9 notes_history long_history: COMPLETE eligible=True match=True
+[09/24/26 03:00:58] INFO     Created new conversation               state.py:614
+                             866947d4-3b8a-47d2-8625-446509c77618               
+[09/24/26 03:00:58] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:58] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+8/9 summary long_history: COMPLETE eligible=True match=True
+[09/24/26 03:00:58] INFO     Created new conversation               state.py:614
+                             8d89bb1c-a39f-466f-afa7-80efb0fcead0               
+[09/24/26 03:00:58] INFO     Loaded 0 tools from spec                base.py:564
+[09/24/26 03:00:58] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+9/9 notes_only long_history: COMPLETE eligible=True match=True
+COMPLETE. Report: .pr/evidence/notes-challenge-verified/report.json; offline=True

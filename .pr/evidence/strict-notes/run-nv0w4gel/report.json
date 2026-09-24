@@ -1,0 +1,51 @@
+{
+  "passed": false,
+  "offline": true,
+  "offline_case": "skip-retrieval",
+  "model": "TestLLM",
+  "checks": {
+    "notes_committed_without_history_answer": true,
+    "source_events_hidden": true,
+    "answers_absent_from_active_context": true,
+    "reset_completed_before_retrieval": true,
+    "notes_read_after_reset": false,
+    "hidden_history_search_after_reset": false,
+    "hidden_history_read_after_reset": false,
+    "answer_exact_match": true
+  },
+  "scope": "Post-reset native tool retrieval; no quality comparison or restart test",
+  "expected": {
+    "note_value": "NOTE-0693a21cbe843dc1",
+    "history_value": "HIST-b2957e2c2fa02245"
+  },
+  "conversation_id": "159ff93b-2dc3-4434-90fc-3f147dbcecc7",
+  "source_event_ids": [
+    "b3cb676a-0034-40ad-8e35-9aac183f5311",
+    "8f2d0204-e49c-4033-a601-4ae3cf8c4e0e"
+  ],
+  "notes_version_id": "6bdad810-b68b-4f49-91fa-7851a120b024",
+  "reset_event_id": "2c7c11da-2788-4926-83d9-5b1046efbe90",
+  "answer": "{\"note_value\": \"NOTE-0693a21cbe843dc1\", \"history_value\": \"HIST-b2957e2c2fa02245\"}",
+  "error_type": "AssertionError",
+  "execution_status": "finished",
+  "runtime_error_codes": [],
+  "metrics": {
+    "model_name": "default",
+    "accumulated_cost": 0.0,
+    "max_budget_per_task": null,
+    "accumulated_token_usage": {
+      "model": "default",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 0,
+      "context_window": 0,
+      "per_turn_token": 0,
+      "response_id": ""
+    },
+    "costs": [],
+    "response_latencies": [],
+    "token_usages": []
+  }
+}
