@@ -55,6 +55,7 @@ from openhands.agent_server.init_router import (
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.local_secret_resolver import local_secret_resolution
 from openhands.agent_server.mcp_router import mcp_router
+from openhands.agent_server.meta_profiles_router import meta_profiles_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
     check_openai_api_key,
@@ -456,6 +457,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
     api_router.include_router(agent_profiles_router)
+    api_router.include_router(meta_profiles_router)
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
