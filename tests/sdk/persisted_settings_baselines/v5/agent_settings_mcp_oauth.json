@@ -1,6 +1,6 @@
 {
   "__expected__": {
-    "schema_version": 5,
+    "schema_version": 6,
     "agent_kind": "openhands",
     "mcp_config.superhuman-mail.auth.strategy": "oauth2",
     "mcp_config.superhuman-mail.auth.state.tokens.access_token": "token-value",

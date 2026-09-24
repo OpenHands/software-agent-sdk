@@ -33,6 +33,38 @@ from openhands.sdk.settings import (
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
+class _SecretProbeCipher:
+    """Fake cipher that flags secret serialization without needing a real key.
+
+    Passed as ``context={"cipher": probe}`` this forces every secret field's
+    serializer down the "encrypted" branch (see ``resolve_expose_mode``),
+    reusing the real serialization pipeline to detect secret-bearing fields
+    instead of hand-walking the model for ``SecretStr`` instances. That
+    matters for fields like ``AgentContext.secrets``, whose bare-string
+    entries are plain ``str`` at rest and only become secret-shaped inside
+    their own field serializer at dump time -- a value-type walk can't see
+    that, but reusing the pipeline does.
+    """
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def try_decrypt_str(self, raw: str) -> str | None:  # noqa: ARG002
+        return None
+
+    def encrypt(self, value: SecretStr) -> str:
+        if value.get_secret_value():
+            self.found = True
+        return ""
+
+
+def _contains_secret_value(model: BaseModel) -> bool:
+    """Check if serializing `model` would touch any secret-bearing field."""
+    probe = _SecretProbeCipher()
+    model.model_dump(mode="json", context={"cipher": probe})
+    return probe.found
+
+
 class SettingsUpdatePayload(TypedDict, total=False):
     """Typed payload for PersistedSettings.update() method.
 
@@ -57,6 +89,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
     active_agent_profile_id: str | None
+    active_meta_profile: str | None
 
 
 def _deep_merge(
@@ -110,7 +143,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 2
+PERSISTED_SETTINGS_SCHEMA_VERSION = 3
 
 
 class PersistedSettings(BaseModel):
@@ -158,6 +191,11 @@ class PersistedSettings(BaseModel):
             "default, so older settings files load with this as None."
         ),
     )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active meta-profile used for "
+        "intelligent model routing.",
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -179,6 +217,17 @@ class PersistedSettings(BaseModel):
             raw.get_secret_value() if isinstance(raw, SecretStr) else str(raw)
         )
         return bool(secret_value and secret_value.strip())
+
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these settings contain any secret value anywhere.
+
+        Broader than ``llm_api_key_is_set``: walks the whole ``agent_settings``
+        tree (MCP server env/headers, ``critic_api_key``, provider creds,
+        ``agent_context.secrets``, ...) rather than checking a fixed field
+        list, so it stays correct as new secret-bearing fields are added.
+        """
+        return _contains_secret_value(self.agent_settings)
 
     def update(
         self,
@@ -273,10 +322,62 @@ class PersistedSettings(BaseModel):
                 self.active_profile = payload["active_profile"]
             if "active_agent_profile_id" in payload:
                 self.active_agent_profile_id = payload["active_agent_profile_id"]
+
+            # Update active_meta_profile if explicitly provided (incl. None)
+            if "active_meta_profile" in payload:
+                self._apply_active_meta_profile(payload["active_meta_profile"])
+
+            # Enforce the invariant even when only ``agent_settings`` changed:
+            # switching to an agent variant that cannot attach the routing tool
+            # (e.g. ACP) must not leave a stale top-level ``active_meta_profile``
+            # claiming routing is active. (No-op when active already matches.)
+            self._clear_active_meta_profile_if_unsupported()
         finally:
             # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:
                 conv_merged.clear()
+
+    def _agent_supports_routing(self) -> bool:
+        """Whether the current agent variant can attach the routing tool.
+
+        OpenHands agent settings expose ``active_meta_profile`` /
+        ``enable_classify_and_switch_llm_tool``; ACP (and any other) variants do
+        not and never attach :class:`ClassifyAndSwitchLLMTool`.
+        """
+        return "active_meta_profile" in type(self.agent_settings).model_fields
+
+    def _apply_active_meta_profile(self, name: str | None) -> None:
+        """Set ``active_meta_profile`` and propagate it into agent_settings.
+
+        Propagating into the nested ``agent_settings`` is what enables/uses the
+        routing tool on the agent built from these settings (mirrors how
+        activating a profile bakes the LLM into ``agent_settings``).
+
+        The top-level field is a strict facade for the nested state, not a
+        best-effort hint: if the current agent variant cannot attach the routing
+        tool (e.g. ACP), the request is dropped and the facade cleared so
+        persisted state never claims an active router no conversation can use.
+        """
+        if not self._agent_supports_routing():
+            self.active_meta_profile = None
+            return
+        self.active_meta_profile = name
+        self.agent_settings = self.agent_settings.model_copy(
+            update={
+                "active_meta_profile": name,
+                "enable_classify_and_switch_llm_tool": name is not None,
+            }
+        )
+
+    def _clear_active_meta_profile_if_unsupported(self) -> None:
+        """Clear the facade when the agent variant cannot support routing.
+
+        Guards the agent-kind-switch path: changing ``agent_settings`` to a
+        non-routing variant (e.g. ACP) while a meta-profile is active would
+        otherwise leave the top-level ``active_meta_profile`` stale.
+        """
+        if not self._agent_supports_routing() and self.active_meta_profile is not None:
+            self.active_meta_profile = None
 
     @classmethod
     def from_persisted(
@@ -288,7 +389,12 @@ class PersistedSettings(BaseModel):
 
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
-        - **v2** (current): adds the opaque ``misc_settings`` container.
+        - **v2**: adds the opaque ``misc_settings`` container.
+        - **v3** (current): nested ``agent_settings`` advanced to schema v6
+          (dropped the removed ``llm.modify_params`` field). Nested payloads
+          are migrated through ``validate_agent_settings`` in
+          ``_normalize_inputs``; the top-level bump keeps the file schema in
+          step with the nested shape change.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
@@ -411,6 +517,11 @@ class Secrets(BaseModel):
     custom_secrets: dict[str, CustomSecret] = Field(default_factory=dict)
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def has_any_secret(self) -> bool:
+        """Check if these secrets contain any non-empty value."""
+        return _contains_secret_value(self)
 
     def get_env_vars(self) -> dict[str, str]:
         """Get secrets as environment variables dict.

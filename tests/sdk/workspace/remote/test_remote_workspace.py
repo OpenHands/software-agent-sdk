@@ -1,11 +1,13 @@
 """Unit tests for RemoteWorkspace class."""
 
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
 
+from openhands.sdk.context import AgentContext
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
@@ -431,9 +433,21 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-4",
+            "api_key": "sk-test-key",
+            "base_url": "https://api.openai.com/v1",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
     llm = workspace.get_llm()
@@ -448,12 +462,106 @@ def test_get_llm_returns_configured_llm(monkeypatch):
         assert llm.api_key == "sk-test-key"
     assert llm.base_url == "https://api.openai.com/v1"
 
-    # Verify API was called with correct headers
-    mock_client.get.assert_called_once()
-    call_args = mock_client.get.call_args
-    assert call_args[0][0] == "/api/settings"
-    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
-    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+    assert [call.args[0] for call in mock_client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/default",
+    ]
+
+
+def test_get_llm_without_name_resolves_active_profile(monkeypatch):
+    """Default resolution honors active_profile, not stale agent settings."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-5.5", "api_key": None},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": "glm-default",
+    }
+    settings_response.raise_for_status = Mock()
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.json.return_value = {
+        "name": "glm-default",
+        "config": {
+            "model": "openhands/glm-5.2",
+            "api_key": "sk-glm-key",
+            "usage_id": "default",
+        },
+        "api_key_set": True,
+    }
+    profile_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.side_effect = [settings_response, profile_response]
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "openhands/glm-5.2"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-glm-key"
+    assert llm.usage_id == "profile:glm-default"
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/profiles/glm-default",
+    ]
+
+
+@pytest.mark.parametrize("active_profile", [None, ""])
+def test_get_llm_without_active_profile_falls_back_to_legacy(
+    monkeypatch, active_profile
+):
+    """Falsy active_profile values use the legacy agent_settings.llm fallback."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {
+            "llm": {"model": "gpt-4", "api_key": "sk-legacy"},
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+        "active_profile": active_profile,
+    }
+    settings_response.raise_for_status = Mock()
+
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    llm = workspace.get_llm()
+
+    assert llm.model == "gpt-4"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-legacy"
+
+    # Discovery avoids exposing legacy credentials; the fallback fetches them only
+    # when active_profile is absent.
+    assert [call.args[0] for call in client.get.call_args_list] == [
+        "/api/settings",
+        "/api/settings",
+    ]
+    assert client.get.call_args_list[0].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key"
+    }
+    assert client.get.call_args_list[1].kwargs["headers"] == {
+        "X-Session-API-Key": "test-key",
+        "X-Expose-Secrets": "plaintext",
+    }
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):
@@ -478,12 +586,23 @@ def test_get_llm_with_kwargs_override(monkeypatch):
         },
         "conversation_settings": {},
         "llm_api_key_is_set": True,
+        "active_profile": "default",
     }
     mock_response.raise_for_status = Mock()
-    mock_client.get.return_value = mock_response
+    profile_response = Mock()
+    profile_response.status_code = 200
+    profile_response.raise_for_status = Mock()
+    profile_response.json.return_value = {
+        "name": "default",
+        "config": {
+            "model": "gpt-3.5-turbo",
+            "api_key": "sk-persisted-key",
+        },
+    }
+    mock_client.get.side_effect = [mock_response, profile_response]
     workspace._client = mock_client
 
-    # Override model but use persisted API key
+    # Override model but use the active profile API key
     llm = workspace.get_llm(model="gpt-4o")
 
     assert llm.model == "gpt-4o"  # Overridden
@@ -631,6 +750,27 @@ def test_get_secrets_filters_by_names():
     assert "GITHUB_TOKEN" in secrets
     assert "AWS_ACCESS_KEY" in secrets
     assert "OPENAI_API_KEY" not in secrets
+
+
+def test_get_secrets_requests_agent_profile_scope():
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {"secrets": [{"name": "GITHUB_TOKEN"}]}
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets(agent_profile_id="profile-id")
+
+    assert list(secrets) == ["GITHUB_TOKEN"]
+    mock_client.get.assert_called_once_with(
+        "/api/settings/secrets",
+        headers={"X-Session-API-Key": "test-key"},
+        params={"agent_profile_id": "profile-id"},
+    )
 
 
 def test_get_secrets_returns_empty_dict_when_no_secrets():
@@ -1001,6 +1141,135 @@ def test_load_skills_from_agent_server_with_project_dirs():
         # Should have loaded global skills + 2 project dirs = 3 calls
         assert mock_post.call_count == 3
         assert len(skills) >= 1  # At least the global skill
+
+
+def test_load_skills_from_agent_server_preserves_base_context_when_found():
+    """Test load_skills_from_agent_server preserves caller's AgentContext fields."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(
+        marketplace_path="internal/marketplace.json",
+        disabled_skills=["risky-skill"],
+        user_message_suffix="Follow the client's policy.",
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server(
+            base_context=base_context
+        )
+        assert len(skills) == 1
+        assert context.marketplace_path == "internal/marketplace.json"
+        assert context.disabled_skills == ["risky-skill"]
+        assert context.user_message_suffix == "Follow the client's policy."
+        assert context.load_public_skills is False
+
+
+def test_load_skills_from_agent_server_preserves_base_context_on_fallback():
+    """Test base context fields survive even when no skills are found."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(
+        marketplace_path="internal/marketplace.json",
+        disabled_skills=["risky-skill"],
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server(
+            base_context=base_context
+        )
+        assert len(skills) == 0
+        assert context.marketplace_path == "internal/marketplace.json"
+        assert context.disabled_skills == ["risky-skill"]
+        assert context.load_public_skills is True
+
+
+def test_load_skills_from_agent_server_without_base_context_matches_legacy():
+    """Test omitting base_context matches today's default behavior."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+        assert context.marketplace_path == AgentContext().marketplace_path
+        assert context.disabled_skills == AgentContext().disabled_skills
+        assert context.user_message_suffix == AgentContext().user_message_suffix
+
+
+def test_load_skills_from_agent_server_preserves_current_datetime():
+    """Test current_datetime from the base context is not regenerated."""
+    from datetime import datetime
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    fixed_time = datetime(2020, 1, 1, tzinfo=UTC)
+    base_context = AgentContext(current_datetime=fixed_time)
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server(base_context=base_context)
+        assert context.current_datetime == fixed_time
+
+
+def test_load_skills_from_agent_server_applies_disabled_skills():
+    """Test a skill named in disabled_skills is filtered out, not just carried."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(disabled_skills=["risky-skill"])
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [
+            {"name": "risky-skill", "content": "Denied"},
+            {"name": "ok-skill", "content": "Allowed"},
+        ],
+        "sources": {"public": 2},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server(base_context=base_context)
+        assert [s.name for s in context.skills] == ["ok-skill"]
+        assert context.disabled_skills == ["risky-skill"]
+
+
+def test_load_skills_from_agent_server_fallback_resolves_public_skills():
+    """Test the empty-skills fallback materializes public skills, as before."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    legacy = AgentContext(skills=[], load_public_skills=True)
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server()
+        assert context.load_public_skills is True
+        assert [s.name for s in context.skills] == [s.name for s in legacy.skills]
 
 
 # --- Completion callback tests ---

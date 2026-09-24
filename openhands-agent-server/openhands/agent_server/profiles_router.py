@@ -1,5 +1,6 @@
 """HTTP endpoints for managing named LLM configurations (profiles)."""
 
+import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
@@ -18,6 +19,7 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_provider_connections_store,
     get_settings_store,
 )
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -56,6 +58,8 @@ class ProfileInfo(BaseModel):
     name: str
     model: str | None = None
     base_url: str | None = None
+    provider_connection_id: str | None = None
+    provider_connection_broken: bool = False
     api_key_set: bool = False
 
 
@@ -98,6 +102,28 @@ def _has_api_key(llm: LLM) -> bool:
     if not isinstance(llm.api_key, SecretStr):
         return False
     return bool(llm.api_key.get_secret_value().strip())
+
+
+def _profile_api_key_set(request: Request, llm: LLM) -> bool:
+    """Effective key presence: the profile's own key, or its provider's.
+
+    A profile linked to a provider connection carries no inline key (cleared on
+    save), so its key presence lives on the connection.
+    """
+    if _has_api_key(llm):
+        return True
+    connection_id = llm.provider_connection_id
+    if not connection_id:
+        return False
+    config = get_config(request)
+    cipher = get_cipher(request)
+    # The provider store read can raise on a corrupted file; map it instead of
+    # letting it surface as an unhandled 500 on GET /profiles/{name}.
+    with store_errors():
+        connection = get_provider_connections_store(config).get(
+            connection_id, cipher=cipher
+        )
+    return connection is not None and connection.api_key_value() is not None
 
 
 def _set_active_profile_if_matches(
@@ -154,7 +180,10 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     store = get_llm_profile_store()
     try:
         with store_errors():
-            llm = store.load(name, cipher=cipher)
+            # Display the profile exactly as stored: don't inject the linked
+            # provider's credentials, and don't fail a read when the reference
+            # dangles. Effective key presence is reported via ``api_key_set``.
+            llm = store.load(name, cipher=cipher, resolve_provider=False)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -170,7 +199,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
         config["api_key"] = None
 
     return ProfileDetailResponse(
-        name=name, config=config, api_key_set=_has_api_key(llm)
+        name=name, config=config, api_key_set=_profile_api_key_set(request, llm)
     )
 
 
@@ -277,7 +306,23 @@ async def validate_profile(
     ]
 
     try:
-        # Mirror the runtime dispatch (see ``amake_llm_completion``) and stay
+        # Restore runtime subscription credentials, mirroring ``from_persisted``.
+        # The frontend sends auth_type="subscription" but the OAuth access token
+        # lives in the credential store, not in the serialized LLM config. Without
+        # this, the pre-flight sends api_key=None and fails with
+        # "Incorrect API key provided: None".
+        #
+        # Run the synchronous factory (which may do a network token refresh)
+        # off the event loop and inside the handled path so credential errors
+        # surface as ``valid=False`` instead of a 500.
+        if getattr(llm, "auth_type", None) == "subscription":
+            from openhands.sdk.llm.auth.openai import (
+                create_subscription_llm_from_config,
+            )
+
+            llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
+
+        # Mirror the runtime dispatch (see ``LLM.agenerate``) and stay
         # async so provider I/O doesn't pin the FastAPI event loop.
         if llm.uses_responses_api():
             await llm.aresponses(messages=messages, max_tokens=1)
@@ -417,8 +462,13 @@ async def activate_profile(
     cipher = get_cipher(request)
     config = get_config(request)
 
-    # Load the profile
+    # Load the profile. ``load`` resolves any referenced provider connection
+    # (read-at-use), so the LLM applied to settings already carries the shared
+    # api_key / base_url; ``provider_connection_id`` is retained so a later
+    # rotation re-resolves on the next activation or launch.
     profile_store = get_llm_profile_store()
+    # A dangling provider_connection_id raises ProviderConnectionNotFound, which
+    # store_errors() maps to 422.
     try:
         with store_errors():
             llm = profile_store.load(name, cipher=cipher)
@@ -428,7 +478,6 @@ async def activate_profile(
             detail=f"Profile '{name}' not found",
         )
 
-    # Apply the LLM config to settings and record active profile
     settings_store = get_settings_store(config)
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:

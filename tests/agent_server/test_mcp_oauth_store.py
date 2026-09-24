@@ -385,3 +385,126 @@ def test_settings_backed_provider_forwards_on_tools_reconciled():
         provider.create_tools(config, on_tools_reconciled=callback)
 
     assert mock_create.call_args.kwargs["on_tools_reconciled"] is callback
+
+
+def _inline_oauth_server(access_token: str):
+    """One OAuth server carrying its state inline, as a hosted agent passes it."""
+    return coerce_mcp_config(
+        {
+            "mail": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {"type": "oauth", "client_auth_method": "none"},
+                    "state": {"tokens": {"access_token": access_token}},
+                },
+            }
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_mcp_oauth_token_store_serves_inline_state_for_servers_absent_from_settings(  # noqa: E501
+    tmp_path: Path,
+):
+    reset_stores()
+    try:
+        # Arrange: the sandbox settings store knows no MCP servers at all.
+        config = Config(
+            session_api_keys=[],
+            conversations_path=tmp_path / "conversations",
+            secret_key=SecretStr("mcp-oauth-test-key"),
+        )
+        settings_store = get_settings_store(config)
+        settings_store.save(PersistedSettings())
+        store = MCPSettingsOAuthTokenStore(
+            seed_mcp_config=_inline_oauth_server("agent-access-token"),
+            cipher=config.cipher,
+        )
+        key = "https://mcp.example.com/mcp/tokens"
+
+        # Act
+        initial = await store.get(key=key, collection="mcp-oauth-token")
+        await store.put(
+            key=key,
+            value={"access_token": "refreshed-access-token"},
+            collection="mcp-oauth-token",
+        )
+        refreshed = await store.get(key=key, collection="mcp-oauth-token")
+        deleted = await store.delete(key=key, collection="mcp-oauth-token")
+
+        # Assert: served from the inline state, refreshed in memory, never
+        # written into settings.
+        assert initial == {"access_token": "agent-access-token"}
+        assert refreshed == {"access_token": "refreshed-access-token"}
+        assert deleted is True
+        assert await store.get(key=key, collection="mcp-oauth-token") is None
+        loaded = settings_store.load()
+        assert loaded is not None
+        assert not loaded.agent_settings.mcp_config
+    finally:
+        reset_stores()
+
+
+@pytest.mark.asyncio
+async def test_mcp_oauth_token_store_prefers_settings_over_inline_state(
+    tmp_path: Path,
+):
+    reset_stores()
+    try:
+        # Arrange: the same server exists in settings with its own tokens.
+        config = Config(
+            session_api_keys=[],
+            conversations_path=tmp_path / "conversations",
+            secret_key=SecretStr("mcp-oauth-test-key"),
+        )
+        settings = PersistedSettings()
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"mcp_config": _inline_oauth_server("settings-access-token")}
+        )
+        get_settings_store(config).save(settings)
+        store = MCPSettingsOAuthTokenStore(
+            seed_mcp_config=_inline_oauth_server("agent-access-token"),
+            cipher=config.cipher,
+        )
+
+        # Act
+        value = await store.get(
+            key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
+        )
+
+        # Assert
+        assert value == {"access_token": "settings-access-token"}
+    finally:
+        reset_stores()
+
+
+@pytest.mark.asyncio
+async def test_settings_backed_provider_seeds_token_store_from_agent_mcp_config(
+    tmp_path: Path,
+):
+    reset_stores()
+    try:
+        # Arrange
+        config = Config(
+            session_api_keys=[],
+            conversations_path=tmp_path / "conversations",
+            secret_key=SecretStr("mcp-oauth-test-key"),
+        )
+        get_settings_store(config).save(PersistedSettings())
+        provider = create_settings_backed_mcp_tool_provider(config)
+        mcp_config = _inline_oauth_server("agent-access-token")
+
+        # Act
+        with patch(
+            "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
+        ) as mock_create:
+            provider.create_tools(mcp_config)
+
+        # Assert: the store handed to FastMCP already knows the agent's tokens.
+        storage = mock_create.call_args.kwargs["mcp_oauth_token_storage"]
+        assert await storage.get(
+            key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
+        ) == {"access_token": "agent-access-token"}
+    finally:
+        reset_stores()

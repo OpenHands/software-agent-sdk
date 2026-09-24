@@ -117,6 +117,20 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
+    # Names only — the values live in the user's secrets store and reach a
+    # conversation as ``LookupSecret``s resolved at spawn time, so this keeps the
+    # profile secret-free. Unlike ``mcp_server_refs`` a ref here can never
+    # dangle: this is an allow-list applied to whatever the conversation was
+    # given, so a name with no matching secret simply never matches.
+    secret_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which of the user's saved secrets to expose to this agent. "
+            "null = all; [] = none; a non-null list = filter to the named keys. "
+            "Strict: nothing is added back. An ACP profile must list its own "
+            "provider credential to receive it."
+        ),
+    )
 
 
 class OpenHandsAgentProfile(AgentProfileBase):
@@ -224,9 +238,9 @@ class ACPAgentProfile(AgentProfileBase):
         ),
     )
     # No skill-selection field: ACP agents own their tooling and prompt
-    # construction, so no user/public discovered skills are injected. (Only
-    # repo-scoped project skills reach an ACP agent, via the resolver's
-    # ``load_project_skills`` — see #4019 for whether even those should.)
+    # construction. Project skills never reach one (the CLI reads the repo
+    # itself, #4019); whether any managed skill does is a deployment choice the
+    # caller expresses through ``resolve_agent_profile``'s ``available_skills``.
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
@@ -292,6 +306,16 @@ class LaunchedAgentProfile(BaseModel):
         ge=0,
         description="Revision of the agent profile at launch time.",
     )
+    secret_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Secret allow-list captured at launch, also enforced on resume. "
+            "null preserves unrestricted behavior for older conversations."
+        ),
+    )
+
+    def allows_secret(self, name: str) -> bool:
+        return self.secret_refs is None or name in self.secret_refs
 
 
 def _agent_profile_discriminator(value: Any) -> str:
