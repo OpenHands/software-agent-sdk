@@ -17,7 +17,7 @@ export interface MetaProfilesClientOptions {
  * Client for the agent-server ``/api/meta-profiles`` endpoints.
  *
  * A meta-profile is a model-routing configuration consumed by the
- * ``classify_and_switch_llm`` tool. Unlike LLM profiles, meta-profiles hold no
+ * ``route_task_to_model`` tool. Unlike LLM profiles, meta-profiles hold no
  * secrets — they are plain JSON documents — so there is no secret-exposure
  * handling here.
  */
