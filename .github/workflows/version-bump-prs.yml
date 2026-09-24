@@ -267,11 +267,102 @@ jobs:
                     echo "✅ PR created for $REPO"
                   fi
 
+            - name: Create PR for enterprise repo
+              id: enterprise_pr
+              continue-on-error: true
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  REPO="OpenHands/enterprise"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" enterprise-repo
+                  cd enterprise-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Check if branch already exists on remote
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    # Create branch
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # enterprise pins openhands-sdk + openhands-agent-server + openhands-tools as
+                  # exact PEP 621 dependencies and keeps a uv.lock. Update the pins with
+                  # sed (exact, no normalization), then regenerate the lock, keeping the
+                  # project's own [tool.uv] table (exclude-newer + exclude-newer-package)
+                  # intact so the regenerated lock still satisfies `uv sync --locked`in CI.
+
+                  echo "📝 Updating pyproject.toml SDK pins..."
+                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
+
+                  # --no-cache avoids stale index data from the just-published packages.
+
+                  echo "📝 Regenerating uv.lock..."
+                  uv lock --no-cache
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Commit and push. Use a Conventional Commit `chore(deps):` subject so the
+                  # target repo's release-please does not cut a release from these bumps
+                  # (the manual bump this replaces, #484, used the same convention).
+                  git add pyproject.toml uv.lock
+                  git commit -m "chore(deps): bump SDK to $VERSION" \
+                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock)." \
+                    -m "Automated version bump after PyPI release." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Check if PR already exists
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                  else
+                    # Create PR with a `chore:` title to match the bump-PR convention.
+
+                    gh pr create \
+                      --repo "$REPO" \
+                      --title "chore: bump SDK to $VERSION" \
+                      --body "## Automated Version Bump
+
+                  This PR updates the following packages to version **$VERSION**:
+                  - \`openhands-sdk\`
+                  - \`openhands-agent-server\`
+                  - \`openhands-tools\`
+
+                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
+
+                  ---
+                  _This PR was automatically created by the version-bump-prs workflow._" \
+                      --base main \
+                      --head "$BRANCH"
+
+                    echo "✅ PR created for $REPO"
+                  fi
+
             - name: Summary
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
                   CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
                   AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
+                  ENTERPRISE_OUTCOME: ${{ steps.enterprise_pr.outcome }}
               run: |
                   echo "## Version Bump PRs" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
@@ -290,6 +381,11 @@ jobs:
                     echo "- ⚠️ **automation PR creation FAILED** — see the \"Create PR for automation repo\" step logs" >> $GITHUB_STEP_SUMMARY
                   else
                     echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$ENTERPRISE_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **enterprise PR creation FAILED** — see the \"Create PR for enterprise repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [enterprise](https://github.com/OpenHands/enterprise/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
                   fi
 
             - name: Notify Slack
@@ -453,3 +549,135 @@ jobs:
                   VERSION: ${{ steps.get_version.outputs.version }}
               run: |
                   echo "TypeScript client bump: https://github.com/${{ github.repository }}/pulls?q=is%3Apr+bump-typescript-agent-server-$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+    bump-cloud-chart:
+        # After an SDK release, bump the agent-server image tag pinned in the
+        # openhands-cloud charts (three locations) so the Check agent-server sync
+        # gate never trips on a stale pin. Shares the pypi-release dispatch chain
+        # and image-readiness wait used by bump-typescript-client.
+        #
+        # The sync gate compares this agent-server tag against the SDK version the
+        # chart's pinned enterprise-server release was built against (see
+        # OpenHands/OpenHands-Cloud scripts/check_agent_server_sync.py). This job
+        # is only correct because the same version-bump-prs.yml run also opens the
+        # enterprise SDK-pin bump PR (create-version-bump-prs), so the two pins
+        # move together and are merged together in the same release cycle.
+        concurrency:
+            group: bump-image-tag-OpenHands-OpenHands-Cloud-agent-server
+            cancel-in-progress: false
+        runs-on: ubuntu-24.04
+        timeout-minutes: 30
+        steps:
+            - name: Get version
+              id: get_version
+              env:
+                  VERSION_INPUT: ${{ github.event.inputs.version }}
+              run: |
+                  VERSION="$VERSION_INPUT"
+                  if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "❌ Invalid version format. Expected: X.Y.Z (e.g., 1.49.5)"
+                    exit 1
+                  fi
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "image_tag=${VERSION}-python" >> "$GITHUB_OUTPUT"
+
+            - name: Wait for agent-server image in GHCR
+              env:
+                  IMAGE_TAG: ${{ steps.get_version.outputs.image_tag }}
+              run: |
+                  set -euo pipefail
+                  IMAGE="ghcr.io/openhands/agent-server:${IMAGE_TAG}"
+                  for ATTEMPT in $(seq 1 90); do
+                    if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+                      echo "✅ ${IMAGE} is published"
+                      exit 0
+                    fi
+                    echo "Attempt $ATTEMPT/90: waiting 30s for ${IMAGE}"
+                    sleep 30
+                  done
+                  echo "❌ Timeout waiting for ${IMAGE}"
+                  exit 1
+
+            # Auth choice: the sibling jobs open PRs in public repos with the
+            # PAT, but cloud chart bumps write to the private OpenHands-Cloud
+            # repo, so this job uses the shared release App (RELEASE_APP_ID /
+            # RELEASE_APP_PRIVATE_KEY) exactly like the enterprise and
+            # agent-canvas callers, with deliberately no PAT/GITHUB_TOKEN fallback.
+            - name: Mint GitHub App token (scoped to OpenHands-Cloud)
+              id: app-token
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: OpenHands-Cloud
+
+            - name: Checkout chart repo
+              uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+              with:
+                  repository: OpenHands/OpenHands-Cloud
+                  ref: main
+                  token: ${{ steps.app-token.outputs.token }}
+                  persist-credentials: false
+
+            - name: Set up uv
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.12'
+                  enable-cache: false
+
+            - name: Bump agent-server image tag (three pin locations)
+              env:
+                  IMAGE_TAG: ${{ steps.get_version.outputs.image_tag }}
+              run: |
+                  set -euo pipefail
+                  # The chart repo's blessed edit script: path-aware, idempotent,
+                  # preserves quoting/comments/blank lines, verifies after writing.
+                  uv run scripts/bump_image_tag/bump_image_tag.py \
+                      --file charts/image-loader/values.yaml \
+                      --path .image.tag \
+                      --tag "$IMAGE_TAG"
+                  uv run scripts/bump_image_tag/bump_image_tag.py \
+                      --file charts/openhands/charts/runtime-api/values.yaml \
+                      --path .global.agentServerImage.tag \
+                      --tag "$IMAGE_TAG"
+                  uv run scripts/bump_image_tag/bump_image_tag.py \
+                      --file charts/openhands/values.yaml \
+                      --path .global.agentServerImage.tag \
+                      --tag "$IMAGE_TAG"
+
+            - name: Create or update pull request
+              id: cpr
+              uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+              with:
+                  token: ${{ steps.app-token.outputs.token }}
+                  add-paths: |
+                      charts/image-loader/values.yaml
+                      charts/openhands/charts/runtime-api/values.yaml
+                      charts/openhands/values.yaml
+                  base: main
+                  branch: bump-image-tag/agent-server
+                  delete-branch: true
+                  commit-message: 'feat(agent-server): bump image tag to ${{ steps.get_version.outputs.image_tag }}'
+                  title: 'feat(agent-server): bump image tag to ${{ steps.get_version.outputs.image_tag }}'
+                  labels: automated,image-bump
+                  body: |
+                      Automated image tag bump for **agent-server** after the
+                      [software-agent-sdk v${{ steps.get_version.outputs.version }} release](https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ steps.get_version.outputs.version }}).
+
+                      | File | Path |
+                      | --- | --- |
+                      | `charts/image-loader/values.yaml` | `.image.tag` |
+                      | `charts/openhands/charts/runtime-api/values.yaml` | `.global.agentServerImage.tag` |
+                      | `charts/openhands/values.yaml` | `.global.agentServerImage.tag` |
+
+                      Opened by the software-agent-sdk `version-bump-prs.yml` workflow.
+
+            - name: Summary
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+                  IMAGE_TAG: ${{ steps.get_version.outputs.image_tag }}
+                  URL: ${{ steps.cpr.outputs.pull-request-url }}
+              run: |
+                  echo "Cloud chart bump (agent-server → ${IMAGE_TAG}): ${URL}" >> "$GITHUB_STEP_SUMMARY"
