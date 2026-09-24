@@ -6,7 +6,7 @@ Business logic is delegated to skills_service.py.
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.skills_service import (
@@ -24,9 +24,11 @@ from openhands.agent_server.skills_service import (
     sync_public_skills,
 )
 from openhands.sdk.extensions.fetch import ExtensionFetchError
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     SkillFetchError,
+    SkillInfo,
     SkillValidationError,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
@@ -99,28 +101,25 @@ class SkillsRequest(BaseModel):
             "Set to null to load all public skills."
         ),
     )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Marketplace registrations for plugin-based skill loading. Registrations "
+            "with auto_load=True or a list of plugin names add their skills to the "
+            "public skills."
+        ),
+    )
+
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
     )
-    org_config: OrgConfig | None = Field(
-        default=None, description="Organization skills configuration"
+    org_configs: list[OrgConfig] | None = Field(
+        default=None,
+        description="Organization/user skill repositories to load concurrently",
     )
     sandbox_config: SandboxConfig | None = Field(
         default=None, description="Sandbox skills configuration"
     )
-
-
-class SkillInfo(BaseModel):
-    """Skill information returned by the API."""
-
-    name: str
-    type: Literal["repo", "knowledge", "agentskills"]
-    content: str
-    triggers: list[str] = Field(default_factory=list)
-    source: str | None = None
-    description: str | None = None
-    is_agentskills_format: bool = False
-    disable_model_invocation: bool = False
 
 
 class SkillsResponse(BaseModel):
@@ -242,8 +241,21 @@ class MarketplaceCatalogResponse(BaseModel):
     skills: list[MarketplaceSkillInfo]
 
 
+def _merge_registered_marketplaces(
+    server_registrations: list[MarketplaceRegistration],
+    request_registrations: list[MarketplaceRegistration],
+) -> list[MarketplaceRegistration]:
+    registrations_by_name = {
+        registration.name: registration for registration in server_registrations
+    }
+    registrations_by_name.update(
+        {registration.name: registration for registration in request_registrations}
+    )
+    return list(registrations_by_name.values())
+
+
 @skills_router.post("", response_model=SkillsResponse)
-def get_skills(request: SkillsRequest) -> SkillsResponse:
+def get_skills(request: SkillsRequest, http_request: Request) -> SkillsResponse:
     """Load and merge skills from all configured sources.
 
     Skills are loaded from multiple sources and merged with the following
@@ -268,11 +280,16 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
             for url in request.sandbox_config.exposed_urls
         ]
 
-    org_repo_url = None
-    org_name = None
-    if request.org_config:
-        org_repo_url = request.org_config.org_repo_url
-        org_name = request.org_config.org_name
+    org_repos: list[tuple[str, str]] = []
+    if request.org_configs:
+        org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
+
+    config = getattr(http_request.app.state, "config", None)
+    server_registrations = config.registered_marketplaces if config is not None else []
+    registered_marketplaces = _merge_registered_marketplaces(
+        server_registrations,
+        request.registered_marketplaces,
+    )
 
     # Call the service
     result = load_all_skills(
@@ -281,26 +298,13 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         load_project=request.load_project,
         load_org=request.load_org,
         project_dir=request.project_dir,
-        org_repo_url=org_repo_url,
-        org_name=org_name,
+        org_repos=org_repos,
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
+        registered_marketplaces=registered_marketplaces,
     )
 
-    # Convert Skill objects to SkillInfo for response
-    skills_info = [
-        SkillInfo(
-            name=info.name,
-            type=info.type,
-            content=info.content,
-            triggers=info.triggers,
-            source=info.source,
-            description=info.description,
-            is_agentskills_format=info.is_agentskills_format,
-            disable_model_invocation=info.disable_model_invocation,
-        )
-        for info in (skill.to_skill_info() for skill in result.skills)
-    ]
+    skills_info = [skill.to_skill_info() for skill in result.skills]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)
 

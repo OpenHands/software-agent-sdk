@@ -4,8 +4,6 @@ name: Agent Server
 on:
     push:
         branches: [main]
-        tags:
-            - '*'  # Trigger on any tag (e.g., 1.0.0, 1.0.0a5, build-docker)
     pull_request:
         branches: [main]
     workflow_dispatch:
@@ -13,7 +11,7 @@ on:
             base_image:
                 description: Base runtime image
                 type: string
-                default: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                default: python-node-runtime
             image:
                 description: GHCR image name
                 type: string
@@ -22,6 +20,14 @@ on:
                 description: Target platforms
                 type: string
                 default: linux/amd64,linux/arm64
+            install_acp_providers:
+                description: Comma-separated ACP provider keys to bake into the image
+                type: string
+                default: claude-code,codex,gemini-cli
+            install_capabilities:
+                description: Comma-separated capability keys to bake into the image
+                type: string
+                default: vscode,browser,docker
 
 permissions:
     contents: read
@@ -35,7 +41,7 @@ jobs:
             matrix:
                 os: [ubuntu-latest, macos-latest, windows-latest]
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -232,7 +238,7 @@ jobs:
 
         steps:
             - name: Checkout PR branch
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   fetch-depth: 0
 
@@ -243,7 +249,7 @@ jobs:
                   python-version: '3.13'
 
             - name: Install Node.js (for npx)
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
                   node-version: 22
 
@@ -270,30 +276,86 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Explicit matrix: 3 variants × 2 architectures = 6 jobs
+                # Explicit matrix: 5 variants × 2 architectures = 10 jobs
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      acp_provider_flavor: default
+                      target: binary
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
+                      custom_tags: python
+                      image_flavor: default
+                      acp_provider_flavor: default
+                      target: binary
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Python variant without preinstalled ACP providers
+                    - variant: python-slim
+                      custom_tags: python
+                      image_flavor: slim
+                      acp_provider_flavor: none
+                      target: binary
+                      arch: amd64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-slim
+                      custom_tags: python
+                      image_flavor: slim
+                      acp_provider_flavor: none
+                      target: binary
+                      arch: arm64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04-arm
+                      platform: linux/arm64
+
+                    # Minimal Python variant without ACP providers or capabilities
+                    - variant: python-minimal
+                      custom_tags: python
+                      image_flavor: minimal
+                      acp_provider_flavor: none
+                      target: binary-minimal
+                      arch: amd64
+                      base_image: python-node-runtime
+                      runner: ubuntu-24.04
+                      platform: linux/amd64
+
+                    - variant: python-minimal
+                      custom_tags: python
+                      image_flavor: minimal
+                      acp_provider_flavor: none
+                      target: binary-minimal
+                      arch: arm64
+                      base_image: python-node-runtime
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
                     # Java variant
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: java
+                      custom_tags: java
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: arm64
                       base_image: eclipse-temurin:17-jdk
                       runner: ubuntu-24.04-arm
@@ -301,12 +363,18 @@ jobs:
 
                     # Golang variant
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: amd64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: golang
+                      custom_tags: golang
+                      image_flavor: default
+                      acp_provider_flavor: default
                       arch: arm64
                       base_image: golang:1.21-bookworm
                       runner: ubuntu-24.04-arm
@@ -317,10 +385,20 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
-            CUSTOM_TAGS: ${{ matrix.variant }}
+            # The maybe-empty value (inputs.install_acp_providers) must be the
+            # LAST operand: GitHub Actions' `A && B || C` collapses to C
+            # whenever B is falsy, so an explicit "" dispatch input ("install
+            # none") would silently fall through to the default if it sat in
+            # B's position instead.
+            INSTALL_ACP_PROVIDERS: ${{ github.event_name != 'workflow_dispatch' && 'claude-code,codex,gemini-cli' || inputs.install_acp_providers }}
+            # Same last-operand reasoning as INSTALL_ACP_PROVIDERS above: an
+            # explicit "" dispatch input ("install none") must survive.
+            INSTALL_CAPABILITIES: ${{ github.event_name != 'workflow_dispatch' && 'vscode,browser,docker' || inputs.install_capabilities }}
+            CUSTOM_TAGS: ${{ matrix.custom_tags }}
+            IMAGE_FLAVOR: ${{ matrix.image_flavor }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
-            TARGET: binary
+            TARGET: ${{ matrix.target || 'binary' }}
             PLATFORM: ${{ matrix.platform }}
             # Use SDK_SHA/SDK_REF so build.py tags PR images with the head commit and branch.
             # GITHUB_SHA/GITHUB_REF point at the synthetic merge ref on pull_request events.
@@ -331,7 +409,7 @@ jobs:
 
         steps:
             - name: Checkout
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Install uv
               uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -340,10 +418,10 @@ jobs:
                   python-version: '3.13'
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+              uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+              uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -351,6 +429,8 @@ jobs:
 
             - name: Prepare build context and metadata
               id: prep
+              env:
+                  GITHUB_REF: ${{ github.ref }}
               run: |
                   uv sync --frozen
 
@@ -358,7 +438,7 @@ jobs:
                   # build.py now handles architecture tagging internally via --arch flag
                   # Add --versioned-tag when triggered by a git tag (e.g., v1.0.0)
                   BUILD_CMD="uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only --arch ${{ matrix.arch }}"
-                  if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+                  if [[ "$GITHUB_REF" == refs/tags/* ]]; then
                       BUILD_CMD="$BUILD_CMD --versioned-tag"
                   fi
                   eval "$BUILD_CMD"
@@ -376,6 +456,18 @@ jobs:
                   VERSIONED_TAGS_CSV=$(grep '^versioned_tags_csv=' $GITHUB_OUTPUT | cut -d= -f2- || echo "")
                   echo "versioned_tags_csv=$VERSIONED_TAGS_CSV" >> $GITHUB_OUTPUT
 
+                  if [ "${{ matrix.acp_provider_flavor }}" = "none" ]; then
+                      echo "install_acp_providers=" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_acp_providers=$INSTALL_ACP_PROVIDERS" >> $GITHUB_OUTPUT
+                  fi
+
+                  if [ "${{ matrix.target }}" = "binary-minimal" ]; then
+                      echo "install_capabilities=" >> $GITHUB_OUTPUT
+                  else
+                      echo "install_capabilities=$INSTALL_CAPABILITIES" >> $GITHUB_OUTPUT
+                  fi
+
                   # Verify outputs
                   echo "=== Build outputs ==="
                   echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
@@ -386,7 +478,7 @@ jobs:
 
             - name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
-              uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+              uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
               with:
                   context: ${{ steps.prep.outputs.build_context }}
                   file: ${{ steps.prep.outputs.dockerfile }}
@@ -394,46 +486,65 @@ jobs:
                   platforms: ${{ env.PLATFORM }}
                   push: true
                   tags: ${{ steps.prep.outputs.tags }}
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+                  cache-from: type=gha,scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }}
+                  cache-to: type=gha,scope=agent-server-${{ matrix.variant }}-${{ matrix.arch }},mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
                       OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
+                      INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}
+                      INSTALL_CAPABILITIES=${{ steps.prep.outputs.install_capabilities }}
 
             - name: Cleanup build context
               if: always()
+              env:
+                  BUILD_CONTEXT: ${{ steps.prep.outputs.build_context }}
               run: |
-                  if [ -n "${{ steps.prep.outputs.build_context }}" ] && [ -d "${{ steps.prep.outputs.build_context }}" ]; then
-                      echo "Cleaning up build context: ${{ steps.prep.outputs.build_context }}"
-                      rm -rf "${{ steps.prep.outputs.build_context }}"
+                  if [ -n "$BUILD_CONTEXT" ] && [ -d "$BUILD_CONTEXT" ]; then
+                      echo "Cleaning up build context: $BUILD_CONTEXT"
+                      rm -rf "$BUILD_CONTEXT"
                   fi
 
             - name: Summary (${{ matrix.variant }}-${{ matrix.arch }}) - outputs
+              env:
+                  SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
+                  TAGS: ${{ steps.prep.outputs.tags }}
+                  BUILD_DIGEST: ${{ steps.build.outputs.digest }}
               run: |
-                  echo "Image: ${{ env.IMAGE }}"
-                  echo "Variant: ${{ env.VARIANT }}"
-                  echo "Architecture: ${{ env.ARCH }}"
-                  echo "Platform: ${{ env.PLATFORM }}"
-                  echo "Short SHA: ${{ steps.prep.outputs.short_sha }}"
-                  echo "Tags: ${{ steps.prep.outputs.tags }}"
-                  echo "Build digest: ${{ steps.build.outputs.digest }}"
+                  echo "Image: $IMAGE"
+                  echo "Variant: $VARIANT"
+                  echo "Architecture: $ARCH"
+                  echo "Platform: $PLATFORM"
+                  echo "Short SHA: $SHORT_SHA"
+                  echo "Tags: $TAGS"
+                  echo "Build digest: $BUILD_DIGEST"
 
             - name: Save build info for consolidation
+              env:
+                  SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
+                  TAGS: ${{ steps.prep.outputs.tags }}
+                  VERSIONED_TAGS_CSV: ${{ steps.prep.outputs.versioned_tags_csv }}
               run: |
                   mkdir -p build-info
-                  cat > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json" << EOF
-                  {
-                    "variant": "${{ matrix.variant }}",
-                    "arch": "${{ matrix.arch }}",
-                    "base_image": "${{ matrix.base_image }}",
-                    "image": "${{ env.IMAGE }}",
-                    "short_sha": "${{ steps.prep.outputs.short_sha }}",
-                    "tags": "${{ steps.prep.outputs.tags }}",
-                    "versioned_tags_csv": "${{ steps.prep.outputs.versioned_tags_csv }}",
-                    "platform": "${{ env.PLATFORM }}"
-                  }
-                  EOF
+                  jq -n \
+                    --arg variant "$VARIANT" \
+                    --arg arch "$ARCH" \
+                    --arg base_image "$BASE_IMAGE" \
+                    --arg image "$IMAGE" \
+                    --arg short_sha "$SHORT_SHA" \
+                    --arg tags "$TAGS" \
+                    --arg versioned_tags_csv "$VERSIONED_TAGS_CSV" \
+                    --arg platform "$PLATFORM" \
+                    '{
+                      variant: $variant,
+                      arch: $arch,
+                      base_image: $base_image,
+                      image: $image,
+                      short_sha: $short_sha,
+                      tags: $tags,
+                      versioned_tags_csv: $versioned_tags_csv,
+                      platform: $platform
+                    }' > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json"
 
             - name: Upload build info artifact
               uses: actions/upload-artifact@v7
@@ -453,7 +564,7 @@ jobs:
         runs-on: ubuntu-24.04
         strategy:
             matrix:
-                variant: [python, java, golang]
+                variant: [python, python-slim, python-minimal, java, golang]
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 
@@ -474,10 +585,10 @@ jobs:
                   echo "Using SHORT_SHA: $SHORT_SHA"
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+              uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+              uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -485,9 +596,11 @@ jobs:
 
             - name: Create and push multi-arch manifest for ${{ matrix.variant }}
               id: create_manifest
+              env:
+                  GIT_REF: ${{ github.ref }}
+                  SHORT_SHA: ${{ steps.get_sha.outputs.short_sha }}
+                  VARIANT: ${{ matrix.variant }}
               run: |
-                  SHORT_SHA=${{ steps.get_sha.outputs.short_sha }}
-                  VARIANT=${{ matrix.variant }}
                   AMD64_TAGS_CSV=$(jq -r '.tags' build-info/${VARIANT}-amd64.json)
                   declare -A SEEN_MANIFEST_TAGS=()
                   MANIFEST_TAGS=()
@@ -529,7 +642,7 @@ jobs:
                   done
 
                   # Preserve the latest-<variant> alias used by the workspace defaults.
-                  if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+                  if [ "$GIT_REF" == "refs/heads/main" ]; then
                       LATEST_TAG="latest-${VARIANT}"
                       create_manifest "$LATEST_TAG" "main-${VARIANT}"
                       MANIFEST_TAGS+=("$LATEST_TAG")
@@ -539,14 +652,17 @@ jobs:
 
                   # Save manifest info for consolidation
                   mkdir -p manifest-info
-                  cat > "manifest-info/${VARIANT}.json" << EOF
-                  {
-                    "variant": "${VARIANT}",
-                    "image": "${IMAGE}",
-                    "short_sha": "${SHORT_SHA}",
-                    "manifest_tag": "${MANIFEST_TAG_CSV}"
-                  }
-                  EOF
+                  jq -n \
+                    --arg variant "$VARIANT" \
+                    --arg image "$IMAGE" \
+                    --arg short_sha "$SHORT_SHA" \
+                    --arg manifest_tag "$MANIFEST_TAG_CSV" \
+                    '{
+                      variant: $variant,
+                      image: $image,
+                      short_sha: $short_sha,
+                      manifest_tag: $manifest_tag
+                    }' > "manifest-info/${VARIANT}.json"
 
             - name: Upload manifest info artifact
               uses: actions/upload-artifact@v7
@@ -731,13 +847,15 @@ jobs:
         steps:
             - name: Generate PR description from build summary
               id: generate_description
+              env:
+                  BUILD_SUMMARY_JSON: ${{ needs.consolidate-build-info.outputs.build_summary }}
               run: |
                   echo "Event: ${{ github.event_name }}"
                   echo "PR number: ${{ github.event.number }}"
                   echo "Run attempt: ${{ github.run_attempt }}"
 
                   # Parse the build summary JSON
-                  BUILD_SUMMARY='${{ needs.consolidate-build-info.outputs.build_summary }}'
+                  BUILD_SUMMARY="$BUILD_SUMMARY_JSON"
                   echo "Build summary received:"
                   echo "$BUILD_SUMMARY" | jq .
 
@@ -777,7 +895,8 @@ jobs:
 
                   <!-- AGENT_SERVER_IMAGES_START -->
                   ---
-                  **Agent Server images for this PR**
+                  <details>
+                  <summary><b>🐳 Agent Server images for this PR</b> — GHCR package, pull/run commands, and all pushed tags (click to expand)</summary>
 
                   • **GHCR package:** ${GHCR_URL}
 
@@ -809,6 +928,7 @@ jobs:
                   - Each variant tag (e.g., \`${SHORT_SHA}-python\`) is a **multi-arch manifest** supporting both **amd64** and **arm64**
                   - Docker automatically pulls the correct architecture for your platform
                   - Individual architecture tags (e.g., \`${SHORT_SHA}-python-amd64\`) are also available if needed
+                  </details>
                   <!-- AGENT_SERVER_IMAGES_END -->
                   EOF
                   )
@@ -821,7 +941,7 @@ jobs:
                   } >> $GITHUB_OUTPUT
 
             - name: Update PR description with docker image details
-              uses: nefrob/pr-description@4dcc9f3ad5ec06b2a197c5f8f93db5e69d2fdca7 # v1.2.0
+              uses: nefrob/pr-description@30859d560129561327a48ec569ec3b6aa62dd2c9 # v1.3.0
               with:
                   content: ${{ steps.generate_description.outputs.pr_content }}
                   regex: <!-- AGENT_SERVER_IMAGES_START -->.*?<!-- AGENT_SERVER_IMAGES_END -->

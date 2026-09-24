@@ -180,6 +180,67 @@ def test_delegation_manager_init():
     assert len(manager._sub_agents) == 0
 
 
+def test_close_closes_spawned_sub_agents():
+    """Closing the delegate executor releases spawned sub-conversations."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+
+    observation = executor(
+        DelegateAction(command="spawn", ids=["sub1"]), parent_conversation
+    )
+
+    assert "Successfully spawned" in observation.text
+    sub_conversation = executor._sub_agents["sub1"]
+    assert sub_conversation._cleanup_initiated is False
+
+    executor.close()
+
+    assert sub_conversation._cleanup_initiated is True
+    assert executor._sub_agents == {}
+
+
+def test_spawn_closes_replaced_sub_agent():
+    """Re-spawning an ID closes the conversation it replaces."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+
+    executor(DelegateAction(command="spawn", ids=["sub1"]), parent_conversation)
+    first_conversation = executor._sub_agents["sub1"]
+
+    observation = executor(
+        DelegateAction(command="spawn", ids=["sub1"]), parent_conversation
+    )
+
+    replacement_conversation = executor._sub_agents["sub1"]
+    assert "Successfully spawned" in observation.text
+    assert replacement_conversation is not first_conversation
+    assert first_conversation._cleanup_initiated is True
+    assert replacement_conversation._cleanup_initiated is False
+
+    executor.close()
+
+
+def test_spawn_rolls_back_partial_batch_when_agent_type_missing():
+    """A failed spawn batch does not leave created sub-conversations behind."""
+    register_builtins_agents()
+    executor, parent_conversation = create_test_executor_and_parent()
+    parent_conversation._visualizer = None
+
+    observation = executor(
+        DelegateAction(
+            command="spawn",
+            ids=["sub1", "missing"],
+            agent_types=["default", "does-not-exist"],
+        ),
+        parent_conversation,
+    )
+
+    assert observation.is_error is True
+    assert executor._sub_agents == {}
+
+
 def test_spawn_disables_streaming_for_sub_agents():
     """Test that spawned sub-agents have streaming disabled.
 

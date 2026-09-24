@@ -222,3 +222,56 @@ def test_path_escape_with_parent_directory(tmp_ws: Path):
     obs = run_exec(tmp_ws, patch)
     assert obs.is_error
     assert "Absolute or escaping paths" in obs.text
+
+
+def test_reject_sibling_prefix_path_escape(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "workspace-escape" / "owned.txt"
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: ../workspace-escape/owned.txt\n"
+        "+x\n"
+        "*** End Patch"
+    )
+    obs = run_exec(workspace, patch)
+
+    assert obs.is_error
+    assert "Absolute or escaping paths" in obs.text
+    assert not outside.exists()
+
+
+def test_malformed_patch_header_returns_differror(tmp_ws: Path):
+    """A patch missing '*** Begin Patch' must return a structured error, not crash.
+
+    Before the assert→DiffError fix, process_patch() used assert to validate
+    the header. Python disables assert with -O (optimized mode, used in Docker
+    production images), so a bad header would silently pass and corrupt state.
+    Now it raises DiffError which is caught and returned as is_error=True.
+    """
+    obs = run_exec(tmp_ws, "INVALID HEADER\n*** End Patch")
+    assert obs.is_error
+    assert "Begin Patch" in obs.text
+
+
+def test_invalid_move_to_path_returns_differror(tmp_ws: Path):
+    """A '*** Move to:' with '..' components must be rejected as a structured error.
+
+    The original Parser.parse() had a TODO acknowledging this check was missing.
+    An unvalidated move_to path could allow the agent to move files outside the
+    workspace.
+    """
+    fp = tmp_ws / "source.txt"
+    fp.write_text("hello\n")
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: source.txt\n"
+        "*** Move to: ../outside.txt\n"
+        "@@\n"
+        " hello\n"
+        "*** End Patch"
+    )
+    obs = run_exec(tmp_ws, patch)
+    assert obs.is_error
+    assert "Invalid move path" in obs.text

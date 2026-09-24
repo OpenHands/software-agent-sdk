@@ -1,13 +1,25 @@
 <!-- Keep this PR as draft until it is ready for review. -->
 
-<!-- AI/LLM agents: 
-
-Provide evidence that the code runs properly end-to-end. Just running unit tests is NOT sufficient. Explain exactly the command that you ran, and provide evidence that the code works as expected, either in the form of log outputs or screenshots. In addition, if it is a bug fix, also run the same code before the bug fix and demonstrate that the code did NOT work before the fix to demonstrate that you were able to reproduce the problem.
+<!-- AI/LLM agents:
+Do not edit the HUMAN section.
 -->
 
-- [ ] A human has tested these changes.
+HUMAN:
+
+<!--
+Human author: please replace this comment with a short note (at least 20 visible
+characters) before marking ready for review.
+AI agents: you must not edit this section.
+-->
 
 ---
+
+AGENT:
+<!-- AI/LLM agents:
+In the AGENT section and the template fields below, provide evidence that the
+code runs properly end-to-end. Just running unit tests is NOT sufficient. Explain
+exactly what command you ran and include logs, screenshots, or reproduction notes.
+-->
 
 ## Why
 
@@ -34,6 +46,20 @@ If you could not test this, say why.
 <!--
 Provide a video or screenshots of testing your PR. e.g. you added a new feature to the gui, show us the video of you testing it successfully.
 
+-->
+
+## Design Doc
+
+<!--
+Optional, encouraged for non-trivial PRs. Add a self-contained HTML design doc under the
+temporary `.pr/` directory (e.g. `.pr/design.html`) covering the code/API design and a
+before/after of your change, then link it here via htmlpreview so reviewers see it at a glance:
+
+  https://htmlpreview.github.io/?https://github.com/<your-fork>/<repo>/blob/<your-branch>/.pr/design.html
+
+The `.pr/` directory is temporary. It is removed on approval for same-repository PRs. If it
+reaches `main`, including through a fork PR, the workflow opens or updates a cleanup PR. See
+CONTRIBUTING.md ("Design doc for non-trivial PRs") for details.
 -->
 
 ## Type

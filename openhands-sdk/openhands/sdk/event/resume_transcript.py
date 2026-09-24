@@ -211,9 +211,13 @@ def _render_tool_event(event: ACPToolCallEvent, max_chars: int) -> str | None:
 def _terminal_tool_indices(events: Sequence[Event]) -> set[int]:
     """Indices of the terminal ACPToolCallEvent for each *streaming sequence*.
 
-    ACP streams ``pending → … → completed`` events for a single tool call
-    consecutively; only the last event in that run carries the final I/O.
-    We keep that last event and drop the earlier intermediates.
+    ACP emits an early ``started`` event and one terminal
+    (``completed`` / ``failed``) event for a single tool call consecutively;
+    only the terminal event carries the final I/O. We keep that terminal event
+    and drop the earlier ``started`` one. (This also tolerates legacy logs
+    persisted before the source collapse, where a ``pending → … → completed``
+    run held several intermediates — keeping the last still picks the
+    terminal frame.)
 
     Critically, dedup is scoped to **contiguous runs separated by
     MessageEvents**, not to the entire history. ACP providers (e.g. Codex)

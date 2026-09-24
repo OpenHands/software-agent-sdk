@@ -1,6 +1,5 @@
 """Edit tool executor implementation."""
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,11 +42,7 @@ class EditExecutor(ToolExecutor[EditAction, EditObservation]):
         new_string = action.new_string
         expected_replacements = action.expected_replacements
 
-        # Resolve path relative to workspace
-        if not os.path.isabs(file_path):
-            resolved_path = self.workspace_root / file_path
-        else:
-            resolved_path = Path(file_path)
+        resolved_path = (self.workspace_root / file_path).resolve()
 
         # Handle file creation (old_string is empty)
         if old_string == "":

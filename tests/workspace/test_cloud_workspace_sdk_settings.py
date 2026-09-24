@@ -14,6 +14,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import LookupSecret
 from openhands.workspace.cloud.workspace import OpenHandsCloudWorkspace
 
@@ -234,6 +235,22 @@ class TestGetSecrets:
         assert "GITHUB_TOKEN" in secrets
         assert "MY_API_KEY" not in secrets
 
+    def test_get_secrets_requests_agent_profile_scope(self, mock_workspace):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"secrets": [{"name": "GITHUB_TOKEN"}]}
+
+        with patch.object(
+            mock_workspace, "_send_settings_request", return_value=mock_response
+        ) as mock_req:
+            secrets = mock_workspace.get_secrets(agent_profile_id="profile-id")
+
+        assert list(secrets) == ["GITHUB_TOKEN"]
+        mock_req.assert_called_once_with(
+            "GET",
+            f"{CLOUD_URL}/api/v1/sandboxes/{SANDBOX_ID}/settings/secrets",
+            params={"agent_profile_id": "profile-id"},
+        )
+
     def test_get_secrets_empty(self, mock_workspace):
         """Empty secrets list returns empty dict."""
         mock_response = MagicMock()
@@ -254,11 +271,11 @@ class TestGetSecrets:
             mock_workspace.get_secrets()
 
 
-class TestGetMcpConfig:
+class TestGetMcpServers:
     """Tests for OpenHandsCloudWorkspace.get_mcp_config()."""
 
     def test_get_mcp_config_returns_empty_when_no_config(self, mock_workspace):
-        """get_mcp_config returns empty dict when no MCP config is set."""
+        """get_mcp_config returns empty dict when no MCP servers is set."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "llm_model": "gpt-4o",
@@ -299,14 +316,15 @@ class TestGetMcpConfig:
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
-        assert "mcpServers" in mcp_config
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 2
 
         # First SSE server with API key
         assert servers["sse_0"]["url"] == "https://sse.example.com/mcp"
         assert servers["sse_0"]["transport"] == "sse"
-        assert servers["sse_0"]["headers"]["Authorization"] == "Bearer sse-key-123"
+        sse_headers = servers["sse_0"]["headers"]
+        assert isinstance(sse_headers, dict)
+        assert sse_headers["Authorization"] == "Bearer sse-key-123"
 
         # Second SSE server without API key
         assert servers["sse_1"]["url"] == "https://sse2.example.com/mcp"
@@ -336,12 +354,14 @@ class TestGetMcpConfig:
         ):
             mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 1
 
         assert servers["shttp_0"]["url"] == "https://shttp.example.com/mcp"
         assert servers["shttp_0"]["transport"] == "streamable-http"
-        assert servers["shttp_0"]["headers"]["Authorization"] == "Bearer shttp-key"
+        shttp_headers = servers["shttp_0"]["headers"]
+        assert isinstance(shttp_headers, dict)
+        assert shttp_headers["Authorization"] == "Bearer shttp-key"
         assert servers["shttp_0"]["timeout"] == 120
 
     def test_get_mcp_config_transforms_stdio_servers(self, mock_workspace):
@@ -368,7 +388,7 @@ class TestGetMcpConfig:
         ):
             mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 1
 
         # STDIO servers use their explicit name
@@ -400,7 +420,7 @@ class TestGetMcpConfig:
         ):
             mcp_config = mock_workspace.get_mcp_config()
 
-        servers = mcp_config["mcpServers"]
+        servers = dump_mcp_config(mcp_config)
         assert len(servers) == 3
         assert "sse_0" in servers
         assert "shttp_0" in servers
@@ -431,10 +451,8 @@ class TestGetMcpConfig:
 
         assert mcp_config == {}
 
-    def test_get_mcp_config_is_mcpconfig_compatible(self, mock_workspace):
-        """get_mcp_config returns dict that can be validated by fastmcp.MCPConfig."""
-        from fastmcp.mcp_config import MCPConfig
-
+    def test_get_mcp_config_is_native_settings_compatible(self, mock_workspace):
+        """get_mcp_config returns a native SDK MCP server map."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -456,12 +474,11 @@ class TestGetMcpConfig:
         ):
             mcp_config_dict = mock_workspace.get_mcp_config()
 
-        # Should be parseable by MCPConfig
-        config = MCPConfig.model_validate(mcp_config_dict)
-        assert len(config.mcpServers) == 3
-        assert "sse_0" in config.mcpServers
-        assert "shttp_0" in config.mcpServers
-        assert "fetch" in config.mcpServers
+        config = mcp_config_dict
+        assert len(config) == 3
+        assert "sse_0" in config
+        assert "shttp_0" in config
+        assert "fetch" in config
 
 
 class TestRetry:

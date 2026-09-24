@@ -2,15 +2,13 @@
 
 import re
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser, Tree
+from tree_sitter import Node
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security.shell_parser import parse
 
 
 logger = get_logger(__name__)
-
-_BASH_LANGUAGE = Language(tree_sitter_bash.language())
 
 # Regions whose contents bash takes verbatim — escape doubling stops at
 # their boundaries so operators nested inside (e.g.) a double-quoted
@@ -32,12 +30,6 @@ _PRESERVE_TYPES: frozenset[str] = frozenset(
 _ESCAPE_PATTERN: re.Pattern[bytes] = re.compile(rb"\\([;&|<>])")
 
 
-def _parse(source: bytes) -> Tree:
-    # Parser is not thread-safe; the Language is. Construct a fresh
-    # Parser per call so concurrent callers cannot trample each other.
-    return Parser(_BASH_LANGUAGE).parse(source)
-
-
 def split_bash_commands(commands: str) -> list[str]:
     """Split a multi-statement bash input into top-level statements.
 
@@ -52,10 +44,10 @@ def split_bash_commands(commands: str) -> list[str]:
         return [""]
 
     source = commands.encode()
-    tree = _parse(source)
-    root = tree.root_node
+    result = parse(commands)
+    root = result.tree.root_node
 
-    if root.has_error:
+    if result.has_error:
         logger.debug(
             "tree-sitter-bash reported parse errors; returning input as-is\n"
             "[input]: %s",
@@ -88,8 +80,8 @@ def escape_bash_special_chars(command: str) -> str:
         return ""
 
     source = command.encode()
-    tree = _parse(source)
-    if tree.root_node.has_error:
+    result = parse(command)
+    if result.has_error:
         logger.debug(
             "tree-sitter-bash reported parse errors; returning input as-is\n"
             "[input]: %s",
@@ -106,7 +98,7 @@ def escape_bash_special_chars(command: str) -> str:
         for child in node.children:
             collect(child)
 
-    collect(tree.root_node)
+    collect(result.tree.root_node)
 
     out = bytearray()
     cursor = 0

@@ -77,7 +77,7 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
             if not p.startswith("/")
             else Path(p).resolve()
         )
-        if not str(pth).startswith(str(self.workspace_root)):
+        if not pth.is_relative_to(self.workspace_root):
             raise DiffError("Absolute or escaping paths are not allowed")
         return pth
 

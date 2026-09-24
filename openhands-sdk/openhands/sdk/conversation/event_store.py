@@ -2,7 +2,7 @@
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
-from typing import SupportsIndex, overload
+from typing import Final, SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -11,6 +11,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event import Event, EventID
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import posix_path_name
@@ -20,6 +21,14 @@ logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
+
+# Sidecar marker naming the log's event count, so a writer can check it with one
+# ``exists()``. The count lives in the name because ``FileStore.read`` is cached.
+LENGTH_MARKER_PATTERN: Final[str] = ".eventlog-len-{length}.marker"
+
+# ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
+# below in _effective_parent_id and re-exported here so existing
+# ``from event_store import ROOT_PARENT_ID`` importers keep working.
 
 
 class EventLog(EventsListBase):
@@ -46,6 +55,7 @@ class EventLog(EventsListBase):
         self._dir = dir_path
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
+        self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
         self._length = self._scan_and_build_index()
@@ -71,6 +81,54 @@ class EventLog(EventsListBase):
             raise IndexError("Event index out of range")
         return self._idx_to_id[idx]
 
+    def __contains__(self, item: object) -> bool:
+        """Whether the log contains a given event id or ``Event`` (by id).
+
+        Checking by id (not the ``Sequence`` default of value-equality) keeps
+        ``event in events`` true after the event is stamped with a ``parent_id``
+        on append, and avoids hashing unhashable event payloads.
+        """
+        if isinstance(item, Event):
+            return item.id in self._id_to_idx
+        return item in self._id_to_idx
+
+    def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
+        """Resolve the parent of ``event`` (at ``idx``) for tree traversal.
+
+        Legacy events predating the tree have no ``parent_id``; they fall back to
+        the linear chain (event ``idx - 1``) so old conversations load unbranched
+        with no disk rewrite.
+        """
+        if event.parent_id == ROOT_PARENT_ID:
+            return None  # explicit root (feature-created root at idx > 0)
+        if event.parent_id is not None:
+            return event.parent_id  # explicit (new events)
+        if idx == 0:
+            return None  # genuine root
+        return self.get_id(idx - 1)  # legacy linear chain (back-compat)
+
+    def path_to_root(
+        self, leaf_id: EventID | None, limit: int | None = None
+    ) -> list[Event]:
+        """The active branch ``leaf -> ... -> root``, returned root-first.
+
+        ``leaf_id=None`` yields ``[]``. ``limit`` keeps only the last ``limit``
+        events (walking back from the leaf), so callers wanting a recent window
+        stay O(limit) instead of O(branch). Raises ValueError on a cycle, KeyError
+        if ``leaf_id`` or an ancestor is missing.
+        """
+        chain: list[Event] = []
+        seen: set[EventID] = set()
+        cur_id: EventID | None = leaf_id
+        while cur_id is not None and (limit is None or len(chain) < limit):
+            if cur_id in seen:
+                raise ValueError(f"Cycle in event tree at {cur_id}")
+            seen.add(cur_id)
+            idx = self.get_index(cur_id)
+            chain.append(evt := self[idx])
+            cur_id = self._effective_parent_id(idx, evt)
+        return chain[::-1]
+
     @overload
     def __getitem__(self, idx: int) -> Event: ...
 
@@ -89,6 +147,10 @@ class EventLog(EventsListBase):
             i += self._length
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
+
+        if (cached := self._event_cache.get(i)) is not None:
+            return cached
+
         try:
             path = self._path(i)
         except KeyError:
@@ -102,10 +164,16 @@ class EventLog(EventsListBase):
         txt = self._fs.read(path)
         if not txt:
             raise FileNotFoundError(f"Missing event file: {path}")
-        return Event.model_validate_json(txt)
+        evt = Event.model_validate_json(txt)
+        self._event_cache[i] = evt
+        return evt
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
+            cached = self._event_cache.get(i)
+            if cached is not None:
+                yield cached
+                continue
             txt = self._fs.read(self._path(i))
             if not txt:
                 continue
@@ -114,23 +182,29 @@ class EventLog(EventsListBase):
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id
                 self._id_to_idx.setdefault(evt_id, i)
+            self._event_cache[i] = evt
             yield evt
 
-    def append(self, event: Event) -> None:
+    def append(self, event: Event) -> int:
         """Append an event with locking for thread/process safety.
+
+        Returns:
+            The sequence number (index) the log assigned to ``event``.
 
         Raises:
             TimeoutError: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
-            ValueError: If an event with the same ID already exists.
+            ValueError: If an event with the same ID already exists or its explicit
+                parent does not exist.
         """
         evt_id = event.id
 
         try:
             with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
-                # Sync with disk in case another process wrote while we waited
-                disk_length = self._count_events_on_disk()
-                if disk_length > self._length:
-                    self._sync_from_disk(disk_length)
+                # Sync with disk only if the marker cannot rule out another writer
+                if not self._marker_matches_length():
+                    disk_length = self._count_events_on_disk()
+                    if disk_length > self._length:
+                        self._sync_from_disk(disk_length)
 
                 if evt_id in self._id_to_idx:
                     existing_idx = self._id_to_idx[evt_id]
@@ -139,22 +213,62 @@ class EventLog(EventsListBase):
                         f"{existing_idx}"
                     )
 
+                if (
+                    event.parent_id not in (None, ROOT_PARENT_ID)
+                    and event.parent_id not in self._id_to_idx
+                ):
+                    raise ValueError(
+                        f"Parent event '{event.parent_id}' does not exist "
+                        f"for event '{evt_id}'"
+                    )
+
                 payload = event.model_dump_json(exclude_none=True)
                 write_guard = (
                     nullcontext() if self._write_guard is None else self._write_guard()
                 )
+                idx = self._length
                 with write_guard:
-                    target_path = self._path(self._length, event_id=evt_id)
+                    target_path = self._path(idx, event_id=evt_id)
                     self._fs.write(target_path, payload)
-                self._idx_to_id[self._length] = evt_id
-                self._id_to_idx[evt_id] = self._length
+                self._idx_to_id[idx] = evt_id
+                self._id_to_idx[evt_id] = idx
+                self._event_cache[idx] = event
                 self._length += 1
+                self._advance_length_marker(idx)
+                return idx
         except TimeoutError:
             logger.error(
                 f"Failed to acquire EventLog lock within {LOCK_TIMEOUT_SECONDS}s "
                 f"for event {evt_id}"
             )
             raise
+
+    def _marker_path(self, length: int) -> str:
+        return f"{self._dir}/{LENGTH_MARKER_PATTERN.format(length=length)}"
+
+    def _marker_matches_length(self) -> bool:
+        """Whether the marker proves no one has appended since we last did.
+
+        ``False`` is not proof of divergence, so callers must fall back to the
+        exact count.
+        """
+        try:
+            return bool(self._fs.exists(self._marker_path(self._length)))
+        except Exception as e:
+            logger.warning("Error reading event count marker in %s: %s", self._dir, e)
+            return False
+
+    def _advance_length_marker(self, previous_length: int) -> None:
+        """Move the marker from ``previous_length`` to the current length.
+
+        Deleting first is deliberate: an interrupted update leaves no marker
+        rather than a stale one claiming to be current.
+        """
+        try:
+            self._fs.delete(self._marker_path(previous_length))
+            self._fs.write(self._marker_path(self._length), "")
+        except Exception as e:
+            logger.warning("Error updating event count marker in %s: %s", self._dir, e)
 
     def _count_events_on_disk(self) -> int:
         """Count event files on disk."""
@@ -209,6 +323,7 @@ class EventLog(EventsListBase):
         except Exception:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._event_cache.clear()
             return 0
 
         by_idx: dict[int, EventID] = {}
@@ -219,12 +334,16 @@ class EventLog(EventsListBase):
                 idx = int(m.group("idx"))
                 evt_id = m.group("event_id")
                 by_idx[idx] = evt_id
+            elif name.startswith("."):
+                # Our own sidecars (lock file, count marker), not event files.
+                continue
             else:
                 logger.warning(f"Unrecognized event file name: {name}")
 
         if not by_idx:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._event_cache.clear()
             return 0
 
         n = 0
@@ -240,6 +359,7 @@ class EventLog(EventsListBase):
 
         self._id_to_idx.clear()
         self._idx_to_id.clear()
+        self._event_cache.clear()
         for i in range(n):
             evt_id = by_idx[i]
             self._idx_to_id[i] = evt_id

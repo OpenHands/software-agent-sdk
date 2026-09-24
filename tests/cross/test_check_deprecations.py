@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ def _load_prod_module():
 _prod = _load_prod_module()
 DeprecationRecord = _prod.DeprecationRecord
 _gather_rest_route_deprecations = _prod._gather_rest_route_deprecations
+_gather_pydantic_field_deprecations = _prod._gather_pydantic_field_deprecations
+_runway_error = _prod._runway_error
 _should_fail = _prod._should_fail
 
 
@@ -109,6 +112,94 @@ def test_gather_rest_route_deprecations_requires_parseable_docstring(tmp_path):
         )
 
 
+def test_gather_pydantic_field_deprecations_collects_scheduled_field(tmp_path):
+    path = tmp_path / "model.py"
+    tree = ast.parse(
+        "class Foo(BaseModel):\n"
+        "    bar: str | None = Field(\n"
+        "        default=None,\n"
+        "        deprecated=True,\n"
+        "        description=(\n"
+        '            "Deprecated since v1.10.0 and scheduled for removal in '
+        'v1.15.0. "\n'
+        '            "Use baz instead."\n'
+        "        ),\n"
+        "    )\n"
+    )
+
+    records = list(
+        _gather_pydantic_field_deprecations(
+            tree, path, package="openhands-agent-server"
+        )
+    )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.identifier == "Foo.bar"
+    assert record.deprecated_in == "1.10.0"
+    assert record.removed_in == "1.15.0"
+    assert record.kind == "pydantic_field"
+    assert record.path == path
+
+
+def test_gather_pydantic_field_deprecations_skips_open_ended_field(tmp_path):
+    """A deprecated=True field with no versioned schedule is not tracked.
+
+    Some deprecations are deliberately open-ended backward-compatibility
+    aliases (e.g. SubAgentInfo.mcp_servers) with no planned removal version.
+    """
+    path = tmp_path / "model.py"
+    tree = ast.parse(
+        "class Foo(BaseModel):\n"
+        "    baz: str | None = Field(\n"
+        "        default=None,\n"
+        "        deprecated=True,\n"
+        '        description="Deprecated compat alias, use bar instead.",\n'
+        "    )\n"
+    )
+
+    assert (
+        list(
+            _gather_pydantic_field_deprecations(
+                tree, path, package="openhands-agent-server"
+            )
+        )
+        == []
+    )
+
+
+def test_gather_pydantic_field_deprecations_ignores_non_deprecated_fields(tmp_path):
+    path = tmp_path / "model.py"
+    tree = ast.parse(
+        "class Foo(BaseModel):\n"
+        '    bar: str | None = Field(default=None, description="Not deprecated.")\n'
+    )
+
+    assert (
+        list(
+            _gather_pydantic_field_deprecations(
+                tree, path, package="openhands-agent-server"
+            )
+        )
+        == []
+    )
+
+
+def test_should_fail_for_overdue_pydantic_field_record():
+    record = DeprecationRecord(
+        identifier="Foo.bar",
+        removed_in="1.15.0",
+        deprecated_in="1.10.0",
+        path=Path("model.py"),
+        line=5,
+        kind="pydantic_field",
+        package="openhands-agent-server",
+    )
+
+    assert _should_fail("1.15.0", record) is True
+    assert _should_fail("1.14.9", record) is False
+
+
 def test_should_fail_for_overdue_rest_route_record():
     record = DeprecationRecord(
         identifier="POST /foo",
@@ -122,3 +213,126 @@ def test_should_fail_for_overdue_rest_route_record():
 
     assert _should_fail("1.14.0", record) is True
     assert _should_fail("1.13.9", record) is False
+
+
+def test_runway_error_rejects_less_than_five_minor_releases():
+    record = DeprecationRecord(
+        identifier="ACPAgentSettings.llm",
+        removed_in="1.29.0",
+        deprecated_in="1.28.0",
+        path=Path("settings.py"),
+        line=42,
+        kind="warn_call",
+        package="openhands-sdk",
+    )
+
+    error = _runway_error(record)
+
+    assert error is not None
+    assert "minimum removed_in: 1.33.0" in error
+
+
+def test_main_fails_for_invalid_runway(monkeypatch, tmp_path, capsys):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nversion = "1.28.0"\n')
+    source_root = tmp_path / "pkg"
+    source_root.mkdir()
+    (source_root / "module.py").write_text(
+        "from openhands.sdk.utils.deprecation import warn_deprecated\n\n"
+        "def trigger():\n"
+        "    warn_deprecated(\n"
+        "        'BadFeature',\n"
+        "        deprecated_in='1.28.0',\n"
+        "        removed_in='1.29.0',\n"
+        "    )\n"
+    )
+    monkeypatch.setattr(_prod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        _prod,
+        "PACKAGES",
+        (
+            _prod.PackageConfig(
+                name="test-package",
+                pyproject=pyproject,
+                source_roots=(source_root,),
+            ),
+        ),
+    )
+
+    assert _prod.main([]) == 1
+    output = capsys.readouterr().out
+    assert "less than 5 minor releases" in output
+    assert "minimum removed_in: 1.33.0" in output
+
+
+def test_main_fails_for_overdue_pydantic_field(monkeypatch, tmp_path, capsys):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nversion = "1.20.0"\n')
+    source_root = tmp_path / "pkg"
+    source_root.mkdir()
+    (source_root / "model.py").write_text(
+        "class Foo(BaseModel):\n"
+        "    bar: str | None = Field(\n"
+        "        default=None,\n"
+        "        deprecated=True,\n"
+        "        description=(\n"
+        '            "Deprecated since v1.10.0 and scheduled for removal in '
+        'v1.15.0."\n'
+        "        ),\n"
+        "    )\n"
+    )
+    monkeypatch.setattr(_prod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        _prod,
+        "PACKAGES",
+        (
+            _prod.PackageConfig(
+                name="test-package",
+                pyproject=pyproject,
+                source_roots=(source_root,),
+            ),
+        ),
+    )
+
+    assert _prod.main([]) == 1
+    output = capsys.readouterr().out
+    assert "passed their removal deadline" in output
+    assert "Foo.bar" in output
+
+
+def test_runway_error_accepts_five_minor_releases():
+    record = DeprecationRecord(
+        identifier="ACPAgentSettings.llm",
+        removed_in="1.33.0",
+        deprecated_in="1.28.0",
+        path=Path("settings.py"),
+        line=42,
+        kind="warn_call",
+        package="openhands-sdk",
+    )
+
+    assert _runway_error(record) is None
+
+
+def test_runway_error_skips_cleanup_and_date_based_removals():
+    cleanup_record = DeprecationRecord(
+        identifier="temporary workaround",
+        removed_in="1.29.0",
+        deprecated_in=None,
+        path=Path("module.py"),
+        line=12,
+        kind="cleanup_call",
+        package="openhands-sdk",
+    )
+    date_record = DeprecationRecord(
+        identifier="OldFeature",
+        removed_in=date(2027, 1, 1),
+        deprecated_in="1.28.0",
+        path=Path("module.py"),
+        line=18,
+        kind="decorator",
+        package="openhands-sdk",
+    )
+
+    assert _runway_error(cleanup_record) is None
+    assert _runway_error(date_record) is None

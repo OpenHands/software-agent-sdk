@@ -1,3 +1,4 @@
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,7 +9,10 @@ from openhands.sdk.context.condenser.utils import (
     get_total_token_count,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool.builtins.finish import FinishTool
 
 
 def message_event(content: str) -> MessageEvent:
@@ -26,7 +30,7 @@ def mock_llm() -> LLM:
     mock_llm.model = "test-model"
 
     # Mock get_token_count to return predictable values based on message content length
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         # Simple heuristic: count characters in all text content
         # Each character = 0.25 tokens (roughly 4 chars per token)
         total_chars = 0
@@ -77,6 +81,47 @@ class TestGetTotalTokenCount:
         call_args = mock_llm.get_token_count.call_args[0][0]  # type: ignore
         assert isinstance(call_args, list)
         assert all(isinstance(msg, Message) for msg in call_args)
+
+    def test_system_prompt_tools_are_counted(self, mock_llm: LLM):
+        """Test that agent tool schemas are included in token counting."""
+        tools = cast(list[ToolDefinition], list(FinishTool.create()))
+        events = [
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="system"),
+                tools=tools,
+            ),
+            message_event("Test"),
+        ]
+
+        mock_llm.get_token_count.side_effect = None  # type: ignore
+        mock_llm.get_token_count.return_value = 7  # type: ignore
+
+        assert get_total_token_count(events, mock_llm) == 7
+
+        kwargs = mock_llm.get_token_count.call_args.kwargs  # type: ignore
+        assert kwargs["tools"] == tools
+        assert kwargs["add_security_risk_prediction"] is True
+
+    def test_system_prompt_empty_tools_are_not_counted(self, mock_llm: LLM):
+        """Test that empty tool lists do not add tool schema tokens."""
+        events = [
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="system"),
+                tools=[],
+            ),
+            message_event("Test"),
+        ]
+
+        mock_llm.get_token_count.side_effect = None  # type: ignore
+        mock_llm.get_token_count.return_value = 3  # type: ignore
+
+        assert get_total_token_count(events, mock_llm) == 3
+
+        kwargs = mock_llm.get_token_count.call_args.kwargs  # type: ignore
+        assert kwargs["tools"] is None
+        assert kwargs["add_security_risk_prediction"] is False
 
 
 class TestGetShortestPrefixAboveTokenCount:
@@ -234,3 +279,32 @@ class TestGetSuffixLengthForTokenReduction:
 
         # Suffix + prefix should equal total length
         assert suffix_length + prefix_length == len(events)
+
+    def test_base_events_are_included_for_prefix_token_counting(self, mock_llm: LLM):
+        """Token reduction should count suffixes in the context of kept events."""
+        base_events = [
+            message_event("system-like prefix"),
+            message_event("kept user request"),
+        ]
+        events = [
+            message_event("A" * 40),  # 40 chars -> 10 tokens
+            message_event("B" * 40),  # 40 chars -> 10 tokens
+            message_event("C" * 40),  # 40 chars -> 10 tokens
+        ]
+
+        suffix_length = get_suffix_length_for_token_reduction(
+            events,
+            mock_llm,
+            token_reduction=10,
+            base_events=base_events,
+        )
+
+        assert suffix_length == 1
+        first_counted_messages = mock_llm.get_token_count.call_args_list[0].args[0]  # type: ignore
+        counted_text = "\n".join(
+            content.text
+            for message in first_counted_messages
+            for content in message.content
+        )
+        assert "system-like prefix" in counted_text
+        assert "kept user request" in counted_text

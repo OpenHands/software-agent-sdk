@@ -50,20 +50,11 @@ async def conversation_service(tmp_path: Path) -> AsyncIterator[ConversationServ
 
 
 @pytest_asyncio.fixture
-async def bash_service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[BashEventService]:
-    """Per-test BashEventService, monkeypatched into the bash router.
-
-    The bash router stores its service as a module-level global
-    (``bash_router.bash_event_service``) initialized at import time, so we
-    can't isolate it via FastAPI dependency injection — we have to swap the
-    attribute. monkeypatch restores the original on teardown.
-    """
+async def bash_service(tmp_path: Path) -> AsyncIterator[BashEventService]:
+    """Per-test BashEventService scoped to tmp_path/bash_events."""
     bash_dir = tmp_path / "bash_events"
     bash_dir.mkdir(parents=True, exist_ok=True)
     service = BashEventService(bash_events_dir=bash_dir)
-    monkeypatch.setattr(bash_router_module, "bash_event_service", service)
     async with service:
         yield service
 
@@ -85,6 +76,7 @@ def app(
     """
     fastapi_app = FastAPI()
     fastapi_app.state.config = Config()
+    fastapi_app.state.bash_event_service = bash_service
     fastapi_app.include_router(server_details_router)
     fastapi_app.include_router(conversation_router, prefix="/api")
     fastapi_app.include_router(event_router, prefix="/api")

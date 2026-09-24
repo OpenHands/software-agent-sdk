@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_bash_event_service
 from openhands.agent_server.models import BashCommand
 
 
@@ -30,34 +31,38 @@ def client():
     return TestClient(create_app(config))
 
 
-@pytest.mark.asyncio
-async def test_clear_all_bash_events_empty_storage():
+def test_clear_all_bash_events_empty_storage():
     """Test clearing bash events when storage is empty."""
-    with patch("openhands.agent_server.bash_router.bash_event_service") as mock_service:
-        mock_service.clear_all_events = AsyncMock(return_value=0)
+    mock_service = MagicMock(spec=BashEventService)
+    mock_service.clear_all_events = AsyncMock(return_value=0)
 
-        config = Config(session_api_keys=[])  # Disable authentication
-        client = TestClient(create_app(config))
-        response = client.delete("/api/bash/bash_events")
+    config = Config(session_api_keys=[])
+    app = create_app(config)
+    app.dependency_overrides[get_bash_event_service] = lambda: mock_service
 
-        assert response.status_code == 200
-        assert response.json() == {"cleared_count": 0}
-        mock_service.clear_all_events.assert_called_once()
+    client = TestClient(app)
+    response = client.delete("/api/bash/bash_events")
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared_count": 0}
+    mock_service.clear_all_events.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_clear_all_bash_events_with_data():
+def test_clear_all_bash_events_with_data():
     """Test clearing bash events when storage contains data."""
-    with patch("openhands.agent_server.bash_router.bash_event_service") as mock_service:
-        mock_service.clear_all_events = AsyncMock(return_value=5)
+    mock_service = MagicMock(spec=BashEventService)
+    mock_service.clear_all_events = AsyncMock(return_value=5)
 
-        config = Config(session_api_keys=[])  # Disable authentication
-        client = TestClient(create_app(config))
-        response = client.delete("/api/bash/bash_events")
+    config = Config(session_api_keys=[])
+    app = create_app(config)
+    app.dependency_overrides[get_bash_event_service] = lambda: mock_service
 
-        assert response.status_code == 200
-        assert response.json() == {"cleared_count": 5}
-        mock_service.clear_all_events.assert_called_once()
+    client = TestClient(app)
+    response = client.delete("/api/bash/bash_events")
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared_count": 5}
+    mock_service.clear_all_events.assert_called_once()
 
 
 @pytest.mark.asyncio

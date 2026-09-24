@@ -1,0 +1,23 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "openhands/gpt-5.5",
+    "tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      }
+    ]
+  },
+  "schema_version": 4,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "openhands/gpt-5.5"
+  },
+  "tools": [
+    {
+      "name": "TerminalTool",
+      "params": {}
+    }
+  ]
+}

@@ -1,14 +1,6 @@
 from rich.text import Text
 
 
-def display_dict(d) -> Text:
-    """Create a Rich Text representation of a dictionary.
-
-    This function is deprecated. Use display_json instead.
-    """
-    return display_json(d)
-
-
 def display_json(data) -> Text:
     """Create a Rich Text representation of JSON data.
 

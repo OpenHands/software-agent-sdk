@@ -131,6 +131,20 @@ class LLMBadRequestError(LLMError):
         super().__init__(message)
 
 
+class LLMContentPolicyViolationError(LLMBadRequestError):
+    """Provider blocked the request/response via its content filter.
+
+    Subclasses LLMBadRequestError for back-compat. Deterministic in
+    (messages, model): a bare retry trips the same filter, so recovery
+    requires changing the request, not re-sending it.
+    """
+
+    def __init__(
+        self, message: str = "Output blocked by content filtering policy"
+    ) -> None:
+        super().__init__(message)
+
+
 # Other
 class UserCancelledError(Exception):
     def __init__(self, message: str = "User cancelled the request") -> None:

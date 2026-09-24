@@ -3,7 +3,9 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyCookie, APIKeyHeader
 
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 
@@ -20,22 +22,26 @@ _WORKSPACE_SESSION_COOKIE = APIKeyCookie(
 )
 
 
-def create_session_api_key_dependency(config: Config):
-    """Create a session API key dependency with the given config."""
+def check_session_api_key(
+    request: Request,
+    session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
+) -> None:
+    """Reject the request if the supplied key is not in the current session keys.
 
-    def check_session_api_key(
-        session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
-    ):
-        """Check the session API key and throw an exception if incorrect. Having this as
-        a dependency means it appears in OpenAPI Docs
-        """
-        if config.session_api_keys and session_api_key not in config.session_api_keys:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-
-    return check_session_api_key
+    Reads ``session_api_keys`` from ``request.app.state.config`` at request time
+    so that keys delivered via ``POST /api/init`` take effect immediately without
+    restarting the server or re-registering routes.
+    """
+    config: Config = request.app.state.config
+    if config.session_api_keys and session_api_key not in config.session_api_keys:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 
-def create_workspace_session_dependency(config: Config):
+def check_workspace_session(
+    request: Request,
+    header_key: str | None = Depends(_SESSION_API_KEY_HEADER),
+    cookie_key: str | None = Depends(_WORKSPACE_SESSION_COOKIE),
+) -> None:
     """Auth dependency for the workspace static-file routes.
 
     Accepts EITHER the standard ``X-Session-API-Key`` header OR the
@@ -46,28 +52,16 @@ def create_workspace_session_dependency(config: Config):
     frontend embeds workspace artifacts. The cookie is deliberately scoped
     to this router only; no other endpoint honors it.
     """
-
-    def check_workspace_session(
-        header_key: str | None = Depends(_SESSION_API_KEY_HEADER),
-        cookie_key: str | None = Depends(_WORKSPACE_SESSION_COOKIE),
-    ):
-        if not config.session_api_keys:
+    config: Config = request.app.state.config
+    if not config.session_api_keys:
+        return
+    for candidate in (header_key, cookie_key):
+        if candidate and candidate in config.session_api_keys:
             return
-        for candidate in (header_key, cookie_key):
-            if candidate and candidate in config.session_api_keys:
-                return
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-
-    return check_workspace_session
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 
-def get_conversation_service(request: Request):
-    """Get the conversation service from app state.
-
-    This dependency ensures that the conversation service is properly initialized
-    through the application lifespan context manager.
-    """
-
+def get_conversation_service(request: Request) -> ConversationService:
     service = getattr(request.app.state, "conversation_service", None)
     if service is None:
         raise HTTPException(
@@ -77,11 +71,39 @@ def get_conversation_service(request: Request):
     return service
 
 
+async def get_bash_event_service(request: Request) -> BashEventService:
+    if "runtime_conversation_id" in request.path_params:
+        event_service: EventService = request.state.runtime_event_service
+        if event_service.bash_event_service is None:
+            event_service.bash_event_service = BashEventService(
+                bash_events_dir=event_service.conversation_dir / "bash_events",
+                default_cwd=event_service.get_conversation().workspace.working_dir,
+            )
+        return event_service.bash_event_service
+    service = getattr(request.app.state, "bash_event_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Bash event service is not available",
+        )
+    return service
+
+
 async def get_event_service(
     conversation_id: UUID,
+    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> EventService:
-    event_service = await conversation_service.get_event_service(conversation_id)
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if (
+        isinstance(registry, ConversationRegistry)
+        and registry.serves_persisted_event_reads
+    ):
+        event_service = await conversation_service.get_persisted_event_service(
+            conversation_id
+        )
+    else:
+        event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

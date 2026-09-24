@@ -1,0 +1,61 @@
+---
+name: Persisted settings compatibility checks
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    persisted-settings-compat:
+        name: Persisted settings
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install workspace deps (dev)
+              run: uv sync --frozen --group dev
+
+            - name: Run persisted settings compatibility check
+              shell: bash
+              run: |
+                  uv run python .github/scripts/check_persisted_settings_compat.py \
+                    2>&1 | tee persisted-settings-compat.log
+                  exit_code=${PIPESTATUS[0]}
+                  exit "${exit_code}"
+
+            - name: Write persisted settings summary
+              if: ${{ always() }}
+              env:
+                  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                  python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
+                  import os
+                  from pathlib import Path
+
+                  log_path = Path("persisted-settings-compat.log")
+                  if log_path.exists():
+                      excerpt = log_path.read_text()[:1000].replace("```", "``\\`")
+                      print("## Persisted settings compatibility checks")
+                      print()
+                      print("<details><summary>Log excerpt (first 1000 characters)</summary>")
+                      print()
+                      print("```text")
+                      print(excerpt)
+                      print("```")
+                      print()
+                      print("</details>")
+                      print()
+                  print(f"[Action log]({os.environ['RUN_URL']})")
+                  PY

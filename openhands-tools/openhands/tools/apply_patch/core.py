@@ -59,7 +59,9 @@ def assemble_changes(
                     old_content=old_content,
                 )
             else:
-                assert False
+                raise DiffError(
+                    f"Unexpected state: path '{path}' exists in neither orig nor dest"
+                )
     return commit
 
 
@@ -95,13 +97,15 @@ class Parser(BaseModel):
         return False
 
     def startswith(self, prefix: str | tuple[str, ...]) -> bool:
-        assert self.index < len(self.lines), f"Index: {self.index} >= {len(self.lines)}"
+        if self.index >= len(self.lines):
+            raise DiffError(f"Unexpected end of patch at index {self.index}")
         if self.lines[self.index].startswith(prefix):
             return True
         return False
 
     def read_str(self, prefix: str = "", return_everything: bool = False) -> str:
-        assert self.index < len(self.lines), f"Index: {self.index} >= {len(self.lines)}"
+        if self.index >= len(self.lines):
+            raise DiffError(f"Unexpected end of patch at index {self.index}")
         line = self.lines[self.index]
         if line.startswith(prefix):
             text = line if return_everything else line[len(prefix) :]
@@ -116,11 +120,15 @@ class Parser(BaseModel):
                 if path in self.patch.actions:
                     raise DiffError(f"Update File Error: Duplicate Path: {path}")
                 move_to = self.read_str("*** Move to: ")
+                if move_to and (".." in move_to.split("/") or move_to.startswith("/")):
+                    raise DiffError(
+                        f"Update File Error: Invalid move path '{move_to}': "
+                        "must be a relative path without '..' components"
+                    )
                 if path not in self.current_files:
                     raise DiffError(f"Update File Error: Missing File: {path}")
                 text = self.current_files[path]
                 action = self.parse_update_file(text)
-                # TODO: Check move_to is valid
                 action.move_path = move_to
                 self.patch.actions[path] = action
                 continue
@@ -359,7 +367,10 @@ def identify_files_needed(text: str) -> list[str]:
 
 
 def _get_updated_file(text: str, action: PatchAction, path: str) -> str:
-    assert action.type == ActionType.UPDATE
+    if action.type != ActionType.UPDATE:
+        raise DiffError(
+            f"_get_updated_file: expected UPDATE action for '{path}', got {action.type}"
+        )
     orig_lines = text.split("\n")
     dest_lines = []
     orig_index = 0
@@ -375,7 +386,6 @@ def _get_updated_file(text: str, action: PatchAction, path: str) -> str:
                 f"_get_updated_file: {path}: orig_index {orig_index} > "
                 f"chunk.orig_index {chunk.orig_index}"
             )
-        assert orig_index <= chunk.orig_index
         dest_lines.extend(orig_lines[orig_index : chunk.orig_index])
         delta = chunk.orig_index - orig_index
         orig_index += delta
@@ -389,8 +399,16 @@ def _get_updated_file(text: str, action: PatchAction, path: str) -> str:
     delta = len(orig_lines) - orig_index
     orig_index += delta
     dest_index += delta
-    assert orig_index == len(orig_lines)
-    assert dest_index == len(dest_lines)
+    if orig_index != len(orig_lines):
+        raise DiffError(
+            f"_get_updated_file: {path}: did not consume all original lines "
+            f"(orig_index={orig_index}, len={len(orig_lines)})"
+        )
+    if dest_index != len(dest_lines):
+        raise DiffError(
+            f"_get_updated_file: {path}: dest line count mismatch "
+            f"(dest_index={dest_index}, len={len(dest_lines)})"
+        )
     return "\n".join(dest_lines)
 
 
@@ -449,10 +467,14 @@ def apply_commit(
         if change.type == ActionType.DELETE:
             remove_fn(path)
         elif change.type == ActionType.ADD:
-            assert change.new_content is not None
+            if change.new_content is None:
+                raise DiffError(f"apply_commit: ADD change for '{path}' has no content")
             write_fn(path, change.new_content)
         elif change.type == ActionType.UPDATE:
-            assert change.new_content is not None
+            if change.new_content is None:
+                raise DiffError(
+                    f"apply_commit: UPDATE change for '{path}' has no content"
+                )
             if change.move_path:
                 write_fn(change.move_path, change.new_content)
                 remove_fn(path)
@@ -470,7 +492,8 @@ def process_patch(
 
     Returns (message, fuzz, commit)
     """
-    assert text.startswith("*** Begin Patch")
+    if not text.startswith("*** Begin Patch"):
+        raise DiffError("Invalid patch: must start with '*** Begin Patch'")
     paths = identify_files_needed(text)
     orig = load_files(paths, open_fn)
     patch, fuzz = text_to_patch(text, orig)

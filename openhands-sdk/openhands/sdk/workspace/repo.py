@@ -21,6 +21,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 
 
 logger = get_logger(__name__)
@@ -146,7 +150,10 @@ class RepoSource(BaseModel):
             return v
         # Normalize HTTP to HTTPS for security (token injection requires HTTPS)
         if v.startswith("http://"):
-            logger.warning(f"Converting HTTP URL to HTTPS for security: {v}")
+            logger.warning(
+                "Converting HTTP URL to HTTPS for security: "
+                f"{redact_url_credentials_in_text(v)}"
+            )
             v = "https://" + v[7:]
         # Allow HTTPS, git@, and file:// URLs (file:// for testing)
         if v.startswith(("https://", "git@", "file://")):
@@ -287,10 +294,17 @@ _PROVIDER_CONFIG: dict[GitProvider, tuple[str, str]] = {
 }
 
 
-def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
+def _build_clone_url(
+    url: str,
+    provider: GitProvider,
+    token: str | None,
+    *,
+    explicit_provider: bool = False,
+) -> str:
     """Build authenticated clone URL based on the repository URL and provider.
 
-    Uses proper URL parsing to prevent token injection into malicious URLs.
+    The token is injected into the provider's public host, or into the URL's own
+    host when the caller set `provider` explicitly (self-hosted instances).
     """
     config = _PROVIDER_CONFIG.get(provider)
     if not config:
@@ -304,30 +318,21 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
     if is_short_format:
         return f"https://{auth_prefix}{base_url}/{url}.git"
 
-    # Handle full URLs - inject authentication only if hostname matches exactly
-    if token:
-        parsed = urllib.parse.urlparse(url)
-        if parsed.netloc.lower() == base_url:
-            # Replace only the first occurrence to prevent double injection
-            return url.replace(
-                f"https://{base_url}", f"https://{auth_prefix}{base_url}", 1
-            )
-
-    return url
-
-
-def _mask_url(url: str) -> str:
-    """Remove credentials from URL for display."""
-    if "://" not in url:
+    if not token:
         return url
-    return url.split("://")[0] + "://" + url.split("://")[-1].split("@")[-1]
 
+    parsed = urllib.parse.urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or parsed.username or not hostname:
+        return url
+    if hostname != base_url:
+        # An auto-detected provider is derived from the URL, so it cannot
+        # authorize another host - and never a lookalike of the public one.
+        if not explicit_provider or hostname.startswith(f"{base_url}."):
+            return url
 
-def _mask_token(text: str, token: str | None) -> str:
-    """Mask token in text for safe logging."""
-    if token:
-        text = text.replace(token, "***")
-    return text
+    netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    return urllib.parse.urlunparse(parsed._replace(netloc=f"{auth_prefix}{netloc}"))
 
 
 # Type for functions that fetch tokens by name (e.g., "github_token" -> token value)
@@ -374,14 +379,16 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
     """Clone a single repository. Returns True on success."""
     try:
         provider = repo.get_provider()
-        clone_url = _build_clone_url(repo.url, provider, token)
+        clone_url = _build_clone_url(
+            repo.url, provider, token, explicit_provider=repo.provider is not None
+        )
         provider_str = provider.value
     except ValueError:
         # No provider detected (e.g., file:// URLs) - use URL as-is
         clone_url = repo.url
         provider_str = "local"
 
-    display_url = _mask_url(repo.url)
+    display_url = redact_url_credentials(repo.url)
     logger.info(f"[clone] Cloning {display_url} ({provider_str}) -> {dest.name}/")
 
     cmd = _build_clone_command(clone_url, dest, repo.ref)
@@ -395,7 +402,9 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
         return False
 
     if result.returncode != 0:
-        logger.warning(f"[clone] Failed: {_mask_token(result.stderr, token)}")
+        logger.warning(
+            f"[clone] Failed: {redact_url_credentials_in_text(result.stderr)}"
+        )
         return False
 
     # For SHA refs, we did a full clone and need to checkout the specific commit
@@ -454,7 +463,9 @@ def clone_repos(
             seen_urls.add(repo.url)
             unique_repos.append(repo)
         elif repo.url:
-            logger.warning(f"[clone] Skipping duplicate URL: {_mask_url(repo.url)}")
+            logger.warning(
+                f"[clone] Skipping duplicate URL: {redact_url_credentials(repo.url)}"
+            )
 
     if not unique_repos:
         logger.info("[clone] No repositories to clone after deduplication")
@@ -496,10 +507,10 @@ def clone_repos(
                     ref=repo.ref,
                 )
             else:
-                failed.append(_mask_url(repo.url))
+                failed.append(redact_url_credentials(repo.url))
         except Exception as e:
             # Don't let one bad repo stop the entire batch
-            display_url = _mask_url(repo.url) if repo.url else "<unknown>"
+            display_url = redact_url_credentials(repo.url) if repo.url else "<unknown>"
             logger.warning(f"[clone] Error processing {display_url}: {e}")
             failed.append(display_url)
 

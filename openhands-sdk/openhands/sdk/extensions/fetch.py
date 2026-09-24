@@ -8,6 +8,7 @@ from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.git.utils import extract_repo_name, is_git_url, normalize_git_url
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import is_local_path_source
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 logger = get_logger(__name__)
@@ -108,7 +109,7 @@ def _resolve_local_source(url: str) -> Path:
 
 
 def _apply_subpath(base_path: Path, subpath: str | None, context: str) -> Path:
-    """Apply a subpath to a base path, validating it exists.
+    """Apply a subpath to a base path, validating it exists and stays inside.
 
     Args:
         base_path: The root path.
@@ -119,12 +120,16 @@ def _apply_subpath(base_path: Path, subpath: str | None, context: str) -> Path:
         The final path (base_path if no subpath, otherwise base_path/subpath).
 
     Raises:
-        ExtensionFetchError: If subpath doesn't exist.
+        ExtensionFetchError: If subpath escapes base_path or doesn't exist.
     """
     if not subpath:
         return base_path
 
     final_path = base_path / subpath.strip("/")
+    # Containment: a subpath must not climb out of the base via ".." or a symlink.
+    resolved_base = base_path.resolve()
+    if not final_path.resolve().is_relative_to(resolved_base):
+        raise ExtensionFetchError(f"Subdirectory '{subpath}' escapes {context}")
     if not final_path.exists():
         raise ExtensionFetchError(f"Subdirectory '{subpath}' not found in {context}")
     return final_path
@@ -190,13 +195,8 @@ def fetch_with_resolution(
     source_type, url = parse_extension_source(source)
 
     if source_type == SourceType.LOCAL:
-        if repo_path is not None:
-            raise ExtensionFetchError(
-                f"repo_path is not supported for local extension sources. "
-                f"Specify the full path directly instead of "
-                f"source='{source}' + repo_path='{repo_path}'"
-            )
-        return _resolve_local_source(url), None
+        base_path = _resolve_local_source(url)
+        return _apply_subpath(base_path, repo_path, f"local source '{source}'"), None
 
     git = git_helper if git_helper is not None else GitHelper()
 
@@ -266,13 +266,17 @@ def _fetch_remote_source_with_resolution(
     )
 
     if result is None:
-        raise ExtensionFetchError(f"Failed to fetch extension from {source}")
+        raise ExtensionFetchError(
+            f"Failed to fetch extension from {redact_url_credentials(source)}"
+        )
 
     # Get the actual commit SHA that was checked out
     try:
         resolved_ref = git_helper.get_head_commit(repo_cache_path)
     except Exception as e:
-        logger.warning(f"Could not get commit SHA for {source}: {e}")
+        logger.warning(
+            f"Could not get commit SHA for {redact_url_credentials(source)}: {e}"
+        )
         # Fall back to the requested ref if we can't get the SHA
         resolved_ref = ref or "HEAD"
 

@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import contextlib
 import functools
 import inspect
 import sys
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any, Final, Literal
+from collections.abc import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.utils import get_env
 
 
 if TYPE_CHECKING:
-    pass
+    from openhands.sdk.conversation.types import TraceMetadataValue
 
 
 logger = get_logger(__name__)
@@ -28,6 +30,10 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
 )
+
+
+OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
+"""Metadata key naming the side-utility operation a span subtree belongs to."""
 
 
 def _get_int_env(key: str) -> int | None:
@@ -78,6 +84,9 @@ def maybe_init_laminar():
 
     To force HTTP instead of gRPC for Laminar communication:
     LMNR_FORCE_HTTP=true  # or 1, yes, on
+
+    To initialize only selected Laminar integrations:
+    LMNR_INSTRUMENTS=litellm,mcp
     """
     if not should_enable_observability():
         logger.debug(
@@ -88,19 +97,35 @@ def maybe_init_laminar():
 
     from lmnr import Instruments, Laminar
 
+    if Laminar.is_initialized():
+        return
+
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
+    instruments_env = get_env("LMNR_INSTRUMENTS")
+    instruments = None
+    if instruments_env is not None:
+        instruments = set()
+        for value in map(str.strip, instruments_env.split(",")):
+            if not value:
+                continue
+            try:
+                instruments.add(Instruments(value))
+            except ValueError:
+                logger.warning("Ignoring invalid LMNR_INSTRUMENTS value %r", value)
 
     if _is_otel_backend_laminar():
         Laminar.initialize(
             base_url=base_url,
             http_port=_get_int_env("LMNR_HTTP_PORT"),
             grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+            instruments=instruments,
             force_http=force_http,
         )
     else:
         # Do not enable browser session replays for non-laminar backends
         Laminar.initialize(
+            instruments=instruments,
             disabled_instruments=[
                 Instruments.BROWSER_USE_SESSION,
                 Instruments.PATCHRIGHT,
@@ -124,7 +149,6 @@ def observe[**P, R](
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     preserve_global_context: bool = False,
-    rollout_entrypoint: bool = False,
     **kwargs: dict[str, Any],
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Lazy-resolving observe decorator.
@@ -150,7 +174,6 @@ def observe[**P, R](
             metadata=metadata,
             tags=tags,
             preserve_global_context=preserve_global_context,
-            rollout_entrypoint=rollout_entrypoint,
             **kwargs,
         )(func)
 
@@ -192,6 +215,30 @@ def observe[**P, R](
         return sync_wrapper
 
     return decorator
+
+
+# Keep owner first so observe can restore its conversation root span.
+def _return_tool_result(owner: object, tool_input: Any, tool_output: Any) -> Any:
+    _ = owner, tool_input
+    return tool_output
+
+
+def record_tool_result(
+    owner: object,
+    *,
+    name: str,
+    tool_call_id: str,
+    tool_input: Any,
+    tool_output: Any,
+) -> None:
+    if not should_enable_observability():
+        return
+    observe(
+        name=name,
+        span_type="TOOL",
+        ignore_inputs=["owner", "tool_output"],
+        metadata={"tool_call_id": tool_call_id},
+    )(_return_tool_result)(owner, tool_input, tool_output)
 
 
 def should_enable_observability() -> bool:
@@ -253,21 +300,39 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
+        attributes: Mapping[str, str] | None = None,
+        metadata: dict[str, TraceMetadataValue] | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         from lmnr import Laminar
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
         self.span = Laminar.start_span(name)
-        if session_id or user_id:
-            # ``set_trace_session_id`` / ``set_trace_user_id`` require an
-            # active span; briefly enter the span context to apply them.
+        if attributes:
             with contextlib.suppress(Exception):
-                with Laminar.use_span(self.span):
+                for key, value in attributes.items():
+                    self.span.set_attribute(key, value)
+        if session_id or user_id or metadata or tags:
+            # These trace/span helpers require an active span; briefly enter
+            # the span context to apply conversation-level observability data.
+            with contextlib.suppress(Exception):
+                with Laminar.use_span(
+                    self.span,
+                    # Don't mark the span ERROR if a helper raises.
+                    record_exception=False,
+                    set_status_on_exception=False,
+                ):
                     if session_id:
                         Laminar.set_trace_session_id(session_id)
                     if user_id:
                         Laminar.set_trace_user_id(user_id)
+                    if metadata:
+                        # dict is invariant: dict[str, TraceMetadataValue] is
+                        # not assignable to dict[str, Any] without a cast.
+                        Laminar.set_trace_metadata(cast(dict[str, Any], metadata))
+                    if tags:
+                        Laminar.set_span_tags(tags)
         self._ended = False
 
     def end(self) -> None:
@@ -285,6 +350,9 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
+    attributes: Mapping[str, str] | None = None,
+    metadata: dict[str, TraceMetadataValue] | None = None,
+    tags: list[str] | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
@@ -293,7 +361,14 @@ def start_root_span(
     if not should_enable_observability():
         return None
     try:
-        return RootSpan(name, session_id=session_id, user_id=user_id)
+        return RootSpan(
+            name,
+            session_id=session_id,
+            user_id=user_id,
+            attributes=attributes,
+            metadata=metadata,
+            tags=tags,
+        )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
         return None
@@ -304,6 +379,126 @@ def end_root_span(root: RootSpan | None) -> None:
     if root is None:
         return
     root.end()
+
+
+def start_child_span(
+    root: RootSpan | None,
+    name: str,
+    tags: list[str] | None = None,
+) -> None:
+    """Create and immediately end a child span under a conversation root span."""
+    if root is None or root.span is None:
+        return
+    try:
+        from lmnr import Laminar
+
+        with Laminar.use_span(
+            root.span,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
+            with Laminar.start_as_current_span(name=name):
+                if tags:
+                    Laminar.set_span_tags(tags)
+    except Exception:
+        logger.debug("Failed to create observability child span", exc_info=True)
+
+
+@contextlib.contextmanager
+def llm_call_span(name: str) -> Iterator[Any]:
+    """Open a span that stays current for the duration of one LLM call.
+
+    lmnr's LiteLLM instrumentation builds its span with ``Laminar.start_span``
+    (detached from the OTel context) and ends it in a ``finally`` before
+    ``litellm.completion`` returns, so attributes cannot be attached to it
+    afterwards -- OTel silently drops writes to an ended span. This span is
+    *current* while the call runs, so lmnr's span nests underneath it, and it
+    stays open long enough for Telemetry to attach the authoritative cost.
+
+    Yields ``None`` when observability is disabled, so callers stay branch-free.
+    """
+    if not should_enable_observability():
+        yield None
+        return
+    try:
+        from lmnr import Laminar
+
+        cm = Laminar.start_as_current_span(name=name, span_type="LLM")
+    except Exception:
+        logger.debug("Failed to open LLM observability span", exc_info=True)
+        yield None
+        return
+    with cm as span:
+        yield span
+
+
+# Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`
+# TOOL span; copied onto a detached delegate trace when present so the
+# originating tool call is visible from the delegate's trace alone.
+_TOOL_CALL_ID_META_KEY: Final[str] = "tool_call_id"
+
+
+@contextlib.contextmanager
+def detached_delegate_context() -> Iterator[dict[str, TraceMetadataValue]]:
+    """Clear the ambient span so a conversation constructed inside this block
+    starts a genuinely new Laminar trace, instead of ``RootSpan`` silently
+    joining whatever span is currently active.
+
+    ``Laminar.start_span`` without an explicit ``context=`` parents onto the
+    ambient span — its "isolated context" helper just returns whatever is
+    current. Laminar tracks that "current" span via its OWN isolated
+    ``ContextVar`` (``lmnr...tracing.context._ISOLATED_RUNTIME_CONTEXT``),
+    separate from the standard ``opentelemetry.context`` one, so attaching an
+    empty/no-parent context through the standard API (as ``RootSpan`` does
+    for cross-thread re-attachment) has no effect here — ``Laminar.use_span``
+    is the one call that updates both. Pushing ``INVALID_SPAN`` through it is
+    what actually severs the link, so a sub-agent conversation constructed
+    synchronously inside its parent's ``task`` TOOL span (see TaskManager)
+    starts its own trace instead of inheriting the parent's
+    (software-agent-sdk#4365).
+
+    Yields trace-metadata linking the delegate back to the severed parent
+    span (``delegate.parent_trace_id``/``delegate.parent_span_id``, plus a
+    best-effort ``tool_call_id`` copied from the parent's TOOL span) for the
+    caller to merge into the delegate's ``observability_metadata``. Yields an
+    empty dict if there is no active span, or if observability is disabled.
+    """
+    if not should_enable_observability():
+        yield {}
+        return
+    try:
+        from lmnr import Laminar
+        from opentelemetry import trace as otel_trace
+
+        parent = Laminar.get_laminar_span_context()
+    except Exception:
+        logger.debug("Failed to capture parent span for delegate", exc_info=True)
+        yield {}
+        return
+
+    link: dict[str, TraceMetadataValue] = {}
+    if parent is not None:
+        link["delegate.parent_trace_id"] = str(parent.trace_id)
+        link["delegate.parent_span_id"] = str(parent.span_id)
+        tool_call_id = (parent.metadata or {}).get(_TOOL_CALL_ID_META_KEY)
+        if tool_call_id:
+            link[_TOOL_CALL_ID_META_KEY] = tool_call_id
+
+    # Only guard *entering* Laminar.use_span (a caller exception raised
+    # inside the ``with`` block below must propagate normally, not be
+    # swallowed here).
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(
+                Laminar.use_span(
+                    otel_trace.INVALID_SPAN,
+                    record_exception=False,
+                    set_status_on_exception=False,
+                )
+            )
+        except Exception:
+            logger.debug("Failed to detach ambient span for delegate", exc_info=True)
+        yield link
 
 
 @contextlib.contextmanager
@@ -349,141 +544,6 @@ def _root_span_from_args(args: tuple[Any, ...]) -> RootSpan | None:
     if isinstance(candidate, RootSpan):
         return candidate
     return None
-
-
-# ---------------------------------------------------------------------------
-# Backwards-compat shims (deprecated).
-# ---------------------------------------------------------------------------
-#
-# Deprecation schedule: deprecated in 1.22.0, scheduled for removal in 1.27.0.
-# This matches the SDK's existing 5-minor-version grace window — see
-# ``VerificationSettings.confirmation_mode`` (deprecated 1.17.0, removed
-# 1.22.0). New code should use ``start_root_span`` / ``end_root_span`` (or
-# ``BaseConversation._start_observability_span`` /
-# ``_end_observability_span``).
-#
-# An audit on 2026-05-07 found no callers of these symbols outside the SDK
-# itself: 0 hits in OpenHands/OpenHands, 0 in OpenHands/agent-canvas, 0 in
-# OpenHands/codescout (only ``maybe_init_laminar`` is used), and 0 elsewhere
-# in the OpenHands org via GitHub code search. The shims are kept solely to
-# protect any unaudited private/external consumer; they emit a
-# ``DeprecationWarning`` so any straggler is alerted before removal.
-
-
-class SpanManager:
-    """Deprecated single-stack span manager.
-
-    .. deprecated:: 1.22.0
-        Will be removed in 1.27.0. The SDK no longer relies on a global stack:
-        each ``BaseConversation`` owns its own ``RootSpan``, which avoids
-        cross-conversation collisions when multiple conversations are alive
-        concurrently. Use ``start_root_span`` / ``end_root_span`` (or
-        ``BaseConversation._start_observability_span`` /
-        ``_end_observability_span``) instead.
-    """
-
-    def __init__(self) -> None:
-        self._stack: list[RootSpan] = []
-
-    def start_active_span(self, name: str, session_id: str | None = None) -> None:
-        # Literal version strings are required by .github/scripts/check_deprecations.py
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            "SpanManager.start_active_span",
-            deprecated_in="1.22.0",
-            removed_in="1.27.0",
-            details=(
-                "Use openhands.sdk.observability.laminar.start_root_span and "
-                "store the returned RootSpan on the owning object."
-            ),
-        )
-        root = start_root_span(name, session_id=session_id)
-        if root is not None:
-            self._stack.append(root)
-
-    def end_active_span(self) -> None:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            "SpanManager.end_active_span",
-            deprecated_in="1.22.0",
-            removed_in="1.27.0",
-            details="Use openhands.sdk.observability.laminar.end_root_span.",
-        )
-        if not self._stack:
-            logger.warning("Attempted to end active span, but stack is empty")
-            return
-        end_root_span(self._stack.pop())
-
-
-_span_manager: SpanManager | None = None
-
-
-def _get_span_manager() -> SpanManager:
-    """Internal accessor for the deprecated module-level SpanManager.
-
-    Bypasses ``SpanManager.__init__`` so wiring up the legacy shims doesn't
-    itself trigger a deprecation warning.
-    """
-    global _span_manager
-    if _span_manager is None:
-        _span_manager = SpanManager.__new__(SpanManager)
-        _span_manager._stack = []
-    return _span_manager
-
-
-def start_active_span(name: str, session_id: str | None = None) -> None:
-    """Deprecated: use ``start_root_span`` with a per-conversation owner.
-
-    .. deprecated:: 1.22.0
-        Will be removed in 1.27.0.
-    """
-    from openhands.sdk.utils.deprecation import warn_deprecated
-
-    warn_deprecated(
-        "openhands.sdk.observability.laminar.start_active_span",
-        deprecated_in="1.22.0",
-        removed_in="1.27.0",
-        details=(
-            "Use openhands.sdk.observability.laminar.start_root_span and "
-            "store the returned RootSpan on the owning object (e.g. a "
-            "Conversation). The @observe decorator will then re-attach the "
-            "span as the parent of nested calls automatically. The previous "
-            "global LIFO stack could not safely support multiple concurrent "
-            "conversations."
-        ),
-    )
-    # Inline the work to avoid triggering SpanManager's own deprecation warning.
-    mgr = _get_span_manager()
-    root = start_root_span(name, session_id=session_id)
-    if root is not None:
-        mgr._stack.append(root)
-
-
-def end_active_span() -> None:
-    """Deprecated: paired with the deprecated ``start_active_span``.
-
-    .. deprecated:: 1.22.0
-        Will be removed in 1.27.0.
-    """
-    from openhands.sdk.utils.deprecation import warn_deprecated
-
-    warn_deprecated(
-        "openhands.sdk.observability.laminar.end_active_span",
-        deprecated_in="1.22.0",
-        removed_in="1.27.0",
-        details="Use openhands.sdk.observability.laminar.end_root_span.",
-    )
-    try:
-        mgr = _get_span_manager()
-        if not mgr._stack:
-            logger.warning("Attempted to end active span, but stack is empty")
-            return
-        end_root_span(mgr._stack.pop())
-    except Exception:
-        logger.debug("Error ending active span")
-        pass
 
 
 def init_laminar_for_external():

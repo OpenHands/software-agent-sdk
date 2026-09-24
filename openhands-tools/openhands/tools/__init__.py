@@ -18,6 +18,7 @@ from ``openhands.tools.browser_use``.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from openhands.tools.ask_oracle import AskOracleTool
 from openhands.tools.delegate import DelegationVisualizer
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import (
@@ -29,6 +30,7 @@ from openhands.tools.preset.default import (
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
+from openhands.tools.workflow import WorkflowToolSet
 
 
 try:
@@ -39,11 +41,13 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
+    "AskOracleTool",
     "DelegationVisualizer",
     "FileEditorTool",
     "TaskToolSet",
     "TaskTrackerTool",
     "TerminalTool",
+    "WorkflowToolSet",
     "get_default_agent",
     "get_default_tools",
     "register_default_tools",

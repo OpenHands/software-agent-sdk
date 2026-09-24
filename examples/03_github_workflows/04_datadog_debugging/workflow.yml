@@ -89,17 +89,28 @@ jobs:
                   LLM_MODEL: <YOUR_LLM_MODEL>
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PYTHONPATH: ''
+                  INPUTS_QUERY_TYPE: ${{ inputs.query_type }}
+                  INPUTS_DATADOG_QUERY: ${{ inputs.datadog_query }}
+                  INPUTS_REPO_LIST: ${{ inputs.repo_list }}
+                  INPUTS_ISSUE_REPO: ${{ inputs.issue_repo }}
+                  INPUTS_ISSUE_PARENT: ${{ inputs.issue_parent }}
+                  INPUTS_ISSUE_PREFIX: ${{ inputs.issue_prefix }}
               run: |
                   mkdir -p /tmp/datadog-debug
                   cd /tmp/datadog-debug-script
+                  ISSUE_PARENT_ARG=()
+                  if [ -n "$INPUTS_ISSUE_PARENT" ]; then
+                    ISSUE_PARENT_ARG=(--issue-parent "$INPUTS_ISSUE_PARENT")
+                  fi
+
                   python datadog_debugging.py \
-                    --query-type "${{ inputs.query_type }}" \
-                    --query "${{ inputs.datadog_query }}" \
-                    --repos "${{ inputs.repo_list }}" \
+                    --query-type "$INPUTS_QUERY_TYPE" \
+                    --query "$INPUTS_DATADOG_QUERY" \
+                    --repos "$INPUTS_REPO_LIST" \
                     --working-dir "/tmp/datadog-debug" \
-                    --issue-repo "${{ inputs.issue_repo }}" \
-                    --issue-parent "${{ inputs.issue_parent }}" \
-                    --issue-prefix "${{ inputs.issue_prefix }}"
+                    --issue-repo "$INPUTS_ISSUE_REPO" \
+                    "${ISSUE_PARENT_ARG[@]}" \
+                    --issue-prefix "$INPUTS_ISSUE_PREFIX"
 
             - name: Upload debugging artifacts
               if: always()

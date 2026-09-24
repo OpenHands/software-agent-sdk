@@ -5,6 +5,7 @@ import traceback
 import uuid
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from litellm.cost_calculator import completion_cost as litellm_completion_cost
@@ -12,11 +13,116 @@ from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.utils import CostPerToken, ModelResponse, Usage
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
+from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageSnapshot:
+    """Provider-independent view of one response's token accounting.
+
+    LiteLLM reports usage in two disjoint shapes that name the same quantities
+    differently: ``Usage`` (Chat Completions) uses ``prompt_tokens`` /
+    ``completion_tokens``, while ``ResponseAPIUsage`` (Responses API) uses
+    ``input_tokens`` / ``output_tokens``. Normalizing once, at the boundary,
+    keeps every consumer -- metrics, span attributes and completion logs -- on
+    a single vocabulary instead of rediscovering the aliases at each call site.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    @property
+    def has_tokens(self) -> bool:
+        """Whether the provider reported any prompt or completion tokens."""
+        return self.prompt_tokens > 0 or self.completion_tokens > 0
+
+
+def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | None:
+    """Return a :class:`UsageSnapshot` for either provider usage shape.
+
+    ``None`` means "no token accounting": the provider reported no usage, or
+    reported a shape this module does not recognize. Unrecognized shapes are
+    ignored rather than guessed at, so adding a provider cannot silently feed
+    invented token counts into cost and cache accounting.
+    """
+    if isinstance(usage, Usage):
+        prompt_details = usage.prompt_tokens_details
+        completion_details = usage.completion_tokens_details
+        # ``cache_creation_tokens`` defaults to ``None``, so presence in
+        # ``model_fields_set`` is what distinguishes "provider reported a cache
+        # write" from "provider said nothing about cache writes".
+        cache_write = 0
+        if (
+            prompt_details is not None
+            and "cache_creation_tokens" in prompt_details.model_fields_set
+        ):
+            cache_write = int(prompt_details.cache_creation_tokens or 0)
+        return UsageSnapshot(
+            prompt_tokens=int(usage.prompt_tokens or 0),
+            completion_tokens=int(usage.completion_tokens or 0),
+            reasoning_tokens=(
+                int(completion_details.reasoning_tokens or 0)
+                if completion_details is not None
+                else 0
+            ),
+            cache_read_tokens=(
+                int(prompt_details.cached_tokens or 0)
+                if prompt_details is not None
+                else 0
+            ),
+            cache_write_tokens=cache_write,
+        )
+
+    if isinstance(usage, ResponseAPIUsage):
+        input_details = usage.input_tokens_details
+        output_details = usage.output_tokens_details
+        return UsageSnapshot(
+            prompt_tokens=int(usage.input_tokens or 0),
+            completion_tokens=int(usage.output_tokens or 0),
+            reasoning_tokens=(
+                int(output_details.reasoning_tokens or 0)
+                if output_details is not None
+                else 0
+            ),
+            cache_read_tokens=(
+                int(input_details.cached_tokens or 0)
+                if input_details is not None
+                else 0
+            ),
+        )
+
+    return None
+
+
+def _response_usage(
+    resp: ModelResponse | ResponsesAPIResponse,
+) -> Usage | ResponseAPIUsage | None:
+    """Return the usage object a response carries, if any.
+
+    ``ResponsesAPIResponse`` declares ``usage`` as a field. ``ModelResponse``
+    only accepts it as a constructor argument, so pydantic keeps it in the
+    model's extra mapping instead of its fields; reading that mapping is the
+    typed equivalent of probing for a possibly-absent attribute.
+    """
+    if isinstance(resp, ResponsesAPIResponse):
+        return resp.usage
+    if isinstance(resp, ModelResponse):
+        extra = resp.model_extra
+        if not extra:
+            return None
+        usage = extra.get("usage")
+        if isinstance(usage, (Usage, ResponseAPIUsage)):
+            return usage
+    return None
 
 
 class Telemetry(BaseModel):
@@ -48,6 +154,8 @@ class Telemetry(BaseModel):
         default=None
     )
     _stats_update_callback: Callable[[], None] | None = PrivateAttr(default=None)
+    _span_cm: Any = PrivateAttr(default=None)
+    _span: Any = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", arbitrary_types_allowed=True
@@ -77,11 +185,13 @@ class Telemetry(BaseModel):
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
         self._req_ctx = telemetry_ctx or {}
+        self._open_span()
 
     def on_response(
         self,
         resp: ModelResponse | ResponsesAPIResponse,
         raw_resp: ModelResponse | None = None,
+        provider_info: LLMProvider | None = None,
     ) -> Metrics:
         """
         Side-effects:
@@ -94,16 +204,16 @@ class Telemetry(BaseModel):
         self.metrics.add_response_latency(self._last_latency, response_id)
 
         # 2) cost
-        cost = self._compute_cost(resp)
+        cost = self._compute_cost(resp, provider_info=provider_info)
         # Intentionally skip logging zero-cost (0.0) responses; only record
         # positive cost
         if cost:
             self.metrics.add_cost(cost)
 
-        # 3) tokens - use typed usage field when available
-        usage = getattr(resp, "usage", None)
+        # 3) tokens - normalize the provider's usage shape exactly once
+        usage = normalize_usage(_response_usage(resp))
 
-        if usage and self._has_meaningful_usage(usage):
+        if usage is not None and usage.has_tokens:
             self._record_usage(
                 usage, response_id, self._req_ctx.get("context_window", 0)
             )
@@ -112,7 +222,11 @@ class Telemetry(BaseModel):
         if self.log_enabled:
             self.log_llm_call(resp, cost, raw_resp=raw_resp)
 
-        # 5) notify about stats update
+        # 5) authoritative cost + cache buckets onto the span, before it closes
+        self._annotate_span(cost, usage)
+        self._close_span()
+
+        # 6) notify about stats update
         if self._stats_update_callback is not None:
             try:
                 self._stats_update_callback()
@@ -125,6 +239,7 @@ class Telemetry(BaseModel):
         # Best-effort logging for failed requests (so we can debug malformed
         # request payloads, e.g. orphaned Responses reasoning items).
         self._last_latency = time.time() - (self._req_start or time.time())
+        self._close_span(_err)
 
         if not self.log_enabled:
             return
@@ -165,87 +280,79 @@ class Telemetry(BaseModel):
         return
 
     # ---------- Helpers ----------
-    def _has_meaningful_usage(self, usage: Usage | ResponseAPIUsage | None) -> bool:
-        """Check if usage has meaningful (non-zero) token counts.
-
-        Supports both Chat Completions Usage and Responses API Usage shapes.
-        """
-        if usage is None:
-            return False
-        try:
-            prompt_tokens = getattr(usage, "prompt_tokens", None)
-            if prompt_tokens is None:
-                prompt_tokens = getattr(usage, "input_tokens", 0)
-            completion_tokens = getattr(usage, "completion_tokens", None)
-            if completion_tokens is None:
-                completion_tokens = getattr(usage, "output_tokens", 0)
-
-            pt = int(prompt_tokens or 0)
-            ct = int(completion_tokens or 0)
-            return pt > 0 or ct > 0
-        except Exception:
-            return False
-
     def _record_usage(
-        self, usage: Usage | ResponseAPIUsage, response_id: str, context_window: int
+        self, usage: UsageSnapshot, response_id: str, context_window: int
     ) -> None:
-        """
-        Record token usage, supporting both Chat Completions Usage and
-        Responses API Usage.
-
-        Chat shape:
-          - prompt_tokens, completion_tokens
-          - prompt_tokens_details.cached_tokens
-          - completion_tokens_details.reasoning_tokens
-          - _cache_creation_input_tokens for cache_write
-        Responses shape:
-          - input_tokens, output_tokens
-          - input_tokens_details.cached_tokens
-          - output_tokens_details.reasoning_tokens
-        """
-        prompt_tokens = int(
-            getattr(usage, "prompt_tokens", None)
-            or getattr(usage, "input_tokens", 0)
-            or 0
-        )
-        completion_tokens = int(
-            getattr(usage, "completion_tokens", None)
-            or getattr(usage, "output_tokens", 0)
-            or 0
-        )
-
-        cache_read = 0
-        p_details = getattr(usage, "prompt_tokens_details", None) or getattr(
-            usage, "input_tokens_details", None
-        )
-        if p_details is not None:
-            cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
-
-        # Kimi-K2-thinking populate usage.cached_tokens field
-        if not cache_read and hasattr(usage, "cached_tokens"):
-            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
-
-        reasoning_tokens = 0
-        c_details = getattr(usage, "completion_tokens_details", None) or getattr(
-            usage, "output_tokens_details", None
-        )
-        if c_details is not None:
-            reasoning_tokens = int(getattr(c_details, "reasoning_tokens", 0) or 0)
-
-        # Chat-specific: litellm may set a hidden cache write field
-        cache_write = int(getattr(usage, "_cache_creation_input_tokens", 0) or 0)
-
+        """Record an already-normalized usage snapshot into ``metrics``."""
         self.metrics.add_token_usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cache_read_tokens=cache_read,
-            cache_write_tokens=cache_write,
-            reasoning_tokens=reasoning_tokens,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
             context_window=context_window,
             response_id=response_id,
         )
 
-    def _compute_cost(self, resp: ModelResponse | ResponsesAPIResponse) -> float | None:
+    # ---------- Observability span ----------
+    # These bracket one LLM call: ``on_request`` -> transport -> ``on_response``
+    # all run inside a single retry attempt, so the span is current while
+    # litellm executes and still open when the cost is known.
+    def _open_span(self) -> None:
+        self._close_span()  # a retry re-enters on_request; never leak the old one
+        try:
+            # Imported lazily: openhands.sdk.observability pulls in
+            # openhands.sdk.event, which imports this module.
+            from openhands.sdk.observability.laminar import llm_call_span
+
+            cm = llm_call_span(f"llm.{self.model_name}")
+            self._span = cm.__enter__()
+            self._span_cm = cm
+        except Exception:
+            logger.debug("Failed to open LLM span", exc_info=True)
+            self._span = self._span_cm = None
+
+    def _annotate_span(self, cost: float | None, usage: UsageSnapshot | None) -> None:
+        span = self._span
+        if span is None:
+            return
+        try:
+            if cost:
+                # Authoritative: _compute_cost prefers the proxy's
+                # x-litellm-response-cost header, which is already cache-aware
+                # and priced by the real backend rather than by a name lookup.
+                span.set_attribute("gen_ai.usage.cost", float(cost))
+            if usage is not None:
+                # Emitted unconditionally: lmnr only reports these when
+                # prompt_tokens_details is populated, which not every provider
+                # shape does.
+                span.set_attribute(
+                    "gen_ai.usage.cache_read_input_tokens", usage.cache_read_tokens
+                )
+                span.set_attribute(
+                    "gen_ai.usage.cache_creation_input_tokens",
+                    usage.cache_write_tokens,
+                )
+        except Exception:
+            logger.debug("Failed to annotate LLM span", exc_info=True)
+
+    def _close_span(self, err: BaseException | None = None) -> None:
+        cm, self._span_cm, self._span = self._span_cm, None, None
+        if cm is None:
+            return
+        try:
+            if err is not None:
+                cm.__exit__(type(err), err, err.__traceback__)
+            else:
+                cm.__exit__(None, None, None)
+        except Exception:
+            logger.debug("Failed to close LLM span", exc_info=True)
+
+    def _compute_cost(
+        self,
+        resp: ModelResponse | ResponsesAPIResponse,
+        provider_info: LLMProvider | None = None,
+    ) -> float | None:
         """Try provider header → litellm direct. Return None on failure."""
         extra_kwargs = {}
         if (
@@ -260,7 +367,7 @@ class Telemetry(BaseModel):
             extra_kwargs["custom_cost_per_token"] = cost_per_token
 
         try:
-            hidden = getattr(resp, "_hidden_params", {}) or {}
+            hidden = resp._hidden_params or {}
             cost = hidden.get("additional_headers", {}).get(
                 "llm_provider-x-litellm-response-cost"
             )
@@ -269,14 +376,13 @@ class Telemetry(BaseModel):
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
 
-        # move on to litellm cost calculator
-        # Handle model name properly - if it doesn't contain "/", use as-is
-        if "/" in self.model_name:
-            provider, bare = self.model_name.split("/", 1)
-            extra_kwargs["model"] = bare
-            extra_kwargs["custom_llm_provider"] = provider
-        else:
-            extra_kwargs["model"] = self.model_name
+        if provider_info is None:
+            call_kwargs = litellm_call_kwargs(self.model_name, None)
+            provider_info = LLMProvider.from_model(
+                model=call_kwargs["model"],
+                api_base=call_kwargs["api_base"],
+            )
+        extra_kwargs.update(provider_info.as_litellm_call_kwargs())
         try:
             return float(
                 litellm_completion_cost(completion_response=resp, **extra_kwargs)
@@ -313,40 +419,13 @@ class Telemetry(BaseModel):
 
             # Usage summary (prompt, completion, reasoning tokens) for quick inspection
             try:
-                usage = getattr(resp, "usage", None)
-                if usage:
-                    prompt_tokens = int(
-                        getattr(usage, "prompt_tokens", None)
-                        or getattr(usage, "input_tokens", 0)
-                        or 0
-                    )
-                    completion_tokens = int(
-                        getattr(usage, "completion_tokens", None)
-                        or getattr(usage, "output_tokens", 0)
-                        or 0
-                    )
-                    details = getattr(
-                        usage, "completion_tokens_details", None
-                    ) or getattr(usage, "output_tokens_details", None)
-                    reasoning_tokens = (
-                        int(getattr(details, "reasoning_tokens", 0) or 0)
-                        if details
-                        else 0
-                    )
-                    p_details = getattr(
-                        usage, "prompt_tokens_details", None
-                    ) or getattr(usage, "input_tokens_details", None)
-                    cache_read_tokens = (
-                        int(getattr(p_details, "cached_tokens", 0) or 0)
-                        if p_details
-                        else 0
-                    )
-
+                usage = normalize_usage(_response_usage(resp))
+                if usage is not None:
                     data["usage_summary"] = {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "reasoning_tokens": reasoning_tokens,
-                        "cache_read_tokens": cache_read_tokens,
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "reasoning_tokens": usage.reasoning_tokens,
+                        "cache_read_tokens": usage.cache_read_tokens,
                     }
             except Exception:
                 # Best-effort only; don't fail logging

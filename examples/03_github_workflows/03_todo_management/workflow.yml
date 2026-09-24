@@ -73,11 +73,14 @@ jobs:
 
             - name: Scan for TODOs
               id: scan
+              env:
+                  GITHUB_EVENT_INPUTS_TODO_IDENTIFIER: ${{ github.event.inputs.todo_identifier || 'TODO(openhands)' }}
+                  GITHUB_EVENT_INPUTS_MAX_TODOS: ${{ github.event.inputs.max_todos || '3' }}
               run: |
                   echo "Scanning for TODO comments..."
 
                   # Run the scanner and capture output
-                  TODO_IDENTIFIER="${{ github.event.inputs.todo_identifier || 'TODO(openhands)' }}"
+                  TODO_IDENTIFIER="$GITHUB_EVENT_INPUTS_TODO_IDENTIFIER"
                   python /tmp/scanner.py . --identifier "$TODO_IDENTIFIER" > todos.json
 
                   # Count TODOs
@@ -86,7 +89,7 @@ jobs:
                   echo "Found $TODO_COUNT $TODO_IDENTIFIER items"
 
                   # Limit the number of TODOs to process
-                  MAX_TODOS="${{ github.event.inputs.max_todos || '3' }}"
+                  MAX_TODOS="$GITHUB_EVENT_INPUTS_MAX_TODOS"
                   if [ "$TODO_COUNT" -gt "$MAX_TODOS" ]; then
                     echo "Limiting to first $MAX_TODOS TODOs"
                     python -c "
@@ -178,6 +181,7 @@ jobs:
                   TODO_LINE: ${{ matrix.todo.line }}
                   TODO_DESCRIPTION: ${{ matrix.todo.description }}
                   PYTHONPATH: ''
+                  BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
               run: |
                   echo "Processing TODO: $TODO_DESCRIPTION"
                   echo "File: $TODO_FILE:$TODO_LINE"
@@ -284,17 +288,19 @@ jobs:
                   ---
                   *This PR was created automatically by the TODO Management workflow.*"
 
+                  PR_PAYLOAD=$(jq -n \
+                    --arg title "$PR_TITLE" \
+                    --arg body "$PR_BODY" \
+                    --arg head "$BRANCH_NAME" \
+                    --arg base "$BASE_REF" \
+                    '{title: $title, body: $body, head: $head, base: $base}')
+
                   # Create PR using GitHub CLI or API
                   curl -X POST \
                     -H "Authorization: token $GITHUB_TOKEN" \
                     -H "Accept: application/vnd.github.v3+json" \
                     "https://api.github.com/repos/${{ github.repository }}/pulls" \
-                    -d "{
-                      \"title\": \"$PR_TITLE\",
-                      \"body\": \"$PR_BODY\",
-                      \"head\": \"$BRANCH_NAME\",
-                      \"base\": \"${{ github.ref_name }}\"
-                    }"
+                    -d "$PR_PAYLOAD"
 
     summary:
         needs: [scan-todos, process-todos]

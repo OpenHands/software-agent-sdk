@@ -7,7 +7,7 @@ from openhands.sdk.agent import (
     AgentBase,
 )
 from openhands.sdk.banner import _print_banner
-from openhands.sdk.context import AgentContext
+from openhands.sdk.context import AgentContext, load_memory
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -50,6 +50,7 @@ from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
+    ACPFileSecretSpec,
     ACPModelOption,
     ACPProviderInfo,
     AgentSettingsBase,
@@ -62,6 +63,7 @@ from openhands.sdk.settings import (
     SettingsSchema,
     SettingsSectionSchema,
     VerificationSettings,
+    apply_agent_settings_diff,
     build_session_model_meta,
     default_agent_settings,
     detect_acp_provider_by_agent_name,
@@ -83,6 +85,7 @@ from openhands.sdk.skills import (
 )
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
+    discover_agents,
     load_agents_from_dir,
     load_project_agents,
     load_user_agents,
@@ -159,11 +162,13 @@ __all__ = [
     "VerificationSettings",
     "ACP_PROVIDERS",
     "ACPAgentSettings",
+    "ACPFileSecretSpec",
     "ACPModelOption",
     "ACPProviderInfo",
     "AgentSettingsBase",
     "AgentSettingsConfig",
     "OpenHandsAgentSettings",
+    "apply_agent_settings_diff",
     "build_session_model_meta",
     "default_agent_settings",
     "detect_acp_provider_by_agent_name",
@@ -193,7 +198,9 @@ __all__ = [
     "load_project_agents",
     "load_user_agents",
     "load_agents_from_dir",
+    "discover_agents",
     "agent_definition_to_factory",
+    "load_memory",
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, load_config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import (
     WORKSPACE_SESSION_COOKIE_NAME,
@@ -191,6 +191,64 @@ def test_non_workspace_routes_reject_unlisted_origin(tmp_path):
         ),
     )
     resp = _preflight(client, "/api/conversations", origin=OTHER_ORIGIN)
+    assert "access-control-allow-origin" not in resp.headers
+
+
+def test_non_workspace_regex_echoes_http_origin_on_actual_response(tmp_path):
+    """Regex origin matches must remain credential-compatible.
+
+    Starlette's regex path echoes the concrete origin instead of emitting a
+    literal wildcard, so browsers accept the response together with
+    ``Access-Control-Allow-Credentials: true``.
+    """
+    client = _build_client(
+        tmp_path,
+        conversation_id=uuid4(),
+        config=Config(
+            session_api_keys=[SESSION_KEY],
+            allow_cors_origin_regex=r"https?://.+",
+        ),
+    )
+
+    resp = client.get("/server_info", headers={"Origin": OTHER_ORIGIN})
+
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == OTHER_ORIGIN
+    assert resp.headers["access-control-allow-credentials"] == "true"
+    assert "Origin" in resp.headers.get("vary", "")
+
+
+def test_json_config_regex_echoes_http_origin_on_actual_response(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"allow_cors_origin_regex": "https://.*\\\\.example\\\\.com"}'
+    )
+    client = _build_client(
+        tmp_path,
+        conversation_id=uuid4(),
+        config=load_config(config_path),
+    )
+
+    resp = client.get("/server_info", headers={"Origin": "https://app.example.com"})
+
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://app.example.com"
+    assert resp.headers["access-control-allow-credentials"] == "true"
+    assert "Origin" in resp.headers.get("vary", "")
+
+
+def test_non_workspace_regex_rejects_null_origin(tmp_path):
+    client = _build_client(
+        tmp_path,
+        conversation_id=uuid4(),
+        config=Config(
+            session_api_keys=[SESSION_KEY],
+            allow_cors_origin_regex=r"https?://.+",
+        ),
+    )
+
+    resp = _preflight(client, "/api/conversations", origin="null")
+
     assert "access-control-allow-origin" not in resp.headers
 
 

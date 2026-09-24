@@ -8,8 +8,9 @@ based on path:
   the request Origin on every response. These are the only routes that
   authenticate via an ambient (cookie) credential.
 * Everything else — ``LocalhostCORSMiddleware``, which honors the
-  operator's ``allow_cors_origins`` and always allows localhost and
-  ``DOCKER_HOST_ADDR`` (matches OpenHands/OpenHands#4624 intent).
+  operator's ``allow_cors_origins`` / ``allow_cors_origin_regex`` and always
+  allows localhost and ``DOCKER_HOST_ADDR`` (matches OpenHands/OpenHands#4624
+  intent).
 """
 
 import os
@@ -33,10 +34,16 @@ def _is_workspace_cookie_path(path: str) -> bool:
 class LocalhostCORSMiddleware(CORSMiddleware):
     """``CORSMiddleware`` that always allows localhost and ``DOCKER_HOST_ADDR``."""
 
-    def __init__(self, app: ASGIApp, allow_origins: list[str]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        allow_origins: list[str],
+        allow_origin_regex: str | None = None,
+    ) -> None:
         super().__init__(
             app,
             allow_origins=allow_origins,
+            allow_origin_regex=allow_origin_regex,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -69,9 +76,17 @@ class CORSDispatcher:
        partition key and are not legitimate clients.
     """
 
-    def __init__(self, app: ASGIApp, *, allow_origins: list[str]) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        allow_origins: list[str],
+        allow_origin_regex: str | None = None,
+    ) -> None:
         self._default_cors = LocalhostCORSMiddleware(
-            app, allow_origins=list(allow_origins)
+            app,
+            allow_origins=list(allow_origins),
+            allow_origin_regex=allow_origin_regex,
         )
         self._workspace_cors = CORSMiddleware(
             app,
