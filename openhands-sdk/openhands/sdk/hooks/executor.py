@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.llm import LLM
+    from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.llm.utils.metrics import Metrics
 
 
@@ -166,6 +167,7 @@ class HookExecutor:
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
         llm_getter: "Callable[[], LLM | None] | None" = None,
+        llm_call_context: "LLMCallContext | None" = None,
         persistence_dir: str | None = None,
         visualizer: type[ConversationVisualizerBase]
         | ConversationVisualizerBase
@@ -179,6 +181,7 @@ class HookExecutor:
         # LLM: switch_llm()/switch_profile() replace agent.llm after the executor
         # is built, and a captured instance would go stale.
         self._llm_getter = llm_getter
+        self.llm_call_context = llm_call_context
         self.persistence_dir = persistence_dir
         self.visualizer = visualizer
         self.conversation_stats = conversation_stats
@@ -272,6 +275,7 @@ class HookExecutor:
                 persistence_dir=self.persistence_dir,
                 visualizer=hook_visualizer,
                 max_iteration_per_run=hook.max_iterations,
+                _parent_llm_call_context=self.llm_call_context,
             )
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"
@@ -358,7 +362,11 @@ class HookExecutor:
         ]
 
         try:
-            response = hook_llm.generate(messages=messages, store=False)
+            response = hook_llm.generate(
+                messages=messages,
+                store=False,
+                call_context=self.llm_call_context,
+            )
             raw = "\n".join(content_to_str(response.message.content))
         except Exception as e:
             logger.warning(

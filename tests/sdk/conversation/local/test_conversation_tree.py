@@ -601,8 +601,9 @@ def test_generate_title_reads_active_branch(monkeypatch):
 
         captured: dict = {}
 
-        def _fake_generate(events, llm, max_length=50):
+        def _fake_generate(events, llm, max_length=50, *, call_context=None):
             captured["events"] = list(events)
+            captured["call_context"] = call_context
             return "title"
 
         monkeypatch.setattr(
@@ -620,6 +621,7 @@ def test_generate_title_reads_active_branch(monkeypatch):
             if isinstance(c, TextContent)
         ]
         assert texts == ["fresh root"]
+        assert captured["call_context"] is conv.get_llm_call_context()
 
 
 def test_fork_preserves_empty_head():
