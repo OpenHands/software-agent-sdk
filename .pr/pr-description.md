@@ -43,11 +43,13 @@ uv run pytest -q tests/cross/test_remote_conversation_live_server.py -k storage_
 
 [Validation details](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/validation.md) include reproduction commands, reports, and limitations:
 
-- Broad Python regression: **1,970 passed**, 70 skipped, 6 deselected; later affected-scope runs also passed. Full TypeScript suite: **336 passed**. Pre-commit, persisted-settings compatibility, and OpenAPI checks passed.
+- Original Python regression: **1,970 passed**, 70 skipped, 6 deselected; later affected-scope runs also passed. Full TypeScript suite: **336 passed**. Pre-commit, persisted-settings compatibility, and OpenAPI checks passed.
 - [Strict live test](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/strict-notes/run-528nrz0g/report.json): **8/8 checks passed**, including actual notes read and search/read of a hidden source after reset. Its old all-zero usage fields are invalid metrics and are not used as cost evidence.
 - [Live paired evaluation](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/notes-comparison/report.json): **18/18 exact matches**, six samples per strategy, 162 provider attempts. All three strategies scored 6/6; history was searched once and never read. This does not demonstrate a retrieval advantage or token savings.
 - [Live challenge suite](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/notes-challenge/report.json): **0/9 completed**, paused after eight attempts because of HTTP 503. Its offline scripted counterpart passed 9/9 and validates the harness only.
 - Actual temporary-file, partial-result, and state-snapshot failures are covered without automatically repeating uncertain tools. [Offline example output](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/evidence/offline-example.log) confirms persisted reopen.
+
+After merging current upstream and resolving the optional tool registration conflict, **341 Python/server tests** and **338 TypeScript tests** passed. A fresh OpenAPI quality check passed with 103 allowlisted locations. See the [post-merge validation](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/validation.md#verification-after-merging-current-upstream). These follow-up checks did not call a real LLM; the live reports above remain tied to the initial implementation.
 
 The repository integration/benchmark workflows have not run for this PR. Maintainer review should determine any additional benchmark requirements.
 
@@ -73,4 +75,4 @@ The condenser and storage protection both default to disabled; existing settings
 
 The guard is an admission policy, not an OS quota. It preserves committed content, reports uncommitted outputs, and neither deletes history nor resumes execution automatically. Recovery APIs require a server containing this feature.
 
-Request the `integration-test` label for prompt/agent decision coverage. Companion docs PR: [OpenHands/docs#837](https://github.com/OpenHands/docs/pull/837). The same changes are preserved in [docs.patch](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/docs.patch). Merge implementation before docs. Remove temporary `.pr/` artifacts before merging a fork PR.
+Maintainers: please add `integration-test` for prompt/agent decision coverage; this contributor account cannot add labels. Companion docs PR: [OpenHands/docs#837](https://github.com/OpenHands/docs/pull/837). The same changes are preserved in [docs.patch](https://github.com/cbinhan/software-agent-sdk/blob/feat/notes-history-storage-safety/.pr/docs.patch). Merge implementation before docs. Remove temporary `.pr/` artifacts before merging a fork PR.

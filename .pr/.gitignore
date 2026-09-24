@@ -52,3 +52,7 @@
 !/strict_notes_retrieval.py
 !/test_memory_challenges.py
 !/validation.md
+!/evidence/post-merge-sdk-tools.log
+!/evidence/post-merge-storage.log
+!/evidence/post-merge-server.log
+!/evidence/post-merge-typescript.log

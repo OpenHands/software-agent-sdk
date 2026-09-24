@@ -1,9 +1,10 @@
 # Notes, history retrieval, and storage safety — validation
 
 Working branch: `feat/notes-history-storage-safety`.
-Base: `bd5fff06c2fe79d6e0e5d192bbf22339482f2805`.
-Tested implementation commit: `69179b1b456e2a281217be9016a77924be817b3d`.
-The commit and these review artifacts have not been published to a PR yet.
+Original base: `bd5fff06c2fe79d6e0e5d192bbf22339482f2805`.
+Original implementation used for the live evaluation: `69179b1b456e2a281217be9016a77924be817b3d`.
+Current implementation after merging upstream: `0934c600d9e8bbf289f63e3324ec14f63bac1223`.
+Published drafts: [SDK #5312](https://github.com/OpenHands/software-agent-sdk/pull/5312) and [docs #837](https://github.com/OpenHands/docs/pull/837).
 
 ## Implemented behavior
 
@@ -45,7 +46,7 @@ Result: **1,970 passed, 70 skipped, 6 deselected**. Example-discovery skips are 
 | Final critic admission, iterative refinement, and storage tests | 85 passed |
 | TypeScript full coverage suite | 336 passed across 21 files |
 | Persisted settings compatibility gate | 14 historical fixtures and 8 PyPI baseline payloads passed |
-| Final exported OpenAPI quality gate | Passed; 102 explicitly allowlisted weak schema locations |
+| Original exported OpenAPI quality gate | Passed; 102 explicitly allowlisted weak schema locations |
 
 The 3 new OpenAPI allowlist entries are inherited `ToolDefinition.meta` opaque dictionaries, matching existing built-in tool metadata. They do not weaken recovery request validation.
 
@@ -199,7 +200,7 @@ All edited Python files passed their individual pre-commit hooks. Total token/co
 - A filesystem that cannot be probed fails closed. Opening a protected conversation also checks capacity; existing event files remain available for separate read-only inspection.
 - Notes append stores only its delta, but action parameters and retrieval observations still consume ordinary event-log space. No total disk quota, TTL, archive, or garbage collector is included.
 - Changes to agent prompts/decisions should receive the repository's `integration-test` label when a PR is opened. The targeted real-provider tests above have run; the repository's integration/benchmark evaluation workflows have not been run for this PR.
-- Documentation changes are committed as `bf660fa4123d7a1ade2500d6492b6ce277545565` on the matching branch in `/private/tmp/openhands-4916-docs`; [docs.patch](docs.patch) preserves the companion diff. Creating an SDK PR requires a companion docs PR under repository policy.
+- Documentation changes are published in [OpenHands/docs#837](https://github.com/OpenHands/docs/pull/837), commit `bf660fa4123d7a1ade2500d6492b6ce277545565`; [docs.patch](docs.patch) preserves the companion diff. Both draft descriptions cross-reference the other PR. Merge the SDK implementation before its documentation.
 - Documentation validation passed: Mintlify strict build and broken-link checks, local page preview, all three Python snippets parsed, setup/read-only inspection executed with TestLLM and no model calls, and the TypeScript recovery snippet passed strict type checking. The guide's read-only cold-recovery example loaded 17 events with all 20 persisted source files' hashes and modification times unchanged.
 - `.pr/` contains temporary review evidence and must not ship in the merged tree. The repository cleanup workflow exists; fork PRs should remove these artifacts before merge.
 
@@ -209,6 +210,22 @@ The committed review bundle contains the referenced reports, selected context sn
 
 ## Publication preflight
 
-- All 126 local documentation links resolve to the committed implementation or selected review artifacts. High-confidence credential scanning found no matches in the selected artifacts; raw conversation state is excluded.
+- Before publication, all 126 local documentation links resolved to the implementation or selected review artifacts. Published source links now use the explicit implementation revision and evidence links use the public feature branch. High-confidence credential scanning found no matches in the selected artifacts; raw conversation state is excluded.
 - The PR description preserves the template's human-only section exactly. The local description validator reports its sole pending error: `Add a short human-written note between HUMAN: and AGENT:`. The author must fill this themselves before marking the PR ready; the description-check workflow skips draft PRs.
-- No remote SDK or docs PR has been created yet. Publication requires GitHub authentication, final head-repository links, reciprocal PR URLs, and a request for the `integration-test` label.
+- Both PRs are published as drafts from the public `cbinhan` forks, with reciprocal links and a public design preview. The account has read-only upstream permissions: GitHub rejected adding `integration-test` (`AddLabelsToLabelable`), so the SDK description requests a maintainer to add it. The HUMAN field remains reserved for the author before marking ready.
+
+## Verification after merging current upstream
+
+GitHub initially detected a conflict with upstream `e21d77673b738f056676044600c4ad81c5a575c8`. Merge commit `0934c600d9e8bbf289f63e3324ec14f63bac1223` retains both the upstream model-routing tool and the three optional memory tools; default built-ins remain unchanged. `make build` refreshed the upstream dependency lock, and the conflict file passed pre-commit.
+
+| Current merged-tree check | Result |
+|---|---|
+| Settings, model routing/switching, memory tools, agent reset, notes condenser | [213 passed](evidence/post-merge-sdk-tools.log) |
+| Storage IO/recovery, critic admission, EventLog | [55 passed](evidence/post-merge-storage.log) |
+| Server API, local secret resolver, meta-profile routes, storage, real HTTP recovery | [73 passed](evidence/post-merge-server.log) |
+| Fresh OpenAPI export and quality gate | [Passed: 103 allowlisted locations](evidence/post-merge-server.log) |
+| TypeScript dependency install, build, and full suite | [338 passed across 21 files](evidence/post-merge-typescript.log) |
+
+The three Python/server selections total **341 passing tests**. These runs are separate from the original 1,970-test regression above; overlapping older runs are not added as unique coverage. The OpenAPI count grows from 102 to 103 because upstream added the model-routing tool's opaque metadata entry. These post-merge checks do not call a real LLM API; the earlier live reports remain evidence from the original implementation revision.
+
+The new upstream optional model router reads recent messages from the EventLog for its classifier. It is disabled by default and was not part of the memory evaluation; active-view eviction assertions should not be generalized to every optional auxiliary model path.
