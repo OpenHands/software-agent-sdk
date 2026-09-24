@@ -267,11 +267,97 @@ jobs:
                     echo "✅ PR created for $REPO"
                   fi
 
+            - name: Create PR for OpenHands repo
+              id: openhands_pr
+              continue-on-error: true
+              env:
+                  VERSION: ${{ steps.get_version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  REPO="OpenHands/OpenHands"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-repo
+                  cd openhands-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Check if branch already exists on remote
+                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
+                    git fetch origin "$BRANCH"
+                    git checkout "$BRANCH"
+                  else
+                    # Create branch
+                    git checkout -b "$BRANCH"
+                  fi
+
+                  # OpenHands tracks the agent-server version in config/defaults.json
+                  # under versions.agentServer. Bump only that scalar (bare semver),
+                  # leaving versions.agentCanvas/automation and images.agentServer
+                  # untouched.
+                  echo "📝 Updating config/defaults.json versions.agentServer..."
+                  sed -i -E 's/("agentServer"[[:space:]]*:[[:space:]]*")[0-9]+\.[0-9]+\.[0-9]+(")/\1'"$VERSION"'\2/' config/defaults.json
+
+                  # Verify the edit took (the versions one,, not the images one).
+                  if ! grep -E '"agentServer"[[:space:]]*:[[:space:]]*"'"$VERSION"'"' config/defaults.json; then
+                    echo "❌ Failed to bump versions.agentServer to $VERSION in config/defaults.json"
+                    exit 1
+                  fi
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Commit and push
+                  git add config/defaults.json
+                  git commit -m "chore: bump agent-server to $VERSION" \
+                    -m "Updates config/defaults.json versions.agentServer to match software-agent-sdk v$VERSION." \
+                    -m "Automated version bump after PyPI release." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Check if PR already exists
+                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
+                  if [ -n "$EXISTING_PR" ]; then
+                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
+                  else
+                    # Create PR
+                    gh pr create \
+                      --repo "$REPO" \
+                      --title "chore: bump agent-server to $VERSION" \
+                      --body "## Automated Version Bump
+
+                  This PR updates the following version to **$VERSION**:
+                  - \`versions.agentServer\` in \`config/defaults.json\`
+
+                  The TS client pin in \`package.json\` is left untouched; the
+                  existing \`check-sdk-version-sync.mjs\` check flags any staleness.
+
+                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
+
+                  ---
+                  _This PR was automatically created by the version-bump-prs workflow._" \
+                      --base main \
+                      --head "$BRANCH"
+
+                    echo "✅ PR created for $REPO"
+                  fi
+
             - name: Summary
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
                   CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
                   AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
+                  OPENHANDS_OUTCOME: ${{ steps.openhands_pr.outcome }}
               run: |
                   echo "## Version Bump PRs" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
@@ -290,6 +376,11 @@ jobs:
                     echo "- ⚠️ **automation PR creation FAILED** — see the \"Create PR for automation repo\" step logs" >> $GITHUB_STEP_SUMMARY
                   else
                     echo "- [automation](https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  fi
+                  if [ "$OPENHANDS_OUTCOME" = "failure" ]; then
+                    echo "- ⚠️ **OpenHands PR creation FAILED** — see the \"Create PR for OpenHands repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "- [OpenHands](https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
                   fi
 
             - name: Notify Slack
