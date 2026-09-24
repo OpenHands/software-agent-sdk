@@ -301,8 +301,9 @@ class Message(BaseModel):
         if not force_string_serializer and (
             cache_enabled or vision_enabled or function_calling_enabled
         ):
-            message_dict = self._list_serializer(vision_enabled=vision_enabled, 
-                                                 cache_enabled=cache_enabled)
+            message_dict = self._list_serializer(
+                vision_enabled=vision_enabled, cache_enabled=cache_enabled
+            )
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
             # single string
@@ -341,7 +342,9 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _list_serializer(self, *, vision_enabled: bool, cache_enabled: bool) -> dict[str, Any]:
+    def _list_serializer(
+        self, *, vision_enabled: bool, cache_enabled: bool
+    ) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
         role_tool_with_prompt_caching = False
 
@@ -359,7 +362,7 @@ class Message(BaseModel):
         for item in self.content:
             # All content types now return list[dict[str, Any]]
             item_dicts = item.to_llm_dict()
-            
+
             if not cache_enabled:
                 for d in item_dicts:
                     d.pop("cache_control", None)

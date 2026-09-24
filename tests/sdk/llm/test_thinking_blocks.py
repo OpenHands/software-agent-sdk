@@ -490,7 +490,9 @@ def test_thinking_blocks_only_for_assistant_role():
         thinking_blocks=[thinking_block],
     )
 
-    assistant_dict = assistant_message._list_serializer(vision_enabled=False, cache_enabled=False)
+    assistant_dict = assistant_message._list_serializer(
+        vision_enabled=False, cache_enabled=False
+    )
 
     # Thinking blocks should be added for assistant role
     assert "thinking_blocks" in assistant_dict
