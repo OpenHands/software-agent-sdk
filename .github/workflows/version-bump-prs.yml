@@ -459,6 +459,16 @@ jobs:
         # openhands-cloud charts (three locations) so the Check agent-server sync
         # gate never trips on a stale pin. Shares the pypi-release dispatch chain
         # and image-readiness wait used by bump-typescript-client.
+        #
+        # The sync gate compares this agent-server tag against the SDK version the
+        # chart's pinned enterprise-server release was built against (see
+        # OpenHands/OpenHands-Cloud scripts/check_agent_server_sync.py). This job
+        # is only correct because the same version-bump-prs.yml run also opens the
+        # enterprise SDK-pin bump PR (create-version-bump-prs), so the two pins
+        # move together and are merged together in the same release cycle.
+        concurrency:
+            group: bump-image-tag-OpenHands-OpenHands-Cloud-agent-server
+            cancel-in-progress: false
         runs-on: ubuntu-24.04
         timeout-minutes: 30
         steps:
