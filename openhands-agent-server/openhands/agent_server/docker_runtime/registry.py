@@ -41,6 +41,17 @@ _CONVERSATIONS_DIR = "/var/openhands/conversations"
 _PERSISTENCE_DIR = "/var/openhands/.openhands"
 _WORKSPACE_DIR = "/workspace"
 _OWNER_LABEL = "ai.openhands.runtime-owner"
+_CONVERSATION_LABEL = "ai.openhands.conversation-id"
+# Set by the runtime for each container; never taken from the server's env.
+_RUNTIME_ENV = (
+    "HOME",
+    "OH_CONVERSATIONS_PATH",
+    "OH_PERSISTENCE_DIR",
+    "OH_CONVERSATION_RUNTIME",
+    "OH_SECRET_KEY",
+    V1_SESSION_API_KEY_ENV,
+    "OH_RUNTIME_LAUNCHED_PROFILE",
+)
 
 
 @dataclass(slots=True)
@@ -376,18 +387,17 @@ class DockerConversationRegistry(ConversationRegistry):
         )
         if "DEBUG" in os.environ:
             env["DEBUG"] = os.environ["DEBUG"]
+        # Operator-chosen variables, never the ones that isolate this runtime.
+        passed = [
+            name
+            for name in self.config.conversation_container_env
+            if name in os.environ and name not in (*_RUNTIME_ENV, "DEBUG")
+        ]
+        for name in passed:
+            env[name] = os.environ[name]
 
         flags: list[str] = []
-        for name in (
-            "HOME",
-            "OH_CONVERSATIONS_PATH",
-            "OH_PERSISTENCE_DIR",
-            "OH_CONVERSATION_RUNTIME",
-            "OH_SECRET_KEY",
-            V1_SESSION_API_KEY_ENV,
-            "OH_RUNTIME_LAUNCHED_PROFILE",
-            "DEBUG",
-        ):
+        for name in (*_RUNTIME_ENV, "DEBUG", *passed):
             if name in env:
                 flags.extend(("-e", name))
         for host, target in (
@@ -396,6 +406,12 @@ class DockerConversationRegistry(ConversationRegistry):
             (workspace_dir, _WORKSPACE_DIR),
         ):
             flags.extend(("-v", f"{host}:{target}"))
+        for volume in self.config.conversation_container_volumes:
+            flags.extend(("-v", volume))
+        network = self.config.conversation_container_network
+        # On a shared network the server reaches the container by name, so
+        # nothing is published on the Docker host.
+        flags.extend(("--network", network) if network else ("-p", "127.0.0.1::8000"))
         if self.config.conversation_container_memory:
             flags.extend(("--memory", self.config.conversation_container_memory))
         if self.config.conversation_container_cpus is not None:
@@ -405,6 +421,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 ("--pids-limit", str(self.config.conversation_container_pids_limit))
             )
 
+        name = f"agent-server-conversation-{uuid4()}"
         command = [
             "docker",
             "run",
@@ -420,10 +437,10 @@ class DockerConversationRegistry(ConversationRegistry):
             "host.docker.internal:host-gateway",
             "--label",
             f"{_OWNER_LABEL}={self.owner}",
+            "--label",
+            f"{_CONVERSATION_LABEL}={conversation_id}",
             "--name",
-            f"agent-server-conversation-{uuid4()}",
-            "-p",
-            "127.0.0.1::8000",
+            name,
             *flags,
             self.config.conversation_image,
             "--host",
@@ -439,12 +456,16 @@ class DockerConversationRegistry(ConversationRegistry):
 
         container_id = result.stdout.strip()
         try:
-            binding = execute_command(["docker", "port", container_id, "8000/tcp"])
-            address, port = binding.stdout.strip().rsplit(":", 1)
-            if binding.returncode != 0 or address != "127.0.0.1":
-                raise RuntimeError("Docker did not create a loopback port binding")
+            if network:
+                host = f"http://{name}:8000"
+            else:
+                binding = execute_command(["docker", "port", container_id, "8000/tcp"])
+                address, port = binding.stdout.strip().rsplit(":", 1)
+                if binding.returncode != 0 or address != "127.0.0.1":
+                    raise RuntimeError("Docker did not create a loopback port binding")
+                host = f"http://127.0.0.1:{int(port)}"
             container = ConversationContainer(
-                host=f"http://127.0.0.1:{int(port)}",
+                host=host,
                 api_key=identity.api_key.get_secret_value(),
                 container_id=container_id,
             )
