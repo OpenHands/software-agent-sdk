@@ -298,20 +298,21 @@ jobs:
                     git checkout -b "$BRANCH"
                   fi
 
-                  # enterprise pins openhands-sdk + openhands-agent-server as exact
-                  # PEP 621 dependencies and keeps a uv.lock. Update the pins with
-                  # sed (exact, no normalization), then regenerate the lock. The repo
-                  # exempts these packages from its freshness guardrail via
-                  # exclude-newer-package, so no UV_EXCLUDE_NEWER override is needed.
+                  # enterprise pins openhands-sdk + openhands-agent-server + openhands-tools as
+                  # exact PEP 621 dependencies and keeps a uv.lock. Update the pins with
+                  # sed (exact, no normalization), then regenerate the lock, keeping the
+                  # project's own [tool.uv] table (exclude-newer + exclude-newer-package)
+                  # intact so the regenerated lock still satisfies `uv sync --locked`in CI.
 
                   echo "📝 Updating pyproject.toml SDK pins..."
                   sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
                   sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
+                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
 
                   # --no-cache avoids stale index data from the just-published packages.
 
                   echo "📝 Regenerating uv.lock..."
-                  uv lock --no-cache --no-config
+                  uv lock --no-cache
 
                   # Check if there are changes
                   if git diff --quiet; then
@@ -319,11 +320,12 @@ jobs:
                     exit 0
                   fi
 
-                  # Commit and push. Use a Conventional Commit `fix:` subject so the
-                  # target repo's release-please opens a release PR on merge.
+                  # Commit and push. Use a Conventional Commit `chore(deps):` subject so the
+                  # target repo's release-please does not cut a release from these bumps
+                  # (the manual bump this replaces, #484, used the same convention).
                   git add pyproject.toml uv.lock
-                  git commit -m "fix: bump SDK to $VERSION" \
-                    -m "Bump openhands-sdk, openhands-agent-server to $VERSION (regenerated uv.lock)." \
+                  git commit -m "chore(deps): bump SDK to $VERSION" \
+                    -m "Bump openhands-sdk, openhands-agent-server, openhands-tools to $VERSION (regenerated uv.lock)." \
                     -m "Automated version bump after PyPI release." \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
@@ -343,6 +345,7 @@ jobs:
                   This PR updates the following packages to version **$VERSION**:
                   - \`openhands-sdk\`
                   - \`openhands-agent-server\`
+                  - \`openhands-tools\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 
