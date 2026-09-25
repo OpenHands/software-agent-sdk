@@ -26,6 +26,7 @@ from openhands.sdk.mcp.config import (
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
@@ -104,7 +105,7 @@ def _oauth_auth_from_authentication_config(
     if client_auth_method is not None:
         additional_client_metadata["token_endpoint_auth_method"] = client_auth_method
 
-    return OAuth(
+    return MCPOAuth(
         scopes=authentication.scopes,
         client_name=authentication.client_name or "FastMCP Client",
         token_storage=mcp_oauth_token_storage,
@@ -202,7 +203,7 @@ def _prepare_mcp_config(
         if oauth_auth is not None:
             server.auth = oauth_auth
         elif mcp_oauth_token_storage is not None:
-            server.auth = OAuth(token_storage=mcp_oauth_token_storage)
+            server.auth = MCPOAuth(token_storage=mcp_oauth_token_storage)
 
     return prepared
 
