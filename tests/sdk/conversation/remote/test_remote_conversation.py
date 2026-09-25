@@ -212,6 +212,89 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_attach_registers_conversation_with_workspace(self, mock_ws_client):
+        """Attaching registers the conversation so the run callback links it."""
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value["agent"] = self.agent.model_dump(mode="json")
+                response.json.return_value["max_iterations"] = 500
+            return response
+
+        client.request.side_effect = respond
+        assert self.workspace.conversation_id is None
+
+        conversation = RemoteConversation.attach(
+            workspace=self.workspace, conversation_id=cid, visualizer=None
+        )
+
+        assert self.workspace.conversation_id == str(cid)
+        assert conversation.id == cid
+        conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_constructor_attach_registers_conversation_with_workspace(
+        self, mock_ws_client
+    ):
+        """The automations' attach route registers the conversation it resumed.
+
+        ``Conversation(..., conversation_id=<existing>)`` is how automations
+        resume a stable conversation, and it probes the server from
+        ``RemoteConversation.__init__`` rather than calling ``attach()``.
+        """
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value["agent"] = self.agent.model_dump(mode="json")
+                response.json.return_value["max_iterations"] = 500
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            conversation_id=cid,
+            visualizer=None,
+        )
+
+        assert self.workspace.conversation_id == str(cid)
+        assert conversation.id == cid
+        # Attaching must not create the conversation again.
+        assert all(call.args[0] != "POST" for call in client.request.call_args_list)
+        conversation.close()
+
+    def test_failed_attach_does_not_register_conversation(self):
+        """A rejected attach leaves the workspace's registered ID untouched."""
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        client.request.side_effect = None
+        client.request.return_value = httpx.Response(
+            404, request=httpx.Request("GET", f"{self.host}/api/conversations/{cid}")
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            RemoteConversation.attach(self.workspace, cid, visualizer=None)
+        assert self.workspace.conversation_id is None
+
+        self.workspace.register_conversation("conv-previous")
+        with pytest.raises(httpx.HTTPStatusError):
+            RemoteConversation.attach(self.workspace, cid, visualizer=None)
+        assert self.workspace.conversation_id == "conv-previous"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_create_from_profile_uses_resolved_agent(self, mock_ws_client):
         cid, profile_id = uuid.uuid4(), uuid.uuid4()
         hooks = HookConfig.model_validate({"stop": [{"hooks": [{"command": "true"}]}]})
