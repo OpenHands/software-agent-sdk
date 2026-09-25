@@ -6,6 +6,7 @@ tmux session, enabling concurrent command execution across panes.
 
 from __future__ import annotations
 
+import shlex
 import threading
 import time
 import uuid
@@ -27,6 +28,9 @@ from openhands.tools.terminal.constants import (
 from openhands.tools.terminal.env import (
     build_terminal_env,
     normalize_terminal_env,
+)
+from openhands.tools.terminal.terminal.process_priority import (
+    get_process_priority_prefix,
 )
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
@@ -167,13 +171,20 @@ class TmuxPanePool:
         """Create a new PooledTmuxTerminal within the shared session."""
         assert self._session is not None
 
-        shell_command = "/bin/bash"
+        shell_command = ["/bin/bash"]
         if self.username in ["root", "openhands"]:
-            shell_command = f"su {self.username} -"
+            shell_command = ["su", self.username, "-"]
+
+        window_command = shlex.join(
+            (
+                *get_process_priority_prefix(build_terminal_env(self.env)),
+                *shell_command,
+            )
+        )
 
         window = self._session.new_window(
             window_name=f"pane-{len(self._all_panes)}",
-            window_shell=shell_command,
+            window_shell=window_command,
             start_directory=self.work_dir,
         )
         active_pane = window.active_pane
