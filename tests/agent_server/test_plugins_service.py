@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import plugins_service
+from openhands.agent_server import marketplace_snapshot
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.plugins_service import (
     MarketplacePluginInfo,
@@ -23,9 +23,9 @@ from openhands.sdk.plugin import install_plugin
 @pytest.fixture(autouse=True)
 def _reset_catalog_cache():
     """Reset the module-level TTL cache so tests don't leak entries to each other."""
-    plugins_service._plugin_catalog_cache = None
+    marketplace_snapshot._marketplace_cache.clear()
     yield
-    plugins_service._plugin_catalog_cache = None
+    marketplace_snapshot._marketplace_cache.clear()
 
 
 def _write_marketplace(repo_dir: Path, plugins: list[dict]) -> Path:
@@ -74,7 +74,7 @@ def test_catalog_returns_only_true_plugins(tmp_path: Path, monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        plugins_service, "update_skills_repository", lambda *a, **k: repo
+        marketplace_snapshot, "update_skills_repository", lambda *a, **k: repo
     )
     installed = tmp_path / "installed"
     installed.mkdir()
@@ -84,7 +84,7 @@ def test_catalog_returns_only_true_plugins(tmp_path: Path, monkeypatch):
 
     # Assert: only the ./plugins/ entry, resolved to local PluginSource coords.
     assert [p.name for p in catalog] == ["local-plugin"]
-    assert catalog[0].source.endswith("plugins/local-plugin")
+    assert Path(catalog[0].source).parts[-2:] == ("plugins", "local-plugin")
     assert catalog[0].ref is None
     assert catalog[0].repo_path is None
 
@@ -103,7 +103,7 @@ def test_catalog_loads_from_plugin_manifest_layout(tmp_path: Path, monkeypatch):
     )
     assert not (repo / "marketplaces" / "default.json").exists()
     monkeypatch.setattr(
-        plugins_service, "update_skills_repository", lambda *a, **k: repo
+        marketplace_snapshot, "update_skills_repository", lambda *a, **k: repo
     )
     installed = tmp_path / "installed"
     installed.mkdir()
@@ -113,7 +113,7 @@ def test_catalog_loads_from_plugin_manifest_layout(tmp_path: Path, monkeypatch):
 
     # Assert: the true plugin is returned (not an empty catalog), skill excluded.
     assert [p.name for p in catalog] == ["city-weather"]
-    assert catalog[0].source.endswith("plugins/city-weather")
+    assert Path(catalog[0].source).parts[-2:] == ("plugins", "city-weather")
 
 
 def test_catalog_resolves_structured_source_and_excludes_structured_skills(
@@ -143,7 +143,7 @@ def test_catalog_resolves_structured_source_and_excludes_structured_skills(
         ],
     )
     monkeypatch.setattr(
-        plugins_service, "update_skills_repository", lambda *a, **k: repo
+        marketplace_snapshot, "update_skills_repository", lambda *a, **k: repo
     )
     installed = tmp_path / "installed"
     installed.mkdir()
@@ -168,7 +168,7 @@ def test_catalog_marks_installed_plugins(tmp_path: Path, monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        plugins_service, "update_skills_repository", lambda *a, **k: repo
+        marketplace_snapshot, "update_skills_repository", lambda *a, **k: repo
     )
     store = tmp_path / "installed"
     store.mkdir()
@@ -205,7 +205,7 @@ def test_catalog_enriches_local_plugin_entries_with_contents(
     )
     (plugin_dir / "README.md").write_text("# Local plugin")
     monkeypatch.setattr(
-        plugins_service, "update_skills_repository", lambda *a, **k: repo
+        marketplace_snapshot, "update_skills_repository", lambda *a, **k: repo
     )
     installed = tmp_path / "installed"
     installed.mkdir()
@@ -245,7 +245,7 @@ def test_catalog_leaves_contents_unset_for_remote_sources(tmp_path: Path, monkey
         ],
     )
     monkeypatch.setattr(
-        plugins_service, "update_skills_repository", lambda *a, **k: repo
+        marketplace_snapshot, "update_skills_repository", lambda *a, **k: repo
     )
     installed = tmp_path / "installed"
     installed.mkdir()
