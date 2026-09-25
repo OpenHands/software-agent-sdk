@@ -352,6 +352,19 @@ class Config(BaseModel):
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)
     conversation_container_startup_timeout: float = Field(default=120, gt=0)
+    conversation_shared_cache_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Host directory bind-mounted into every Docker conversation "
+            "container as its uv cache (UV_CACHE_DIR), so conversations reuse "
+            "downloaded packages instead of each filling a private cache. Must "
+            "be an existing absolute directory, not a symlink, writable by the "
+            "agent-server's user. Every conversation can read and write it, "
+            "which weakens the isolation between them: use it only in "
+            "single-tenant deployments. Unset (the default) keeps one private, "
+            "prunable cache per conversation."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
