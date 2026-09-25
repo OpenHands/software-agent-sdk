@@ -322,8 +322,10 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
         config: dict[str, MCPServer],
         timeout=30.0,
         *,
+        strict=False,
         mcp_oauth_token_storage=None,
     ):
+        assert strict is True
         seen_configs.append(config)
         return FakeClient()
 
@@ -586,8 +588,10 @@ def test_mcp_test_returns_encrypted_oauth_state_from_probe(
         config,
         timeout=30.0,
         *,
+        strict=False,
         mcp_oauth_token_storage=None,
     ):
+        assert strict is True
         calls.append(mcp_oauth_token_storage)
         assert mcp_oauth_token_storage is not None
         asyncio.run(
@@ -690,9 +694,11 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
         config,
         timeout=30.0,
         *,
+        strict=False,
         mcp_oauth_token_storage=None,
         mcp_oauth_factory=None,
     ):
+        assert strict is True
         assert mcp_oauth_token_storage is not None
         assert mcp_oauth_factory is not None
         server_name, server = next(iter(config.items()))
