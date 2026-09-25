@@ -383,9 +383,7 @@ def test_chat_options_forwards_prompt_cache_key_when_override_enabled():
     )
     llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
-        select_chat_options(llm, user_kwargs={}, has_tools=True).get(
-            "prompt_cache_key"
-        )
+        select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
         == "conv-abc123"
     )
 
