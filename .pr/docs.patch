@@ -33,10 +33,10 @@ index 5ffadce..d19f5b9 100644
  ### How It Works
 diff --git a/sdk/guides/convo-notes-and-history.mdx b/sdk/guides/convo-notes-and-history.mdx
 new file mode 100644
-index 0000000..cc21bac
+index 0000000..de9fa28
 --- /dev/null
 +++ b/sdk/guides/convo-notes-and-history.mdx
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,259 @@
 +---
 +title: "Notes, History Retrieval, And Storage Protection"
 +description: "Keep editable notes across context windows, retrieve original events, and pause before local disks fill."
@@ -98,6 +98,36 @@ index 0000000..cc21bac
 +Use a persistent local directory for restart durability. An in-memory conversation
 +does not provide durable storage. The default condenser and existing conversations
 +remain unchanged unless the new features are selected explicitly.
++
++## Enable Through Settings
++
++For settings-based launches, select `NotesRetrievalCondenserSettings`. The settings
++factory adds `ContextNotesTool` and `ConversationHistoryTool` when this condenser
++is enabled, including when `tools` is omitted or empty. Existing explicit specs
++for either tool are retained without duplication. Other configured tools and the
++stored settings are unchanged.
++
++```python
++from openhands.sdk import OpenHandsAgentSettings
++from openhands.sdk.settings import NotesRetrievalCondenserSettings
++
++settings = OpenHandsAgentSettings(
++    llm=llm,
++    condenser=NotesRetrievalCondenserSettings(enabled=True, max_size=240),
++)
++agent = settings.create_agent()
++```
++
++As with other settings-based agents, the runtime must register the default task
++tools before starting a conversation. The Agent Server handles that registration;
++standalone SDK applications can call
++`openhands.tools.preset.default.register_default_tools(enable_browser=False)`.
++Use `tools=[]` if no task tools are needed; the two required memory tools are still
++added while this condenser is enabled.
++
++`NewContextTool` remains optional and must be selected explicitly for manual
++resets. Disabled notes settings do not add either memory tool. Direct `Agent(...)`
++construction still requires explicit memory tools, as shown above.
 +
 +## Write Long Notes Without Truncation
 +

@@ -56,3 +56,7 @@
 !/evidence/post-merge-storage.log
 !/evidence/post-merge-server.log
 !/evidence/post-merge-typescript.log
+!/evidence/review-settings-before.log
+!/evidence/review-settings-after.log
+!/evidence/review-merged-regression.log
+!/evidence/review-offline-example.log

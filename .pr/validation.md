@@ -229,3 +229,39 @@ GitHub initially detected a conflict with upstream `e21d77673b738f056676044600c4
 The three Python/server selections total **341 passing tests**. These runs are separate from the original 1,970-test regression above; overlapping older runs are not added as unique coverage. The OpenAPI count grows from 102 to 103 because upstream added the model-routing tool's opaque metadata entry. These post-merge checks do not call a real LLM API; the earlier live reports remain evidence from the original implementation revision.
 
 The new upstream optional model router reads recent messages from the EventLog for its classifier. It is disabled by default and was not part of the memory evaluation; active-view eviction assertions should not be generalized to every optional auxiliary model path.
+
+
+## Review follow-up: settings entry point and upstream conflict
+
+The review at `1e2dc4e46` identified a real settings-path defect: selecting
+`NotesRetrievalCondenserSettings(enabled=True)` did not supply its required tools.
+Fix `4b06dc157` makes `OpenHandsAgentSettings.create_agent()` add missing
+`ContextNotesTool` and `ConversationHistoryTool` specs when notes retrieval is
+selected and enabled. Existing explicit specs are not duplicated; settings are
+not mutated; disabled notes settings do not add tools. Direct `Agent(...)`
+construction still requires explicit tools. `NewContextTool` remains optional.
+
+The reproduction uses the supported `create_agent()` -> `Conversation` ->
+`send_message()` -> `run()` path with real registered default tools and TestLLM.
+It covers omitted, empty, partial, and complete tool lists, then exercises notes
+write/read and history search. This is an offline runtime regression, not a live
+provider evaluation or a deployed Agent Server/GUI test. On this macOS host the
+terminal falls back to the supported subprocess implementation because tmux is
+absent; no terminal command is invoked by the test.
+
+| Validation | Result and evidence |
+| --- | --- |
+| Before fix, same four settings runtime cases on `1e2dc4e46` | [3 failed with missing required tools; explicit tools passed](evidence/review-settings-before.log) |
+| Settings, notes agent and condenser after fix | [160 passed](evidence/review-settings-after.log) |
+| After merging upstream `1612a78ef`, same suites plus storage guards, local recovery and auth errors/retry | [202 passed](evidence/review-merged-regression.log) |
+| Offline example on merged implementation | [One context reset and successful notes restore from persisted events](evidence/review-offline-example.log) |
+
+Merge `5b1b79010d9cc7d85723a87af3d8b76d88d28804` preserves both the
+`StorageSafetyError` branch and upstream `LLMAuthenticationError` branch in sync
+and async conversation loops. The regression suite covers both behaviors.
+Pre-commit passed for the settings implementation, tests and conflict file.
+
+No new paid/model API requests were made for this fix. The earlier live-evaluation
+limitations above remain unchanged: the paired comparison does not establish a
+retrieval advantage. GitHub fork workflows still require maintainer approval;
+local results are not presented as current-head CI results.
