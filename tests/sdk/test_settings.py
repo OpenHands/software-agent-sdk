@@ -70,6 +70,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "enable_classify_and_switch_llm_tool",
+        "active_meta_profile",
         "tool_concurrency_limit",
         "mcp_config",
     }
@@ -354,6 +356,8 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "enable_classify_and_switch_llm_tool",
+        "active_meta_profile",
         "tool_concurrency_limit",
         "mcp_config",
     }
@@ -519,7 +523,7 @@ def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
             "schema_version": 3,
             "agent_kind": "openhands",
             "llm": {
-                "model": "litellm_proxy/claude-opus-4-8",
+                "model": "litellm_proxy/claude-opus-5",
                 "base_url": "https://llm-proxy.app.all-hands.dev/",
             },
         }
@@ -527,7 +531,7 @@ def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
 
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
-    assert settings.llm.model == "openhands/claude-opus-4-8"
+    assert settings.llm.model == "openhands/claude-opus-5"
     assert settings.llm.base_url is None
 
 

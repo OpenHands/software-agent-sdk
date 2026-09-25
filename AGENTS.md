@@ -37,6 +37,36 @@ The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript`
 
 All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
 
+## Review-Facing Implementation Checklist
+
+Code should satisfy the repository review checkpoints before the PR is opened:
+
+- Trace cross-layer changes through every affected public entry point, including
+  factories, constructors, registries, serialization, REST/WebSocket transport,
+  `clients/typescript/`, and create/resume/fork paths. Do not add a field or
+  option at one layer while another supported path drops or ignores it.
+- Treat public Python and server APIs, defaults, serialized events, persisted
+  settings, and stored conversations as compatibility surfaces. Use the
+  deprecation, schema-version migration, and golden-fixture mechanisms described
+  below instead of one-off shims.
+- Give tasks, processes, connections, plugins, event loops, and persistent
+  artifacts an owner. Cancellation must stop underlying work; close and rollback
+  paths must cover success, failure, and cancellation; shared conversation state
+  must use its existing synchronization mechanism.
+- Route credentials through `openhands.sdk.utils.pydantic_secrets` and verify the
+  full input, serialization, persistence, logging, resume, and delivery path.
+  Never introduce a parallel redaction or secret-sentinel implementation.
+- Verify imports, executables, dependency installation, paths, and process
+  cleanup in every affected production artifact, including the packaged Agent
+  Server, Docker images, and relevant host platforms. A mocked unit test alone
+  does not validate a packaging or installation change.
+- Every LLM request built in this repo must place a `system` message before the
+  first `user` message (see "LLM message construction invariant" in
+  `DEVELOPMENT.md`). This covers the agent loop and all standalone calls
+  (condensers, goal judge, profile pre-flight ping, security analyzers, etc.).
+  The first message role must be `system`, or there must be a documented
+  exception (ACP agents, subscription/Codex transport).
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.

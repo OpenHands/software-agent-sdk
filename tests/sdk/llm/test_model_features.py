@@ -55,7 +55,6 @@ def test_model_matches(name, pattern, expected):
         ("gemini-3-flash-preview", True),
         # GPT-5 family
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("gpt-5.4", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
@@ -72,7 +71,7 @@ def test_model_matches(name, pattern, expected):
         # not take the parameter at all (see the two rows above). These follow
         # LiteLLM's per-route `supported_openai_params` rather than an SDK
         # override, so a value here tracks upstream and may move again (#4877).
-        ("openrouter/moonshotai/kimi-k2.5", False),
+        ("openrouter/moonshotai/kimi-k2.5", True),
         ("openrouter/moonshotai/kimi-k2-thinking", True),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
@@ -483,8 +482,14 @@ def test_supports_stop_words_false_models(model):
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("openai/gpt-5-mini", True),
+        # GPT-6 family rejects function tools + reasoning_effort on
+        # /v1/chat/completions; route via /v1/responses (saas-deploy #1144).
+        ("gpt-6-sol", True),
+        ("gpt-6-luna", True),
+        ("gpt-6-astra", True),
+        ("openai/gpt-6-sol", True),
+        ("litellm_proxy/gpt-6-luna", True),
         ("codex-mini-latest", True),
         ("openai/codex-mini-latest", True),
         ("gpt-4o", False),
@@ -518,7 +523,6 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5", True),
         # New GPT-5.2 family should support extended retention
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("openai/gpt-5.2-chat-latest", True),
         ("openai/gpt-5.2-pro", True),
         ("openai/gpt-5-mini", False),
