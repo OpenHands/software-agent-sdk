@@ -73,7 +73,10 @@ def apply_call_context(
     out = dict(user_kwargs)
 
     ctx = call_context or llm._call_context
-    if ctx.prompt_cache_key:
+    # Only send `prompt_cache_key` to providers that accept it as an OpenAI
+    # param (OpenAI Responses/Chat). Anthropic and Gemini reject it with a
+    # 400 UnsupportedParamsError when litellm validates non-default params.
+    if ctx.prompt_cache_key and llm._model_features().supports_prompt_cache_key:
         out["prompt_cache_key"] = ctx.prompt_cache_key
     if ctx.session_id:
         existing = out.get("extra_headers") or {}
