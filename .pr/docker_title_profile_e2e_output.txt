@@ -1,0 +1,916 @@
+# Live Docker-runtime evidence for #5310 (Docker Desktop 29.3.1 linux/arm64, macOS host)
+
+Script: .pr/docker_title_profile_e2e.py. Endpoint = deterministic OpenAI-compatible HTTP server on the host with synthetic credentials; it is not a real provider. The fix is outer-server code only; the outer agent-server ran from an untouched base worktree (RED) or the patched checkout (GREEN). All runs delete their conversation and leave no container.
+
+## Round 2 (final source: base 1612a78 + patch, images built from that base and from the patched tree)
+
+- r2-red-base2-*: untouched 1612a78, image local/agent-server-5310:1612a78-base2 (75469a9b2aa5): the issue reproduces.
+- r2-red-oldpatch-repeats-v2: the round-1 patch (before the repeated-start fix) applied to 1612a78 in a disposable worktree, with --repeat-starts: the review finding reproduces live (snapshot bytes change after a host edit; a different name imports a second profile).
+- r2-green-patched2-*: final patch, image local/agent-server-5310:1612a78-patched2 (14fe22fcd9bd, verified to contain stage_title_profile and the lock), with --repeat-starts and --restart.
+
+
+## r2-red-base2-synthetic
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "agent",
+  "agent_llm": "synthetic",
+  "server_git_head": "1612a78efa11b76ff347cbf3be7d6b6aeddbca62",
+  "server_dirty_files": [],
+  "image_id": "sha256:75469a9b2aa5619592c06c59c2a268c09aa25c0e5ac7659f2fe788220d038f2d",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [],
+  "send_message_status": 200,
+  "title_from_meta_json": "Agent LLM title 5310",
+  "title_from_inner_api": "Agent LLM title 5310",
+  "title_produced_by": "agent",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-agent-model",
+      "credential": "agent"
+    }
+  ],
+  "runtime_copy": null,
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": null,
+  "reprovision_status": null,
+  "container_profiles_after_restart": null,
+  "mounts_after_restart": null,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/951d812371f64801b91d638358d2e5b0",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 0
+drwxr-xr-x 2 501 dialout  64 Sep 25 05:01 .
+drwx------ 5 501 dialout 160 Sep 25 05:01 ..
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 05:01:41,360", "levelname": "WARNING", "name": "openhands.agent_server.conversation_service", "filename": "conversation_service.py", "lineno": 2736, "message": "Failed to load title LLM profile 'title-aux': Profile `title-aux` not found. Available profiles: none. Falling back
+```
+
+
+## r2-red-base2-acp-sentinel
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "truncation",
+  "agent_llm": "acp-sentinel",
+  "server_git_head": "1612a78efa11b76ff347cbf3be7d6b6aeddbca62",
+  "server_dirty_files": [],
+  "image_id": "sha256:75469a9b2aa5619592c06c59c2a268c09aa25c0e5ac7659f2fe788220d038f2d",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [],
+  "send_message_status": 200,
+  "title_from_meta_json": "Please investigate the flaky login test in CI a...",
+  "title_from_inner_api": "Please investigate the flaky login test in CI a...",
+  "title_produced_by": "truncation",
+  "endpoint_records": [],
+  "runtime_copy": null,
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": null,
+  "reprovision_status": null,
+  "container_profiles_after_restart": null,
+  "mounts_after_restart": null,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/d6cba89680d343078ca9f79a93835e52",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 0
+drwxr-xr-x 2 501 dialout  64 Sep 25 05:01 .
+drwx------ 5 501 dialout 160 Sep 25 05:01 ..
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 05:01:55,310", "levelname": "WARNING", "name": "openhands.agent_server.conversation_service", "filename": "conversation_service.py", "lineno": 2736, "message": "Failed to load title LLM profile 'title-aux': Profile `title-aux` not found. Available profiles: none. Falling back
+```
+
+
+## r2-red-oldpatch-repeats-v2
+
+```json
+{
+  "verdict": "FAIL",
+  "expect": "aux",
+  "agent_llm": "synthetic",
+  "server_git_head": "1612a78efa11b76ff347cbf3be7d6b6aeddbca62",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:75469a9b2aa5619592c06c59c2a268c09aa25c0e5ac7659f2fe788220d038f2d",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:63558/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": {
+    "statuses": [
+      [
+        "same-request",
+        200
+      ],
+      [
+        "after-host-edit",
+        200
+      ],
+      [
+        "different-profile",
+        200
+      ]
+    ],
+    "profiles_before": [
+      "title-aux.json"
+    ],
+    "profiles_after": [
+      "title-aux.json",
+      "unrelated.json"
+    ],
+    "snapshot_bytes_unchanged": false,
+    "unrelated_profile_imported": true,
+    "inner_title_after_repeats": "Aux profile title 5310"
+  },
+  "release_status": null,
+  "reprovision_status": null,
+  "container_profiles_after_restart": null,
+  "mounts_after_restart": null,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/ee63f1bea6d04f4daab4d7b345326aee",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 05:03 .
+drwx------ 5 501 dialout  160 Sep 25 05:03 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 05:03 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 05:03 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 05:03:51,714", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 05:03:51,726", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```
+
+
+## r2-green-patched2-synthetic
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "aux",
+  "agent_llm": "synthetic",
+  "server_git_head": "1612a78efa11b76ff347cbf3be7d6b6aeddbca62",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:14fe22fcd9bd8c219765d8b1787d8880381a58f5402cdb5f803a117ac4ea3b98",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:63592/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": {
+    "statuses": [
+      [
+        "same-request",
+        200
+      ],
+      [
+        "after-host-edit",
+        200
+      ],
+      [
+        "different-profile",
+        200
+      ]
+    ],
+    "profiles_before": [
+      "title-aux.json"
+    ],
+    "profiles_after": [
+      "title-aux.json"
+    ],
+    "snapshot_bytes_unchanged": true,
+    "unrelated_profile_imported": false,
+    "inner_title_after_repeats": "Aux profile title 5310"
+  },
+  "release_status": 204,
+  "reprovision_status": 200,
+  "container_profiles_after_restart": [
+    "title-aux.json"
+  ],
+  "mounts_after_restart": 3,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/68085bfd76b6402c8d2b9fff6ef13886",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 05:03 .
+drwx------ 5 501 dialout  160 Sep 25 05:04 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 05:03 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 05:03 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 05:04:05,410", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 05:04:05,422", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```
+
+
+## r2-green-patched2-acp-sentinel
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "aux",
+  "agent_llm": "acp-sentinel",
+  "server_git_head": "1612a78efa11b76ff347cbf3be7d6b6aeddbca62",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:14fe22fcd9bd8c219765d8b1787d8880381a58f5402cdb5f803a117ac4ea3b98",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:63633/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": {
+    "statuses": [
+      [
+        "same-request",
+        200
+      ],
+      [
+        "after-host-edit",
+        200
+      ],
+      [
+        "different-profile",
+        200
+      ]
+    ],
+    "profiles_before": [
+      "title-aux.json"
+    ],
+    "profiles_after": [
+      "title-aux.json"
+    ],
+    "snapshot_bytes_unchanged": true,
+    "unrelated_profile_imported": false,
+    "inner_title_after_repeats": "Aux profile title 5310"
+  },
+  "release_status": 204,
+  "reprovision_status": 200,
+  "container_profiles_after_restart": [
+    "title-aux.json"
+  ],
+  "mounts_after_restart": 3,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/.openhands",
+    "/workspace",
+    "/var/openhands/conversations/233bed311d03487398f14d5ee9f045f3"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 05:04 .
+drwx------ 5 501 dialout  160 Sep 25 05:04 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 05:04 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 05:04 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 05:04:24,715", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 05:04:24,728", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```
+
+
+## Round 1 (historical: base b874a47, patch before the repeated-start fix; kept unchanged)
+
+Images: local/agent-server-5310:b874a47-base (b8365c8bc662) and :b874a47-patched (0672a03adedb). These runs did not exercise repeated starts.
+
+
+## red-base-synthetic
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "agent",
+  "agent_llm": "synthetic",
+  "server_git_head": "b874a47c9ca4cd00072af69871005441697b35c0",
+  "server_dirty_files": [],
+  "image_id": "sha256:b8365c8bc662b4540dc22587462b88ca276fbabb769521d4207f0b2c986a5f6b",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [],
+  "send_message_status": 200,
+  "title_from_meta_json": "Agent LLM title 5310",
+  "title_from_inner_api": "Agent LLM title 5310",
+  "title_produced_by": "agent",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-agent-model",
+      "credential": "agent"
+    }
+  ],
+  "runtime_copy": null,
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": null,
+  "reprovision_status": null,
+  "container_profiles_after_restart": null,
+  "mounts_after_restart": null,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/4fdb278d56fe4a44a9c8534634a19d1b",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 0
+drwxr-xr-x 2 501 dialout  64 Sep 25 01:03 .
+drwx------ 5 501 dialout 160 Sep 25 01:03 ..
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 01:03:21,162", "levelname": "WARNING", "name": "openhands.agent_server.conversation_service", "filename": "conversation_service.py", "lineno": 2736, "message": "Failed to load title LLM profile 'title-aux': Profile `title-aux` not found. Available profiles: none. Falling back
+```
+
+
+## red-base-acp-sentinel
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "truncation",
+  "agent_llm": "acp-sentinel",
+  "server_git_head": "b874a47c9ca4cd00072af69871005441697b35c0",
+  "server_dirty_files": [],
+  "image_id": "sha256:b8365c8bc662b4540dc22587462b88ca276fbabb769521d4207f0b2c986a5f6b",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [],
+  "send_message_status": 200,
+  "title_from_meta_json": "Please investigate the flaky login test in CI a...",
+  "title_from_inner_api": "Please investigate the flaky login test in CI a...",
+  "title_produced_by": "truncation",
+  "endpoint_records": [],
+  "runtime_copy": null,
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": null,
+  "reprovision_status": null,
+  "container_profiles_after_restart": null,
+  "mounts_after_restart": null,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/workspace",
+    "/var/openhands/conversations/b569cd62edad48968ee362bd83bde1c1",
+    "/var/openhands/.openhands"
+  ]
+}
+```
+container profiles listing:
+```
+total 0
+drwxr-xr-x 2 501 dialout  64 Sep 25 01:03 .
+drwx------ 5 501 dialout 160 Sep 25 01:03 ..
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 01:03:33,467", "levelname": "WARNING", "name": "openhands.agent_server.conversation_service", "filename": "conversation_service.py", "lineno": 2736, "message": "Failed to load title LLM profile 'title-aux': Profile `title-aux` not found. Available profiles: none. Falling back
+```
+
+
+## green-patched-synthetic
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "aux",
+  "agent_llm": "synthetic",
+  "server_git_head": "b874a47c9ca4cd00072af69871005441697b35c0",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:b8365c8bc662b4540dc22587462b88ca276fbabb769521d4207f0b2c986a5f6b",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:56452/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": 204,
+  "reprovision_status": 200,
+  "container_profiles_after_restart": [
+    "title-aux.json"
+  ],
+  "mounts_after_restart": 3,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/530c6fc7f656431fae7c5df8d07e2580",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 01:03 .
+drwx------ 5 501 dialout  160 Sep 25 01:03 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 01:03 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 01:03 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 01:03:47,532", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 01:03:47,544", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```
+
+
+## green-patched-acp-sentinel
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "aux",
+  "agent_llm": "acp-sentinel",
+  "server_git_head": "b874a47c9ca4cd00072af69871005441697b35c0",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:b8365c8bc662b4540dc22587462b88ca276fbabb769521d4207f0b2c986a5f6b",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:56495/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": 204,
+  "reprovision_status": 200,
+  "container_profiles_after_restart": [
+    "title-aux.json"
+  ],
+  "mounts_after_restart": 3,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/workspace",
+    "/var/openhands/conversations/a0d2bec79d7a4b4caed1d5c33d9d5139",
+    "/var/openhands/.openhands"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 01:03 .
+drwx------ 5 501 dialout  160 Sep 25 01:04 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 01:03 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 01:03 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 01:04:05,020", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 01:04:05,031", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```
+
+
+## green-patched-image-synthetic
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "aux",
+  "agent_llm": "synthetic",
+  "server_git_head": "b874a47c9ca4cd00072af69871005441697b35c0",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:0672a03adedbc435199be2763397f4a30db0c3e17ca68ad255bea922a9b0eb16",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:59079/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": 204,
+  "reprovision_status": 200,
+  "container_profiles_after_restart": [
+    "title-aux.json"
+  ],
+  "mounts_after_restart": 3,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/b85f6564e0c546168e836624b22e4f03",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 03:45 .
+drwx------ 5 501 dialout  160 Sep 25 03:45 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 03:45 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 03:45 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 03:45:30,865", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 03:45:30,877", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```
+
+
+## green-patched-image-acp-sentinel
+
+```json
+{
+  "verdict": "PASS",
+  "expect": "aux",
+  "agent_llm": "acp-sentinel",
+  "server_git_head": "b874a47c9ca4cd00072af69871005441697b35c0",
+  "server_dirty_files": [
+    "M openhands-agent-server/openhands/agent_server/docker_runtime/mediation.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/provisioning.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/registry.py",
+    " M openhands-agent-server/openhands/agent_server/docker_runtime/routers.py",
+    " M tests/agent_server/docker_runtime/test_mediation.py",
+    " M tests/agent_server/docker_runtime/test_routes.py",
+    "?? .pr/"
+  ],
+  "image_id": "sha256:0672a03adedbc435199be2763397f4a30db0c3e17ca68ad255bea922a9b0eb16",
+  "start_status": 201,
+  "container_reaches_endpoint": true,
+  "OH_PERSISTENCE_DIR_in_container": "/var/openhands/.openhands",
+  "host_persistence_mounted": false,
+  "runtime_profile_files": [
+    ".profiles.lock",
+    "title-aux.json"
+  ],
+  "send_message_status": 200,
+  "title_from_meta_json": "Aux profile title 5310",
+  "title_from_inner_api": "Aux profile title 5310",
+  "title_produced_by": "aux",
+  "endpoint_records": [
+    {
+      "path": "/v1/chat/completions",
+      "model": "synthetic-title-model",
+      "credential": "aux"
+    }
+  ],
+  "runtime_copy": {
+    "plaintext_key_in_file": false,
+    "decrypts_with_runtime_key": true,
+    "base_url": "http://host.docker.internal:59121/v1",
+    "model": "openai/synthetic-title-model",
+    "host_key_yields_secret": false,
+    "provider_connection_id": null
+  },
+  "unrelated_profile_in_runtime": false,
+  "provider_connections_copied": false,
+  "aux_key_plaintext_hits": [],
+  "unrelated_key_plaintext_hits": [],
+  "repeated_starts": null,
+  "release_status": 204,
+  "reprovision_status": 200,
+  "container_profiles_after_restart": [
+    "title-aux.json"
+  ],
+  "mounts_after_restart": 3,
+  "cleanup": {
+    "delete_status": 200,
+    "server_exit": -15,
+    "leftover_containers_removed": [],
+    "runtime_dir_remains": false,
+    "conversation_dir_remains": false
+  },
+  "mount_destinations": [
+    "/var/openhands/conversations/0d103d7914ba442fba5f9fa406dc58c8",
+    "/var/openhands/.openhands",
+    "/workspace"
+  ]
+}
+```
+container profiles listing:
+```
+total 4
+drwxr-xr-x 4 501 dialout  128 Sep 25 03:45 .
+drwx------ 5 501 dialout  160 Sep 25 03:45 ..
+-rw-r--r-- 1 501 dialout    0 Sep 25 03:45 .profiles.lock
+-rw------- 1 501 dialout 1022 Sep 25 03:45 title-aux.json
+```
+inner log title lines:
+```
+{"asctime": "2026-09-25 03:45:53,042", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+{"asctime": "2026-09-25 03:45:53,056", "levelname": "INFO", "name": "openhands.sdk.llm.llm_profile_store", "filename": "llm_profile_store.py", "lineno": 303, "message": "[Profile Store] Loaded profile `title-aux` from /var/openhands/.openhands/profiles/title-aux.json"}
+```

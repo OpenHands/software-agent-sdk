@@ -13,14 +13,27 @@ from openhands.agent_server.conversation_service import (
     _resolve_agent_from_profile,
     _with_load_memory,
 )
-from openhands.agent_server.docker_runtime.provisioning import RuntimeIdentity
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.docker_runtime.provisioning import (
+    RuntimeIdentity,
+    RuntimeProvisioningStore,
+)
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_llm_profile_store,
+    get_settings_store,
+)
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretRegistry
+from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
 from openhands.sdk.settings.model import validate_agent_settings
+
+
+logger = get_logger(__name__)
 
 
 def materialize_secrets(
@@ -100,6 +113,72 @@ async def prepare_start(
         }
     )
     return request, launched
+
+
+def stage_title_profile(
+    request: StartConversationRequest,
+    identity: RuntimeIdentity,
+    provisioning: RuntimeProvisioningStore,
+    config: Config,
+) -> None:
+    """Copy the selected title LLM profile into the runtime's own profile store.
+
+    The inner agent-server resolves ``title_llm_profile`` by name against the
+    profile store under its own persistence directory, which is this
+    conversation's private runtime directory rather than the host store. Only
+    the selected profile is copied. A linked provider connection is resolved on
+    the host into inline credentials, because the runtime has no provider store
+    to follow the reference, and the copy is encrypted with the runtime key so
+    the host key never enters the container.
+
+    The copy is taken once, when the conversation is first established, like
+    the agent's own LLM: a repeated start of an established conversation keeps
+    the original snapshot, whatever the host profile or the new request says.
+    A retry of a creation attempt that never established the conversation
+    replaces what the earlier attempt staged, so the runtime store never holds
+    more than the selected profile. A missing or unloadable profile is left to
+    the inner server's existing fallback (agent LLM, then truncation), so
+    conversation creation still succeeds.
+    """
+    conversation_id = identity.conversation_id
+    # Establishment is judged by the same persisted markers
+    # ``RuntimeProvisioningStore.create`` checks; the inner server writes them
+    # into the mounted conversation directory once the start succeeded.
+    conversation_dir = provisioning.direct_child(
+        config.conversations_path, conversation_id.hex
+    )
+    profiles_dir = provisioning.persistence_dir(conversation_id) / "profiles"
+    name = request.title_llm_profile
+    with provisioning.lock(conversation_id):
+        if (conversation_dir / "meta.json").exists() or (
+            conversation_dir / "base_state.json"
+        ).exists():
+            return
+        llm = _load_title_profile(name, config) if name else None
+        if llm is None and not profiles_dir.is_dir():
+            return
+        profiles_dir.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        runtime_store = LLMProfileStore(base_dir=profiles_dir)
+        for stale in runtime_store.list():
+            runtime_store.delete(stale)
+        if llm is not None and name:
+            runtime_store.save(
+                name,
+                llm.model_copy(update={"provider_connection_id": None}),
+                include_secrets=True,
+                cipher=identity.cipher,
+            )
+
+
+def _load_title_profile(name: str, config: Config) -> LLM | None:
+    try:
+        return get_llm_profile_store().load(name, cipher=config.cipher)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            f"Title LLM profile '{name}' was not staged for the conversation "
+            f"runtime: {exc}. The runtime will fall back to the agent's LLM."
+        )
+        return None
 
 
 def serialize_start(
