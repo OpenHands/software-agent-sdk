@@ -42,6 +42,7 @@ import os
 
 from openhands.sdk.agent import AgentBase
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import LookupSecret
 
@@ -82,7 +83,9 @@ def _llm_is_in_scope(llm: LLM, managed_base_urls: set[str]) -> bool:
     # Subscription auth isn't a refreshable API key (the SDK resolver skips it too).
     if llm.auth_type != "api_key":
         return False
-    base_url = (llm.base_url or "").rstrip("/")
+    base_url = (litellm_call_kwargs(llm.model, llm.base_url)["api_base"] or "").rstrip(
+        "/"
+    )
     return base_url in managed_base_urls
 
 

@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Literal
 
+import pytest
 from litellm.exceptions import AuthenticationError
 from pydantic import SecretStr
 
@@ -111,6 +112,27 @@ def test_scopes_to_managed_base_url(monkeypatch):
     assert register_managed_llm_key_refresh(agent) == 0
     with _served_key(REFRESH_URL, "fresh_key"):
         assert byok._resolve_refreshed_api_key(_auth_error()) is None
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_canonical_managed_provider_refreshes(monkeypatch, persisted):
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, "https://llm-proxy.app.all-hands.dev")
+    llm = LLM(
+        model="openhands/deepseek-v4.1-flash",
+        api_key=SecretStr("stale_key"),
+        usage_id="managed",
+    )
+    if persisted:
+        llm = LLM.model_validate_json(
+            llm.model_dump_json(context={"expose_secrets": True})
+        )
+    assert llm.base_url is None
+    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    with _served_key(REFRESH_URL, "fresh_key"):
+        refreshed = llm._resolve_refreshed_api_key(_auth_error())
+    assert refreshed is not None
+    assert refreshed.get_secret_value() == "fresh_key"
 
 
 def test_skips_subscription_auth(monkeypatch):
