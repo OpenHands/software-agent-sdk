@@ -85,6 +85,7 @@ from openhands.sdk.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.mcp._compat import compat_attr
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
     FinishAction,
@@ -108,7 +109,8 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     if "summary" in tool.action_type.model_fields:
         return True
     if isinstance(tool, MCPToolDefinition):
-        props = tool.mcp_tool.inputSchema.get("properties", {})
+        input_schema = compat_attr(tool.mcp_tool, "input_schema", "inputSchema")
+        props = input_schema.get("properties", {})
         if "summary" in props:
             return True
     return False
