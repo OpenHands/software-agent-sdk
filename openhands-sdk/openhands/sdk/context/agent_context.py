@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import copy
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 from pydantic import (
     BaseModel,
     Field,
+    GetJsonSchemaHandler,
     SecretStr,
     SerializationInfo,
     SerializerFunctionWrapHandler,
@@ -17,6 +19,8 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.prompts.presets import create_registry
@@ -44,6 +48,20 @@ from openhands.sdk.utils.pydantic_secrets import (
 logger = get_logger(__name__)
 
 PROMPT_DIR = pathlib.Path(__file__).parent / "prompts" / "templates"
+
+
+def _without_current_datetime_serializer(core_schema: CoreSchema) -> CoreSchema:
+    schema_without_serializer = copy.copy(cast(dict[str, Any], core_schema))
+    current = schema_without_serializer
+    while current.get("type") != "model":
+        inner = current.get("schema")
+        if not isinstance(inner, dict):
+            return core_schema
+        copied_inner = copy.copy(inner)
+        current["schema"] = copied_inner
+        current = copied_inner
+    current.pop("serialization", None)
+    return cast(CoreSchema, schema_without_serializer)
 
 
 class ResolvedDynamicData(NamedTuple):
@@ -226,6 +244,16 @@ class AgentContext(BaseModel):
         ):
             data["current_datetime"] = None
         return data
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        if handler.mode != "serialization":
+            return handler(core_schema)
+        return handler(_without_current_datetime_serializer(core_schema))
 
     @field_validator("secrets", mode="before")
     @classmethod
