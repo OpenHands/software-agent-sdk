@@ -1,5 +1,7 @@
 import json
 import shutil
+from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,6 +14,7 @@ from openhands.sdk import (
     Agent,
     AgentContext,
     AgentSettingsBase,
+    Conversation,
     ConversationSettings,
     OpenHandsAgentSettings,
     SettingProminence,
@@ -26,8 +29,11 @@ from openhands.sdk.context.condenser import (
     NoOpCondenser,
     NotesRetrievalCondenser,
 )
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.event import ObservationEvent
+from openhands.sdk.llm import Message, MessageToolCall
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
@@ -41,7 +47,9 @@ from openhands.sdk.settings import (
     VerificationSettings,
 )
 from openhands.sdk.settings.model import ACPServerKind
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.preset.default import register_default_tools
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -2665,3 +2673,79 @@ def test_notes_retrieval_settings_roundtrip_and_create_agent() -> None:
         NotesRetrievalCondenserSettings(enabled=False).build_condenser(agent.llm)
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "tool_names",
+    [
+        None,
+        [],
+        ["ContextNotesTool"],
+        ["ContextNotesTool", "ConversationHistoryTool"],
+    ],
+    ids=["defaults", "empty", "partial", "explicit"],
+)
+def test_notes_settings_run_with_required_tools(
+    tmp_path: Path, tool_names: list[str] | None
+) -> None:
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"call-{i}",
+                        name=name,
+                        arguments=json.dumps(arguments),
+                        origin="completion",
+                    )
+                ],
+            )
+            for i, (name, arguments) in enumerate(
+                [
+                    ("context_notes", {"command": "write", "content": "ZX-4916"}),
+                    ("context_notes", {"command": "read"}),
+                    ("conversation_history", {"command": "search", "query": "east"}),
+                    ("finish", {"message": "done"}),
+                ]
+            )
+        ]
+    )
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=NotesRetrievalCondenserSettings(enabled=True),
+        tools=None if tool_names is None else [Tool(name=n) for n in tool_names],
+    )
+    register_default_tools(enable_browser=False)
+    original = settings.model_dump(mode="json")
+    agent = settings.create_agent()
+    with closing(
+        Conversation(agent=agent, workspace=tmp_path, visualizer=None)
+    ) as conversation:
+        conversation.send_message("Remember region east")
+        conversation.run()
+        observations = [
+            event.observation
+            for event in conversation.state.events
+            if isinstance(event, ObservationEvent)
+            and event.tool_name in {"context_notes", "conversation_history"}
+        ]
+        assert len(observations) == 3
+        assert all(not observation.is_error for observation in observations)
+        assert json.loads(observations[1].text)["text"] == "ZX-4916"
+        assert "Remember region east" in observations[2].text
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+    assert llm.call_count == 4
+    assert settings.model_dump(mode="json") == original
+
+
+def test_disabled_notes_settings_do_not_add_tools() -> None:
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"),
+        tools=[],
+        condenser=NotesRetrievalCondenserSettings(enabled=False),
+    ).create_agent()
+    assert agent.condenser is None
+    assert agent.tools == []

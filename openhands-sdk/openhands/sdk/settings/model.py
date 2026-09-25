@@ -1491,6 +1491,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.tool.builtins import (
             BUILT_IN_TOOLS,
             ClassifyAndSwitchLLMTool,
+            ContextNotesTool,
+            ConversationHistoryTool,
             SwitchLLMTool,
         )
         from openhands.sdk.tool.defaults import default_tool_specs
@@ -1524,6 +1526,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
+        if isinstance(self.condenser, NotesRetrievalCondenserSettings) and (
+            condenser is not None
+        ):
+            configured_names = {tool.name for tool in tools}
+            for tool_class in (ContextNotesTool, ConversationHistoryTool):
+                if tool_class.__name__ not in configured_names:
+                    tools.append(Tool(name=tool_class.__name__))
         return Agent(
             llm=llm,
             tools=tools,
