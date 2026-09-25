@@ -2,6 +2,7 @@
   "__expected__": {
     "active_profile": "fixture-v2-profile",
     "agent_settings.agent_kind": "openhands",
+    "agent_settings.schema_version": 6,
     "agent_settings.llm.model": "fixture-v2-persisted-llm",
     "agent_settings.tools": [
       {
@@ -24,6 +25,9 @@
     "agent_kind": "openhands",
     "llm": {
       "model": "fixture-v2-persisted-llm"
+    },
+    "agent_context": {
+      "current_datetime": "2024-03-15T14:30:00Z"
     },
     "tools": [
       {

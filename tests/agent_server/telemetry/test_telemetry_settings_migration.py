@@ -1,8 +1,10 @@
-"""Persisted settings stay at schema v2.
+"""Persisted settings schema migration coverage.
 
-Consent lives in ``misc_settings.telemetry.consent``, which needs no schema
-change because ``misc_settings`` already exists and is already persisted.
+Telemetry consent lives in ``misc_settings.telemetry.consent`` and does not
+require a schema bump. Schema v3 advances the nested agent-settings format.
 """
+
+from datetime import datetime
 
 import pytest
 
@@ -13,8 +15,8 @@ from openhands.agent_server.persistence.models import (
 from openhands.agent_server.telemetry.policy import resolve
 
 
-def test_schema_version_was_not_bumped_for_consent():
-    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 2
+def test_schema_version_tracks_nested_agent_settings_change():
+    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 3
 
 
 def test_there_is_no_typed_consent_field():
@@ -27,10 +29,35 @@ def test_older_settings_still_load(version: int):
     settings = PersistedSettings.from_persisted(
         {"schema_version": version, "active_profile": "default"}
     )
-    assert settings.schema_version == 2
+    assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
     assert settings.active_profile == "default"
     # No consent recorded anywhere means no consent.
     assert resolve(settings.misc_settings, env={}).enabled is False
+
+
+def test_v2_settings_migrate_nested_runtime_datetime():
+    before = datetime.now().astimezone()
+    settings = PersistedSettings.from_persisted(
+        {
+            "schema_version": 2,
+            "agent_settings": {
+                "schema_version": 5,
+                "agent_kind": "openhands",
+                "llm": {"model": "test-model"},
+                "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+            },
+        }
+    )
+    after = datetime.now().astimezone()
+
+    assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_settings.schema_version == 6
+    assert settings.agent_settings.agent_context is not None
+    current_datetime = settings.agent_settings.agent_context.current_datetime
+    assert isinstance(current_datetime, datetime)
+    assert before <= current_datetime <= after
+    payload = settings.model_dump(mode="json")
+    assert "current_datetime" not in payload["agent_settings"]["agent_context"]
 
 
 def test_consent_round_trips_through_misc_settings():
@@ -51,4 +78,6 @@ def test_revoking_through_misc_settings_disables():
 
 def test_a_newer_schema_version_is_still_rejected():
     with pytest.raises(ValueError, match="newer than supported"):
-        PersistedSettings.from_persisted({"schema_version": 3})
+        PersistedSettings.from_persisted(
+            {"schema_version": PERSISTED_SETTINGS_SCHEMA_VERSION + 1}
+        )

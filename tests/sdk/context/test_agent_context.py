@@ -1048,6 +1048,16 @@ templates.",
         assert restored.current_datetime != "2024-03-15T14:30:00Z"
         assert restored.current_datetime is not None
 
+    def test_explicit_none_current_datetime_is_serialized(self):
+        """ACP's explicit no-timestamp value must survive persistence."""
+        context = AgentContext(current_datetime=None)
+
+        serialized = context.model_dump(mode="json", exclude_none=True)
+        restored = AgentContext.model_validate(serialized)
+
+        assert serialized["current_datetime"] is None
+        assert restored.current_datetime is None
+
     def test_get_system_message_suffix_with_datetime_only(self):
         """Test system message suffix with datetime but no other content."""
         context = AgentContext(

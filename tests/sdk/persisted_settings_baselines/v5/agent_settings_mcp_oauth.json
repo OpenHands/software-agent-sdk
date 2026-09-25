@@ -1,6 +1,6 @@
 {
   "__expected__": {
-    "schema_version": 5,
+    "schema_version": 6,
     "agent_kind": "openhands",
     "mcp_config.superhuman-mail.auth.strategy": "oauth2",
     "mcp_config.superhuman-mail.auth.state.tokens.access_token": "token-value",
@@ -10,6 +10,9 @@
   "agent_kind": "openhands",
   "llm": {
     "model": "openhands/gpt-5.5"
+  },
+  "agent_context": {
+    "current_datetime": "2026-08-29T21:04:21.388304+01:00"
   },
   "mcp_config": {
     "superhuman-mail": {

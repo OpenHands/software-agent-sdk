@@ -9,9 +9,12 @@ from pydantic import (
     BaseModel,
     Field,
     SecretStr,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -194,7 +197,6 @@ class AgentContext(BaseModel):
         # Timezone-aware local "now"; get_formatted_datetime renders it to the
         # minute for the prompt.
         default_factory=lambda: datetime.now().astimezone(),
-        exclude=True,
         description=(
             "Current date and time information to provide to the agent. "
             "Can be a datetime object (which will be formatted as ISO 8601) "
@@ -205,6 +207,25 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+
+    @model_serializer(mode="wrap")
+    def _serialize_current_datetime(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> Any:
+        """Omit runtime timestamps while preserving an explicit no-time value."""
+        data = handler(self)
+        if not isinstance(data, dict):
+            return data
+
+        if self.current_datetime is not None:
+            data.pop("current_datetime", None)
+        elif (
+            "current_datetime" in self.model_fields_set
+            and (info.include is None or "current_datetime" in info.include)
+            and (info.exclude is None or "current_datetime" not in info.exclude)
+        ):
+            data["current_datetime"] = None
+        return data
 
     @field_validator("secrets", mode="before")
     @classmethod
