@@ -11,6 +11,7 @@ Usage:
 
 import logging
 import os
+import re
 from logging.handlers import TimedRotatingFileHandler
 
 import litellm
@@ -88,6 +89,42 @@ for name in ["httpcore", "httpx", "libtmux"]:
     disable_logger(name, logging.WARNING)
 
 
+# ========= URL PARAM REDACTION FILTER =========
+_URL_RE = re.compile(r"https?://[^\s'\")\]>]+")
+
+
+class URLParamRedactionFilter(logging.Filter):
+    """Redact sensitive query parameters from URLs in log messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._redact(record.msg)
+        if record.args:
+            if isinstance(record.args, dict):
+                record.args = {
+                    k: self._redact(v) if isinstance(v, str) else v
+                    for k, v in record.args.items()
+                }
+            elif isinstance(record.args, tuple):
+                record.args = tuple(
+                    self._redact(a) if isinstance(a, str) else a
+                    for a in record.args
+                )
+        return True
+
+    @staticmethod
+    def _redact(value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        if "?" not in value or "=" not in value:
+            return value
+        if "http://" not in value and "https://" not in value:
+            return value
+        # Lazy import to avoid circular dependency (utils → logger → utils)
+        from openhands.sdk.utils.redact import redact_url_params
+
+        return _URL_RE.sub(lambda m: redact_url_params(m.group(0)), value)
+
+
 # ========= SETUP =========
 def setup_logging(
     level: int | None = None,
@@ -108,6 +145,8 @@ def setup_logging(
     old_level = root.level
     root.setLevel(lvl)
 
+    redaction_filter = URLParamRedactionFilter()
+
     # Set the level for any existing logger with the same intial level
     for logger in logging.root.manager.loggerDict.values():
         if isinstance(logger, logging.Logger) and logger.level == old_level:
@@ -116,6 +155,10 @@ def setup_logging(
     # Do NOT clear existing handlers; Uvicorn installs these before importing the app.
     # Only add ours if there isn't already a comparable stream handler.
     has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
+
+    # Add redaction filter to any pre-existing handlers (e.g. Uvicorn's)
+    for h in root.handlers:
+        h.addFilter(redaction_filter)
 
     if not has_stream:
         if ENV_JSON or IN_CI:
@@ -128,6 +171,7 @@ def setup_logging(
                     "%(filename)s %(lineno)d %(message)s"
                 )
             )
+            ch.addFilter(redaction_filter)
             root.addHandler(ch)
         else:
             # Rich console handler
@@ -138,6 +182,7 @@ def setup_logging(
             )
             rich_handler.setFormatter(logging.Formatter("%(message)s"))
             rich_handler.setLevel(lvl)
+            rich_handler.addFilter(redaction_filter)
             root.addHandler(rich_handler)
 
     if to_file:
@@ -163,6 +208,7 @@ def setup_logging(
                 "- %(filename)s:%(lineno)d - %(message)s"
             )
             fh.setFormatter(logging.Formatter(log_fmt))
+        fh.addFilter(redaction_filter)
         root.addHandler(fh)
 
 
