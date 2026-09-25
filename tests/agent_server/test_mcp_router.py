@@ -768,6 +768,58 @@ def test_mcp_oauth_start_returns_authorization_url_and_final_state(
     assert access_token != "oauth-access-token"
 
 
+def test_mcp_oauth_start_succeeds_without_consent_when_stored_tokens_work(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Arrange: the probe connects with the stored tokens; FastMCP never
+    # publishes an authorization URL.
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    class FakeClient:
+        def __init__(self):
+            self.tools = [SimpleNamespace(name="notion_lookup")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        lambda *args, **kwargs: FakeClient(),
+    )
+
+    # Act
+    started = time.monotonic()
+    response = client.post(
+        "/api/mcp/oauth/start",
+        json={
+            "server": {
+                "transport": "http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "stored-access-token"}},
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+    elapsed = time.monotonic() - started
+
+    # Assert: success with only the job id, without waiting for the consent
+    # timeout; the outcome is on the status route.
+    assert response.status_code == 200, response.text
+    job_id = response.json()["job_id"]
+    assert response.json() == {"ok": True, "job_id": job_id}
+    assert elapsed < 5.0
+    status_body = client.get(f"/api/mcp/oauth/status/{job_id}").json()
+    assert status_body["status"] == "succeeded"
+    assert status_body["tools"] == ["notion_lookup"]
+
+
 def test_browser_coordinated_oauth_callback_handler_delegates_to_fastmcp(
     monkeypatch: pytest.MonkeyPatch,
 ):
