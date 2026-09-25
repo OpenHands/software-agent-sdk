@@ -598,5 +598,11 @@
     "kind": "empty-object-schema",
     "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/SecurityAnalysisEvent/properties/details/additionalProperties/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Per-action analyzer detail (probabilities, confidence, rationale) is analyzer-specific by design; the shape belongs to each SecurityAnalyzer implementation.",
+    "owner": "OpenHands OSS"
   }
 ]

@@ -50,6 +50,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
+from openhands.sdk.event.security import SecurityAnalysisEvent
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -1044,7 +1045,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
 
     def _requires_user_confirmation(
-        self, state: ConversationState, action_events: list[ActionEvent]
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType | None = None,
     ) -> bool:
         """
         Decide whether user confirmation is needed to proceed.
@@ -1068,12 +1072,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # If a security analyzer is registered, use it to grab the risks of the actions
         # involved. If not, we'll set the risks to UNKNOWN.
         if state.security_analyzer is not None:
-            risks = [
-                risk
-                for _, risk in state.security_analyzer.analyze_pending_actions(
-                    action_events
+            analyses = state.security_analyzer.analyze_actions(action_events)
+            risks = [analysis.risk for _, analysis in analyses]
+            # Record the verdict regardless of what the policy does with it, so
+            # the log and UI show what the analyzer said even under NeverConfirm.
+            if on_event is not None:
+                event = SecurityAnalysisEvent(
+                    analyzer=state.security_analyzer.__class__.__name__,
+                    policy=state.confirmation_policy.__class__.__name__,
+                    risks={action.id: analysis.risk for action, analysis in analyses},
+                    details={
+                        action.id: analysis.details
+                        for action, analysis in analyses
+                        if analysis.details is not None
+                    },
                 )
-            ]
+                on_event(state.secret_registry.mask_secrets_in_model(event))
         else:
             risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
 
