@@ -15,7 +15,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple, SupportsFloat
 
-from openhands.agent_server.config import Config
+import httpx
+
+from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
@@ -34,6 +36,8 @@ from openhands.sdk.utils.cipher import Cipher
 
 
 logger = get_logger(__name__)
+
+_WRITE_BACK_TIMEOUT_SECONDS = 10.0
 
 
 class _OAuthKeySpec(NamedTuple):
@@ -93,6 +97,10 @@ class MCPSettingsOAuthTokenStore:
     they carry is served to FastMCP, and tokens refreshed during the
     conversation are kept in memory for the lifetime of the store instead of
     being dropped. Servers found in settings always take precedence.
+
+    ``write_back_webhooks`` are the app server callbacks this agent server
+    posts conversation events to; a refreshed inline state is posted there
+    too so the app server can persist it (see ``_write_back_seeded_state``).
     """
 
     def __init__(
@@ -100,9 +108,13 @@ class MCPSettingsOAuthTokenStore:
         *,
         seed_mcp_config: Mapping[str, MCPServer] | None = None,
         cipher: Cipher | None = None,
+        write_back_webhooks: Sequence[WebhookSpec] = (),
+        session_api_key: str | None = None,
     ):
         self._seeded: dict[str, MCPOAuthState] = {}
         self._seeded_lock = threading.Lock()
+        self._write_back_webhooks = tuple(write_back_webhooks)
+        self._session_api_key = session_api_key
         for server in (seed_mcp_config or {}).values():
             if server.url is None or server.oauth_auth is None:
                 continue
@@ -156,6 +168,7 @@ class MCPSettingsOAuthTokenStore:
         if field is None:
             return
         stored_value = copy.deepcopy(dict(value))
+        seeded_updates: list[tuple[str, MCPOAuthState]] = []
 
         def apply_update(settings: PersistedSettings) -> PersistedSettings:
             mcp_config = settings.agent_settings.mcp_config
@@ -165,9 +178,9 @@ class MCPSettingsOAuthTokenStore:
                 with self._seeded_lock:
                     seeded = self._seeded.get(server_url)
                     if seeded is not None:
-                        self._seeded[server_url] = seeded.with_token_storage_value(
-                            field, stored_value
-                        )
+                        updated = seeded.with_token_storage_value(field, stored_value)
+                        self._seeded[server_url] = updated
+                        seeded_updates.append((server_url, updated))
                         return settings
                 logger.warning(
                     "Could not persist MCP OAuth state: no configured MCP "
@@ -195,6 +208,47 @@ class MCPSettingsOAuthTokenStore:
             return settings
 
         get_settings_store().update(apply_update)
+        for server_url, state in seeded_updates:
+            self._write_back_seeded_state(server_url, state)
+
+    def _write_back_seeded_state(self, server_url: str, state: MCPOAuthState) -> None:
+        """Post the refreshed state of an inline server to the app server.
+
+        The settings of a server passed inline on the agent live on the app
+        server that started the conversation. Without this the refreshed
+        tokens die with the sandbox, and the next conversation starts from
+        the previous refresh token, which providers that rotate refresh
+        tokens have already revoked. Best effort: a failure only logs, and
+        the in-memory overlay keeps serving the new tokens.
+        """
+        if not self._write_back_webhooks:
+            return
+        payload = {
+            "server_url": server_url,
+            "oauth_state": state.to_response().model_dump(
+                mode="json", exclude_none=True
+            ),
+        }
+        for spec in self._write_back_webhooks:
+            headers = dict(spec.headers)
+            if self._session_api_key:
+                headers["X-Session-API-Key"] = self._session_api_key
+            url = f"{spec.base_url.rstrip('/')}/mcp-oauth-state"
+            try:
+                response = httpx.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=_WRITE_BACK_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                logger.warning(
+                    "Could not write back MCP OAuth state for %s to %s",
+                    server_url,
+                    url,
+                    exc_info=True,
+                )
 
     async def put(
         self,
@@ -375,10 +429,13 @@ class SettingsBackedMCPToolProvider:
     """Create MCP tools with FastMCP OAuth state persisted in settings.
 
     OAuth servers absent from settings (passed inline on the agent) fall back
-    to the OAuth state they carry; see ``MCPSettingsOAuthTokenStore``.
+    to the OAuth state they carry, and their refreshed state is posted back
+    through ``webhooks``; see ``MCPSettingsOAuthTokenStore``.
     """
 
     cipher: Cipher | None = None
+    webhooks: tuple[WebhookSpec, ...] = ()
+    session_api_key: str | None = None
 
     def create_tools(
         self,
@@ -392,7 +449,10 @@ class SettingsBackedMCPToolProvider:
             mcp_config,
             timeout,
             mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(
-                seed_mcp_config=mcp_config, cipher=self.cipher
+                seed_mcp_config=mcp_config,
+                cipher=self.cipher,
+                write_back_webhooks=self.webhooks,
+                session_api_key=self.session_api_key,
             ),
             on_tools_changed=on_tools_changed,
             on_tools_reconciled=on_tools_reconciled,
@@ -410,4 +470,10 @@ def create_settings_backed_mcp_tool_provider(
             "(no OH_SECRET_KEY configured). Configure OH_SECRET_KEY for "
             "production deployments."
         )
-    return SettingsBackedMCPToolProvider(cipher=config.cipher)
+    return SettingsBackedMCPToolProvider(
+        cipher=config.cipher,
+        webhooks=tuple(config.webhooks),
+        session_api_key=(
+            config.session_api_keys[0] if config.session_api_keys else None
+        ),
+    )
