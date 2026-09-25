@@ -1043,6 +1043,29 @@ def test_tool_call_wrapper_normalized_to_function_call(content):
     assert json.loads(tool_call["arguments"]) == {"command": "ls"}
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<tool_call>finish\n</tool_call>",
+        "All done.\n<tool_call>finish\n</tool_call>",
+        "All done.\n<tool_call>finish\n",
+    ],
+)
+def test_tool_call_wrapper_without_parameters_normalized(content):
+    messages = [
+        {"role": "user", "content": "finish up"},
+        {"role": "assistant", "content": content},
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        messages, FNCALL_TOOLS
+    )
+
+    tool_call = fncall_messages[1]["tool_calls"][0]["function"]
+    assert tool_call["name"] == "finish"
+    assert json.loads(tool_call["arguments"]) == {}
+
+
 def test_tool_call_wrapper_preserves_closing_tag_in_parameter():
     content = (
         "<tool_call>terminal\n"

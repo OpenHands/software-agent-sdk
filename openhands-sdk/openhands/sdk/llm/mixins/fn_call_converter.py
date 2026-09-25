@@ -587,8 +587,11 @@ def _extract_and_validate_params(
 #     <tool_call>file_editor
 #     <parameter=command>view</parameter>
 #     </tool_call>
+# Zero-argument calls use the same wrapper with no parameter lines:
+#     <tool_call>list_skills
+#     </tool_call>
 _TOOL_CALL_WRAPPER_PATTERN = re.compile(
-    r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*\n(?=\s*<parameter=)"
+    r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*\n(?=\s*(?:<parameter=|</tool_call>|\Z))"
 )
 
 
