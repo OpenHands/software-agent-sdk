@@ -64,6 +64,7 @@ from openhands.sdk.io.storage_safety import (
 )
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
+from openhands.sdk.llm.exceptions import LLMAuthenticationError
 from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -2361,6 +2362,21 @@ class LocalConversation(BaseConversation):
                         break
         except StorageSafetyError:
             raise
+        except LLMAuthenticationError as e:
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code="LLMAuthenticationError",
+                        detail=(
+                            "Your LLM API key appears to be invalid or has expired."
+                        ),
+                    )
+                )
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
         except Exception as e:
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
@@ -2869,6 +2885,21 @@ class LocalConversation(BaseConversation):
                 self._on_event(InterruptEvent())
         except StorageSafetyError:
             raise
+        except LLMAuthenticationError as e:
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code="LLMAuthenticationError",
+                        detail=(
+                            "Your LLM API key appears to be invalid or has expired."
+                        ),
+                    )
+                )
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
         except Exception as e:
             with self._state:
                 updated_agent_state = dict(self._state.agent_state)
