@@ -31,6 +31,7 @@ from openhands.sdk.mcp.config import (
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.mcp.utils import _prepare_mcp_config
 
 
@@ -445,6 +446,36 @@ def test_prepare_mcp_config_applies_oauth_token_storage_to_bare_oauth_credential
     auth = server.auth
     assert isinstance(auth, OAuth)
     assert auth._token_storage is token_storage
+
+
+def test_prepare_mcp_config_builds_endpoint_discovering_oauth_clients():
+    # Arrange: one server with explicit authentication, one bare credential.
+    config = {
+        "mcpServers": {
+            "explicit": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {"type": "oauth", "client_auth_method": "none"},
+                },
+            },
+            "bare": {
+                "url": "https://mcp.example.org/mcp",
+                "auth": {"strategy": "oauth2"},
+            },
+        }
+    }
+
+    # Act
+    prepared = _prepare_mcp_config(
+        native_mcp_config(config), mcp_oauth_token_storage=MemoryStore()
+    )
+
+    # Assert: both refresh against the discovered token endpoint.
+    for name in ("explicit", "bare"):
+        server = prepared.mcpServers[name]
+        assert isinstance(server, RemoteMCPServer)
+        assert isinstance(server.auth, MCPOAuth)
 
 
 def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):

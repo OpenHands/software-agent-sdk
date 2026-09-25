@@ -18,14 +18,20 @@ from typing import ClassVar, Final
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
-from openhands.sdk.plugin.format.base import PluginFormat
+from openhands.sdk.plugin.format.base import (
+    PluginFormat,
+    _read_command_definitions,
+    _read_hooks_config,
+)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
     PluginManifest,
 )
 from openhands.sdk.skills.utils import load_mcp_config
+from openhands.sdk.subagent.load import load_agents_from_dir
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import resolves_within
 
 
 logger = get_logger(__name__)
@@ -70,11 +76,16 @@ class ClaudeCodePluginFormat(PluginFormat):
 
         for manifest_dir in PLUGIN_MANIFEST_DIRS:
             candidate = plugin_dir / manifest_dir / PLUGIN_MANIFEST_FILE
-            if candidate.exists():
+            # follow_symlinks=False: a dangling link must be rejected, not skipped.
+            if candidate.exists(follow_symlinks=False):
                 manifest_path = candidate
                 break
 
         if manifest_path:
+            if not resolves_within(manifest_path, plugin_dir):
+                raise ValueError(
+                    f"Manifest {manifest_path} resolves outside the plugin root"
+                )
             try:
                 with open(manifest_path, encoding="utf-8") as f:
                     data = json.load(f)
@@ -116,7 +127,7 @@ class ClaudeCodePluginFormat(PluginFormat):
         during plugin loading before secrets are available.
         """
         mcp_json = plugin_dir / ".mcp.json"
-        if not mcp_json.exists():
+        if not mcp_json.exists() or not resolves_within(mcp_json, plugin_dir):
             return {}
 
         try:
@@ -140,56 +151,12 @@ class ClaudeCodePluginFormat(PluginFormat):
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
         """Load hooks configuration from ``hooks/hooks.json``."""
-        hooks_json = plugin_dir / "hooks" / "hooks.json"
-        if not hooks_json.exists():
-            return None
-
-        try:
-            hook_config = HookConfig.load(path=hooks_json)
-            # If hooks.json exists but is invalid, HookConfig.load() returns an
-            # empty config and logs the validation error. Keep that distinct from
-            # "file not present" (None).
-            if hook_config.is_empty():
-                logger.info(f"No hooks configured in {hooks_json}")
-                return HookConfig()
-            logger.info(f"Loaded hooks from {hooks_json}")
-            return hook_config
-        except Exception as e:
-            logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
-            return None
+        return _read_hooks_config(plugin_dir)
 
     def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:
         """Load agent definitions from the ``agents/`` directory."""
-        agents_dir = plugin_dir / "agents"
-        if not agents_dir.is_dir():
-            return []
-
-        agents: list[AgentDefinition] = []
-        for item in sorted(agents_dir.iterdir()):
-            if item.suffix == ".md" and item.name.lower() != "readme.md":
-                try:
-                    agent = AgentDefinition.load(item)
-                    agents.append(agent)
-                    logger.debug(f"Loaded agent: {agent.name} from {item}")
-                except Exception as e:
-                    logger.warning(f"Failed to load agent from {item}: {e}")
-
-        return agents
+        return load_agents_from_dir(plugin_dir / "agents", root=plugin_dir)
 
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from the ``commands/`` directory."""
-        commands_dir = plugin_dir / "commands"
-        if not commands_dir.is_dir():
-            return []
-
-        commands: list[CommandDefinition] = []
-        for item in sorted(commands_dir.iterdir()):
-            if item.suffix == ".md" and item.name.lower() != "readme.md":
-                try:
-                    command = CommandDefinition.load(item)
-                    commands.append(command)
-                    logger.debug(f"Loaded command: {command.name} from {item}")
-                except Exception as e:
-                    logger.warning(f"Failed to load command from {item}: {e}")
-
-        return commands
+        return _read_command_definitions(plugin_dir)

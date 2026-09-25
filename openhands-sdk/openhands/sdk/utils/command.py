@@ -15,8 +15,19 @@ logger = get_logger(__name__)
 
 # Env vars that should not be exposed to subprocesses (e.g., bash commands
 # executed by the agent). These credentials allow access to user secrets via
-# the SaaS API and must remain isolated to the SDK's Python process.
-_SENSITIVE_ENV_VARS = frozenset({"SESSION_API_KEY"})
+# the SaaS API and/or decrypting persisted secrets, and must remain isolated to
+# the SDK's Python process.
+#
+# - ``SESSION_API_KEY``: legacy (V0) session key name.
+# - ``OH_SECRET_KEY``: cipher key that decrypts persisted conversation/provider
+#   secrets; leaking it is at least as damaging as leaking the session key.
+# See ``openhands.agent_server.config`` for where these are read from the env.
+_SENSITIVE_ENV_VARS = frozenset({"SESSION_API_KEY", "OH_SECRET_KEY"})
+
+# Session keys are also delivered as an indexed list ``OH_SESSION_API_KEYS_0``,
+# ``OH_SESSION_API_KEYS_1``, ... (V1). Strip every slot by prefix so a rename or
+# an added rotation key cannot silently re-expose the credential to subprocesses.
+_SENSITIVE_ENV_PREFIXES: tuple[str, ...] = ("OH_SESSION_API_KEYS_",)
 _AI_AGENT_ENV_VAR: Final[str] = "AI_AGENT"
 
 
@@ -45,6 +56,14 @@ def sanitized_env(
 
     # Strip sensitive env vars to prevent agent access via bash commands
     for key in _SENSITIVE_ENV_VARS:
+        base_env.pop(key, None)
+
+    # Strip indexed / prefixed credential slots (e.g. OH_SESSION_API_KEYS_0..N).
+    for key in [
+        k
+        for k in base_env
+        if any(k.startswith(prefix) for prefix in _SENSITIVE_ENV_PREFIXES)
+    ]:
         base_env.pop(key, None)
 
     if not base_env.get(_AI_AGENT_ENV_VAR, "").strip():

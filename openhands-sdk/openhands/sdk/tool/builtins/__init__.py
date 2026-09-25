@@ -1,10 +1,17 @@
-"""Implementing essential tools that doesn't interact with the environment.
+"""SDK-resident tools that do not interact with the environment.
 
-These are built in and are *required* for the agent to work.
+`BUILT_IN_TOOLS` contains tools attached to every agent. `BUILT_IN_TOOL_CLASSES`
+also includes optional SDK tools that are resolved by name from agent setup.
 
-For tools that require interacting with the environment, add them to `openhands-tools`.
+Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.classify_and_switch_llm import (
+    ClassifyAndSwitchLLMAction,
+    ClassifyAndSwitchLLMExecutor,
+    ClassifyAndSwitchLLMObservation,
+    ClassifyAndSwitchLLMTool,
+)
 from openhands.sdk.tool.builtins.finish import (
     FinishAction,
     FinishExecutor,
@@ -50,11 +57,16 @@ BUILT_IN_TOOL_CLASSES = {
     InvokeSkillTool.__name__: InvokeSkillTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
+    ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
 
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "ClassifyAndSwitchLLMTool",
+    "ClassifyAndSwitchLLMAction",
+    "ClassifyAndSwitchLLMObservation",
+    "ClassifyAndSwitchLLMExecutor",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

@@ -84,30 +84,6 @@ class TestGetSkillsEndpoint:
             assert call_kwargs["project_dir"] == "/workspace/myproject"
             assert call_kwargs["load_project"] is True
 
-    def test_get_skills_legacy_org_config_supported(self, client):
-        """A deprecated single org_config is normalized to a one-entry org_repos."""
-        with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
-            mock_load.return_value = SkillLoadResult(skills=[], sources={})
-
-            response = client.post(
-                "/api/skills",
-                json={
-                    "load_org": True,
-                    "org_config": {
-                        "repository": "myorg/myrepo",
-                        "provider": "github",
-                        "org_repo_url": "https://github.com/myorg/.openhands",
-                        "org_name": "myorg",
-                    },
-                },
-            )
-
-            assert response.status_code == 200
-            mock_load.assert_called_once()
-            assert mock_load.call_args[1]["org_repos"] == [
-                ("https://github.com/myorg/.openhands", "myorg")
-            ]
-
     def test_get_skills_with_org_configs_list(self, client):
         """Multiple org_configs are forwarded as an ordered list of (url, name)."""
         with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
@@ -483,8 +459,8 @@ class TestPydanticModels:
             )
             assert response.status_code == 200
 
-    def test_org_config_validation(self, client):
-        """Test OrgConfig model validation."""
+    def test_org_configs_validation(self, client):
+        """Test OrgConfig model validation via the org_configs list."""
         with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
             mock_load.return_value = SkillLoadResult(skills=[], sources={})
 
@@ -492,12 +468,14 @@ class TestPydanticModels:
             response = client.post(
                 "/api/skills",
                 json={
-                    "org_config": {
-                        "repository": "org/repo",
-                        "provider": "github",
-                        "org_repo_url": "https://github.com/org/.openhands",
-                        "org_name": "org",
-                    }
+                    "org_configs": [
+                        {
+                            "repository": "org/repo",
+                            "provider": "github",
+                            "org_repo_url": "https://github.com/org/.openhands",
+                            "org_name": "org",
+                        }
+                    ]
                 },
             )
             assert response.status_code == 200
@@ -512,15 +490,17 @@ class TestPydanticModels:
         # FastAPI returns 422 for validation errors
         assert response.status_code == 422
 
-    def test_missing_required_org_config_fields(self, client):
-        """Test validation when org_config is missing required fields."""
+    def test_missing_required_org_configs_fields(self, client):
+        """Test validation when an org_configs entry is missing required fields."""
         response = client.post(
             "/api/skills",
             json={
-                "org_config": {
-                    "repository": "org/repo",
-                    # Missing provider, org_repo_url, org_name
-                }
+                "org_configs": [
+                    {
+                        "repository": "org/repo",
+                        # Missing provider, org_repo_url, org_name
+                    }
+                ]
             },
         )
         assert response.status_code == 422
