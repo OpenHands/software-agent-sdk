@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import Literal
 
 import pytest
+from litellm import ModelResponse
 from litellm.exceptions import AuthenticationError
 from pydantic import SecretStr
 
@@ -24,6 +25,7 @@ from openhands.agent_server.managed_llm_key import (
     register_managed_llm_key_refresh,
 )
 from openhands.sdk import LLM, Agent
+from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.secret import (
     register_local_secret_resolver,
     unregister_local_secret_resolver,
@@ -129,10 +131,23 @@ def test_canonical_managed_provider_refreshes(monkeypatch, persisted):
         )
     assert llm.base_url is None
     assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    keys = []
+
+    def complete(**kwargs):
+        keys.append(kwargs["api_key"])
+        if kwargs["api_key"] == "stale_key":
+            raise _auth_error()
+        return ModelResponse(
+            choices=[{"message": {"role": "assistant", "content": "resumed"}}]
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_completion", complete)
     with _served_key(REFRESH_URL, "fresh_key"):
-        refreshed = llm._resolve_refreshed_api_key(_auth_error())
-    assert refreshed is not None
-    assert refreshed.get_secret_value() == "fresh_key"
+        response = llm.completion(
+            [Message(role="user", content=[TextContent(text="continue")])]
+        )
+    assert response.message.content == [TextContent(text="resumed")]
+    assert keys == ["stale_key", "fresh_key"]
 
 
 def test_skips_subscription_auth(monkeypatch):
