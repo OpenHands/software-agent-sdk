@@ -14,6 +14,7 @@ from openhands.sdk.git.models import GitChange, GitChangeStatus
 from openhands.sdk.git.utils import (
     get_valid_ref,
     run_git_command,
+    unquote_git_path,
     validate_git_repository,
 )
 
@@ -67,8 +68,8 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
         # by similarity percentage)
         if status.startswith("R") and len(parts) == 3:
             # Rename: convert to delete (old path) + add (new path)
-            old_path = parts[1].strip()
-            new_path = parts[2].strip()
+            old_path = unquote_git_path(parts[1].strip())
+            new_path = unquote_git_path(parts[2].strip())
             changes.append(
                 GitChange(
                     status=GitChangeStatus.DELETED,
@@ -88,7 +89,7 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
         # similarity percentage)
         elif status.startswith("C") and len(parts) == 3:
             # Copy: only add the new path (original remains)
-            new_path = parts[2].strip()
+            new_path = unquote_git_path(parts[2].strip())
             changes.append(
                 GitChange(
                     status=GitChangeStatus.ADDED,
@@ -100,7 +101,7 @@ def _parse_name_status(changed_files: list[str]) -> list[GitChange]:
 
         # Handle regular operations (M, A, D, etc.)
         elif len(parts) == 2:
-            path = parts[1].strip()
+            path = unquote_git_path(parts[1].strip())
         else:
             logger.error(f"Unexpected git diff line format: {line}")
             raise GitCommandError(
@@ -203,10 +204,11 @@ def get_changes_in_repo(
         untracked_files = []
     for path in untracked_files:
         if path.strip():
+            clean_untracked_path = unquote_git_path(path.strip())
             changes.append(
                 GitChange(
                     status=GitChangeStatus.ADDED,
-                    path=Path(path.strip()),
+                    path=Path(clean_untracked_path),
                 )
             )
             logger.debug(f"Found untracked file: {path}")
