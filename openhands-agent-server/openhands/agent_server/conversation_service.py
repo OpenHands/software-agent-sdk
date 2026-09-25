@@ -30,6 +30,8 @@ from openhands.agent_server.models import (
     ConversationPage,
     ConversationSortOrder,
     LaunchedAgentProfile,
+    StartChildConversationRequest,
+    StartChildConversationResponse,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -47,7 +49,7 @@ from openhands.agent_server.telemetry import (
 )
 from openhands.agent_server.telemetry.sanitizer import model_family, safe_token
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, AgentContext, Event, Message
+from openhands.sdk import LLM, AgentContext, Event, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.agent.acp_file_credentials import CODEX_AUTH_SECRET_NAME
 from openhands.sdk.agent.base import AgentBase
@@ -2174,6 +2176,95 @@ class ConversationService:
         state = await fork_event_service.get_state()
         return _compose_conversation_info(
             fork_event_service.stored, state, self._children_of(fork_conv_id)
+        )
+
+    async def start_child_conversation(
+        self,
+        parent_id: UUID,
+        request: StartChildConversationRequest,
+    ) -> StartChildConversationResponse | None:
+        """Start a child conversation on this server, derived from *parent_id*.
+
+        Like :meth:`fork_conversation`, the child inherits the parent's stored
+        configuration (secrets, client tools, plugins, hooks, tags, ...) and its
+        resolved agent, but it starts with a fresh event history: ``task`` is
+        delivered as the child's first user message. With
+        ``isolation="worktree"`` the child runs in a git worktree carved from
+        the parent's workspace when that workspace is a git repository;
+        otherwise (or with ``isolation="shared"``) it shares the parent's
+        directory. The link is recorded via ``parent_conversation_id``.
+
+        Returns ``None`` when *parent_id* does not exist.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        parent_service = await self._get_or_load_event_service(parent_id)
+        if parent_service is None:
+            return None
+
+        parent_stored = parent_service.stored
+        parent_agent = cast(AgentBase, parent_service.get_conversation().agent)
+        child_id = uuid4()
+
+        # Reuse the worktree machinery of a regular start: it rewrites the
+        # workspace (and appends worktree guidance to the agent) only when the
+        # parent workspace is a git repository and is a no-op otherwise.
+        prepared = _prepare_request_workspace(
+            StartConversationRequest(
+                agent=parent_agent,
+                workspace=parent_stored.workspace,
+                worktree=request.isolation == "worktree",
+            ),
+            child_id,
+            self.conversation_worktree_root,
+        )
+        now = utc_now()
+        child_stored = parent_stored.model_copy(
+            update={
+                "id": child_id,
+                "workspace": prepared.workspace,
+                "worktree": prepared.worktree,
+                "title": request.title,
+                "metrics": None,
+                "created_at": now,
+                "updated_at": now,
+                "parent_conversation_id": parent_id,
+                "forked_from_conversation_id": None,
+                "forked_from_event_id": None,
+            }
+        )
+        child_dir = self.conversations_dir / child_id.hex
+        try:
+            async with self._conversation_lifecycle(child_id):
+                event_service = await self._start_event_service(
+                    child_stored, is_new_conversation=True, agent=prepared.agent
+                )
+        except Exception:
+            safe_rmtree(child_dir)
+            raise
+
+        await event_service.send_message(
+            Message(role="user", content=[TextContent(text=request.task)]), True
+        )
+
+        state = await event_service.get_state()
+        info = _compose_conversation_info(
+            event_service.stored, state, self._children_of(child_id)
+        )
+        await self._notify_conversation_webhooks(
+            _compose_webhook_conversation_info(event_service.stored, state)
+        )
+
+        parent_dir = Path(parent_stored.workspace.working_dir).resolve()
+        child_workspace_dir = Path(prepared.workspace.working_dir).resolve()
+        return StartChildConversationResponse(
+            conversation_id=child_id,
+            parent_conversation_id=parent_id,
+            status=info.execution_status.value,
+            title=info.title,
+            workspace=str(prepared.workspace.working_dir),
+            isolation="worktree" if child_workspace_dir != parent_dir else "shared",
         )
 
     async def navigate_conversation(

@@ -598,5 +598,11 @@
     "kind": "empty-object-schema",
     "reason": "This existing endpoint has an opaque or non-JSON response contract and is tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
+  },
+  {
+    "pointer": "/components/schemas/StartChildConversationTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands"
   }
 ]
