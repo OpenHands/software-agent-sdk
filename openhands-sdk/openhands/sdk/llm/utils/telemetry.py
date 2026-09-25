@@ -57,15 +57,17 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
     if isinstance(usage, Usage):
         prompt_details = usage.prompt_tokens_details
         completion_details = usage.completion_tokens_details
-        # ``cache_creation_tokens`` defaults to ``None``, so presence in
-        # ``model_fields_set`` is what distinguishes "provider reported a cache
-        # write" from "provider said nothing about cache writes".
-        cache_write = 0
-        if (
-            prompt_details is not None
-            and "cache_creation_tokens" in prompt_details.model_fields_set
-        ):
-            cache_write = int(prompt_details.cache_creation_tokens or 0)
+        # ``PromptTokensDetailsWrapper`` deletes unset optional fields, so a
+        # provider that reports no cache write has the attribute removed while
+        # the name can remain in ``model_fields_set``. Read the details through
+        # ``model_dump()``: a deleted field is absent from the dump and defaults
+        # to 0, whereas a direct attribute read raises ``AttributeError``.
+        details = prompt_details.model_dump() if prompt_details is not None else {}
+        cache_write = int(
+            details.get("cache_creation_tokens")
+            or details.get("cache_write_tokens")
+            or 0
+        )
         return UsageSnapshot(
             prompt_tokens=int(usage.prompt_tokens or 0),
             completion_tokens=int(usage.completion_tokens or 0),
@@ -74,11 +76,7 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
                 if completion_details is not None
                 else 0
             ),
-            cache_read_tokens=(
-                int(prompt_details.cached_tokens or 0)
-                if prompt_details is not None
-                else 0
-            ),
+            cache_read_tokens=int(details.get("cached_tokens") or 0),
             cache_write_tokens=cache_write,
         )
 
