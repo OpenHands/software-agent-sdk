@@ -101,13 +101,8 @@ def test_cache_write_survives_absent_prompt_tokens_details():
 
 
 def test_normalize_usage_cache_write_null_does_not_raise():
-    """A provider that reports ``cache_creation_tokens: null`` must not crash.
-
-    litellm's ``PromptTokensDetailsWrapper`` deletes optional fields whose
-    value is ``None`` from the instance while keeping them in
-    ``model_fields_set``. minimax-m3 reports ``cache_creation_tokens: null``
-    via the dict path, so the SDK must tolerate the field being set-but-missing
-    rather than raising ``AttributeError``.
+    """litellm deletes None optional fields from the instance but keeps them in
+    ``model_fields_set`` (e.g. minimax-m3 reports ``cache_creation_tokens: null``).
     """
     usage = Usage(
         prompt_tokens=100,
