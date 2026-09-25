@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.llm.options.common import (
@@ -12,6 +13,9 @@ from openhands.sdk.llm.options.common import (
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLMCallContext
+
+
+logger = logging.getLogger(__name__)
 
 
 def select_chat_options(
@@ -47,6 +51,25 @@ def select_chat_options(
     if supports_reasoning_effort:
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
+            if (
+                llm.model.startswith("openai/")
+                and llm.capability_overrides.get("supports_reasoning_effort") is True
+            ):
+                allowed_openai_params: list[str] = list(
+                    out.get("allowed_openai_params") or ()
+                )
+                if "reasoning_effort" not in allowed_openai_params:
+                    allowed_openai_params.append("reasoning_effort")
+                out["allowed_openai_params"] = allowed_openai_params
+    elif (
+        llm.reasoning_effort is not None and "reasoning_effort" in llm.model_fields_set
+    ):
+        logger.warning(
+            "Configured reasoning_effort=%s was not forwarded for model %s "
+            "because support is unknown or disabled",
+            llm.reasoning_effort,
+            llm.model,
+        )
 
     model_name = llm._model_name_for_capabilities()
     if model_features.supports_sampling_params is False or (

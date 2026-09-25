@@ -1849,6 +1849,67 @@ def test_max_output_tokens_capped_when_model_info_exceeds_default_cap(
     assert llm.effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openhands/deepseek-v4-pro",
+        "openhands/deepseek-v4-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek-v4-pro",
+        "litellm_proxy/deepseek-v4-flash",
+        "litellm_proxy/deepseek-v4.1-flash",
+    ],
+)
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_deepseek_v4_proxy_aliases_use_safe_default_output_cap(
+    mock_get_model_info, model
+):
+    """Proxy metadata must not turn an advertised maximum into a request default."""
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    mock_get_model_info.return_value = {
+        "max_tokens": 1_000_000,
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 384_000,
+    }
+
+    llm = LLM(model=model, api_key=SecretStr("test-key"), usage_id="test-llm")
+
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_deepseek_v4_proxy_alias_uses_safe_output_cap_without_metadata(
+    mock_get_model_info,
+):
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    mock_get_model_info.return_value = None
+
+    llm = LLM(
+        model="openhands/deepseek-v4.1-flash",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+
+    assert llm.effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_explicit_deepseek_v4_output_cap_is_respected(mock_get_model_info):
+    mock_get_model_info.return_value = {"max_output_tokens": 384_000}
+
+    llm = LLM(
+        model="litellm_proxy/deepseek-v4.1-flash",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        max_output_tokens=32_768,
+    )
+
+    assert llm.effective_max_output_tokens == 32_768
+
+
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
 def test_max_output_tokens_not_capped_without_custom_base_url(mock_get_model_info):
     """Direct API (no base_url) keeps litellm's real max_output_tokens."""

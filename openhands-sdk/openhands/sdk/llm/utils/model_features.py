@@ -67,6 +67,14 @@ class ModelFeatures:
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
+DEEPSEEK_V4_MODEL_IDS = frozenset(
+    {
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+    }
+)
+
 # Common deployment path prefixes used in LiteLLM proxy configurations
 DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
 
@@ -88,10 +96,37 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
             normalized = normalized.removeprefix(prefix)
             break
 
+    # OpenHands and LiteLLM proxy routes use bare aliases. Resolve only the
+    # known DeepSeek V4 aliases through the native provider so LiteLLM can
+    # report their supported request parameters without proxy metadata.
+    if normalized in DEEPSEEK_V4_MODEL_IDS:
+        return f"deepseek/{normalized}"
+
     if normalized == "kimi-k3":
         return "moonshot/kimi-k3"
 
     return normalized
+
+
+def is_deepseek_v4_proxy_alias(model: str | None) -> bool:
+    """Return whether model is a bare DeepSeek V4 OpenHands/proxy alias."""
+    if not model:
+        return False
+
+    normalized = model.strip().lower()
+    for provider_prefix in (LITELLM_PROXY_PREFIX, OPENHANDS_PROVIDER_PREFIX):
+        if normalized.startswith(provider_prefix):
+            normalized = normalized.removeprefix(provider_prefix)
+            break
+    else:
+        return False
+
+    for prefix in DEPLOYMENT_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized.removeprefix(prefix)
+            break
+
+    return normalized in DEEPSEEK_V4_MODEL_IDS
 
 
 @cache

@@ -120,7 +120,11 @@ from openhands.sdk.llm.utils.image_inline import (
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
-from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
+from openhands.sdk.llm.utils.model_features import (
+    ModelFeatures,
+    get_features,
+    is_deepseek_v4_proxy_alias,
+)
 from openhands.sdk.llm.utils.openhands_provider import (
     LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
@@ -2615,6 +2619,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         effective_max_output_tokens = self.max_output_tokens
         if effective_max_output_tokens is None:
+            deepseek_v4_proxy_alias = is_deepseek_v4_proxy_alias(self.model)
             if any(
                 m in self.model
                 for m in [
@@ -2664,8 +2669,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         )
                         effective_max_output_tokens = capped
                     if (
-                        self.base_url is not None
-                        and not self.model.startswith("litellm_proxy/")
+                        (
+                            deepseek_v4_proxy_alias
+                            or (
+                                self.base_url is not None
+                                and not self.model.startswith("litellm_proxy/")
+                            )
+                        )
                         and effective_max_output_tokens is not None
                         and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
                     ):
@@ -2694,6 +2704,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             effective_max_output_tokens,
                             self.model,
                         )
+            if effective_max_output_tokens is None and deepseek_v4_proxy_alias:
+                effective_max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                logger.debug(
+                    "Using default max_output_tokens=%s for %s without model metadata",
+                    effective_max_output_tokens,
+                    self.model,
+                )
 
         if "o3" in self.model:
             o3_limit = 100000
