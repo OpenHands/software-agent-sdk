@@ -59,13 +59,19 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
         completion_details = usage.completion_tokens_details
         # ``cache_creation_tokens`` defaults to ``None``, so presence in
         # ``model_fields_set`` is what distinguishes "provider reported a cache
-        # write" from "provider said nothing about cache writes".
+        # write" from "provider said nothing about cache writes". Use getattr
+        # rather than a bare attribute access: litellm's
+        # ``PromptTokensDetailsWrapper.__init__`` ``del``s optional fields whose
+        # value is ``None``, so the field can be in ``model_fields_set`` yet
+        # missing from the instance (e.g. minimax-m3 reports
+        # ``cache_creation_tokens: null``), which would otherwise raise
+        # ``AttributeError`` here.
         cache_write = 0
         if (
             prompt_details is not None
             and "cache_creation_tokens" in prompt_details.model_fields_set
         ):
-            cache_write = int(prompt_details.cache_creation_tokens or 0)
+            cache_write = int(getattr(prompt_details, "cache_creation_tokens", 0) or 0)
         return UsageSnapshot(
             prompt_tokens=int(usage.prompt_tokens or 0),
             completion_tokens=int(usage.completion_tokens or 0),

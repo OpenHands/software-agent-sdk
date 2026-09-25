@@ -100,6 +100,30 @@ def test_cache_write_survives_absent_prompt_tokens_details():
     assert snapshot.cache_write_tokens == 42
 
 
+def test_normalize_usage_cache_write_null_does_not_raise():
+    """A provider that reports ``cache_creation_tokens: null`` must not crash.
+
+    litellm's ``PromptTokensDetailsWrapper`` deletes optional fields whose
+    value is ``None`` from the instance while keeping them in
+    ``model_fields_set``. minimax-m3 reports ``cache_creation_tokens: null``
+    via the dict path, so the SDK must tolerate the field being set-but-missing
+    rather than raising ``AttributeError``.
+    """
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=5,
+        prompt_tokens_details={
+            "cached_tokens": 3,
+            "cache_creation_tokens": None,
+        },
+    )
+    snapshot = normalize_usage(usage)
+
+    assert snapshot is not None
+    assert snapshot.cache_write_tokens == 0
+    assert snapshot.cache_read_tokens == 3
+
+
 def test_span_closed_on_error(exporter):
     t = Telemetry(model_name="m", metrics=Metrics())
     t.on_request(telemetry_ctx={})
