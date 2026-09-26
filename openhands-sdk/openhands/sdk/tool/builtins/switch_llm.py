@@ -171,7 +171,7 @@ class SwitchLLMTool(ToolDefinition[SwitchLLMAction, SwitchLLMObservation]):
                 executor=SwitchLLMExecutor(),
                 annotations=ToolAnnotations(
                     readOnlyHint=False,
-                    destructiveHint=False,
+                    destructiveHint=True,
                     idempotentHint=False,
                     openWorldHint=False,
                 ),
