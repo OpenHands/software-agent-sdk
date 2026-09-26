@@ -1366,7 +1366,7 @@ wheels = [
 
 [[package]]
 name = "google-cloud-aiplatform"
-version = "1.157.0"
+version = "2.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -1385,9 +1385,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e0/d9/e2a5f5a8535bbc8f68729796f3fc2d68d59a72818fb44f6544edbc2592e4/google_cloud_aiplatform-1.157.0.tar.gz", hash = "sha256:ce8413ed3584c4896f7656b663214c24e91c2c89426f1c91fbd1d220ffda23af", size = 11064992, upload-time = "2026-06-10T00:19:33.643Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/22/2c0f9ccb918d67e9e34ca857337670c97fe49a84ab31979060eb9112dc64/google_cloud_aiplatform-2.1.3.tar.gz", hash = "sha256:6ccd59e9bd5f313209cfe1bef8c4ab2f57ef2c91b96003dd88053df3a5757dc6", size = 11335191, upload-time = "2026-09-16T02:29:39.991Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/82/3ec2ba56dc1fa71ef783348a0c519721879dbc8f1e568534e6d4b4856ccd/google_cloud_aiplatform-1.157.0-py2.py3-none-any.whl", hash = "sha256:0ca499ac5648988916fc089f9e94bd99667eefba13f6936475247f4a0bf86634", size = 9200777, upload-time = "2026-06-10T00:19:30.181Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/b3/be1a23d1cbc239f43de9d4a97dd5e2623a04735125aa41a214822b2e8ad6/google_cloud_aiplatform-2.1.3-py2.py3-none-any.whl", hash = "sha256:846d5dcda761832933bac34aeca1faba5d12819299d200e7a215c22c04770843", size = 9455465, upload-time = "2026-09-16T02:29:36.445Z" },
 ]
 
 [[package]]
@@ -2892,7 +2892,7 @@ requires-dist = [
     { name = "fakeredis", extras = ["lua"], specifier = ">=2.32.1" },
     { name = "fastmcp", specifier = ">=3.2.0,<4" },
     { name = "filelock", specifier = ">=3.20.1" },
-    { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=1.38" },
+    { name = "google-cloud-aiplatform", marker = "extra == 'vertex'", specifier = ">=2.1.3" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "joserfc", specifier = ">=1.7.5" },
     { name = "jsonschema", specifier = ">=4.23.0" },
