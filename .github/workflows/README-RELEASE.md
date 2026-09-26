@@ -4,12 +4,13 @@ This document describes the automated release workflows for the OpenHands Softwa
 
 ## Overview
 
-The release process has been automated with three GitHub Actions workflows:
+The release process uses `create-release.yml` as its sole orchestrator:
 
-1. **prepare-release.yml** - Prepares a release PR with version updates
-2. **pypi-release.yml** - Automatically publishes packages to PyPI when a release is created
-3. **release-binaries.yml** - Builds and smoke-tests multi-arch agent-server binaries
-   on releases and main pushes; release runs also attach binaries to the release
+1. **prepare-release.yml** prepares a release PR with synchronized package versions.
+2. Merging the release PR runs **create-release.yml**, which creates the GitHub release and explicitly dispatches every publisher against its immutable tag.
+3. The dispatched workflows publish Python packages, the TypeScript client, agent-server images, and release binaries.
+
+Publisher workflows do not listen for GitHub release events. This avoids relying on events created with `GITHUB_TOKEN`, which GitHub does not use to trigger downstream workflows.
 
 ## How to Create a New Release
 
@@ -38,30 +39,21 @@ The created PR will include a checklist. Complete the following:
 - [ ] Confirm any merged `release-note-required` PRs are accurately called out in the final release notes
 - [ ] Review and approve the PR
 
-### Step 3: Create the GitHub Release
+### Step 3: Merge the Release PR
 
-1. Go to [Releases](https://github.com/OpenHands/software-agent-sdk/releases/new)
-2. Click **"Draft a new release"**
-3. Configure the release:
-   - **Tag**: `vX.Y.Z` (must match the version)
-   - **Branch**: `rel-X.Y.Z` (the branch created by the workflow)
-   - **Previous tag**: Select the previous release version
-4. Click **"Generate release notes"** to auto-generate the changelog
-5. Review and edit the release notes as needed
-6. Click **"Publish release"**
+Merging the release PR runs **create-release.yml**, which:
 
-### Step 4: PyPI Publication (Automated)
+- creates tag and GitHub release `vX.Y.Z` at the merge commit;
+- explicitly dispatches PyPI publication with version `X.Y.Z`;
+- explicitly dispatches TypeScript publication to npm and GitHub Packages with version `X.Y.Z`;
+- explicitly dispatches versioned agent-server image builds against tag `vX.Y.Z`;
+- explicitly dispatches release binaries against tag `vX.Y.Z`.
 
-Once the release is published, the **pypi-release.yml** workflow will automatically:
-- ✅ Build all packages (openhands-sdk, openhands-tools, openhands-workspace, openhands-agent-server)
-- ✅ Publish them to PyPI
+Each publisher validates that its checked-out package version matches the requested version before publishing. Monitor the dispatched workflows in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions).
 
-You can monitor the progress in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions/workflows/pypi-release.yml).
+### Step 4: Release Binaries + Docker Smoke Test (Automated)
 
-### Step 4b: Release Binaries + Docker Smoke Test (Automated)
-
-In parallel with the PyPI workflow, **release-binaries.yml** also fires on `release: published`.
-It also runs on every push to `main` as ongoing smoke coverage. It:
+**release-binaries.yml** is explicitly dispatched for releases. It also runs on every push to `main` as ongoing smoke coverage. It:
 
 - ✅ Builds the agent-server PyInstaller binary on a 5-runner matrix
   (linux x86_64/arm64, macOS x86_64/arm64, windows x86_64) and smoke-tests each
@@ -107,44 +99,44 @@ If the matching manifest is already in GHCR, the wait step exits immediately.
 
 After successful PyPI publication, the workflow will automatically create PRs to update SDK versions in downstream repositories:
 
-- **[OpenHands](https://github.com/OpenHands/OpenHands)** - Updates `openhands-sdk`, `openhands-tools`, and `openhands-agent-server` versions
 - **[OpenHands-CLI](https://github.com/OpenHands/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
 - **[automation](https://github.com/OpenHands/automation)** - Updates `openhands-sdk` and `openhands-workspace` versions. Opened with a `fix:` title so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK (which the agent-canvas `sdk-version-sync` check requires).
-- **[typescript-client](https://github.com/OpenHands/typescript-client)** -
-  Waits for both the exact GHCR image and the release `openapi.json`, updates
-  `config.agentServerImage`, regenerates the checked-in transport types,
-  and includes an API-change summary. Required client PR CI then runs pinned
-  regeneration, type checking, and integration tests before merge.
+- **TypeScript client (`clients/typescript`)** - Opens a PR in this repository after both the exact GHCR image and release `openapi.json` are available, updates `config.agentServerImage`, regenerates the checked-in transport types, and includes an API-change summary.
 
 These PRs will:
 - Be created automatically with branch name `bump-sdk-X.Y.Z` (`bump-agent-server-X.Y.Z` for typescript-client)
 - Include links back to the SDK release
 - Include generated Agent Server contract changes for the exact released
   version rather than only changing the image tag
-- Need to be reviewed and merged by the respective repository maintainers
+- Need to be reviewed and merged by maintainers
 
 ### Step 6: Post-Release Tasks
 
 - [ ] Merge the release PR to main
-- [ ] Review and merge the auto-created version bump PRs in OpenHands, OpenHands-CLI, automation, and typescript-client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
+- [ ] Review and merge the auto-created version bump PRs in OpenHands-CLI, automation, and the TypeScript client (merging the automation PR triggers its release-please release PR; merge that too to publish the pinned `openhands-automation`)
 - [ ] Announce the release
 
-## Manual PyPI Release (If Needed)
+## Manual Publication Recovery
 
-If you need to manually trigger the PyPI release workflow:
+To retry a registry publisher, run the latest workflow from `main` and pass the release version without the leading `v`. The workflow checks out the corresponding immutable `vX.Y.Z` tag and validates its package version before publishing. For example, recover `v1.45.0` with version input `1.45.0`; never publish package contents from a moving branch.
 
-1. Go to the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions)
-2. Select **"Publish all OpenHands packages (uv)"** workflow
-3. Click **"Run workflow"**
-4. Select the branch/tag you want to publish from
-5. Click **"Run workflow"**
+The independently retryable publisher workflows are:
+
+- **Publish all OpenHands packages (uv)** for PyPI;
+- **Publish TypeScript client to npm**;
+- **Publish TypeScript client to GitHub Packages**;
+- **Agent Server** for versioned container images;
+- **Publish agent-server release artifacts** for binaries and `openapi.json`.
 
 ## Workflow Files
 
 - `.github/workflows/prepare-release.yml` - Automated release preparation
-- `.github/workflows/pypi-release.yml` - PyPI package publication
-- `.github/workflows/release-binaries.yml` - Multi-arch binary publishing and
-  docker manifest smoke test on releases and main pushes
+- `.github/workflows/create-release.yml` - GitHub release creation and sole publisher orchestrator
+- `.github/workflows/pypi-release.yml` - Dispatch-only PyPI package publication
+- `.github/workflows/typescript-client-npm-publish.yml` - Dispatch-only npm publication
+- `.github/workflows/typescript-client-github-packages-publish.yml` - Dispatch-only GitHub Packages publication
+- `.github/workflows/server.yml` - Agent-server builds for PRs, main, and explicit release dispatches
+- `.github/workflows/release-binaries.yml` - Multi-arch binary publishing and Docker manifest smoke tests on main and explicit release dispatches
 
 ## Troubleshooting
 

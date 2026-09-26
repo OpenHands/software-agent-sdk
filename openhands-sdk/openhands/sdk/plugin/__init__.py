@@ -21,6 +21,13 @@ from openhands.sdk.plugin.fetch import (
     PluginFetchError,
     fetch_plugin_with_resolution,
 )
+from openhands.sdk.plugin.format import (
+    AgentPluginsFormat,
+    ClaudeCodePluginFormat,
+    PluginFormat,
+    detect_format,
+)
+from openhands.sdk.plugin.format.agent_plugins_mcp import get_plugin_data_dir
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
     disable_plugin,
@@ -60,6 +67,11 @@ __all__ = [
     "PluginSource",
     "ResolvedPluginSource",
     "CommandDefinition",
+    # Plugin format strategies
+    "PluginFormat",
+    "AgentPluginsFormat",
+    "ClaudeCodePluginFormat",
+    "detect_format",
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
@@ -81,6 +93,7 @@ __all__ = [
     "load_installed_plugins",
     "get_installed_plugins_dir",
     "get_installed_plugin",
+    "get_plugin_data_dir",
     "enable_plugin",
     "disable_plugin",
     "update_plugin",

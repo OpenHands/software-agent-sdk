@@ -1,3 +1,4 @@
+import json
 import os
 from collections.abc import Generator
 from pathlib import Path
@@ -70,7 +71,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
-    _conversation_id: str | None = PrivateAttr(default=None)
 
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
@@ -130,6 +130,29 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         assert isinstance(data, dict)
         return data
 
+    def start_command(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+        timeout: float = 30,
+    ) -> str:
+        """Start a command and return its ID without waiting for completion."""
+        return self._execute(self._start_command_generator(command, cwd, timeout))
+
+    def get_command_output(
+        self, command_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Read the latest output; a missing exit code means it is still running."""
+        return self._execute(self._get_command_output_generator(command_id))
+
+    def get_runtime_session_key(self) -> str:
+        """Get the scoped worker credential for this conversation runtime."""
+        return self._execute(self._runtime_lifecycle_generator(release=False))
+
+    def release_runtime(self) -> None:
+        """Release execution resources while retaining conversation history."""
+        self._execute(self._runtime_lifecycle_generator(release=True))
+
     def execute_command(
         self,
         command: str,
@@ -155,7 +178,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     def file_upload(
         self,
-        source_path: str | Path,
+        source_path: str | Path | bytes,
         destination_path: str | Path,
     ) -> FileOperationResult:
         """Upload a file to the remote system.
@@ -163,7 +186,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Reads the local file and sends it to the remote system via HTTP API.
 
         Args:
-            source_path: Path to the local source file
+            source_path: Local file path or in-memory bytes
             destination_path: Path where the file should be uploaded on remote system
 
         Returns:
@@ -244,13 +267,43 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     def default_conversation_tags(self) -> dict[str, str] | None:
         """Default tags to apply to conversations created with this workspace.
 
-        Subclasses (e.g., OpenHandsCloudWorkspace) can override this to provide
-        context-specific tags like automation metadata.
+        Derives automation metadata from environment variables injected by the
+        automation dispatcher, so any remote workspace (local agent servers
+        included) stamps automation context onto the conversations it creates.
+
+        The tags include (keys are lowercase alphanumeric per API requirements):
+          - automationtrigger: The trigger type (e.g., 'cron', 'webhook', 'manual')
+          - automationid: The automation's unique identifier
+          - automationname: Human-readable automation name
+          - automationrunid: The specific run identifier
 
         Returns:
-            Dictionary of tag key-value pairs, or None if no default tags.
+            Dictionary of tag key-value pairs (empty when no automation env
+            vars are present). Subclasses (e.g., OpenHandsCloudWorkspace) can
+            extend this with additional context.
         """
-        return None
+        tags: dict[str, str] = {}
+
+        # Parse AUTOMATION_EVENT_PAYLOAD (injected by dispatcher)
+        payload_str = os.environ.get("AUTOMATION_EVENT_PAYLOAD")
+        if payload_str:
+            try:
+                payload = json.loads(payload_str)
+                if isinstance(payload, dict):
+                    if payload.get("trigger"):
+                        tags["automationtrigger"] = str(payload["trigger"])
+                    if payload.get("automation_id"):
+                        tags["automationid"] = str(payload["automation_id"])
+                    if payload.get("automation_name"):
+                        tags["automationname"] = str(payload["automation_name"])
+            except (json.JSONDecodeError, TypeError):
+                logger.error("Failed to parse AUTOMATION_EVENT_PAYLOAD")
+
+        run_id = os.environ.get("AUTOMATION_RUN_ID")
+        if run_id:
+            tags["automationrunid"] = run_id
+
+        return tags
 
     def register_conversation(self, conversation_id: str) -> None:
         """Register a conversation ID with this workspace.
@@ -274,54 +327,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """
         return self._conversation_id
 
-    def _send_completion_callback(
-        self, exc_type: type | None, exc_val: BaseException | None
-    ) -> None:
-        """POST completion status to the automation service (best-effort).
-
-        Call this from ``__exit__`` before ``cleanup()``. Does nothing when
-        ``AUTOMATION_CALLBACK_URL`` env var is not set.
-
-        Reads configuration from environment variables:
-          - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
-          - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
-          - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
-
-        Includes ``conversation_id`` in the payload if one was registered via
-        ``register_conversation()``.
-
-        Args:
-            exc_type: Exception type if an exception was raised, None otherwise
-            exc_val: Exception value if an exception was raised, None otherwise
-        """
-        callback_url = os.environ.get("AUTOMATION_CALLBACK_URL")
-        if not callback_url:
-            return
-
-        callback_api_key = os.environ.get("AUTOMATION_CALLBACK_API_KEY")
-        run_id = os.environ.get("AUTOMATION_RUN_ID")
-
-        status = "COMPLETED" if exc_type is None else "FAILED"
-        payload: dict[str, Any] = {"status": status}
-        if run_id:
-            payload["run_id"] = run_id
-        if exc_val is not None:
-            payload["error"] = str(exc_val)
-
-        # Include conversation_id if one was registered
-        if self._conversation_id is not None:
-            payload["conversation_id"] = self._conversation_id
-
-        try:
-            headers: dict[str, str] = {}
-            if callback_api_key:
-                headers["Authorization"] = f"Bearer {callback_api_key}"
-            with httpx.Client(timeout=10.0) as cb_client:
-                resp = cb_client.post(callback_url, json=payload, headers=headers)
-                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Completion callback failed: {e}")
-
     def __exit__(
         self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
     ) -> None:
@@ -339,27 +344,30 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     # settings endpoints. Subclasses like OpenHandsCloudWorkspace may override
     # to use alternative endpoints (e.g., Cloud API).
 
-    def _fetch_agent_settings(
-        self,
-    ) -> "OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings":
-        """Call ``GET /api/settings`` and return a validated settings model.
-
-        Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
-        api_key) are returned as plain strings.  The outer response is
-        validated via :class:`SettingsResponse`, then the ``agent_settings``
-        dict is validated through :meth:`SettingsResponse.get_agent_settings`,
-        which applies the persisted settings migration entry point before
-        picking the correct discriminated-union variant
-        (``OpenHandsAgentSettings`` or ``ACPAgentSettings``).
-        """
+    def _fetch_settings_response(
+        self, *, expose_secrets: bool = True
+    ) -> SettingsResponse:
+        """Call ``GET /api/settings`` and return the validated response."""
         headers = dict(self._headers)
-        headers["X-Expose-Secrets"] = "plaintext"
+        if expose_secrets:
+            headers["X-Expose-Secrets"] = "plaintext"
 
         response = self.client.get("/api/settings", headers=headers)
         response.raise_for_status()
+        return SettingsResponse.model_validate(response.json())
 
-        data = SettingsResponse.model_validate(response.json())
-        return data.get_agent_settings()
+    def _fetch_agent_settings(
+        self,
+    ) -> "OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings":
+        """Return the validated agent settings from ``GET /api/settings``.
+
+        Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
+        api_key) are returned as plain strings. The validated
+        ``SettingsResponse`` is narrowed through
+        :meth:`SettingsResponse.get_agent_settings`, which selects the correct
+        discriminated-union variant.
+        """
+        return self._fetch_settings_response().get_agent_settings()
 
     def _fetch_llm_profile_config(self, profile_name: str) -> dict[str, Any]:
         """Call ``GET /api/profiles/{name}`` and return plaintext LLM config."""
@@ -386,16 +394,23 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         reraise=True,
     )
     def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> "LLM":
-        """Fetch LLM settings from persisted settings or a named profile.
+        """Fetch the active or explicitly named LLM profile.
+
+        When no ``profile_name`` is given, the persisted ``active_profile``
+        pointer is resolved first (so the UI-advertised default is honored).
+        If no ``active_profile`` is configured, the legacy
+        ``agent_settings.llm`` payload is used as a fallback (preserving
+        backward compatibility for servers that have not adopted named
+        profiles).
 
         Args:
             profile_name: Optional LLM profile name. When provided, loads that
-                named profile instead of the active persisted LLM settings.
-            **llm_kwargs: Additional keyword arguments that override persisted
-                or profile values (e.g., ``model``, ``temperature``).
+                named profile instead of resolving the active profile.
+            **llm_kwargs: Additional keyword arguments that override profile
+                values (e.g., ``model``, ``temperature``).
 
         Returns:
-            An LLM instance configured with the persisted settings or profile.
+            An LLM instance configured with the active or named profile.
 
         Raises:
             FileNotFoundError: If ``profile_name`` does not exist.
@@ -412,14 +427,23 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        if profile_name:
+        if profile_name is None:
+            settings_response = self._fetch_settings_response(expose_secrets=False)
+            resolved_profile_name = settings_response.active_profile
+            if resolved_profile_name in (None, ""):
+                settings_response = self._fetch_settings_response()
+                agent_settings = settings_response.get_agent_settings()
+                if not llm_kwargs:
+                    return agent_settings.llm
+                llm_data = agent_settings.llm.model_dump(
+                    context={"expose_secrets": "plaintext"}
+                )
+            else:
+                llm_data = self._fetch_llm_profile_config(resolved_profile_name)
+                llm_data["usage_id"] = f"profile:{resolved_profile_name}"
+        else:
             llm_data = self._fetch_llm_profile_config(profile_name)
             llm_data["usage_id"] = f"profile:{profile_name}"
-        else:
-            settings = self._fetch_agent_settings()
-            if not llm_kwargs:
-                return settings.llm
-            llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
 
         llm_data.update(llm_kwargs)
         return LLM(**llm_data)
@@ -430,7 +454,12 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_secrets(self, names: list[str] | None = None) -> dict[str, "LookupSecret"]:
+    def get_secrets(
+        self,
+        names: list[str] | None = None,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> dict[str, "LookupSecret"]:
         """Build ``LookupSecret`` references for the agent-server's secrets.
 
         Fetches the list of available secret **names** from the agent-server
@@ -444,6 +473,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Args:
             names: Optional list of secret names to include. If ``None``,
                 all available secrets are returned.
+            agent_profile_id: Optional agent profile whose ``secret_refs``
+                restrict the names returned by the agent server.
 
         Returns:
             A dictionary mapping secret names to ``LookupSecret`` instances.
@@ -466,7 +497,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        response = self.client.get("/api/settings/secrets", headers=self._headers)
+        request_kwargs: dict[str, Any] = {"headers": self._headers}
+        if agent_profile_id is not None:
+            request_kwargs["params"] = {"agent_profile_id": agent_profile_id}
+        response = self.client.get("/api/settings/secrets", **request_kwargs)
         response.raise_for_status()
 
         # Validate response using shared SDK model
@@ -691,7 +725,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             "load_project": load_project,
             "load_org": load_org,
             "project_dir": project_dir,
-            "org_config": None,
             "sandbox_config": None,
         }
 
@@ -853,6 +886,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
+        base_context: "AgentContext | None" = None,
     ) -> tuple[list["Skill"], "AgentContext"]:
         """Load skills via the agent-server's /api/skills endpoint.
 
@@ -873,6 +907,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             load_project: Load project skills from workspace directories.
             load_org: Load organization-level skills.
             timeout: Request timeout in seconds.
+            base_context: Existing AgentContext to preserve. All of its
+                fields survive except `skills` and `load_public_skills`,
+                which this method always sets based on whether skills
+                were found. Defaults to None, which starts from a fresh
+                AgentContext — today's behavior.
 
         Returns:
             Tuple of (list of Skill objects, AgentContext).
@@ -925,11 +964,20 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if loaded_skills:
             logger.debug(f"Skills: {[s.name for s in loaded_skills]}")
 
-        # Create AgentContext - fall back to public skills if none loaded
+        # Update `base_context` (or start fresh if none given) with the
+        # newly loaded skills — every other field the caller configured is
+        # preserved. Fall back to public skills if none loaded.
+        base = base_context if base_context is not None else AgentContext()
         if loaded_skills:
-            agent_context = AgentContext(skills=loaded_skills, load_public_skills=False)
+            agent_context = base.model_copy(
+                update={"skills": loaded_skills, "load_public_skills": False}
+            )
         else:
             logger.warning("No skills loaded, falling back to public skills")
-            agent_context = AgentContext(skills=[], load_public_skills=True)
+            agent_context = base.model_copy(
+                update={"skills": [], "load_public_skills": True}
+            )
 
-        return loaded_skills, agent_context
+        # ``model_copy`` skips validators, so re-run the resolution that
+        # applies ``load_*_skills`` and the ``disabled_skills`` deny-list.
+        return loaded_skills, agent_context.resolve_auto_skills()

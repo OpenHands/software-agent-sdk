@@ -1,9 +1,12 @@
 """Utility functions for MCP integration."""
 
 import copy
+import json
 import re
+import threading
+from collections import OrderedDict
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 
 if TYPE_CHECKING:
@@ -12,7 +15,13 @@ if TYPE_CHECKING:
 import mcp.types
 from litellm import ChatCompletionToolParam
 from openai.types.responses import FunctionToolParam
-from pydantic import Field, ValidationError
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
@@ -38,6 +47,44 @@ logger = get_logger(__name__)
 
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
+
+# mcp 2.x dumps its snake_case attribute names unless by_alias=True; mcp 1.x
+# only reads the camelCase wire names. Keys inside inputSchema/outputSchema
+# are user JSON Schema and must never be renamed.
+_MCP_TOOL_WIRE_KEYS: Final[dict[str, str]] = {
+    "input_schema": "inputSchema",
+    "output_schema": "outputSchema",
+    "meta": "_meta",
+}
+_MCP_NESTED_WIRE_KEYS: Final[dict[str, dict[str, str]]] = {
+    "annotations": {
+        "read_only_hint": "readOnlyHint",
+        "destructive_hint": "destructiveHint",
+        "idempotent_hint": "idempotentHint",
+        "open_world_hint": "openWorldHint",
+    },
+    "execution": {"task_support": "taskSupport"},
+    "icons": {"mime_type": "mimeType"},
+}
+
+
+def _mcp_tool_to_wire_keys(data: Any) -> Any:
+    """Normalize a serialized mcp.types.Tool to the MCP spec's camelCase keys."""
+    if not isinstance(data, dict):
+        return data
+    out = {_MCP_TOOL_WIRE_KEYS.get(k, k): v for k, v in data.items()}
+    for key, renames in _MCP_NESTED_WIRE_KEYS.items():
+        value = out.get(key)
+        if isinstance(value, dict):
+            out[key] = {renames.get(k, k): v for k, v in value.items()}
+        elif isinstance(value, list):
+            out[key] = [
+                {renames.get(k, k): v for k, v in item.items()}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+    return out
 
 
 # NOTE: We don't define MCPToolAction because it
@@ -195,7 +242,12 @@ class MCPToolExecutor(ToolExecutor):
         self.client.sync_close()
 
 
-_mcp_dynamic_action_type: dict[str, type[Schema]] = {}
+_MCP_ACTION_TYPE_CACHE_MAX: Final[int] = 512
+# LRU-bounded: keyed by (name, schema), so a tool whose schema keeps changing
+# no longer grows this cache without limit. Guarded by a lock since MCP tool
+# calls can validate concurrently through the parallel tool executor.
+_mcp_dynamic_action_type: OrderedDict[tuple[str, str], type[Schema]] = OrderedDict()
+_mcp_dynamic_action_type_lock = threading.Lock()
 
 
 def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
@@ -213,21 +265,42 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     to openai tool schema.
     """
 
-    # Tool.name should be unique, so we can cache the created types.
-    mcp_action_type = _mcp_dynamic_action_type.get(action_type.name)
-    if mcp_action_type:
-        return mcp_action_type
+    cache_key = (
+        action_type.name,
+        json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
+    )
+    with _mcp_dynamic_action_type_lock:
+        mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
+        if mcp_action_type:
+            _mcp_dynamic_action_type.move_to_end(cache_key)
+            return mcp_action_type
 
-    model_name = f"MCP{to_camel_case(action_type.name)}Action"
-    mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
-    _mcp_dynamic_action_type[action_type.name] = mcp_action_type
-    return mcp_action_type
+        model_name = f"MCP{to_camel_case(action_type.name)}Action"
+        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
+        _mcp_dynamic_action_type[cache_key] = mcp_action_type
+        if len(_mcp_dynamic_action_type) > _MCP_ACTION_TYPE_CACHE_MAX:
+            _mcp_dynamic_action_type.popitem(last=False)
+        return mcp_action_type
 
 
 class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     """MCP Tool that wraps an MCP client and provides tool functionality."""
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
+
+    @field_validator("mcp_tool", mode="before")
+    @classmethod
+    def _read_either_mcp_spelling(cls, v: Any) -> Any:
+        return _mcp_tool_to_wire_keys(v)
+
+    @field_serializer("mcp_tool", mode="wrap")
+    def _write_mcp_wire_spelling(
+        self, v: mcp.types.Tool, handler: SerializerFunctionWrapHandler
+    ):
+        # Persisted events outlive the resolved mcp major; always write the
+        # spec's wire names so every mcp version can read them back. No return
+        # annotation, so the OpenAPI schema keeps referencing mcp.types.Tool.
+        return _mcp_tool_to_wire_keys(handler(v))
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -287,9 +360,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         Raises:
             ValidationError: If the arguments do not conform to the tool schema.
         """
-        # Drop None-valued keys before validation to avoid type errors
-        # on optional fields
-        prefiltered_args = {k: v for k, v in (arguments or {}).items() if v is not None}
+        tool_arguments, structured_output = self._split_response_arguments(arguments)
+        prefiltered_args = {
+            key: value for key, value in tool_arguments.items() if value is not None
+        }
         # Validate against the dynamically created action type (from MCP schema)
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
@@ -304,7 +378,9 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             exclude_none=True,
             exclude=exclude_fields,
         )
-        return MCPToolAction(data=sanitized)
+        action = MCPToolAction(data=sanitized)
+        action._structured_output = structured_output
+        return action
 
     @classmethod
     def create(
@@ -315,7 +391,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         try:
             annotations = (
                 ToolAnnotations.model_validate(
-                    mcp_tool.annotations.model_dump(exclude_none=True)
+                    mcp_tool.annotations.model_dump(exclude_none=True, by_alias=True)
                 )
                 if mcp_tool.annotations
                 else None
@@ -404,6 +480,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 ),
             }
 
+        schema = self._merge_response_schema(schema)
         _prioritize_schema_fields(
             schema=schema,
             priority=("security_risk", "summary"),

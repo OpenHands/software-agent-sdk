@@ -31,6 +31,7 @@ from openhands.sdk.tool.builtins import ThinkTool
 class EmptyMCPClient:
     def __init__(self):
         self.tools = []
+        self._tools_reconciled_callback: Any = None
 
 
 class RecordingMCPToolProvider:
@@ -41,7 +42,7 @@ class RecordingMCPToolProvider:
         state_locked: Callable[[], bool] | None = None,
     ):
         self.created = created
-        self.client = client or EmptyMCPClient()
+        self.client: Any = client or EmptyMCPClient()
         self.state_locked = state_locked
 
     def create_tools(
@@ -50,11 +51,13 @@ class RecordingMCPToolProvider:
         timeout: float = 30.0,
         *,
         on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
     ) -> MCPClient:
         if self.state_locked is None:
             self.created.append(mcp_config)
         else:
             self.created.append((mcp_config, self.state_locked()))
+        self.client._tools_reconciled_callback = on_tools_reconciled
         return cast(MCPClient, self.client)
 
 
@@ -794,6 +797,7 @@ class TestLocalConversationPlugins:
         class RuntimeMCPClient:
             def __init__(self):
                 self.tools = [runtime_tool]
+                self._tools_reconciled_callback: Any = None
 
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
@@ -817,13 +821,14 @@ class TestLocalConversationPlugins:
                 ]
             ),
         )
+        runtime_client = RuntimeMCPClient()
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
             visualizer=None,
             mcp_tool_provider=RecordingMCPToolProvider(
                 mcp_tools_created,
-                RuntimeMCPClient(),
+                runtime_client,
                 state_locked=lambda: conversation.state.locked(),
             ),
         )
@@ -835,6 +840,7 @@ class TestLocalConversationPlugins:
         for name, tool in existing_tools.items():
             assert conversation.agent.tools_map[name] is tool
         assert conversation.agent.tools_map[runtime_tool.name] is runtime_tool
+        assert callable(runtime_client._tools_reconciled_callback)
         assert "runtime-server" in conversation.agent.mcp_config
         assert len(mcp_tools_created) == 1
         created_config, state_locked = mcp_tools_created[0]
@@ -1679,4 +1685,142 @@ class TestAmbientPluginAutoLoad:
             conversation._ensure_plugins_loaded()
 
         assert "LEAKME" not in caplog.text
+        conversation.close()
+
+
+class TestAgentPluginsMCPExpansion:
+    """An Agent Plugins package brings its own, already-complete expansion.
+
+    The conversation-level pass expands ``${VAR}`` against the environment and
+    per-conversation secrets. The standard allows exactly two placeholders and
+    forbids everything else, so those servers must come through untouched.
+    """
+
+    def test_package_values_are_not_expanded_again(
+        self, tmp_path: Path, basic_agent, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.format.agent_plugins_mcp.DEFAULT_PLUGIN_DATA_DIR",
+            tmp_path / "plugin-data",
+        )
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": (
+                        "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+                    ),
+                    "name": "portable",
+                    "version": "1.0.0",
+                    "description": "An Agent Plugins package.",
+                }
+            )
+        )
+        (plugin_dir / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "$schema": (
+                        "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+                    ),
+                    "mcpServers": {
+                        "portable-server": {
+                            "type": "stdio",
+                            "command": "echo",
+                            "args": ["${SECRET_TOKEN}", "${MISSING:-fallback}"],
+                        }
+                    },
+                }
+            )
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(plugin_dir))],
+            visualizer=None,
+            mcp_tool_provider=RecordingMCPToolProvider([]),
+        )
+        conversation.update_secrets({"SECRET_TOKEN": "my-actual-secret"})
+        conversation._ensure_agent_ready()
+
+        server = conversation.agent.mcp_config["portable-server"]
+        assert server.args == ["${SECRET_TOKEN}", "${MISSING:-fallback}"]
+        assert server.literal_values
+        conversation.close()
+
+    def test_load_plugin_does_not_expand_package_servers(
+        self, tmp_path: Path, mock_llm, monkeypatch: pytest.MonkeyPatch
+    ):
+        """load_plugin() expands twice -- the runtime servers and the merged
+        config -- and both must leave an Agent Plugins package literal."""
+        monkeypatch.setattr(
+            "openhands.sdk.plugin.format.agent_plugins_mcp.DEFAULT_PLUGIN_DATA_DIR",
+            tmp_path / "plugin-data",
+        )
+        monkeypatch.setenv("LEAKED", "from-environment")
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace", plugins=[{"name": "portable"}]
+        )
+        package = marketplace_dir / "plugins" / "portable"
+        (package / ".plugin" / "plugin.json").unlink()
+        (package / ".plugin").rmdir()
+        (package / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": (
+                        "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+                    ),
+                    "name": "portable",
+                    "version": "1.0.0",
+                    "description": "An Agent Plugins package.",
+                }
+            )
+        )
+        literal_args = ["${SECRET_TOKEN}", "${LEAKED}", "${MISSING:-fallback}"]
+        (package / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "$schema": (
+                        "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+                    ),
+                    "mcpServers": {
+                        "portable-server": {
+                            "type": "stdio",
+                            "command": "echo",
+                            "args": literal_args,
+                        }
+                    },
+                }
+            )
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        mcp_tools_created: list[Any] = []
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="manual", source=str(marketplace_dir)
+                        )
+                    ]
+                ),
+            ),
+            workspace=workspace,
+            visualizer=None,
+            mcp_tool_provider=RecordingMCPToolProvider(mcp_tools_created),
+        )
+        conversation.update_secrets({"SECRET_TOKEN": "my-actual-secret"})
+        conversation._ensure_agent_ready()
+
+        conversation.load_plugin("portable")
+
+        merged = conversation.agent.mcp_config["portable-server"]
+        assert merged.args == literal_args
+        assert mcp_tools_created[-1]["portable-server"].args == literal_args
         conversation.close()

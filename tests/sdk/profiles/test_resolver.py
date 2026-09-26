@@ -10,7 +10,6 @@ allow-list, which could dangle).
 from pathlib import Path
 
 import pytest
-from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk.agent import ACPAgent, Agent
@@ -19,7 +18,6 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.profiles import (
     ACPAgentProfile,
-    AgentProfileDiagnostics,
     DanglingMcpServerRef,
     OpenHandsAgentProfile,
     ProfileNotFound,
@@ -374,11 +372,11 @@ def test_duplicate_named_catalog_is_deduped(
     assert skills == {"alpha": "second"}  # de-duped (last wins); beta disabled
 
 
-def test_acp_profile_gets_no_user_public_skills(
+def test_acp_profile_has_no_skill_selection_field(
     llm_store: LLMProfileStore,
 ) -> None:
-    # ACP profiles carry no skill field — the subprocess owns its context, so no
-    # user/public discovered skills are injected regardless of the catalog.
+    # An ACP profile selects no skills of its own: the catalog the caller passes
+    # is taken whole, since there is no deny-list to apply.
     acp = ACPAgentProfile(name="acp", acp_server="claude-code")
     assert not hasattr(acp, "skill_refs")
     assert not hasattr(acp, "disabled_skills")
@@ -387,6 +385,27 @@ def test_acp_profile_gets_no_user_public_skills(
         llm_store=llm_store,
         mcp_config={},
         available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(acp_settings, ACPAgentSettings)
+    assert acp_settings.agent_context is not None
+    assert {s.name for s in acp_settings.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
+
+
+def test_acp_profile_gets_no_skills_without_a_catalog(
+    llm_store: LLMProfileStore,
+) -> None:
+    # available_skills=None is how a deployment says "the ACP CLI sources its
+    # own skills" (#4019) — nothing is injected.
+    acp_settings = resolve_agent_profile(
+        ACPAgentProfile(name="acp", acp_server="claude-code"),
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
         cipher=None,
     )
     assert isinstance(acp_settings, ACPAgentSettings)
@@ -592,13 +611,12 @@ def test_acp_blank_command_resolves_empty_list(
     assert settings.acp_args == []
 
 
-def test_acp_carries_no_user_public_skills_but_keeps_load_project_skills(
+def test_acp_never_loads_project_skills(
     llm_store: LLMProfileStore,
 ) -> None:
-    """ACP profiles inject no user/public discovered skills (the subprocess owns
-    its context), but ``agent_context`` is still constructed (never ``None``) so
-    ``load_project_skills=True`` reaches ``LocalConversation``'s lazy
-    project-skill load (#4016). ACP convention: no injected datetime."""
+    """An ACP CLI reads ``AGENTS.md`` and its own project skills from the session
+    cwd, so loading them here would duplicate that content in the prompt
+    (#4019). ACP convention: no injected datetime."""
     profile = ACPAgentProfile(name="acp", acp_server="claude-code")
     settings = resolve_agent_profile(
         profile,
@@ -609,8 +627,7 @@ def test_acp_carries_no_user_public_skills_but_keeps_load_project_skills(
     )
     assert isinstance(settings, ACPAgentSettings)
     assert settings.agent_context is not None
-    assert settings.agent_context.skills == []
-    assert settings.agent_context.load_project_skills is True
+    assert settings.agent_context.load_project_skills is False
     assert settings.agent_context.current_datetime is None
 
 
@@ -639,30 +656,12 @@ def test_dry_run_openhands_valid_and_redacted(
     assert diag.llm_profile_resolved is True
     assert diag.llm_api_key_set is True
     assert diag.resolved_mcp_config_keys == ["fetch"]
-    assert diag.resolved_mcp_servers == ["fetch"]
     assert diag.dangling_mcp_server_refs == []
     assert diag.resolved_settings is not None
     # No secret survives into the redacted resolved settings.
     dumped = diag.model_dump_json()
     assert _LLM_SECRET not in dumped
     assert _MCP_SECRET not in dumped
-
-
-def test_agent_profile_diagnostics_warns_on_legacy_resolved_mcp_servers() -> None:
-    with pytest.warns(
-        DeprecatedWarning,
-        match="AgentProfileDiagnostics\\.resolved_mcp_servers",
-    ) as warning_records:
-        diag = AgentProfileDiagnostics(
-            agent_kind="openhands",
-            resolved_mcp_servers=["fetch"],
-        )
-
-    warning_message = str(warning_records[0].message)
-    assert "deprecated as of 1.36.0" in warning_message
-    assert "removed in 1.41.0" in warning_message
-    assert diag.resolved_mcp_config_keys == ["fetch"]
-    assert diag.resolved_mcp_servers == ["fetch"]
 
 
 def test_dry_run_reports_dangling_llm_and_mcp(
@@ -798,11 +797,26 @@ def test_dry_run_acp_reports_credential_channels_by_role(
     assert diag.resolved_settings is not None
 
 
-def test_dry_run_acp_reports_no_skills(
+def test_dry_run_acp_pi_reports_its_credential_file(
     llm_store: LLMProfileStore,
 ) -> None:
-    # ACP profiles carry no skill field, so the dry-run reports no resolved
-    # skills regardless of the catalog, and stays valid.
+    profile = ACPAgentProfile(name="acp-pi", acp_server="pi")
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+    )
+    assert diag.agent_kind == "acp"
+    assert diag.valid is True
+    assert diag.acp_file_secret_names == ["PI_AUTH_JSON"]
+
+
+def test_dry_run_acp_reports_the_injected_catalog(
+    llm_store: LLMProfileStore,
+) -> None:
+    # An ACP profile has no deny-list, so the dry-run reports whatever catalog
+    # the caller injected — and none when the caller injects nothing.
     profile = ACPAgentProfile(name="acp", acp_server="codex")
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -812,8 +826,18 @@ def test_dry_run_acp_reports_no_skills(
         cipher=None,
     )
     assert diag.disabled_skills == []
-    assert diag.resolved_skills == []
+    assert set(diag.resolved_skills) == {"alpha", "beta", "gamma"}
     assert diag.valid is True
+
+    bare = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert bare.resolved_skills == []
+    assert bare.valid is True
 
 
 def test_dry_run_skill_verdict_matches_real_resolve(

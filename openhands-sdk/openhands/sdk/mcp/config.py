@@ -14,6 +14,7 @@ from pydantic import (
     Field,
     GetCoreSchemaHandler,
     GetJsonSchemaHandler,
+    PrivateAttr,
     SecretStr,
     SerializationInfo,
     TypeAdapter,
@@ -520,6 +521,9 @@ class MCPServer(_MCPBaseModel):
             "ACP subprocess."
         ),
     )
+    # Never a field: data from outside must not be able to exempt a server from
+    # expansion. Only code sets it, via ``as_literal()``.
+    _literal_values: bool = PrivateAttr(default=False)
 
     @field_validator("env", "headers", mode="after")
     @classmethod
@@ -553,6 +557,20 @@ class MCPServer(_MCPBaseModel):
                     "'Authorization' header; use auth.strategy='header' instead."
                 )
         return self
+
+    @property
+    def literal_values(self) -> bool:
+        """True if built by :meth:`as_literal`: never ``${VAR}``-expanded.
+
+        In memory only; input cannot set it and dumps do not write it.
+        """
+        return self._literal_values
+
+    def as_literal(self) -> MCPServer:
+        """Return a copy exempt from ``${VAR}`` expansion, for package servers."""
+        server = self.model_copy()
+        server._literal_values = True
+        return server
 
     @property
     def effective_transport(self) -> MCPTransport | None:

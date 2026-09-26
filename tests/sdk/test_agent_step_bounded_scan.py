@@ -35,8 +35,9 @@ class _LimitedIterEvents(EventLog):
             raise AssertionError("events iterated too many times")
         return iter(self._events)
 
-    def append(self, event) -> None:  # type: ignore[override]
+    def append(self, event) -> int:  # type: ignore[override]
         self._events.append(event)
+        return len(self._events) - 1
 
 
 class _FailingIterEvents(EventLog):
@@ -56,8 +57,9 @@ class _FailingIterEvents(EventLog):
     def __iter__(self) -> Iterator:  # type: ignore[override]
         raise AssertionError("events iterated unexpectedly")
 
-    def append(self, event) -> None:  # type: ignore[override]
+    def append(self, event) -> int:  # type: ignore[override]
         self._events.append(event)
+        return len(self._events) - 1
 
 
 def test_agent_step_latest_user_message_scan_is_bounded(tmp_path):

@@ -131,7 +131,7 @@ async def test_opted_in_session_emits_sanitized_lifecycle_and_error_events():
     await asyncio.wait_for(sink.aclose(), timeout=10)
 
     names = [p["event"] for p in exporter.payloads]
-    assert m.EventName.CONVERSATION_STARTED in names
+    assert m.EventName.CONVERSATION_CREATED in names
     assert m.EventName.CONVERSATION_ERROR in names
     assert m.EventName.CONVERSATION_FINISHED in names
 
@@ -173,7 +173,10 @@ async def test_opted_in_session_reports_useful_diagnostics():
 
     by_name = {p["event"]: p["properties"] for p in exporter.payloads}
 
-    started = by_name[m.EventName.CONVERSATION_STARTED]
+    started = by_name[m.EventName.CONVERSATION_CREATED]
+    assert (
+        started["$insert_id"] == f"conversation_created:{started['conversation_ref']}"
+    )
     assert started["llm_model_family"] == "anthropic"
     assert started["tool_count"] == 4
 
