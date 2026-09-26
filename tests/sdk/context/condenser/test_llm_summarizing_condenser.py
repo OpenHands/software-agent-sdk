@@ -19,9 +19,9 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     Reason,
 )
 from openhands.sdk.context.view import View
-from openhands.sdk.event.base import Event
+from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
@@ -1052,3 +1052,45 @@ def test_summarization_uses_llm_as_is_when_not_streaming(mock_transport) -> None
     assert result.summary == "A summary"
     # The exact same LLM instance is used (no copy when not streaming).
     assert mock_transport.call_args.args[0] is llm
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests: system message must lead every condensed request (#5148/#5149)
+# --------------------------------------------------------------------------- #
+
+
+def _system_prompt_event(
+    text: str = "You are a helpful assistant.",
+) -> SystemPromptEvent:
+    return SystemPromptEvent(system_prompt=TextContent(text=text), tools=[])
+
+
+def _applied_messages(condensation: Condensation, view: View) -> list[Message]:
+    """Apply a condensation to a view and project the result to LLM messages."""
+    applied = condensation.apply(list(view.events))
+    return LLMConvertibleEvent.events_to_messages(applied)
+
+
+def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> None:
+    """keep_first=0 must not let the SystemPromptEvent be forgotten.
+
+    Regression for #5148: the condensed view must still open with a system message
+    even when ``keep_first`` is configured to 0.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=0)
+
+    cast(Any, mock_llm).set_mock_response_content("Summary of forgotten events")
+
+    events: list[Event] = [
+        _system_prompt_event(),
+        *[message_event(f"Event {i}") for i in range(11)],
+    ]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    messages = _applied_messages(result, view)
+    assert messages[0].role == "system"
+    # The forgotten set must not include the leading system prompt event.
+    assert events[0].id not in result.forgotten_event_ids
