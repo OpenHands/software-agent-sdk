@@ -221,7 +221,9 @@ if TYPE_CHECKING:
 class PluginAuthor(BaseModel):
     """Author information for a plugin."""
 
-    name: str = Field(description="Author's name")
+    # Optional: the Agent Plugins schema permits an author object with no name,
+    # so requiring it here would reject a conformant manifest.
+    name: str = Field(default="", description="Author's name")
     email: str | None = Field(default=None, description="Author's email address")
     url: str | None = Field(
         default=None, description="Author's URL (e.g., GitHub profile)"

@@ -10,6 +10,7 @@ from pydantic_core import PydanticSerializationError
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
@@ -133,6 +134,15 @@ def store_errors() -> Iterator[None]:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Profile store is busy. Please retry.",
+        )
+    except ProviderConnectionNotFound as e:
+        # Subclass of ValueError, so it must be handled before the generic
+        # ValueError arm below. A dangling provider reference is a resolvable
+        # config problem (recreate the connection or edit the profile), hence
+        # 422 rather than a generic 400.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
         )
     except ValueError as e:
         raise HTTPException(

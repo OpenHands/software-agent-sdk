@@ -47,6 +47,7 @@ from openhands.sdk.profiles import (
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.settings.model import OpenHandsAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -370,7 +371,10 @@ async def delete_agent_profile(
     """Delete a stored profile (idempotent).
 
     If the deleted profile was the active one, ``active_agent_profile_id`` is
-    cleared.
+    cleared. If ``agent_settings`` is itself left on a non-OpenHands variant,
+    it is reset to default OpenHands agent settings so stale ACP configuration
+    does not outlive the profile it came from; the server-wide ``mcp_config``
+    is carried over.
     """
     store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
@@ -384,11 +388,27 @@ async def delete_agent_profile(
         settings = settings_store.load() or PersistedSettings()
         if settings.active_agent_profile_id == deleted_id:
 
-            def clear_pointer(s: PersistedSettings) -> PersistedSettings:
+            def clear_pointer_and_reset_settings(
+                s: PersistedSettings,
+            ) -> PersistedSettings:
                 s.active_agent_profile_id = None
+                # Stale non-OpenHands settings outlive their profile. Reset to
+                # a fresh OpenHands base rather than merging across the variant
+                # boundary (see _apply_agent_settings_diff), except for
+                # ``mcp_config``: it is the server-wide MCP registry every other
+                # profile resolves ``mcp_server_refs`` against, not ACP state.
+                prior_kind = s.agent_settings.agent_kind
+                if prior_kind != "openhands":
+                    s.agent_settings = OpenHandsAgentSettings(
+                        mcp_config=s.agent_settings.mcp_config
+                    )
+                    logger.info(
+                        f"Reset agent_settings to default "
+                        f"(agent_settings was agent_kind='{prior_kind}')"
+                    )
                 return s
 
-            settings_store.update(clear_pointer)
+            settings_store.update(clear_pointer_and_reset_settings)
             logger.info(f"Cleared active pointer for deleted profile '{name}'")
 
     logger.info(f"Deleted agent profile '{name}'")
@@ -514,13 +534,17 @@ async def materialize_agent_profile(
     mcp_config = settings.agent_settings.mcp_config
 
     # Discover skills off the event loop so the dry-run can report which skills
-    # (catalog minus ``disabled_skills``) resolve. Only OpenHands profiles carry
-    # user/public skills; ACP profiles do not. A discovery failure must not 500
+    # (catalog minus ``disabled_skills``) resolve. Mirrors the launch rule in
+    # ``conversation_service._resolve_agent_from_profile`` so the preview matches
+    # a real launch: an ACP profile is only given a catalog where the CLI cannot
+    # read the user's own configuration (#4019). A discovery failure must not 500
     # the preview: pass ``available_skills=None`` and surface the failure as its
     # own diagnostic below.
     discovery_error: str | None = None
     available_skills = None
-    if profile.agent_kind == "openhands":
+    if profile.agent_kind == "openhands" or (
+        config.acp_skill_sourcing == "openhands_managed"
+    ):
         try:
             available_skills = await asyncio.to_thread(discover_profile_skills)
         except Exception as exc:
