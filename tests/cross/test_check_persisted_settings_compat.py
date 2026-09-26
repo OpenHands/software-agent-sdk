@@ -140,7 +140,7 @@ def test_collect_fixture_cases_and_validate_current_repo_fixtures() -> None:
         "agent_settings": {1, 2, 3, 4, 5, 6},
         "agent_profile": {1, 2},
         "conversation_settings": {1},
-        "persisted_settings": {1, 2, 3},
+        "persisted_settings": {1, 2, 3, 4},
     }
 
 

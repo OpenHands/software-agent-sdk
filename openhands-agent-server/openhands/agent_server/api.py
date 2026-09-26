@@ -163,6 +163,22 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
 
         config: Config = api.state.config
         deferred = config.deferred_init
+
+        # Apply schema migrations and one-time data repairs (e.g. the
+        # #5205 orphaned-ACP fix) *before* anything reads settings, so the
+        # first conversation launched on this boot uses the repaired
+        # shape rather than the stale on-disk state that triggered the bug.
+        from openhands.agent_server.persistence import (
+            apply_startup_settings_migrations,
+            get_settings_store,
+        )
+
+        try:
+            apply_startup_settings_migrations(get_settings_store(config))
+        except Exception:
+            # A hygiene step must not take the process down.
+            logger.exception("Startup settings migration step failed")
+
         conversation_registry = getattr(
             api.state, "conversation_registry", None
         ) or create_conversation_registry(config)

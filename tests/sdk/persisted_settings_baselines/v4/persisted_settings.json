@@ -1,19 +1,19 @@
 {
   "__expected__": {
     "schema_version": 4,
-    "active_profile": "fixture-v3-profile",
+    "active_profile": "fixture-v4-profile",
     "agent_settings.schema_version": 6,
     "agent_settings.agent_kind": "openhands",
-    "agent_settings.llm.model": "fixture-v3-persisted-llm",
+    "agent_settings.llm.model": "fixture-v4-persisted-llm",
     "conversation_settings.max_iterations": 240,
     "misc_settings.theme": "dark"
   },
-  "schema_version": 3,
+  "schema_version": 4,
   "agent_settings": {
     "schema_version": 6,
     "agent_kind": "openhands",
     "llm": {
-      "model": "fixture-v3-persisted-llm"
+      "model": "fixture-v4-persisted-llm"
     },
     "tools": [
       {
@@ -28,7 +28,7 @@
     "confirmation_mode": true,
     "security_analyzer": "llm"
   },
-  "active_profile": "fixture-v3-profile",
+  "active_profile": "fixture-v4-profile",
   "misc_settings": {
     "theme": "dark"
   }

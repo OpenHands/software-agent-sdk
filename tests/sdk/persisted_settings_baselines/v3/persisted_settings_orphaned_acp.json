@@ -1,0 +1,28 @@
+{
+  "__expected__": {
+    "schema_version": 4,
+    "active_agent_profile_id": null,
+    "active_profile": "claude-sonnet-4-6",
+    "agent_settings.schema_version": 6,
+    "agent_settings.agent_kind": "acp",
+    "agent_settings.acp_server": "codex",
+    "agent_settings.acp_model": "gpt-5.5"
+  },
+  "schema_version": 3,
+  "agent_settings": {
+    "schema_version": 6,
+    "agent_kind": "acp",
+    "acp_server": "codex",
+    "acp_model": "gpt-5.5",
+    "llm": {
+      "model": "openhands/claude-sonnet-4-6"
+    }
+  },
+  "conversation_settings": {
+    "schema_version": 1,
+    "max_iterations": 500
+  },
+  "active_profile": "claude-sonnet-4-6",
+  "active_agent_profile_id": null,
+  "misc_settings": {}
+}
