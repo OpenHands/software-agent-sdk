@@ -1682,12 +1682,54 @@ class LocalConversation(BaseConversation):
             # Invalidate the cached ask-agent LLM so it re-clones.
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
 
+    def _resolve_profile_llm(
+        self, profile_name: str, usage_id: str
+    ) -> tuple[LLM, LLM | None]:
+        """Return the LLM to use for ``usage_id``, plus the stale cached LLM
+        it displaced from the registry (``None`` if nothing was displaced).
+
+        A cached entry with no ``provider_connection_id`` is reused as-is (no
+        disk I/O). A cached entry linked to a provider connection is re-read
+        from :class:`LLMProfileStore` on every call instead — read-at-use,
+        matching :meth:`LLMProfileStore.load` — so a rotated shared key takes
+        effect; its metrics are carried onto the fresh LLM. The stale entry is
+        removed from the registry so the caller's own add/switch installs the
+        fresh one, but is returned so the caller can restore it if that
+        install itself fails (see :meth:`_restore_stale_llm`).
+        """
+        try:
+            cached = self.llm_registry.get(usage_id)
+        except KeyError:
+            cached = None
+
+        if cached is not None and cached.provider_connection_id is None:
+            return cached, None
+
+        loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+        resolved = loaded.model_copy(update={"usage_id": usage_id})
+        if cached is None:
+            return resolved, None
+
+        resolved.restore_metrics(cached.metrics.deep_copy())
+        self.llm_registry.remove(usage_id)
+        return resolved, cached
+
+    def _restore_stale_llm(self, usage_id: str, stale: LLM) -> None:
+        """Put a displaced cache entry back if nothing re-registered it.
+
+        Compensates for :meth:`_resolve_profile_llm` removing the healthy
+        cached entry before the caller installs its replacement: if that
+        install fails partway, the registry must not end up missing the LLM
+        entirely while the agent/caller is still relying on it.
+        """
+        if usage_id not in self.llm_registry.list_usage_ids():
+            self.llm_registry.add(stale)
+
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
 
-        Loads the profile from :class:`LLMProfileStore` (cached in the
-        registry under ``profile:{profile_name}`` after first load) and
-        delegates the swap to :meth:`switch_llm`.
+        Delegates the swap to :meth:`switch_llm`. See
+        :meth:`_resolve_profile_llm` for the read-at-use / cache behavior.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -1697,12 +1739,15 @@ class LocalConversation(BaseConversation):
             ValueError: If the profile is corrupted or invalid.
         """
         usage_id = f"profile:{profile_name}"
+        resolved, stale = self._resolve_profile_llm(profile_name, usage_id)
+        if stale is None:
+            self.switch_llm(resolved)
+            return
         try:
-            cached = self.llm_registry.get(usage_id)
-        except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
-            cached = loaded.model_copy(update={"usage_id": usage_id})
-        self.switch_llm(cached)
+            self.switch_llm(resolved)
+        except Exception:
+            self._restore_stale_llm(usage_id, stale)
+            raise
 
     def get_or_create_profile_llm(self, profile_name: str, usage_id: str) -> LLM:
         """Return a saved profile LLM registered for this conversation.
@@ -1710,17 +1755,21 @@ class LocalConversation(BaseConversation):
         Unlike :meth:`switch_profile`, this does not replace the active agent
         model. It is intended for auxiliary one-off model calls from tools while
         still routing token and cost accounting through ``llm_registry`` and
-        ``ConversationStats``.
+        ``ConversationStats``. See :meth:`_resolve_profile_llm` for the
+        read-at-use / cache behavior.
         """
+        llm, stale = self._resolve_profile_llm(profile_name, usage_id)
+        if usage_id in self.llm_registry.list_usage_ids():
+            return llm
         try:
-            return self.llm_registry.get(usage_id)
-        except KeyError:
-            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
-            llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)
-            self._bind_conversation_context(llm)
-            return llm
+        except Exception:
+            if stale is not None:
+                self._restore_stale_llm(usage_id, stale)
+            raise
+        self._bind_conversation_context(llm)
+        return llm
 
     def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.

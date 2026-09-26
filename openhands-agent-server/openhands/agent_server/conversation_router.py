@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
+    store_errors,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
@@ -555,7 +556,13 @@ async def switch_conversation_llm(
     """Swap the conversation's LLM to a caller-supplied object.
 
     Used by app-servers that own the LLM directly and don't push profiles
-    to the agent-server's filesystem (see #3017).
+    to the agent-server's filesystem (see #3017). A connection-linked LLM
+    (no inline key) is resolved here first; resolution failure leaves the
+    active LLM untouched. Reusing the active model's ``usage_id`` would
+    otherwise hit ``switch_llm``'s first-write-wins cache and silently keep
+    the stale LLM, so the connection-resolved path evicts that entry first
+    (carrying its metrics onto the replacement, and restoring it if the
+    swap itself then fails); an inline-key switch is unaffected.
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
@@ -564,7 +571,34 @@ async def switch_conversation_llm(
     cipher = get_cipher(request)
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
-    conversation.switch_llm(llm)
+    if not llm.provider_connection_id:
+        conversation.switch_llm(llm)
+        return Success()
+
+    from openhands.agent_server.persistence.store import get_llm_profile_store
+
+    with store_errors():
+        llm = get_llm_profile_store().resolve_provider_connection(
+            llm, cipher=cipher, context=f"switch_llm ({llm.usage_id})"
+        )
+
+    registry = conversation.llm_registry
+    try:
+        stale = registry.get(llm.usage_id)
+    except KeyError:
+        stale = None
+    if stale is None:
+        conversation.switch_llm(llm)
+        return Success()
+
+    llm.restore_metrics(stale.metrics.deep_copy())
+    registry.remove(llm.usage_id)
+    try:
+        conversation.switch_llm(llm)
+    except Exception:
+        if llm.usage_id not in registry.list_usage_ids():
+            registry.add(stale)
+        raise
     return Success()
 
 

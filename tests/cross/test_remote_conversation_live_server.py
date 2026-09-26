@@ -702,6 +702,194 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+def test_switch_llm_over_live_server_resolves_provider_connection(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Real-HTTP evidence for the switch_llm provider-connection fix.
+
+    A real uvicorn server with real ``ProviderConnectionStore`` /
+    ``LLMProfileStore`` (no mocked ``ConversationService``); only litellm's
+    transport call itself is patched, so the resolved LLM must actually flow
+    through the live router -> ``LLMProfileStore.resolve_provider_connection``
+    -> completion chain for the recorded ``api_key`` to match.
+
+    POST a real provider connection, run once on an inline key, then POST
+    ``/switch_llm`` with an LLM that references the connection instead of an
+    inline key (mirrors Canvas, which never transports the plaintext key);
+    run again and assert litellm actually saw the connection's key, with the
+    caller's ``stream``/``usage_id`` carried through the swap. Then POST
+    ``/switch_llm`` again with a dangling connection id: it must be rejected
+    (422) and a third run must still use the previously-resolved key --
+    atomic failure, not a silently keyless model.
+
+    Not fixed / out of scope: resuming this conversation re-reads the
+    *persisted* agent snapshot (base_state.json), which freezes the plaintext
+    key resolved at switch time rather than re-resolving the connection on
+    resume -- the same snapshot behavior an inline key already has.
+    """
+    seen: list[tuple[str | None, bool, str]] = []
+
+    def fake_completion(
+        self, messages, tools, add_security_risk_prediction=False, **kwargs
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+
+        api_key = self.api_key
+        seen.append(
+            (
+                api_key.get_secret_value()
+                if isinstance(api_key, SecretStr)
+                else api_key,
+                self.stream,
+                self.usage_id,
+            )
+        )
+        litellm_msg = LiteLLMMessage.model_validate(
+            {"role": "assistant", "content": f"reply {len(seen)}"}
+        )
+        raw_response = ModelResponse(
+            id="test-resp",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+        message = Message.from_llm_chat_message(litellm_msg)
+        self.metrics.add_token_usage(
+            prompt_tokens=3,
+            completion_tokens=2,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=8192,
+            response_id="test-resp",
+            reasoning_tokens=0,
+        )
+        return LLMResponse(
+            message=message,
+            metrics=self.metrics.get_snapshot(),
+            raw_response=raw_response,
+        )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir=str(server_env["workspace_path"])
+    )
+    agent = Agent(
+        llm=LLM(
+            model="gpt-4o-mini",
+            api_key=SecretStr("initial-inline-key"),
+            usage_id="switchable",
+        ),
+        tools=[],
+    )
+    conv: RemoteConversation = cast(
+        RemoteConversation, Conversation(agent=agent, workspace=workspace)
+    )
+
+    # Splitting ``seen`` by index rather than asserting an exact total count
+    # tolerates the server's own background completion calls (e.g.
+    # autotitle on the first user message) without weakening what's actually
+    # being proven: every call recorded in each phase used the expected key.
+    conv.send_message("first")
+    conv.run()
+    before_switch = list(seen)
+    assert before_switch, "expected at least one completion before switching"
+    assert all(key == "initial-inline-key" for key, _, _ in before_switch)
+
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        created = client.post(
+            "/api/llm/provider-connections",
+            json={
+                "display_name": "Shared",
+                "provider": "openrouter",
+                "api_key": "sk-live-server-secret",
+            },
+        )
+        assert created.status_code == 201
+        connection_id = created.json()["id"]
+
+        switched = client.post(
+            f"/api/conversations/{conv.id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/anthropic/claude-3.5-sonnet",
+                    "usage_id": "switchable",
+                    "stream": True,
+                    "provider_connection_id": connection_id,
+                }
+            },
+        )
+        assert switched.status_code == 200
+
+    conv.send_message("second")
+    conv.run()
+    after_switch = seen[len(before_switch) :]
+    assert after_switch, "expected at least one completion after switching"
+    # Resolved via the real live-server ProviderConnectionStore/LLMProfileStore
+    # chain, not a mocked service. stream/usage_id survive the swap.
+    assert all(key == "sk-live-server-secret" for key, _, _ in after_switch)
+    assert all(stream is True for _, stream, _ in after_switch)
+    assert all(usage_id == "switchable" for _, _, usage_id in after_switch)
+
+    # A *second* switch reusing the same usage_id: ConversationStats'
+    # registry subscriber only auto-restores a usage_id's metrics the first
+    # time it is ever re-registered, so this specifically exercises the
+    # router's own restore_metrics call (not that one-shot subscriber) for
+    # the tokens accrued across both runs so far.
+    live_conversation = (
+        server_env["conversation_service"]._event_services[conv.id].get_conversation()
+    )
+    tokens_before_resecond_switch = live_conversation.llm_registry.get(
+        "switchable"
+    ).metrics.accumulated_token_usage.prompt_tokens
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        switched_again = client.post(
+            f"/api/conversations/{conv.id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/anthropic/claude-3.5-sonnet",
+                    "usage_id": "switchable",
+                    "stream": True,
+                    "provider_connection_id": connection_id,
+                }
+            },
+        )
+        assert switched_again.status_code == 200
+    resecond_tokens = live_conversation.llm_registry.get(
+        "switchable"
+    ).metrics.accumulated_token_usage.prompt_tokens
+    assert resecond_tokens >= tokens_before_resecond_switch > 0
+
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        missing = client.post(
+            f"/api/conversations/{conv.id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openrouter/anthropic/claude-3.5-sonnet",
+                    "usage_id": "switchable",
+                    "provider_connection_id": "ghost-connection",
+                }
+            },
+        )
+        assert missing.status_code == 422
+
+    before_third = len(seen)
+    conv.send_message("third")
+    conv.run()
+    after_missing_switch = seen[before_third:]
+
+    conv.close()
+
+    # The dangling-connection switch was rejected: the active, previously-
+    # resolved model is still the one litellm sees on the next run.
+    assert after_missing_switch, "expected at least one completion on the third run"
+    assert all(key == "sk-live-server-secret" for key, _, _ in after_missing_switch)
+
+
 def test_openai_chat_completions_gateway_over_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
 ):

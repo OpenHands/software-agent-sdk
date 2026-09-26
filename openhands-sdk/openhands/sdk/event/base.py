@@ -196,4 +196,5 @@ def _combine_action_events(events: list["ActionEvent"]) -> Message:
         thinking_blocks=events[0].thinking_blocks,  # Shared thinking blocks
         # Shared responses reasoning item
         responses_reasoning_item=events[0].responses_reasoning_item,
+        reasoning_details=events[0].reasoning_details,  # Shared reasoning details
     )

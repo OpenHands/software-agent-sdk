@@ -476,6 +476,131 @@ def test_message_with_reasoning_content_list_serializer():
     assert result["reasoning_content"] == "Step by step reasoning"
 
 
+# Confirmed bug reproducer: an OpenRouter assistant turn with only opaque
+# encrypted reasoning_details (no reasoning_content/thinking_blocks) must
+# survive Message.from_llm_chat_message and the outgoing wire dict.
+OPAQUE_REASONING_DETAIL = {
+    "type": "reasoning.encrypted",
+    "data": "opaque-test",
+    "format": "anthropic-claude-v1",
+    "index": 0,
+}
+
+
+def test_message_from_llm_chat_message_preserves_reasoning_details():
+    """LiteLLM's reasoning_details (OpenRouter) must not be dropped.
+
+    Regression test for the reported bug: a LiteLLMMessage carrying only
+    ``reasoning_details`` (no reasoning_content, no thinking_blocks) used to
+    lose that structured data when converted via
+    ``Message.from_llm_chat_message``.
+    """
+    litellm_message = LiteLLMMessage(
+        role="assistant",
+        content=None,
+        reasoning_details=[OPAQUE_REASONING_DETAIL],
+    )
+
+    message = Message.from_llm_chat_message(litellm_message)
+
+    assert message.reasoning_details == [OPAQUE_REASONING_DETAIL]
+
+
+def test_message_with_reasoning_details_sent_when_enabled():
+    """reasoning_details is included in the outgoing dict for OpenRouter."""
+    message = Message(
+        role="assistant",
+        content=[],
+        reasoning_details=[OPAQUE_REASONING_DETAIL],
+    )
+
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_details": True}
+    )
+
+    assert result["reasoning_details"] == [OPAQUE_REASONING_DETAIL]
+
+
+def test_message_with_reasoning_details_omitted_by_default():
+    """reasoning_details must never leak to non-OpenRouter transports."""
+    message = Message(
+        role="assistant",
+        content=[],
+        reasoning_details=[OPAQUE_REASONING_DETAIL],
+    )
+
+    # DEFAULT_SERIALIZATION_OPTS does not set send_reasoning_details, so the
+    # default (False) applies - the appropriate behavior for every
+    # non-OpenRouter transport.
+    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+
+    assert "reasoning_details" not in result
+
+
+def test_message_with_reasoning_details_none_not_sent():
+    """reasoning_details is omitted when None even if the flag is enabled."""
+    message = Message(role="assistant", content=[], reasoning_details=None)
+
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_details": True}
+    )
+
+    assert "reasoning_details" not in result
+
+
+def test_reasoning_details_survives_openrouter_tool_call_round_trip():
+    """LiteLLM boundary fixture (no network): opaque reasoning_details must
+    survive a full incoming -> outgoing round trip alongside a tool call.
+
+    Simulates OpenRouter's real Chat Completions shape: an assistant turn
+    with both a tool call and encrypted reasoning_details (interleaved
+    thinking), exactly as LiteLLM normalizes it onto ``litellm.types.utils.
+    Message``. This exercises the actual LiteLLM message boundary rather
+    than a hand-rolled dict, with no network call involved.
+    """
+    from litellm import ChatCompletionMessageToolCall
+    from litellm.types.utils import Function
+
+    tool_call = ChatCompletionMessageToolCall(
+        id="call_abc",
+        type="function",
+        function=Function(name="get_weather", arguments='{"city": "SF"}'),
+    )
+    litellm_message = LiteLLMMessage(
+        role="assistant",
+        content=None,
+        tool_calls=[tool_call],
+        reasoning_details=[OPAQUE_REASONING_DETAIL],
+    )
+
+    # Incoming: LiteLLM boundary -> our Message.
+    message = Message.from_llm_chat_message(litellm_message)
+    assert message.reasoning_details == [OPAQUE_REASONING_DETAIL]
+    assert message.tool_calls is not None
+    assert message.tool_calls[0].id == "call_abc"
+
+    # Outgoing: our Message -> OpenRouter wire dict. reasoning_details must
+    # be sent back verbatim, and the tool call must survive alongside it.
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "function_calling_enabled": True,
+            "send_reasoning_details": True,
+        }
+    )
+    assert result["reasoning_details"] == [OPAQUE_REASONING_DETAIL]
+    assert result["tool_calls"][0]["id"] == "call_abc"
+    assert result["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    # Same message through a non-OpenRouter transport must drop the
+    # OpenRouter-only field while still sending the tool call.
+    non_openrouter_result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+    )
+    assert "reasoning_details" not in non_openrouter_result
+    assert non_openrouter_result["tool_calls"][0]["id"] == "call_abc"
+
+
 def test_message_deprecated_fields_silently_removed():
     """Test that deprecated fields are silently removed without warnings.
 

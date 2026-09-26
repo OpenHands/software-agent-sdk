@@ -303,29 +303,29 @@ class LLMProfileStore:
             logger.info(f"[Profile Store] Loaded profile `{name}` from {profile_path}")
 
         if resolve_provider:
-            llm_instance = self._resolve_provider_connection(
-                name, llm_instance, cipher=cipher
+            llm_instance = self.resolve_provider_connection(
+                llm_instance, cipher=cipher, context=name
             )
         return llm_instance
 
-    def _resolve_provider_connection(
-        self, profile_name: str, llm: LLM, *, cipher: Cipher | None
+    def resolve_provider_connection(
+        self, llm: LLM, *, cipher: Cipher | None = None, context: str = "<unnamed>"
     ) -> LLM:
         """Apply a referenced provider connection's credentials to ``llm``.
 
-        Rules:
-        - no ``provider_connection_id`` -> unchanged (byte-identical old path).
-        - no provider store configured -> unchanged (inert field).
-        - connection found -> its ``api_key`` / ``base_url`` win (``base_url``
-          is applied as-is, including ``None``).
-        - connection missing -> raise :class:`ProviderConnectionNotFound`.
+        Public so a boundary other than :meth:`load` — raw agent-start,
+        ``switch_llm`` — can resolve ``provider_connection_id`` the same way.
+        ``context`` is only used in log/error messages (a profile name from
+        :meth:`load`, or a caller-chosen description otherwise).
 
-        The inline-key fallback below is not a recovery path for the usual
-        "linked profile, connection later deleted" case: :meth:`save` strips
-        inline creds from any linked profile, so on disk there is no inline key
-        to fall back to and this raises. It only applies to an LLM whose
-        ``provider_connection_id`` was set without going through :meth:`save`
-        (e.g. constructed in memory).
+        Rules: no ``provider_connection_id`` or no provider store configured
+        -> unchanged. Connection found -> its ``api_key``/``base_url`` win
+        (``base_url`` applied as-is, including ``None``); a connection with no
+        key falls back to ``llm``'s own inline key if it has one, else raises.
+        Connection missing -> same inline-key fallback, else raises
+        :class:`ProviderConnectionNotFound`. The fallback only matters for an
+        LLM whose ``provider_connection_id`` was set without going through
+        :meth:`save` (which strips inline creds from a linked profile).
         """
         connection_id = llm.provider_connection_id
         if not connection_id or self._provider_store is None:
@@ -339,20 +339,32 @@ class LLMProfileStore:
         if connection is None:
             if _api_key_present(llm):
                 logger.warning(
-                    "[Profile Store] Profile %r references missing provider "
-                    "connection %r; falling back to the profile's inline key.",
-                    profile_name,
+                    "[Profile Store] %r references missing provider "
+                    "connection %r; falling back to the inline key.",
+                    context,
                     connection_id,
                 )
                 return llm
             raise ProviderConnectionNotFound(
-                f"Profile {profile_name!r} references provider connection "
-                f"{connection_id!r}, which does not exist. Update the profile or "
-                "recreate the connection."
+                f"{context!r} references provider connection {connection_id!r}, "
+                "which does not exist. Update the profile or recreate the "
+                "connection."
+            )
+
+        api_key = connection.api_key_value()
+        if api_key is None and not _api_key_present(llm):
+            # The REST create/update endpoints never allow a connection to be
+            # saved without a key, but one built directly (bypassing the
+            # router) can be. Fail loudly rather than silently resolving to a
+            # keyless LLM — the same atomic-failure guarantee as a missing
+            # connection.
+            raise ProviderConnectionNotFound(
+                f"{context!r} references provider connection {connection_id!r}, "
+                "which has no API key configured. Set a key on the connection "
+                "or the profile."
             )
 
         updates: dict[str, Any] = {"base_url": connection.base_url}
-        api_key = connection.api_key_value()
         if api_key is not None:
             from pydantic import SecretStr
 

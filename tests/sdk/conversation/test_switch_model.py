@@ -19,6 +19,10 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.provider_connection_store import (
+    ProviderConnection,
+    ProviderConnectionStore,
+)
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
 from tests.conftest import create_mock_litellm_response
@@ -312,6 +316,187 @@ def test_switch_reuses_registry_entry(profile_store):
     llm_second = conv.llm_registry.get("profile:fast")
 
     assert llm_first is llm_second
+
+
+def test_switch_profile_reresolves_rotated_provider_connection(tmp_path, monkeypatch):
+    """A profile linked to a shared provider connection must pick up a
+    rotated key the next time it is switched to, instead of forever reusing
+    the credentials cached under ``profile:{name}`` from its first load
+    (read-at-use, matching ``LLMProfileStore.load()``). Metrics already
+    accrued under that usage_id must survive the credential refresh.
+    """
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+
+    provider = ProviderConnectionStore(base_dir=tmp_path / "provider-connections")
+    provider.create(
+        ProviderConnection(
+            id="conn1",
+            display_name="Shared",
+            provider="openrouter",
+            api_key=SecretStr("sk-original"),
+            created_at=1000,
+            updated_at=1000,
+        )
+    )
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "linked",
+        LLM(
+            usage_id="linked",
+            model="openrouter/anthropic/claude-3.5-sonnet",
+            provider_connection_id="conn1",
+        ),
+    )
+    store.save("other", _make_llm("other-model", "other"))
+
+    conv = _make_conversation()
+    conv.switch_profile("linked")
+    first = conv.agent.llm
+    assert isinstance(first.api_key, SecretStr)
+    assert first.api_key.get_secret_value() == "sk-original"
+    first.metrics.add_cost(1.5)
+
+    provider.update(
+        ProviderConnection(
+            id="conn1",
+            display_name="Shared",
+            provider="openrouter",
+            api_key=SecretStr("sk-rotated"),
+            created_at=1000,
+            updated_at=2000,
+        )
+    )
+    conv.switch_profile("other")
+    conv.switch_profile("linked")
+
+    second = conv.agent.llm
+    assert isinstance(second.api_key, SecretStr)
+    assert second.api_key.get_secret_value() == "sk-rotated"
+    assert second.metrics.accumulated_cost == 1.5
+
+
+def _save_linked_profile(
+    tmp_path, monkeypatch, *, api_key: str = "sk-original"
+) -> ProviderConnectionStore:
+    """Save a "linked" profile referencing a fresh provider connection, plus
+    an unrelated "other" profile, under a monkeypatched default profile dir.
+    """
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+
+    provider = ProviderConnectionStore(base_dir=tmp_path / "provider-connections")
+    provider.create(
+        ProviderConnection(
+            id="conn1",
+            display_name="Shared",
+            provider="openrouter",
+            api_key=SecretStr(api_key),
+            created_at=1000,
+            updated_at=1000,
+        )
+    )
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "linked",
+        LLM(
+            usage_id="linked",
+            model="openrouter/anthropic/claude-3.5-sonnet",
+            provider_connection_id="conn1",
+        ),
+    )
+    store.save("other", _make_llm("other-model", "other"))
+    return provider
+
+
+def test_switch_profile_atomic_on_switch_llm_failure(tmp_path, monkeypatch):
+    """A refresh that fails inside ``switch_llm`` must not leave the registry
+    without the LLM the agent is still actively using.
+
+    ``_resolve_profile_llm`` removes the stale, healthy cache entry for a
+    connection-linked profile before ``switch_llm`` installs its
+    replacement; if that install itself fails, the removed entry must be
+    restored rather than lost.
+    """
+    _save_linked_profile(tmp_path, monkeypatch)
+    conv = _make_conversation()
+    conv.switch_profile("linked")
+    original = conv.agent.llm
+    assert conv.llm_registry.get("profile:linked") is original
+
+    def _boom(llm):
+        raise RuntimeError("subscription login required")
+
+    monkeypatch.setattr(
+        "openhands.sdk.conversation.impl.local_conversation."
+        "create_subscription_llm_from_config",
+        _boom,
+    )
+
+    with pytest.raises(RuntimeError, match="subscription login required"):
+        conv.switch_profile("linked")
+
+    # Agent never swapped, and the registry still has the original entry
+    # (not left empty by the removal that preceded the failed install).
+    assert conv.agent.llm is original
+    assert conv.llm_registry.get("profile:linked") is original
+
+
+def test_get_or_create_profile_llm_reresolves_rotated_provider_connection(
+    tmp_path, monkeypatch
+):
+    """``get_or_create_profile_llm`` must re-resolve a connection-linked
+    profile the same way ``switch_profile`` does (read-at-use), carrying
+    metrics over across the refresh.
+    """
+    provider = _save_linked_profile(tmp_path, monkeypatch)
+    conv = _make_conversation()
+
+    first = conv.get_or_create_profile_llm("linked", "aux:linked")
+    assert isinstance(first.api_key, SecretStr)
+    assert first.api_key.get_secret_value() == "sk-original"
+    first.metrics.add_cost(2.0)
+
+    provider.update(
+        ProviderConnection(
+            id="conn1",
+            display_name="Shared",
+            provider="openrouter",
+            api_key=SecretStr("sk-rotated"),
+            created_at=1000,
+            updated_at=2000,
+        )
+    )
+    second = conv.get_or_create_profile_llm("linked", "aux:linked")
+
+    assert isinstance(second.api_key, SecretStr)
+    assert second.api_key.get_secret_value() == "sk-rotated"
+    assert second.metrics.accumulated_cost == 2.0
+    assert conv.llm_registry.get("aux:linked") is second
+
+
+def test_get_or_create_profile_llm_atomic_on_failure(tmp_path, monkeypatch):
+    """Same atomic-failure guarantee as :meth:`switch_profile`, for the
+    auxiliary one-off model path."""
+    _save_linked_profile(tmp_path, monkeypatch)
+    conv = _make_conversation()
+    original = conv.get_or_create_profile_llm("linked", "aux:linked")
+
+    def _boom(llm):
+        raise RuntimeError("subscription login required")
+
+    monkeypatch.setattr(
+        "openhands.sdk.conversation.impl.local_conversation."
+        "create_subscription_llm_from_config",
+        _boom,
+    )
+
+    with pytest.raises(RuntimeError, match="subscription login required"):
+        conv.get_or_create_profile_llm("linked", "aux:linked")
+
+    assert conv.llm_registry.get("aux:linked") is original
 
 
 def test_switch_nonexistent_raises(profile_store):

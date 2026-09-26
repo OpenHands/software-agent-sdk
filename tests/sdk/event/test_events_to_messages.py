@@ -480,6 +480,46 @@ class TestEventsToMessages:
             id="rs_1", summary=["reasoned about the batch"]
         )
 
+    def test_parallel_batch_preserves_reasoning_details(self):
+        """OpenRouter's opaque reasoning_details survive a parallel batch too.
+
+        Entries may carry encrypted/opaque payloads that must be preserved
+        exactly (structured value, not raw bytes), exactly like a singleton
+        action event.
+        """
+        opaque_block = {
+            "type": "reasoning.encrypted",
+            "data": "opaque-test",
+            "format": "anthropic-claude-v1",
+            "index": 0,
+        }
+        first = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="batching two calls")],
+            reasoning_details=[opaque_block],
+            action=EventsToMessagesMockAction(command="one"),
+            tool_name="terminal",
+            tool_call_id="call_1",
+            tool_call=create_tool_call("call_1", "terminal", {"command": "one"}),
+            llm_response_id="response_reasoning_details",
+        )
+        second = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="two"),
+            tool_name="terminal",
+            tool_call_id="call_2",
+            tool_call=create_tool_call("call_2", "terminal", {"command": "two"}),
+            llm_response_id="response_reasoning_details",
+        )
+
+        events = [first, second]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 1
+        combined = messages[0]
+        assert combined.reasoning_details == [opaque_block]
+
     def test_multiple_separate_action_events(self):
         """Test multiple ActionEvents with different response_ids (separate calls)."""
         action1 = create_action_event(
