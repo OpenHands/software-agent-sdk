@@ -185,6 +185,42 @@ def test_docker_network(mock_docker_workspace):
         assert run_cmd[network_index + 1] == network_name
 
 
+def test_docker_workspace_creates_private_network_and_authenticates():
+    with (
+        patch(
+            "openhands.workspace.docker.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch(
+            "openhands.workspace.docker.workspace.find_available_tcp_port",
+            return_value=8000,
+        ),
+        patch("openhands.workspace.docker.workspace.urlopen"),
+        patch.object(DockerWorkspace, "_wait_for_health"),
+        patch.object(DockerWorkspace, "model_post_init"),
+        patch("openhands.workspace.docker.workspace.execute_command") as mock_exec,
+    ):
+        mock_exec.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),  # docker version
+            Mock(returncode=0, stdout="", stderr=""),  # network create
+            Mock(returncode=0, stdout="container_123", stderr=""),  # docker run
+        ]
+        workspace = DockerWorkspace(server_image="test:latest")
+        workspace._start_container("test:latest", None)
+
+        calls = [call.args[0] for call in mock_exec.call_args_list]
+        network_cmd = next(
+            command for command in calls if command[1:3] == ["network", "create"]
+        )
+        run_cmd = next(command for command in calls if command[1] == "run")
+        assert "--network" in run_cmd
+        assert run_cmd[run_cmd.index("--network") + 1] == network_cmd[-1]
+        assert "127.0.0.1:8000:8000" in run_cmd
+        assert any(arg.startswith("SESSION_API_KEY=") for arg in run_cmd)
+        assert any(arg.startswith("OH_SESSION_API_KEYS_0=") for arg in run_cmd)
+        assert workspace.api_key
+
+
 # ===========================================================================
 # health_check_timeout tests for DockerWorkspace and ApptainerWorkspace
 # ===========================================================================
