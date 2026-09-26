@@ -262,6 +262,7 @@ export OH_SECRET_KEY=$(openssl rand -hex 32)
 export OH_SECRET_KEY="your-secret-key-here"
 ```
 
+
 **Important Security Notes:**
 - Use a strong, randomly generated key with at least 256 bits of entropy
 - Store this key securely (e.g., in a secrets manager or environment variable)
@@ -292,6 +293,79 @@ Each webhook can be configured with:
 - **`num_retries`**: Number of retry attempts on failure (default: 3)
 - **`retry_delay`**: Delay between retries in seconds (default: 5)
 - **`headers`**: Custom headers to include in webhook requests
+
+### Optional Canvas App backends
+
+A schema-1 `canvas-extension.json` may add a versioned `backend` block. Apps
+without this block remain browser-only and require no lifecycle calls.
+
+```json
+{
+  "schema_version": 1,
+  "name": "managed-vscode",
+  "display_name": "Managed VS Code",
+  "version": "1.0.0",
+  "entrypoint": "dist/index.js",
+  "backend": {
+    "schema_version": 1,
+    "artifacts": {
+      "linux-amd64": {
+        "path": "backend/linux-amd64.tar.gz",
+        "sha256": "<64 lowercase hex characters>"
+      },
+      "linux-arm64": {
+        "path": "backend/linux-arm64.tar.gz",
+        "sha256": "<64 lowercase hex characters>"
+      }
+    },
+    "argv": [
+      "{artifact_dir}/bin/server",
+      "--host=127.0.0.1",
+      "--port={port}",
+      "--data-dir={data_dir}"
+    ],
+    "health": {
+      "path": "/health",
+      "timeout_seconds": 30,
+      "interval_seconds": 0.1
+    },
+    "inherit_environment": ["LANG", "PATH", "TZ"]
+  }
+}
+```
+
+The executable must be inside `{artifact_dir}`. The generic `{port}`,
+`{data_dir}`, and `{artifact_dir}` placeholders let launchers use the prepared
+artifact while the process working directory remains the installed package.
+Preparation verifies the selected platform archive's SHA-256, safely extracts
+regular files and directories into a content-addressed read-only location, and
+records approval for the exact installed revision. Updating or replacing the
+App invalidates that approval.
+
+Installation, enablement, and bundle mounting never execute backend code. A
+client must call `prepare` and then `start`, each with the revision returned by
+`GET .../backend`. The lifecycle endpoints are:
+
+- `GET /api/canvas-extensions/installed/{name}/backend`
+- `POST .../backend/prepare` with `{"revision": "..."}`
+- `POST .../backend/start` with `{"revision": "..."}`
+- `POST .../backend/stop`
+- `GET .../backend/logs?limit_bytes=65536`
+- `DELETE .../backend/data`
+
+Status is one of `missing`, `stopped`, `starting`, `ready`, `unhealthy`, or
+`unsupported`. Linux amd64 and arm64 are supported when the matching artifact
+is declared. The server runs one owned process group per installed App, drains
+bounded logs continuously, and stops it on disable, uninstall, failed startup,
+or server shutdown. Disable and uninstall preserve mutable data; only the
+separate data endpoint deletes it.
+
+Backends receive no ambient agent-server environment. A manifest may inherit
+only the supported non-credential variables (`LANG`, `LC_ALL`, `LC_CTYPE`,
+`PATH`, `TMPDIR`, and `TZ`). Backend subprocesses are owned and constrained by
+these launch rules, but they are not OS-isolated; use a sandboxed Agent Server
+when operating untrusted code. Authenticated HTTP/WebSocket routing to a ready
+backend is intentionally outside this lifecycle contract.
 
 ## API Documentation
 

@@ -352,7 +352,11 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_backend_manager = AsyncMock()
+            mock_app.state = SimpleNamespace(
+                config=Config(),
+                canvas_extension_backend_manager=mock_backend_manager,
+            )
 
             async with api_lifespan(mock_app):
                 # Exit the context to trigger shutdown
@@ -361,6 +365,7 @@ class TestServiceParallelization:
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
             mock_tool_preload_service.stop.assert_called_once()
+            mock_backend_manager.shutdown.assert_awaited_once()
 
     async def test_services_handle_none_values(self):
         """Test that the lifespan handles None service values correctly."""

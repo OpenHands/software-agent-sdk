@@ -1,5 +1,6 @@
 import { AgentProfilesClient } from './agent-profiles-client';
 import { BashClient } from './bash-client';
+import { CanvasExtensionsClient } from './canvas-extensions-client';
 import { ConversationClient } from './conversation-client';
 import { FileClient } from './file-client';
 import { HooksClient } from './hooks-client';
@@ -124,6 +125,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly conversations: ConversationClient;
   readonly files: FileClient;
   readonly bash: BashClient;
+  readonly canvasExtensions: CanvasExtensionsClient;
   readonly settings: SettingsClient;
   readonly profiles: ProfilesClient;
   readonly agentProfiles: AgentProfilesClient;
@@ -158,6 +160,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.conversations = new ConversationClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.bash = new BashClient(clientOptions);
+    this.canvasExtensions = new CanvasExtensionsClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.profiles = new ProfilesClient(clientOptions);
     this.agentProfiles = new AgentProfilesClient(clientOptions);
