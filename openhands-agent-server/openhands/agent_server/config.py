@@ -346,6 +346,12 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    app_backend_public_url: str | None = Field(
+        default=None,
+        description=(
+            "Separate browser origin that exposes authenticated Canvas App backends"
+        ),
+    )
     conversation_runtime: Literal["local", "docker"] = "local"
     conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
     conversation_container_memory: str | None = "4g"

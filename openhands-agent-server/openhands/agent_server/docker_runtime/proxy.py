@@ -82,6 +82,7 @@ async def proxy_http(
     timeout: float | None = None,
     body: bytes | None = None,
     on_close: Callable[[], Awaitable[None]] | None = None,
+    reject_redirects: bool = False,
 ) -> StreamingResponse:
     """Forward ``request`` to the per-conversation container.
 
@@ -99,6 +100,8 @@ async def proxy_http(
             client disconnects. Callers use this to release a session
             attachment that must outlive the route handler (see
             ``DockerConversationRegistry.attach_session``).
+        reject_redirects: Reject upstream redirects instead of forwarding a
+            location that could escape a fixed-destination proxy.
 
     Notes:
         A fresh :class:`httpx.AsyncClient` is created per request. We avoid a
@@ -148,9 +151,18 @@ async def proxy_http(
             detail="Conversation container unreachable",
         ) from exc
 
+    if reject_redirects and upstream.is_redirect:
+        await stack.aclose()
+        if on_close is not None:
+            await on_close()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Upstream redirect is not allowed",
+        )
+
     async def _response_body() -> AsyncIterator[bytes]:
         try:
-            async for chunk in upstream.aiter_raw(chunk_size=_CHUNK_SIZE):
+            async for chunk in upstream.aiter_raw():
                 yield chunk
         finally:
             await stack.aclose()

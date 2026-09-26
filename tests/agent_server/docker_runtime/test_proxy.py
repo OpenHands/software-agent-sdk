@@ -178,5 +178,6 @@ async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
     # The attachment outlives the route handler so the container cannot be
     # evicted while the client is still reading the response.
     assert registry.has_attached_sessions(conversation_id)
-    assert [chunk async for chunk in response.body_iterator] == [b"firstsecond"]
+    chunks = [chunk async for chunk in response.body_iterator]
+    assert chunks == [b"first", b"second"]
     assert not registry.has_attached_sessions(conversation_id)

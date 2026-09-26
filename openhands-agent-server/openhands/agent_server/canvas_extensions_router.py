@@ -20,6 +20,7 @@ from openhands.agent_server.canvas_extensions.backend import (
     BackendStatus,
     CanvasExtensionBackendManager,
 )
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
 from openhands.agent_server.canvas_extensions.installed import (
     InstalledCanvasExtensionInfo,
     disable_canvas_extension,
@@ -63,6 +64,15 @@ def _backend_manager(request: Request) -> CanvasExtensionBackendManager:
         manager = CanvasExtensionBackendManager()
         request.app.state.canvas_extension_backend_manager = manager
     return manager
+
+
+async def _revoke_and_stop_backend(
+    request: Request, extension_name: str
+) -> BackendStatus:
+    session_store = getattr(request.app.state, "app_backend_session_store", None)
+    if isinstance(session_store, AppBackendSessionStore):
+        await session_store.revoke_app(extension_name)
+    return await _backend_manager(request).stop(extension_name)
 
 
 class InstallCanvasExtensionRequest(BaseModel):

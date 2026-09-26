@@ -76,6 +76,7 @@ export interface ServerInfo {
   build_semver?: string;
   capabilities?: string[];
   conversation_runtime?: 'local' | 'docker';
+  app_backend_ingress_url?: string | null;
   [key: string]: unknown;
 }
 
