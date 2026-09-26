@@ -99,6 +99,49 @@ def test_message_tool_role_with_cache_prompt():
     assert "cache_control" not in result["content"][0]
 
 
+def test_message_tool_role_omits_cache_prompt_when_cache_disabled():
+    """Tool messages should respect disabled prompt caching."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="tool",
+        content=[TextContent(text="Tool response", cache_prompt=True)],
+        tool_call_id="call_123",
+        name="test_tool",
+    )
+
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "cache_enabled": False,
+            "function_calling_enabled": True,
+        }
+    )
+
+    assert "cache_control" not in result
+    assert "cache_control" not in result["content"][0]
+
+
+def test_message_user_role_omits_cache_prompt_when_cache_disabled():
+    """User content should respect disabled prompt caching."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="user",
+        content=[TextContent(text="User request", cache_prompt=True)],
+    )
+
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "cache_enabled": False,
+            "function_calling_enabled": True,
+        }
+    )
+
+    assert "cache_control" not in result["content"][0]
+
+
 def test_message_tool_role_with_image_cache_prompt():
     """Test Message with tool role and ImageContent with cache_prompt."""
     from openhands.sdk.llm.message import ImageContent, Message
