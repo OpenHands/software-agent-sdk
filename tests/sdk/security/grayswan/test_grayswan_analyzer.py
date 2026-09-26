@@ -350,8 +350,47 @@ class TestGraySwanAnalyzerSecurityRisk:
             call_args = mock_client.post.call_args
             assert call_args is not None
             payload = call_args.kwargs.get("json") or call_args[1].get("json")
-            # Should have 2 history events + 1 action = 3 messages
-            assert len(payload["messages"]) == 3
+            # 2 history events + 1 action = 3, plus a synthesized system message
+            # prepended to guarantee the request opens with a system role (the
+            # window had no SystemPromptEvent to re-include).
+            assert len(payload["messages"]) == 4
+            assert payload["messages"][0]["role"] == "system"
+
+    def test_security_risk_preserves_leading_system_prompt_when_window_drops_it(
+        self, analyzer: GraySwanAnalyzer
+    ):
+        """The leading SystemPromptEvent is re-included when the bounded window
+        would otherwise slice it off, keeping the request system-first."""
+        analyzer.history_limit = 2
+
+        events = [
+            create_mock_system_prompt_event("You are a safe assistant."),
+            *[create_mock_message_event(f"Message {i}", "user") for i in range(5)],
+        ]
+        analyzer.set_events(events)
+
+        action = create_mock_action_event()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"violation": 0.1}
+
+        with patch.object(analyzer, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+            mock_get_client.return_value = mock_client
+
+            analyzer.security_risk(action)
+
+            call_args = mock_client.post.call_args
+            assert call_args is not None
+            payload = call_args.kwargs.get("json") or call_args[1].get("json")
+            messages = payload["messages"]
+            # First message must be the real system prompt, not a placeholder.
+            assert messages[0]["role"] == "system"
+            assert messages[0]["content"] == "You are a safe assistant."
+            # Leading system prompt + 2-event window + 1 action = 4 messages.
+            assert len(messages) == 4
 
 
 class TestGraySwanAnalyzerSetEvents:
