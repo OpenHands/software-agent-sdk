@@ -7,6 +7,8 @@ advanced for unrelated reasons — see ``PERSISTED_SETTINGS_SCHEMA_VERSION`` —
 never because of consent.)
 """
 
+from datetime import datetime
+
 import pytest
 
 from openhands.agent_server.persistence.models import (
@@ -14,6 +16,10 @@ from openhands.agent_server.persistence.models import (
     PersistedSettings,
 )
 from openhands.agent_server.telemetry.policy import resolve
+
+
+def test_schema_version_tracks_nested_agent_settings_change():
+    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 4
 
 
 def test_there_is_no_typed_consent_field():
@@ -30,6 +36,77 @@ def test_older_settings_still_load(version: int):
     assert settings.active_profile == "default"
     # No consent recorded anywhere means no consent.
     assert resolve(settings.misc_settings, env={}).enabled is False
+
+
+def test_v2_settings_migrate_nested_runtime_datetime():
+    before = datetime.now().astimezone()
+    settings = PersistedSettings.from_persisted(
+        {
+            "schema_version": 2,
+            "agent_settings": {
+                "schema_version": 5,
+                "agent_kind": "openhands",
+                "llm": {"model": "test-model"},
+                "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+            },
+        }
+    )
+    after = datetime.now().astimezone()
+
+    assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_settings.schema_version == 7
+    assert settings.agent_settings.agent_context is not None
+    current_datetime = settings.agent_settings.agent_context.current_datetime
+    assert isinstance(current_datetime, datetime)
+    assert before <= current_datetime <= after
+    payload = settings.model_dump(mode="json")
+    assert "current_datetime" not in payload["agent_settings"]["agent_context"]
+
+
+def test_v3_settings_migrate_nested_runtime_datetime():
+    before = datetime.now().astimezone()
+    settings = PersistedSettings.from_persisted(
+        {
+            "schema_version": 3,
+            "agent_settings": {
+                "schema_version": 6,
+                "agent_kind": "openhands",
+                "llm": {"model": "test-model"},
+                "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+            },
+        }
+    )
+    after = datetime.now().astimezone()
+
+    assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_settings.schema_version == 7
+    assert settings.agent_settings.agent_context is not None
+    current_datetime = settings.agent_settings.agent_context.current_datetime
+    assert isinstance(current_datetime, datetime)
+    assert before <= current_datetime <= after
+    payload = settings.model_dump(mode="json")
+    assert "current_datetime" not in payload["agent_settings"]["agent_context"]
+
+
+def test_v3_settings_preserve_nested_explicit_no_datetime():
+    settings = PersistedSettings.from_persisted(
+        {
+            "schema_version": 3,
+            "agent_settings": {
+                "schema_version": 6,
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "agent_context": {"current_datetime": None},
+            },
+        }
+    )
+
+    assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_settings.schema_version == 7
+    assert settings.agent_settings.agent_context is not None
+    assert settings.agent_settings.agent_context.current_datetime is None
+    payload = settings.model_dump(mode="json")
+    assert payload["agent_settings"]["agent_context"]["current_datetime"] is None
 
 
 def test_consent_round_trips_through_misc_settings():

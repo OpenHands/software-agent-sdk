@@ -1,0 +1,24 @@
+{
+  "__expected__": {
+    "schema_version": 4,
+    "agent_settings.schema_version": 7,
+    "agent_settings.agent_kind": "acp",
+    "agent_settings.acp_server": "codex",
+    "agent_settings.agent_context.current_datetime": null
+  },
+  "schema_version": 4,
+  "agent_settings": {
+    "schema_version": 7,
+    "agent_kind": "acp",
+    "acp_server": "codex",
+    "agent_context": {
+      "current_datetime": null
+    }
+  },
+  "conversation_settings": {
+    "schema_version": 1
+  },
+  "active_profile": null,
+  "active_agent_profile_id": null,
+  "misc_settings": {}
+}

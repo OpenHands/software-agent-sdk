@@ -1,0 +1,12 @@
+{
+  "__expected__": {
+    "schema_version": 7,
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v7-llm"
+  },
+  "schema_version": 7,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v7-llm"
+  }
+}
