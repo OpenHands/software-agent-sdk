@@ -184,8 +184,7 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
     ) -> TaskTrackerObservation:
         """Execute the task tracker action."""
         if action.command == "plan":
-            # Update the task list
-            self._task_list = action.task_list
+            self._task_list = self._reconcile_task_ids(action.task_list)
             # Save to file if save_dir is provided
             if self.save_dir:
                 self._save_tasks()
@@ -221,6 +220,31 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
                 task_list=[],
             )
 
+    def _reconcile_task_ids(self, task_list: list[TaskItem]) -> list[TaskItem]:
+        """Preserve IDs for unambiguous updates to the full task list."""
+        existing_by_title: dict[str, list[TaskItem]] = {}
+        for task in self._task_list:
+            existing_by_title.setdefault(task.title, []).append(task)
+
+        incoming_title_counts: dict[str, int] = {}
+        for task in task_list:
+            incoming_title_counts[task.title] = (
+                incoming_title_counts.get(task.title, 0) + 1
+            )
+
+        reconciled_tasks = []
+        for task in task_list:
+            candidates = existing_by_title.get(task.title, [])
+            if (
+                "id" not in task.model_fields_set
+                and incoming_title_counts[task.title] == 1
+                and len(candidates) == 1
+            ):
+                task = task.model_copy(update={"id": candidates[0].id})
+            reconciled_tasks.append(task)
+
+        return reconciled_tasks
+
     def _format_task_list(self, task_list: list[TaskItem]) -> str:
         """Format the task list for display."""
         if not task_list:
@@ -253,7 +277,11 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
 
         try:
             with open(tasks_file, encoding="utf-8") as f:
-                self._task_list = [TaskItem.model_validate(d) for d in json.load(f)]
+                task_data = json.load(f)
+
+            self._task_list = [TaskItem.model_validate(d) for d in task_data]
+            if any("id" not in data for data in task_data):
+                self._save_tasks()
         except (OSError, json.JSONDecodeError, TypeError, ValidationError) as e:
             logger.warning(
                 f"Failed to load tasks from {tasks_file}: {e}. Starting with "
