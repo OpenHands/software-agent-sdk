@@ -18,6 +18,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.llm_convertible import SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -25,6 +26,21 @@ from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
+
+
+def _leading_system_prompt_index(events: Sequence[LLMConvertibleEvent]) -> int | None:
+    """Index of the first ``SystemPromptEvent`` in ``events``, or ``None``.
+
+    The agent loop guarantees the ``SystemPromptEvent`` sits at the head of the
+    view (index 0), so condensation must never forget it -- otherwise the
+    condensed view would open with a non-system message and violate the
+    repo-wide "system before first user" invariant. Returns ``None`` when no
+    system prompt is present (e.g. unit-test views built without one).
+    """
+    for i, event in enumerate(events):
+        if isinstance(event, SystemPromptEvent):
+            return i
+    return None
 
 
 class Reason(Enum):
@@ -302,8 +318,16 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 
-        # Find actual forgetting_start: smallest manipulation index >= keep_first
-        forgetting_start = view.manipulation_indices.find_next(self.keep_first)
+        # The leading SystemPromptEvent must never be forgotten, otherwise the
+        # condensed view would open with a non-system message. Floor the start
+        # of the forgetting range just past it (this also covers keep_first=0).
+        protected_prefix = self.keep_first
+        system_idx = _leading_system_prompt_index(view.events)
+        if system_idx is not None:
+            protected_prefix = max(protected_prefix, system_idx + 1)
+
+        # Find actual forgetting_start: smallest manipulation index >= protected_prefix
+        forgetting_start = view.manipulation_indices.find_next(protected_prefix)
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
         forgetting_end = view.manipulation_indices.find_next(naive_end)
