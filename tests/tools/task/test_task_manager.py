@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
@@ -34,10 +34,11 @@ def _make_llm() -> LLM:
 def _make_parent_conversation(
     tmp_path: Path,
     persistence_dir: str | Path | None = None,
+    agent_context: AgentContext | None = None,
 ) -> LocalConversation:
     """Create a real (minimal) parent conversation for the manager."""
     llm = _make_llm()
-    agent = Agent(llm=llm, tools=[])
+    agent = Agent(llm=llm, tools=[], agent_context=agent_context)
     return LocalConversation(
         agent=agent,
         workspace=str(tmp_path),
@@ -50,10 +51,13 @@ def _make_parent_conversation(
 def _manager_with_parent(
     tmp_path: Path,
     persistence_dir: str | Path | None = None,
+    agent_context: AgentContext | None = None,
 ) -> tuple[TaskManager, LocalConversation]:
     """Return a TaskManager whose parent conversation is already set."""
     manager = TaskManager()
-    parent = _make_parent_conversation(tmp_path, persistence_dir=persistence_dir)
+    parent = _make_parent_conversation(
+        tmp_path, persistence_dir=persistence_dir, agent_context=agent_context
+    )
     manager._ensure_parent(parent)
     return manager, parent
 
@@ -273,6 +277,35 @@ class TestTaskManager:
         assert resumed.status == TaskStatus.RUNNING
         assert resumed.conversation is not None
         assert resumed.conversation.state.id == original_uuid
+
+    def test_create_task_rejects_disabled_agent(self, tmp_path):
+        """A sub-agent type named in the parent's disabled_agents is refused;
+        types not on the deny-list still spawn."""
+        manager, _ = _manager_with_parent(
+            tmp_path,
+            agent_context=AgentContext(disabled_agents=["general-purpose"]),
+        )
+        register_builtins_agents()
+
+        with pytest.raises(ValueError, match="general-purpose"):
+            manager._create_task(subagent_type="general-purpose", description=None)
+
+        task = manager._create_task(subagent_type="default", description=None)
+        assert task.status == TaskStatus.RUNNING
+
+    def test_resume_task_rejects_disabled_agent(self, tmp_path):
+        """Resuming with a since-disabled sub-agent type is refused."""
+        manager, _ = _manager_with_parent(
+            tmp_path,
+            agent_context=AgentContext(disabled_agents=["general-purpose"]),
+        )
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="default", description=None)
+        manager._evict_task(task)
+
+        with pytest.raises(ValueError, match="general-purpose"):
+            manager._resume_task(resume=task.id, subagent_type="general-purpose")
 
     def test_default_agent_type(self, tmp_path):
         """'default' should return an agent without raising."""
