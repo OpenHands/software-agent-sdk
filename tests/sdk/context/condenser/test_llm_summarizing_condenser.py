@@ -230,13 +230,18 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     completion_mock.assert_called_once()
     call_args = completion_mock.call_args
     messages = call_args[1]["messages"]  # Get keyword arguments
-    prompt_text = messages[0].content[0].text
+
+    # The summarization instructions are sent as a system message and the
+    # events to summarize (including any previous summary) as a user message.
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
+    events_text = messages[1].content[0].text
 
     # The prompt should contain the previous summary (it's in <PREVIOUS SUMMARY> sec.)
     # The summary is now retrieved from the view, which should have it at the summary
     # event
     assert (
-        "Previous summary content" in prompt_text or "<PREVIOUS SUMMARY>" in prompt_text
+        "Previous summary content" in events_text or "<PREVIOUS SUMMARY>" in events_text
     )
 
 
