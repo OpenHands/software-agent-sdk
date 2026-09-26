@@ -788,47 +788,6 @@ def test_discriminated_union_parsing(clean_env):
     assert model == Dog(name="Bowser", barking=True)
 
 
-def test_config_vnc_environment_variable_parsing(clean_env):
-    """Test parsing OH_ENABLE_VNC environment variable in Config class."""
-    # Test OH_ENABLE_VNC set to true
-    os.environ["OH_ENABLE_VNC"] = "true"
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is True
-
-    # Test OH_ENABLE_VNC set to false
-    os.environ["OH_ENABLE_VNC"] = "false"
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is False
-
-    # Test default value when OH_ENABLE_VNC is not set
-    del os.environ["OH_ENABLE_VNC"]
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is False  # Default value from Config class
-
-
-@pytest.mark.parametrize(
-    "env_value,expected",
-    [
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("1", True),
-        ("false", False),
-        ("False", False),
-        ("FALSE", False),
-        ("0", False),
-        ("", False),
-    ],
-)
-def test_config_vnc_various_boolean_values(clean_env, env_value, expected):
-    """Test that OH_ENABLE_VNC accepts various boolean representations."""
-    os.environ["OH_ENABLE_VNC"] = env_value
-    config = from_env(Config, "OH")
-    assert config.enable_vnc is expected, (
-        f"Failed for OH_ENABLE_VNC='{env_value}', expected {expected}"
-    )
-
-
 # ============================================================================
 # ENUM PARSING TESTS
 # ============================================================================

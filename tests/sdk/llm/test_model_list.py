@@ -14,12 +14,12 @@ from openhands.sdk.llm.utils.verified_models import (
 
 def test_organize_models_and_providers():
     models = [
-        "openai/gpt-4o",
-        "anthropic/claude-sonnet-4-20250514",
-        "o3",
-        "o4-mini",
-        "devstral-small-2505",
-        "mistral/devstral-small-2505",
+        "openai/gpt-5.6",
+        "anthropic/claude-sonnet-5",
+        "gpt-5.3-codex",
+        "gpt-6-astra",
+        "devstral-2512",
+        "mistral/devstral-2512",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
         "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
@@ -110,9 +110,13 @@ def test_openhands_models_all_have_provider_list():
 
 
 def test_gpt_5_6_models_are_verified_for_openai():
-    assert {"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}.issubset(
-        VERIFIED_OPENAI_MODELS
-    )
+    assert {
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-6-astra",
+    }.issubset(VERIFIED_OPENAI_MODELS)
 
 
 def test_kimi_k3_and_claude_opus_5_are_verified():
@@ -135,16 +139,51 @@ def test_nemotron_3_super_uses_full_infra_name():
         )
 
 
-def test_claude_opus_4_5_uses_full_infra_name():
-    """The OpenHands proxy serves the dated snapshot ``claude-opus-4-5-20251101``;
-    the bare alias ``claude-opus-4-5`` is not a valid proxy model name and must
-    not be offered under the OpenHands provider.
+def test_openhands_haiku_uses_full_infra_name():
+    """The OpenHands proxy serves dated snapshots for some Anthropic models
+    (``claude-haiku-4-5-20251001``); bare aliases that the proxy does not know
+    must not be offered under the OpenHands provider.
     """
-    assert "claude-opus-4-5-20251101" in VERIFIED_OPENHANDS_MODELS
-    # Scope is intentionally narrower than test_nemotron_3_super_uses_full_infra_name
-    # (which loops over all providers): VERIFIED_ANTHROPIC_MODELS legitimately keeps
-    # the bare alias because direct-Anthropic BYOK may accept it.
-    assert "claude-opus-4-5" not in VERIFIED_OPENHANDS_MODELS
+    assert "claude-haiku-4-5" not in VERIFIED_OPENHANDS_MODELS
+    # VERIFIED_ANTHROPIC_MODELS keeps the dated name; direct-Anthropic BYOK is fine.
+    assert "claude-haiku-4-5-20251001" in VERIFIED_MODELS["anthropic"]
+
+
+def test_verified_lists_keep_two_latest_versions_per_line():
+    """Check the curation rule for every provider: the two latest versions of a
+    line are present and the version before them is gone (see the module
+    docstring and ``llm/utils/AGENTS.md``). Update the table when a new version
+    lands.
+    """
+    expectations = {
+        "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
+        "anthropic": (
+            {"claude-opus-5-5", "claude-opus-5"},
+            {"claude-opus-4-8", "claude-opus-4-7"},
+        ),
+        "mistral": (
+            {"devstral-2512", "devstral-medium-2512"},
+            {"devstral-medium-2507"},
+        ),
+        "gemini": ({"gemini-3.8-flash", "gemini-3.7-flash"}, {"gemini-3.6-flash"}),
+        "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
+        "moonshot": ({"kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
+        "minimax": ({"minimax-m3", "minimax-m2.7"}, {"minimax-m2.5"}),
+        "glm": ({"glm-5.3", "glm-5.2"}, {"glm-5.1"}),
+        "nvidia": ({"nemotron-3.5-lightning-30b-a3b", "nemotron-3-nano"}, set()),
+        "qwen": ({"qwen3.8-max", "qwen3.7-max"}, {"qwen3-max", "qwen3-6-plus"}),
+    }
+    assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}
+    for provider, (present, absent) in expectations.items():
+        models = set(VERIFIED_MODELS[provider])
+        assert present <= models, f"{provider}: missing {present - models}"
+        assert not (absent & models), f"{provider}: stale {absent & models}"
+    assert {"gpt-6-astra", "gpt-5.6", "claude-opus-5-5", "claude-opus-5"} <= set(
+        VERIFIED_OPENHANDS_MODELS
+    )
+    assert not {"gpt-5.5", "claude-opus-4-8", "claude-opus-4-7", "minimax-m2.5"} & set(
+        VERIFIED_OPENHANDS_MODELS
+    )
 
 
 def test_trinity_model_is_openhands_only():
