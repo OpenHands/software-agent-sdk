@@ -1,5 +1,6 @@
 """Encoding management for file operations."""
 
+import codecs
 import functools
 import inspect
 import os
@@ -48,6 +49,16 @@ class EncodingManager:
         sample_size = min(os.path.getsize(path), 1024 * 1024)  # Max 1MB sample
         with open(path, "rb") as f:
             raw_data = f.read(sample_size)
+
+        if raw_data.startswith(codecs.BOM_UTF8):
+            return "utf-8-sig"
+
+        try:
+            raw_data.decode(self.default_encoding)
+        except UnicodeDecodeError:
+            pass
+        else:
+            return self.default_encoding
 
         # Use charset_normalizer instead of chardet
         results = charset_normalizer.detect(raw_data)
