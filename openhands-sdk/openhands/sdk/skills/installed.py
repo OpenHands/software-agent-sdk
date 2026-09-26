@@ -18,7 +18,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.skills.skill import Skill
 from openhands.sdk.skills.utils import find_skill_md
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 # Public type alias — keeps existing import sites working.
 InstalledSkillInfo = InstallationInfo
 
-DEFAULT_INSTALLED_SKILLS_DIR = Path.home() / ".openhands" / "skills" / "installed"
+DEFAULT_INSTALLED_SKILLS_DIR = get_user_persistence_dir() / "skills" / "installed"
 
 
 def get_installed_skills_dir() -> Path:

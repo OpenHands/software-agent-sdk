@@ -5,6 +5,7 @@ from logging import getLogger
 from typing import Any
 
 import httpx
+import litellm
 from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
@@ -22,6 +23,66 @@ def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return dict(model_info)
     return {**raw, **model_info}
+
+
+# Pricing fields copied from the underlying model so a custom proxy alias
+# becomes priceable in litellm's global `model_cost` map (#4816).
+_PRICING_FIELDS: tuple[str, ...] = (
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "cache_read_input_token_cost",
+    "cache_creation_input_token_cost",
+    "max_input_tokens",
+    "max_output_tokens",
+    "litellm_provider",
+    "mode",
+)
+
+
+def _register_proxy_alias_pricing(
+    alias: str,
+    underlying_model_info: Mapping[str, Any] | None,
+    proxy_model_info: Mapping[str, Any] | None,
+) -> None:
+    """Register a `litellm_proxy/*` alias into litellm's `model_cost` (#4816).
+
+    litellm strips the `litellm_proxy/` prefix and parses the first segment as
+    the provider, so a custom name like `prod/claude-sonnet-4-5-bedrock` makes
+    `cost_per_token` raise and the span is silently priced $0. Registering the
+    alias with the underlying model's pricing makes it priceable without
+    renaming the proxy model.
+    """
+    if not alias or alias in model_cost:
+        return
+    try:
+        litellm.cost_per_token(model=alias, prompt_tokens=1, completion_tokens=1)
+        return
+    except Exception:
+        pass
+
+    entry: dict[str, Any] = {}
+    for src in (underlying_model_info, proxy_model_info):
+        if isinstance(src, Mapping):
+            entry.update({f: src[f] for f in _PRICING_FIELDS if f in src})
+
+    # litellm's `get_llm_provider` cannot resolve `bedrock_converse` as a
+    # provider label for an unknown alias id (only ``bedrock`` is accepted), so
+    # normalize it before registering or `cost_per_token` keeps raising.
+
+    if entry.get("litellm_provider") == "bedrock_converse":
+        entry["litellm_provider"] = "bedrock"
+
+    if (
+        entry.get("input_cost_per_token") is None
+        and entry.get("output_cost_per_token") is None
+    ):
+        return
+
+    entry.setdefault("mode", "chat")
+    try:
+        litellm.register_model({alias: entry})
+    except Exception as e:
+        logger.debug("Failed to register litellm_proxy alias %r: %s", alias, e)
 
 
 @lru_cache
@@ -61,6 +122,24 @@ def _get_model_info_from_litellm_proxy(
         if current:
             model_info = current.get("model_info")
             logger.debug(f"Got model info from litellm proxy: {model_info}")
+
+            # Make custom proxy aliases priceable so cost instrumentation does
+            # not silently record $0 (#4816).
+            underlying_model = current.get("litellm_params", {}).get("model")
+            underlying_model_info = None
+            if isinstance(underlying_model, str) and underlying_model != stripped:
+                try:
+                    underlying_model_info = get_model_info(underlying_model)
+                except Exception as e:
+                    logger.debug(
+                        f"get_model_info(underlying={underlying_model}) failed: {e}"
+                    )
+            _register_proxy_alias_pricing(
+                alias=stripped,
+                underlying_model_info=underlying_model_info,
+                proxy_model_info=model_info,
+            )
+
             return model_info
     except Exception as e:
         logger.debug(

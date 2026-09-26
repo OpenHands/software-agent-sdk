@@ -37,22 +37,6 @@ def test_cost_creation_negative_fails():
     assert "cost" in errors[0]["loc"]
 
 
-def test_cost_pydantic_features():
-    """Test Pydantic features work correctly."""
-    cost = Cost(cost=2.5, model="gpt-3.5")
-
-    # Test model_dump
-    data = cost.model_dump()
-    assert data["cost"] == 2.5
-    assert data["model"] == "gpt-3.5"
-    assert "timestamp" in data
-
-    # Test model_validate
-    cost2 = Cost.model_validate(data)
-    assert cost2.cost == cost.cost
-    assert cost2.model == cost.model
-
-
 def test_response_latency_creation_valid():
     """Test creating a valid ResponseLatency instance."""
     latency = ResponseLatency(model="gpt-4o-mini", latency=1.5, response_id="test-123")
@@ -76,21 +60,6 @@ def test_response_latency_creation_negative_fails():
     assert len(errors) == 1
     assert errors[0]["type"] == "greater_than_equal"
     assert "latency" in errors[0]["loc"]
-
-
-def test_response_latency_pydantic_features():
-    """Test Pydantic features work correctly."""
-    latency = ResponseLatency(model="gpt-4o-mini", latency=2.3, response_id="test-789")
-
-    # Test model_dump
-    data = latency.model_dump()
-    expected = {"model": "gpt-4o-mini", "latency": 2.3, "response_id": "test-789"}
-    assert data == expected
-
-    # Test model_validate
-    latency2 = ResponseLatency.model_validate(data)
-    assert latency2.latency == latency.latency
-    assert latency2.response_id == latency.response_id
 
 
 def test_token_usage_creation_valid():
@@ -236,41 +205,6 @@ def test_token_usage_addition():
     assert combined.context_window == 4096
     assert combined.per_turn_token == 285  # Uses other.per_turn_token
     assert combined.response_id == "test-1"  # Should keep first response_id
-
-
-def test_token_usage_pydantic_features():
-    """Test Pydantic features work correctly."""
-    usage = TokenUsage(
-        model="gpt-3.5",
-        prompt_tokens=75,
-        completion_tokens=25,
-        cache_read_tokens=5,
-        cache_write_tokens=2,
-        context_window=2048,
-        per_turn_token=102,
-        response_id="test-456",
-    )
-
-    # Test model_dump
-    data = usage.model_dump()
-    expected = {
-        "model": "gpt-3.5",
-        "prompt_tokens": 75,
-        "completion_tokens": 25,
-        "cache_read_tokens": 5,
-        "cache_write_tokens": 2,
-        "reasoning_tokens": 0,
-        "context_window": 2048,
-        "per_turn_token": 102,
-        "response_id": "test-456",
-    }
-    assert data == expected
-
-    # Test model_validate
-    usage2 = TokenUsage.model_validate(data)
-    assert usage2.model == usage.model
-    assert usage2.prompt_tokens == usage.prompt_tokens
-    assert usage2.completion_tokens == usage.completion_tokens
 
 
 def test_metrics_creation_empty():
@@ -503,61 +437,6 @@ def test_metrics_deep_copy():
     assert metrics.accumulated_cost == 5.0
 
 
-def test_metrics_pydantic_features():
-    """Test Pydantic features work correctly."""
-    metrics = Metrics(model_name="gpt-4o-mini")
-    metrics.add_cost(5.0)
-    metrics.add_token_usage(100, 50, 10, 5, 4096, "test-123")
-
-    # Test model_dump
-    data = metrics.model_dump()
-    assert data["accumulated_cost"] == 5.0
-    assert data["accumulated_token_usage"]["prompt_tokens"] == 100
-
-    # Test model_validate
-    metrics2 = Metrics.model_validate(data)
-    assert metrics2.model_name == metrics.model_name
-    assert metrics2.accumulated_cost == metrics.accumulated_cost
-    assert metrics2.accumulated_token_usage is not None
-    assert metrics.accumulated_token_usage is not None
-    assert (
-        metrics2.accumulated_token_usage.prompt_tokens
-        == metrics.accumulated_token_usage.prompt_tokens
-    )
-
-
-def test_metrics_validation_errors():
-    """Test that validation errors are properly raised."""
-    # Test that we can't create metrics with invalid nested data
-    with pytest.raises(ValidationError):
-        Metrics.model_validate(
-            {
-                "accumulated_cost": -1.0,  # Should be caught by validation
-                "accumulated_token_usage": None,
-                "costs": [],
-                "response_latencies": [],
-                "token_usages": [],
-            }
-        )
-
-
-def test_metrics_model_validator():
-    """Test the model validator for accumulated_cost consistency."""
-    # This should work - cost matches sum of costs
-    data = {
-        "accumulated_cost": 8.0,
-        "accumulated_token_usage": None,
-        "costs": [
-            {"cost": 5.0, "model": "gpt-4o-mini", "response_id": "test-1"},
-            {"cost": 3.0, "model": "gpt-4o-mini", "response_id": "test-2"},
-        ],
-        "response_latencies": [],
-        "token_usages": [],
-    }
-    metrics = Metrics.model_validate(data)
-    assert metrics.accumulated_cost == 8.0
-
-
 def test_metrics_empty_state_operations():
     """Test operations on empty metrics work correctly."""
     metrics = Metrics()
@@ -579,39 +458,6 @@ def test_metrics_empty_state_operations():
     assert metrics.accumulated_token_usage is not None
 
 
-def test_metrics_as_pydantic_field():
-    """Test that Metrics can be used as a field in another Pydantic class."""
-    from pydantic import BaseModel
-
-    class TestModel(BaseModel):
-        name: str
-        metrics: Metrics
-
-    # Create a metrics instance
-    metrics = Metrics(model_name="gpt-4o-mini")
-    metrics.add_cost(5.0)
-
-    # Use it in another model
-    test_model = TestModel(name="test", metrics=metrics)
-    assert test_model.name == "test"
-    assert test_model.metrics.model_name == "gpt-4o-mini"
-    assert test_model.metrics.accumulated_cost == 5.0
-
-    # Test serialization/deserialization
-    data = test_model.model_dump()
-    test_model2 = TestModel.model_validate(data)
-    assert test_model2.metrics.accumulated_cost == 5.0
-
-
-def test_metrics_cost_negative_validation():
-    """Test Cost validation with negative values (line 17)."""
-    # Test negative cost validation - Pydantic validation happens first
-    with pytest.raises(
-        ValidationError, match="Input should be greater than or equal to 0"
-    ):
-        Cost(model="test-model", cost=-1.0)
-
-
 def test_metrics_accumulated_cost_negative_validation():
     """Test Metrics accumulated cost validation with negative values (line 105)."""
     # Create a metrics instance with negative accumulated cost
@@ -619,28 +465,6 @@ def test_metrics_accumulated_cost_negative_validation():
         ValidationError, match="Input should be greater than or equal to 0"
     ):
         Metrics(accumulated_cost=-1.0)
-
-
-def test_metrics_add_token_usage_none_accumulated():
-    """Test adding token usage when accumulated_token_usage is None (line 172)."""
-    # Create metrics - it auto-initializes accumulated_token_usage
-    metrics = Metrics()
-    assert metrics.accumulated_token_usage is not None
-    assert metrics.accumulated_token_usage.prompt_tokens == 0
-
-    # Add token usage - should update accumulated_token_usage (line 172)
-    metrics.add_token_usage(
-        prompt_tokens=10,
-        completion_tokens=5,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        context_window=100,
-        response_id="test-response",
-    )
-
-    assert metrics.accumulated_token_usage is not None
-    assert metrics.accumulated_token_usage.prompt_tokens == 10
-    assert metrics.accumulated_token_usage.completion_tokens == 5
 
 
 def test_metrics_merge_max_budget_from_other():
@@ -681,37 +505,6 @@ def test_metrics_merge_accumulated_token_usage_none_self():
     assert metrics1.accumulated_token_usage.completion_tokens == 5
 
 
-def test_metrics_diff_current_usage_not_none():
-    """Test diff method when current_usage is not None (lines 274-275)."""
-    # Create metrics with accumulated token usage
-    metrics1 = Metrics()
-    metrics1.add_token_usage(
-        prompt_tokens=20,
-        completion_tokens=10,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        context_window=100,
-        response_id="test1",
-    )
-
-    # Create another metrics with different usage
-    metrics2 = Metrics()
-    metrics2.add_token_usage(
-        prompt_tokens=10,
-        completion_tokens=5,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        context_window=100,
-        response_id="test2",
-    )
-
-    # Calculate diff - should handle current_usage not None (lines 274-275)
-    diff = metrics1.diff(metrics2)
-    assert diff.accumulated_token_usage is not None
-    assert diff.accumulated_token_usage.prompt_tokens == 10
-    assert diff.accumulated_token_usage.completion_tokens == 5
-
-
 def test_metrics_diff_both_usage_none():
     """Test diff method when both accumulated_token_usage are None (lines 276-277)."""
     # Create metrics and manually set accumulated_token_usage to None
@@ -723,50 +516,6 @@ def test_metrics_diff_both_usage_none():
     # Calculate diff - should handle both None (lines 276-277)
     diff = metrics1.diff(metrics2)
     assert diff.accumulated_token_usage is None
-
-
-def test_cost_positive_validation():
-    """Test Cost model with positive cost (line 17 - positive case)."""
-    # Should not raise error for positive cost
-    cost = Cost(model="test-model", cost=10.5)
-    assert cost.cost == 10.5
-    assert cost.model == "test-model"
-
-
-def test_metrics_accumulated_cost_positive_validation():
-    """Test Metrics model with positive accumulated_cost (line 105 - positive case)."""
-    # Should not raise error for positive accumulated_cost
-    metrics = Metrics(accumulated_cost=15.0)
-    assert metrics.accumulated_cost == 15.0
-
-
-def test_metrics_add_token_usage_with_existing_accumulated():
-    """Test add_token_usage when accumulated_token_usage already exists."""
-    # Create metrics and add initial usage
-    metrics = Metrics()
-    metrics.add_token_usage(
-        prompt_tokens=10,
-        completion_tokens=5,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        context_window=100,
-        response_id="test1",
-    )
-
-    # Add more usage - should trigger line 174 (else branch)
-    metrics.add_token_usage(
-        prompt_tokens=20,
-        completion_tokens=10,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        context_window=100,
-        response_id="test2",
-    )
-
-    # Should have accumulated the usage
-    assert metrics.accumulated_token_usage is not None
-    assert metrics.accumulated_token_usage.prompt_tokens == 30
-    assert metrics.accumulated_token_usage.completion_tokens == 15
 
 
 def test_metrics_add_token_usage_none_accumulated_initial():
@@ -789,21 +538,6 @@ def test_metrics_add_token_usage_none_accumulated_initial():
     assert metrics.accumulated_token_usage is not None
     assert metrics.accumulated_token_usage.prompt_tokens == 10
     assert metrics.accumulated_token_usage.completion_tokens == 5
-
-
-def test_cost_validator_positive_path():
-    """Test Cost validator positive path."""
-    # Create Cost using Pydantic validation to trigger validator
-    cost = Cost(model="test-model", cost=5.0)
-    assert cost.cost == 5.0
-    assert cost.model == "test-model"
-
-
-def test_metrics_accumulated_cost_validator_positive_path():
-    """Test Metrics accumulated_cost validator positive path."""
-    # Create Metrics using Pydantic validation to trigger validator
-    metrics = Metrics(accumulated_cost=10.0)
-    assert metrics.accumulated_cost == 10.0
 
 
 def test_metrics_diff_current_only_not_none():

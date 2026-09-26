@@ -99,7 +99,7 @@ class ApptainerWorkspace(RemoteWorkspace):
     )
     extra_ports: bool = Field(
         default=False,
-        description="Whether to expose additional ports (VSCode, VNC).",
+        description="Whether to expose the additional VSCode port.",
     )
     enable_gpu: bool = Field(
         default=False,
@@ -174,10 +174,6 @@ class ApptainerWorkspace(RemoteWorkspace):
             if not check_port_available(self.host_port + 1):
                 raise RuntimeError(
                     f"Port {self.host_port + 1} is not available for VSCode"
-                )
-            if not check_port_available(self.host_port + 2):
-                raise RuntimeError(
-                    f"Port {self.host_port + 2} is not available for VNC"
                 )
 
         # Ensure apptainer is available

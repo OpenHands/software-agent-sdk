@@ -1,10 +1,10 @@
 ---
 name: Publish agent-server release artifacts
 
-# On release published or push to main:
+# On push to main or explicit release dispatch:
 #   1. Build the agent-server PyInstaller binary on Linux + macOS for both
 #      x86_64 and arm64, smoke-test it, and upload workflow artifacts.
-#   2. On release events/manual runs, attach those binaries plus a combined
+#   2. On explicit release dispatches, attach those binaries plus a combined
 #      SHA256SUMS file to the GitHub release.
 #   3. Smoke-test the multi-arch Docker images pushed by `server.yml`,
 #      verifying that every published variant has a manifest covering both
@@ -14,8 +14,6 @@ name: Publish agent-server release artifacts
 on:
     push:
         branches: [main]
-    release:
-        types: [published]
     workflow_dispatch:
         inputs:
             release_tag:
@@ -39,14 +37,10 @@ jobs:
             - id: resolve
               shell: bash
               env:
-                  GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
                   INPUTS_RELEASE_TAG: ${{ inputs.release_tag }}
               run: |
                   set -euo pipefail
-                  if [[ "${{ github.event_name }}" == "release" ]]; then
-                      TAG="$GITHUB_EVENT_RELEASE_TAG_NAME"
-                      VERSION="${TAG#v}"
-                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+                  if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
                       TAG="$INPUTS_RELEASE_TAG"
                       VERSION="${TAG#v}"
                   elif [[ "${{ github.event_name }}" == "push" ]]; then
@@ -200,7 +194,7 @@ jobs:
                   python-version: '3.13'
 
             - name: Install Node.js
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
                   node-version: 22
 
@@ -316,10 +310,10 @@ jobs:
             ARCH: ${{ matrix.arch }}
         steps:
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+              uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}

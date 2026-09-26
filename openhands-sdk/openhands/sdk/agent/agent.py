@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -18,11 +18,10 @@ from openhands.sdk.agent.response_dispatch import (
     ResponseDispatchMixin,
     classify_response,
 )
+from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.agent.utils import (
-    amake_llm_completion,
     aprepare_llm_messages,
     fix_malformed_tool_arguments,
-    make_llm_completion,
     normalize_tool_call,
     parse_tool_call_arguments,
     prepare_llm_messages,
@@ -399,7 +398,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         from openhands.sdk import LLM, Agent, Tool
         from pydantic import SecretStr
 
-        llm = LLM(model="gpt-5.5", api_key=SecretStr("key"))
+        llm = LLM(model="gpt-5.6", api_key=SecretStr("key"))
         tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         agent = Agent(llm=llm, tools=tools)
         ```
@@ -535,7 +534,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             system_prompt=TextContent(text=self.static_system_message),
             # Tools are stored as ToolDefinition objects and converted to
             # OpenAI format with security_risk parameter during LLM completion.
-            # See make_llm_completion() in agent/utils.py for details.
+            # Agent calls always expose security risk prediction in tool schemas.
             tools=list(self.tools_map.values()),
             dynamic_context=TextContent(text=dynamic_context)
             if dynamic_context
@@ -640,6 +639,15 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
+        with StreamContext.open(conversation, on_token) as stream:
+            self._step(conversation, on_event, stream)
+
+    def _step(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        stream: StreamContext,
+    ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
@@ -669,6 +677,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Build per-conversation context once and thread it through all
         # LLM calls in this step (avoids shared mutable state on the LLM).
         call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Establish route-aware runtime metadata (cached, no I/O on a hit)
+        # before the condenser decides a token threshold, so a routed model's
+        # real endpoint limit drives condensation on the first step.
+        self.llm.resolve_runtime_metadata()
 
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
@@ -712,11 +725,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         try:
-            llm_response = make_llm_completion(
-                self.llm,
-                _messages,
+            llm_response = self.llm.generate(
+                messages=_messages,
                 tools=list(self.tools_map.values()),
-                on_token=on_token,
+                store=False,
+                add_security_risk_prediction=True,
+                on_token=stream.token_callback,
                 call_context=call_context,
             )
         except FunctionCallValidationError as e:
@@ -802,11 +816,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         match response_type:
             case LLMResponseType.TOOL_CALLS:
                 self._handle_tool_calls(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -815,6 +829,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     conversation,
                     state,
                     on_event,
+                    stream,
                     response_type=response_type,
                 )
 
@@ -828,12 +843,21 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """Async variant of :meth:`step`.
 
         The LLM completion is performed asynchronously via
-        :func:`amake_llm_completion`.  Tool dispatch uses
+        :meth:`LLM.agenerate`.  Tool dispatch uses
         :meth:`_aexecute_actions` which runs each tool call in its own
         thread via :func:`asyncio.loop.run_in_executor` and schedules
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
+        with StreamContext.open(conversation, on_token) as stream:
+            await self._astep(conversation, on_event, stream)
+
+    async def _astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        stream: StreamContext,
+    ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
@@ -858,6 +882,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
 
         call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Establish route-aware runtime metadata (cached, no I/O on a hit)
+        # before the condenser decides a token threshold, so a routed model's
+        # real endpoint limit drives condensation on the first step.
+        await self.llm.aresolve_runtime_metadata()
 
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
@@ -904,11 +933,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             # and state snapshots aren't blocked for the whole response. No-op
             # unless the run loop holds the lock (e.g. direct astep() in tests).
             async with conversation._released_state_lock_during_io():
-                llm_response = await amake_llm_completion(
-                    self.llm,
-                    _messages,
+                llm_response = await self.llm.agenerate(
+                    messages=_messages,
                     tools=list(self.tools_map.values()),
-                    on_token=on_token,
+                    store=False,
+                    add_security_risk_prediction=True,
+                    on_token=stream.token_callback,
                     call_context=call_context,
                 )
         except FunctionCallValidationError as e:
@@ -996,11 +1026,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         match response_type:
             case LLMResponseType.TOOL_CALLS:
                 await self._ahandle_tool_calls(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
+                    message, llm_response, conversation, state, on_event, stream
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1009,6 +1039,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     conversation,
                     state,
                     on_event,
+                    stream,
                     response_type=response_type,
                 )
 
@@ -1143,6 +1174,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
+        stream: StreamContext | None = None,
     ) -> None:
         try:
             json.loads(tool_call.arguments)
@@ -1158,7 +1190,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 }
             )
 
+        minted: dict[str, Any] = {}
+        if stream is not None and (item_id := stream.claim()):
+            minted["id"] = item_id
         tc_event = ActionEvent(
+            **minted,
             source="agent",
             thought=thought or [],
             reasoning_content=reasoning_content,
@@ -1171,6 +1207,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             action=None,
         )
         on_event(tc_event)
+        if stream is not None and minted:
+            stream.commit()
         error_event = AgentErrorEvent(
             error=error,
             tool_name=tool_name,
@@ -1197,6 +1235,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
+        stream: StreamContext | None = None,
     ) -> ActionEvent | None:
         """Converts a tool call into an ActionEvent, validating arguments.
 
@@ -1239,6 +1278,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     reasoning_content=reasoning_content,
                     thinking_blocks=thinking_blocks,
                     responses_reasoning_item=responses_reasoning_item,
+                    stream=stream,
                 )
                 return
 
@@ -1301,11 +1341,19 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 reasoning_content=reasoning_content,
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
+                stream=stream,
             )
             return
 
-        # Create initial action event
+        # Create initial action event. Claimed here rather than at the call
+        # site so an error path, which never builds this event, leaves the slot
+        # open for the abort in StreamContext.__exit__.
+        minted: dict[str, Any] = {}
+        if stream is not None and (item_id := stream.claim()):
+            minted["id"] = item_id
+
         action_event = ActionEvent(
+            **minted,
             action=action,
             thought=thought or [],
             reasoning_content=reasoning_content,
@@ -1329,6 +1377,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
 
         on_event(action_event)
+        if stream is not None and minted:
+            stream.commit()
         return action_event
 
     def _execute_action_event(

@@ -10,14 +10,14 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -31,7 +31,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.persistence import PersistedSettings
-from openhands.sdk import LLM, Agent, AgentContext
+from openhands.sdk import LLM, Agent, AgentBase, AgentContext
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -44,7 +44,9 @@ from openhands.sdk.profiles.resolver import (
     DanglingMcpServerRef,
     ProfileNotFound,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.skills import Skill
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -207,7 +209,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -249,7 +251,7 @@ class TestResolveAgentFromProfile:
             store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -289,6 +291,65 @@ class TestResolveAgentFromProfile:
         # resolved settings object.
         mock_config.model_copy.assert_not_called()
 
+    def test_acp_profile_skips_discovery_under_native_sourcing(self):
+        """A host-local ACP CLI reads the user's own skills from its home
+        directory, so the server injects none and skips discovery entirely
+        (#4019)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_acp_profile()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[Skill(name="a", content="x")]) as Disc,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            MockResolve.return_value = MagicMock()
+
+            _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}, acp_skill_sourcing="native"
+            )
+
+        Disc.assert_not_called()
+        assert MockResolve.call_args.kwargs["available_skills"] is None
+
+    def test_acp_profile_gets_catalog_under_managed_sourcing(self):
+        """In a container the CLI has no host home to read skills from, so the
+        server supplies its discovered catalog instead (#4019)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_acp_profile()
+        catalog = [Skill(name="a", content="x")]
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=catalog) as Disc,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            MockResolve.return_value = MagicMock()
+
+            _resolve_agent_from_profile(
+                profile.id,
+                cipher=None,
+                mcp_config={},
+                acp_skill_sourcing="openhands_managed",
+            )
+
+        Disc.assert_called_once()
+        assert MockResolve.call_args.kwargs["available_skills"] == catalog
+
     def test_openhands_default_tools_get_browser_when_usable(self):
         """A default-toolset (tools=None) OpenHands profile launch injects the
         browser tool set when this server's runtime can run it — the
@@ -317,7 +378,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -348,7 +409,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -380,7 +441,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -412,7 +473,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -493,7 +554,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = acp_agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -536,8 +597,8 @@ async def _start_from_profile(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     resolved_settings: OpenHandsAgentSettings | ACPAgentSettings,
     persisted_settings: PersistedSettings,
-) -> StoredConversation:
-    """Launch from ``profile`` and return the captured ``StoredConversation``.
+) -> tuple[StoredConversation, Any]:
+    """Launch from ``profile`` and return the captured ``(StoredConversation, agent)``.
 
     Only the stores are stubbed, so ``_resolve_agent_from_profile`` and the
     settings read that feeds it both run for real — this is the path a client
@@ -549,12 +610,14 @@ async def _start_from_profile(
     )
     captured: dict[str, Any] = {}
 
-    async def capture_start(stored, **_kwargs):
+    async def capture_start(stored, **kwargs):
+        agent = kwargs["agent"]
         captured["stored"] = stored
+        captured["agent"] = agent
         event_service = AsyncMock(spec=EventService)
         event_service.get_state.return_value = ConversationState(
             id=uuid4(),
-            agent=stored.agent,
+            agent=agent,
             workspace=request.workspace,
             execution_status=ConversationExecutionStatus.IDLE,
         )
@@ -598,7 +661,68 @@ async def _start_from_profile(
         MockStore.return_value.load.return_value = profile
         await service.start_conversation(request)
 
-    return captured["stored"]
+    return captured["stored"], captured["agent"]
+
+
+async def _start_with_agent(
+    tmp_path,
+    persisted_settings: PersistedSettings,
+    *,
+    agent: Agent | None = None,
+    agent_settings: dict[str, Any] | None = None,
+) -> Any:
+    """Launch via a concrete ``agent`` or a raw ``agent_settings`` payload and
+    return the captured agent.
+
+    Neither shape touches profile resolution, so unlike ``_start_from_profile``
+    only the settings-store read that feeds ``load_memory`` needs stubbing.
+    """
+    request = StartConversationRequest(
+        agent=cast(AgentBase, agent),
+        agent_settings=agent_settings,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def capture_start(stored, **kwargs):
+        launched_agent = kwargs["agent"]
+        captured["agent"] = launched_agent
+        event_service = AsyncMock(spec=EventService)
+        event_service.get_state.return_value = ConversationState(
+            id=uuid4(),
+            agent=launched_agent,
+            workspace=request.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+        )
+        event_service.stored = MagicMock(
+            launched_agent_profile=None,
+            client_tools=[],
+            title=None,
+            metrics=None,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            forked_from_conversation_id=None,
+            forked_from_event_id=None,
+            parent_conversation_id=None,
+        )
+        return event_service
+
+    service = ConversationService(conversations_dir=tmp_path)
+    service._event_services = {}
+
+    with (
+        patch(_SETTINGS_STORE_PATH) as MockSettingsStore,
+        patch.object(
+            service,
+            "_start_event_service",
+            new_callable=AsyncMock,
+            side_effect=capture_start,
+        ),
+    ):
+        MockSettingsStore.return_value.load.return_value = persisted_settings
+        await service.start_conversation(request)
+
+    return captured["agent"]
 
 
 class TestConversationServiceStartFromProfile:
@@ -627,7 +751,7 @@ class TestConversationServiceStartFromProfile:
 
         with patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(agent, launched_agent_profile),
+            return_value=(agent, launched_agent_profile, None),
         ):
             service = ConversationService(conversations_dir=tmp_path)
             service._event_services = {}
@@ -649,8 +773,9 @@ class TestConversationServiceStartFromProfile:
                     parent_conversation_id=None,
                 )
 
-                async def capture_start(stored, **_kwargs):
+                async def capture_start(stored, **kwargs):
                     captured["stored"] = stored
+                    captured["agent"] = kwargs.get("agent")
                     return mock_es
 
                 mock_ses.side_effect = capture_start
@@ -662,8 +787,9 @@ class TestConversationServiceStartFromProfile:
         assert stored.launched_agent_profile is not None
         assert stored.launched_agent_profile.agent_profile_id == profile_id
         assert stored.launched_agent_profile.revision == 5
-        # The resolved agent (not None) must be present
-        assert stored.agent is not None
+        # The resolved agent (not None) must be passed to _start_event_service
+        # (it is persisted to base_state.json, not meta.json).
+        assert captured["agent"] is not None
 
     @pytest.mark.asyncio
     async def test_profile_not_found_propagates(self, tmp_path):
@@ -718,12 +844,12 @@ class TestConversationServiceStartFromProfile:
             )
         )
 
-        stored = await _start_from_profile(
+        stored, agent = await _start_from_profile(
             tmp_path, profile, resolved_settings, persisted
         )
 
-        assert stored.agent.agent_context is not None
-        assert stored.agent.agent_context.load_memory is True
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
 
     @pytest.mark.parametrize(
         "persisted_settings",
@@ -749,12 +875,175 @@ class TestConversationServiceStartFromProfile:
     ):
         profile, resolved_settings = _resolved_settings_for("openhands")
 
-        stored = await _start_from_profile(
+        stored, agent = await _start_from_profile(
             tmp_path, profile, resolved_settings, persisted_settings
         )
 
-        assert stored.agent.agent_context is not None
-        assert stored.agent.agent_context.load_memory is False
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is False
+
+
+class TestConversationServiceStartWithDirectAgent:
+    @pytest.mark.asyncio
+    async def test_direct_agent_launch_inherits_the_stored_memory_preference(
+        self, tmp_path
+    ):
+        """Same guarantee as the profile launch, for the ``agent`` shape.
+
+        ``request.agent`` is already set when a client sends ``agent``
+        directly, so this path never touched ``_resolve_agent_from_profile``'s
+        stamp and silently dropped the global preference before this fix.
+        """
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(tmp_path, persisted, agent=_make_agent())
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+
+    @pytest.mark.parametrize(
+        "persisted_settings",
+        [
+            pytest.param(
+                PersistedSettings(
+                    agent_settings=OpenHandsAgentSettings(agent_context=AgentContext())
+                ),
+                id="preference-off",
+            ),
+            pytest.param(
+                PersistedSettings(agent_settings=ACPAgentSettings()),
+                id="stored-settings-without-agent-context",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_direct_agent_launch_leaves_memory_off_without_the_preference(
+        self, tmp_path, persisted_settings
+    ):
+        agent = await _start_with_agent(
+            tmp_path, persisted_settings, agent=_make_agent()
+        )
+
+        # A directly-constructed Agent has no AgentContext by default, so "off"
+        # surfaces as agent_context staying None rather than an explicit
+        # AgentContext(load_memory=False) — both mean the same thing to the
+        # runtime (see AgentBase's own check: agent_context is not None and
+        # agent_context.load_memory).
+        effective_load_memory = (
+            agent.agent_context is not None and agent.agent_context.load_memory
+        )
+        assert effective_load_memory is False
+
+    @pytest.mark.asyncio
+    async def test_agent_settings_launch_inherits_the_stored_memory_preference(
+        self, tmp_path
+    ):
+        """Locks in the third shape: ``_populate_agent_from_settings`` converts
+        this to ``request.agent`` before ``_start_conversation`` even runs, so
+        it needs the same coverage as the ``agent`` shape above, not just the
+        two paths that were already tested pre-fix.
+        """
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(
+            tmp_path,
+            persisted,
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "gpt-4o", "usage_id": "llm"},
+            },
+        )
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+
+    @pytest.mark.parametrize(
+        "persisted_settings",
+        [
+            pytest.param(
+                PersistedSettings(
+                    agent_settings=OpenHandsAgentSettings(agent_context=AgentContext())
+                ),
+                id="preference-off",
+            ),
+            pytest.param(
+                PersistedSettings(agent_settings=ACPAgentSettings()),
+                id="stored-settings-without-agent-context",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_agent_settings_launch_leaves_memory_off_without_the_preference(
+        self, tmp_path, persisted_settings
+    ):
+        agent = await _start_with_agent(
+            tmp_path,
+            persisted_settings,
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "gpt-4o", "usage_id": "llm"},
+            },
+        )
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is False
+
+    @pytest.mark.asyncio
+    async def test_agent_launch_preserves_context_when_load_memory_already_true(
+        self, tmp_path
+    ):
+        """The stamp must update load_memory in place, not replace the whole
+        AgentContext — a client who already opted in keeps every other field
+        they set (skills, suffix, etc.) untouched."""
+        agent_with_context = Agent(
+            llm=LLM(model="gpt-4o", usage_id="llm"),
+            tools=[],
+            agent_context=AgentContext(
+                load_memory=True,
+                skills=[],
+                system_message_suffix="client-set suffix",
+            ),
+        )
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(tmp_path, persisted, agent=agent_with_context)
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+        assert agent.agent_context.system_message_suffix == "client-set suffix"
+
+    @pytest.mark.asyncio
+    async def test_stamp_does_not_introduce_a_current_datetime(self, tmp_path):
+        """Synthesizing a context must not smuggle in AgentContext's defaults.
+
+        ``current_datetime`` defaults to "now", and ACPAgent._render_suffix
+        deliberately suppresses it when no context was supplied, so a bare
+        ``AgentContext()`` here would start emitting a <CURRENT_DATETIME> block
+        into prompts that previously had none.
+        """
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+
+        agent = await _start_with_agent(tmp_path, persisted, agent=_make_agent())
+
+        assert agent.agent_context is not None
+        assert agent.agent_context.load_memory is True
+        assert agent.agent_context.current_datetime is None
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +1105,6 @@ class TestLaunchedAgentProfileRoundTrip:
         lp = LaunchedAgentProfile(agent_profile_id=profile_id, revision=7)
         stored = StoredConversation(
             id=uuid4(),
-            agent=_make_agent(),
             workspace=LocalWorkspace(working_dir="/tmp"),
             launched_agent_profile=lp,
         )
@@ -834,7 +1122,6 @@ class TestLaunchedAgentProfileRoundTrip:
     def test_stored_conversation_without_profile_has_none(self):
         stored = StoredConversation(
             id=uuid4(),
-            agent=_make_agent(),
             workspace=LocalWorkspace(working_dir="/tmp"),
         )
         assert stored.launched_agent_profile is None
@@ -898,7 +1185,6 @@ class TestLaunchedAgentProfileRoundTrip:
         lp = LaunchedAgentProfile(agent_profile_id=profile_id, revision=5)
         stored = StoredConversation(
             id=uuid4(),
-            agent=_make_agent(),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
             launched_agent_profile=lp,
         )
@@ -909,3 +1195,128 @@ class TestLaunchedAgentProfileRoundTrip:
         assert reloaded.launched_agent_profile is not None
         assert reloaded.launched_agent_profile.agent_profile_id == profile_id
         assert reloaded.launched_agent_profile.revision == 5
+
+
+class TestProfileSecretScope:
+    """``secret_refs`` narrows a launch's secrets, enforced server-side (#17236)."""
+
+    def _resolve(self, profile):
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]),
+            patch(
+                "openhands.agent_server.conversation_service.is_tool_usable",
+                return_value=False,
+            ),
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = _make_agent()
+            MockResolve.return_value = mock_config
+            _, _, allowed = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}
+            )
+        return allowed
+
+    def test_an_unscoped_profile_reports_no_restriction(self):
+        assert self._resolve(_make_openhands_profile()) is None
+
+    def test_a_scoped_profile_reports_its_allow_list(self):
+        profile = _make_openhands_profile()
+        profile = profile.model_copy(update={"secret_refs": ["GITHUB_TOKEN"]})
+        assert self._resolve(profile) == {"GITHUB_TOKEN"}
+
+    def test_a_scoped_acp_profile_gets_no_implicit_provider_credentials(self):
+        # Strict: an ACP profile must list its own credential to receive it.
+        profile = _make_acp_profile().model_copy(update={"secret_refs": []})
+        assert self._resolve(profile) == set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("secret_refs", "expected"),
+        [
+            (None, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            ([], set()),
+            (["GITHUB_TOKEN"], {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN", "MISSING"], {"GITHUB_TOKEN"}),
+            (["MISSING"], set()),
+        ],
+    )
+    async def test_start_conversation_drops_secrets_the_profile_disallows(
+        self, tmp_path, secret_refs, expected
+    ):
+        """The filter runs on the request, so a client cannot widen the scope."""
+        profile = _make_openhands_profile().model_copy(
+            update={"secret_refs": secret_refs}
+        )
+        captured: dict[str, Any] = {}
+
+        request = StartConversationRequest(
+            agent_profile_id=profile.id,
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(value=SecretStr("gh")),
+                "DATADOG_API_KEY": StaticSecret(value=SecretStr("dd")),
+            },
+        )
+
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as service:
+            with (
+                patch(_STORE_PATH) as MockStore,
+                patch(_LLM_STORE_PATH),
+                patch(_RESOLVE_PATH) as MockResolve,
+                patch(_DISCOVER_PATH, return_value=[]),
+                patch(
+                    "openhands.agent_server.conversation_service.is_tool_usable",
+                    return_value=False,
+                ),
+                patch.object(
+                    service, "_start_event_service", new_callable=AsyncMock
+                ) as mock_ses,
+            ):
+                store_inst = MockStore.return_value
+                store_inst.name_for_id.return_value = profile.name
+                store_inst.load.return_value = profile
+                agent = _make_agent()
+                mock_config = MagicMock()
+                mock_config.create_agent.return_value = agent
+                MockResolve.return_value = mock_config
+
+                mock_es = AsyncMock(spec=EventService)
+                mock_es.get_state.return_value = ConversationState(
+                    id=uuid4(),
+                    agent=agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                )
+                mock_es.stored = MagicMock(
+                    launched_agent_profile=None,
+                    client_tools=[],
+                    title=None,
+                    metrics=None,
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    forked_from_conversation_id=None,
+                    forked_from_event_id=None,
+                    parent_conversation_id=None,
+                )
+
+                async def capture(stored, **kwargs):
+                    captured["secrets"] = dict(stored.secrets)
+                    return mock_es
+
+                mock_ses.side_effect = capture
+
+                await service.start_conversation(request)
+
+        assert set(captured["secrets"]) == expected
