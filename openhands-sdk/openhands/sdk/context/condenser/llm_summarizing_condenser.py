@@ -202,6 +202,25 @@ class LLMSummarizingCondenser(RollingCondenser):
         if Reason.REQUEST in reasons:
             return CondensationRequirement.HARD
 
+    def _build_summary_messages(self, event_strings: Sequence[str]) -> list[Message]:
+        """Build the messages sent to the summarization LLM.
+
+        The summarization instructions are sent as a ``system`` message and the
+        events to summarize as a ``user`` message. Splitting roles keeps the
+        steering instructions in the provider's ``instructions``/``system`` slot
+        and the event payload in the ``input``/``user`` slot, which is the
+        canonical shape for both the Chat Completions and Responses APIs.
+        """
+        prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+        system_prompt = render_template(prompt_dir, "summarizing_system.j2")
+        events_prompt = render_template(
+            prompt_dir, "summarizing_events.j2", events=event_strings
+        )
+        return [
+            Message(role="system", content=[TextContent(text=system_prompt)]),
+            Message(role="user", content=[TextContent(text=events_prompt)]),
+        ]
+
     def _generate_condensation(
         self,
         forgotten_events: Sequence[LLMConvertibleEvent],
@@ -231,13 +250,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             for forgotten_event in forgotten_events
         ]
 
-        prompt = render_template(
-            os.path.join(os.path.dirname(__file__), "prompts"),
-            "summarizing_prompt.j2",
-            events=event_strings,
-        )
-
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        messages = self._build_summary_messages(event_strings)
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
@@ -435,13 +448,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             for fe in forgotten_events
         ]
 
-        prompt = render_template(
-            os.path.join(os.path.dirname(__file__), "prompts"),
-            "summarizing_prompt.j2",
-            events=event_strings,
-        )
-
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        messages = self._build_summary_messages(event_strings)
 
         try:
             llm_response = await self.llm.agenerate(messages=messages, store=False)
