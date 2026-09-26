@@ -68,6 +68,7 @@ async def test_list_verified_models():
     assert response.models == VERIFIED_MODELS
     assert "openai" in response.models
     assert "anthropic" in response.models
+    assert "openrouter" in response.models
 
 
 def test_providers_endpoint_integration(client):
