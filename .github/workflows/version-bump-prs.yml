@@ -312,7 +312,39 @@ jobs:
 
                   # Fetch the released client package integrity from the npm registry
                   # so package-lock.json stays valid for npm ci.
-                  INTEGRITY=$(curl -sS "https://registry.npmjs.org/@openhands/typescript-client/$VERSION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["dist"]["integrity"])')
+                  #
+                  # The npm publish of @openhands/typescript-client is not gated by
+                  # this workflow's "Wait for packages to be available on PyPI" step
+                  # (that only waits on the Python wheels), and the TypeScript client
+                  # bump job runs concurrently in a separate job. So the version may
+                  # not be on npm yet when this step starts: the registry then answers
+                  # 404 with a JSON body of "version not found: X.Y.Z" (a bare string),
+                  # and the old one-shot `json.load(sys.stdin)["dist"]` raised
+                  # `TypeError: string indices must be integers` (run 36142114681).
+                  # Poll until the version is resolvable, then read its integrity.
+                  NPM_MAX_ATTEMPTS=60
+                  NPM_SLEEP_SECONDS=20
+                  ATTEMPT=1
+                  while [ "$ATTEMPT" -le "$NPM_MAX_ATTEMPTS" ]; do
+                    INTEGRITY=$(curl -sS "https://registry.npmjs.org/@openhands/typescript-client/$VERSION" \
+                      | python3 -c 'import json,sys
+                    d = json.load(sys.stdin)
+                    if isinstance(d, dict) and "dist" in d and "integrity" in d["dist"]:
+                        print(d["dist"]["integrity"])
+                    ')
+                    if [ -n "$INTEGRITY" ]; then
+                      echo "✅ @openhands/typescript-client@$VERSION integrity: $INTEGRITY"
+                      break
+                    fi
+                    echo "  Attempt $ATTEMPT/$NPM_MAX_ATTEMPTS: @openhands/typescript-client@$VERSION not on npm yet, waiting ${NPM_SLEEP_SECONDS}s..."
+                    sleep "$NPM_SLEEP_SECONDS"
+                    ATTEMPT=$((ATTEMPT + 1))
+                  done
+
+                  if [ -z "$INTEGRITY" ]; then
+                    echo "❌ Timeout waiting for @openhands/typescript-client@$VERSION on npm"
+                    exit 1
+                  fi
 
                   python3 - "$VERSION" "$CURRENT_VERSION" "$INTEGRITY" <<'PY'
                   import re
