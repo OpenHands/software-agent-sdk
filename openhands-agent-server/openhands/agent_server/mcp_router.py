@@ -47,6 +47,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.oauth import MCPOAuth
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -346,6 +347,9 @@ class _MCPOAuthProbeJob:
                 "succeeded" if isinstance(result, MCPTestSuccess) else "failed"
             )
         self.done.set()
+        # Also wakes the start route when the probe finished without needing
+        # consent (stored tokens still valid, or refreshed) or failed early.
+        self.authorization_ready.set()
 
     def to_status_response(self) -> MCPOAuthStatusResponse:
         with self.lock:
@@ -440,7 +444,7 @@ def _oauth_auth_from_authentication(
     )
 
 
-class _BrowserCoordinatedOAuth(OAuth):
+class _BrowserCoordinatedOAuth(MCPOAuth):
     """FastMCP OAuth client that lets the frontend own browser navigation."""
 
     def __init__(self, *, job: _MCPOAuthProbeJob, **kwargs: Any):
@@ -707,6 +711,11 @@ async def start_mcp_oauth(
             job_id=job.id,
             authorization_url=job.authorization_url,
         )
+
+    if job.done.is_set() and isinstance(job.result, MCPTestSuccess):
+        # No consent was needed: the stored tokens were valid or refreshed.
+        # The caller reads the outcome from the status route.
+        return MCPOAuthStartResponse(ok=True, job_id=job.id)
 
     if job.done.is_set() and isinstance(job.result, MCPTestFailure):
         return MCPOAuthStartResponse(

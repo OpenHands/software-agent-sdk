@@ -1,4 +1,5 @@
 import asyncio
+from uuid import uuid4
 
 import pytest
 from starlette.websockets import WebSocket
@@ -132,3 +133,50 @@ async def test_http_client_lives_until_the_stream_is_consumed(monkeypatch):
     assert not client.is_closed
     assert [chunk async for chunk in response.body_iterator] == [b"result"]
     assert client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_long_lived_proxied_stream_holds_a_session_until_consumed(
+    tmp_path, monkeypatch
+):
+    """An in-flight proxied stream must keep the runtime attached to avoid eviction."""
+    import httpx
+    from pydantic import SecretStr
+
+    from openhands.agent_server.config import Config
+    from openhands.agent_server.docker_runtime import proxy
+    from openhands.agent_server.docker_runtime.registry import (
+        DockerConversationRegistry,
+    )
+    from openhands.agent_server.docker_runtime.routers import _proxy_with_session
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"first"
+            yield b"second"
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=Body())
+        )
+    )
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    registry = DockerConversationRegistry(
+        Config(
+            conversations_path=tmp_path / "conversations",
+            secret_key=SecretStr("outer-key"),
+        )
+    )
+    request, target = request_and_target()
+    conversation_id = uuid4()
+
+    response = await _proxy_with_session(
+        registry, conversation_id, target, request, upstream_path="/api/test"
+    )
+
+    # The attachment outlives the route handler so the container cannot be
+    # evicted while the client is still reading the response.
+    assert registry.has_attached_sessions(conversation_id)
+    assert [chunk async for chunk in response.body_iterator] == [b"firstsecond"]
+    assert not registry.has_attached_sessions(conversation_id)
