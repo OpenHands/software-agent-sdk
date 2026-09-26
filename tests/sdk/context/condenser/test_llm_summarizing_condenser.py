@@ -1133,7 +1133,8 @@ async def test_ahard_context_reset_preserves_leading_system_prompt(
     assert events[0].id not in result.forgotten_event_ids
     messages = _applied_messages(result, view)
     assert messages[0].role == "system"
-    
+
+
 def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> None:
     """keep_first=0 must not let the SystemPromptEvent be forgotten.
 
