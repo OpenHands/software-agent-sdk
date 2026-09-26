@@ -264,12 +264,6 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/Icon/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/InvokeSkillTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
@@ -480,12 +474,6 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/ToolExecution/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/VisionInspectTool/properties/meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Tool metadata is intentionally extensible across tool providers.",
@@ -510,33 +498,21 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/mcp__types__Tool/additionalProperties",
+    "pointer": "/components/schemas/mcp_types___types__Tool/properties/_meta/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
+    "reason": "The upstream MCP tool metadata is intentionally extensible.",
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/mcp__types__Tool/properties/_meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/mcp__types__Tool/properties/inputSchema/additionalProperties",
+    "pointer": "/components/schemas/mcp_types___types__Tool/properties/inputSchema/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/mcp__types__Tool/properties/outputSchema/anyOf/0/additionalProperties",
+    "pointer": "/components/schemas/mcp_types___types__Tool/properties/outputSchema/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/mcp__types__ToolAnnotations/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
   },
   {

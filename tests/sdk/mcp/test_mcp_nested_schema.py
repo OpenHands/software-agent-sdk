@@ -35,7 +35,7 @@ def _make_tool(
     mcp_tool = mcp.types.Tool(
         name=name,
         description=description,
-        inputSchema=input_schema,
+        input_schema=input_schema,
     )
     return MCPToolDefinition(
         description=description,
@@ -241,7 +241,7 @@ class TestInjectedFields:
         mcp_tool = mcp.types.Tool(
             name="readonly_tool",
             description="read only",
-            inputSchema=self.SIMPLE_NESTED,
+            input_schema=self.SIMPLE_NESTED,
         )
         tool = MCPToolDefinition(
             description="read only",

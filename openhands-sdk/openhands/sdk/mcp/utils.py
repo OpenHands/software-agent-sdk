@@ -245,9 +245,8 @@ async def log_handler(message: LogMessage):
     logger.log(level, msg, extra=extra)
 
 
-async def _connect_and_list_tools(client: MCPClient) -> None:
-    """Connect to MCP server and populate client._tools."""
-    await client.connect()
+async def _list_tools(client: MCPClient) -> None:
+    """Populate client tools after its persistent connection starts."""
     await _refresh_tools(client)
 
 
@@ -418,9 +417,8 @@ def create_mcp_tools(
     client._tools_reconciled_callback = on_tools_reconciled
 
     try:
-        client.call_async_from_sync(
-            _connect_and_list_tools, timeout=timeout, client=client
-        )
+        client.sync_connect(timeout)
+        client.call_async_from_sync(_list_tools, timeout=timeout, client=client)
     except TimeoutError as e:
         client.sync_close()
         # Extract server names from config for better error message
