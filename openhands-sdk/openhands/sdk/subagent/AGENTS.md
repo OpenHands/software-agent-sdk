@@ -59,34 +59,39 @@ loading must:
 
 ## Invariant 2: resolution / precedence (“who wins”)
 
-### Core rule: first registration wins
+### Core rule: process base plus conversation overlay
 
-Once an agent name is registered in the global registry (`_agent_factories`), later
-sources must not overwrite it.
+Explicit programmatic agents and built-ins live in the process registry.
+Plugin and project/user file agents live in each `LocalConversation`'s
+`ConversationAgentRegistry`, so same-name definitions in different conversations
+do not collide. The scoped registry keeps the highest-priority source; first
+registration wins within the same priority. This also handles forwarded
+definitions and plugins loaded after project files.
 
 This is enforced by using:
 
 - `register_agent(...)` (raises on duplicates; used for programmatic registration)
-- `register_agent_if_absent(...)` (skips duplicates; used for plugins, file agents, builtins)
+- `register_agent_if_absent(...)` (process-level first wins; used for built-ins)
+- `ConversationAgentRegistry.register_if_absent(...)` (scoped source priority)
 
 ### Effective precedence order
 
-`LocalConversation._ensure_agent_ready()` establishes this order for agents loaded
-as part of conversation initialization:
+The resolver enforces this order, independent of arrival order:
 
-1. Existing registry entries, including explicit `register_agent(...)` calls
-2. Plugin-provided agents (`Plugin.agents` → `register_plugin_agents`)
+1. Explicit process-level `register_agent(...)` calls
+2. Conversation plugin agents (`Plugin.agents` → `register_plugin_agents`)
 3. Project file-based agents
    - `{project}/.agents/agents/*.md` then `{project}/.openhands/agents/*.md`
 4. User file-based agents
    - `~/.agents/agents/*.md` then `~/.openhands/agents/*.md`
 
-Built-ins are discovered and registered separately by `openhands-tools` through
-`register_builtins_agents()`. Because all non-programmatic sources use
-`register_agent_if_absent(...)`, whichever source registers a name first keeps it.
-Call built-in registration after higher-priority sources if built-ins should act as
-fallbacks. The agent-server registers built-ins during tool-router import, before
-per-conversation file discovery.
+5. Process-level built-ins registered by `openhands-tools`
+
+Task/Delegate resolution uses the parent conversation's resolver. Remote clients
+forward shared programmatic/built-in definitions; workspace files and plugins
+are discovered on the server, not by reading server paths on the client.
+Forwarded definitions are restored lazily into the server conversation overlay;
+they are never registered into the server process registry.
 
 ### Deduplication rules inside file-based loading
 
@@ -94,7 +99,7 @@ File-based loading has *two* layers of “first wins” deduplication:
 
 1. **Within a level** (`load_project_agents` / `load_user_agents`):
    - `.agents/agents` wins over `.openhands/agents` for the same agent name.
-2. **Across levels** (`register_file_agents`):
+2. **Across levels** (`discover_agents`, used by `register_file_agents`):
    - project wins over user for the same agent name.
 
 If you change these rules, update the unit tests in `tests/sdk/subagent/`.

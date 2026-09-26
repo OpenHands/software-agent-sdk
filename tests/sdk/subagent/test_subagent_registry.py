@@ -11,6 +11,7 @@ from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.subagent.registry import (
+    ConversationAgentRegistry,
     _reset_registry_for_tests,
     agent_definition_to_factory,
     get_agent_factory,
@@ -20,7 +21,7 @@ from openhands.sdk.subagent.registry import (
     register_file_agents,
     register_plugin_agents,
 )
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.schema import AgentDefinition, AgentDefinitionLevel
 
 
 def setup_function() -> None:
@@ -46,6 +47,86 @@ def _create_skill_file(skills_dir: Path, name: str, content: str) -> None:
     skill_file.write_text(
         f"---\nname: {name}\ntriggers:\n  - {name}\n---\n\n{content}\n"
     )
+
+
+def test_conversation_registry_ignores_legacy_global_file_agents() -> None:
+    def factory(llm: LLM) -> Agent:
+        return cast(Agent, MagicMock())
+
+    register_agent_if_absent(
+        "other-project",
+        factory,
+        AgentDefinition(name="other-project", description="leaked", level="project"),
+    )
+
+    registry = ConversationAgentRegistry()
+    with pytest.raises(ValueError, match="Unknown agent 'other-project'"):
+        registry.get_agent_factory("other-project")
+    assert registry.get_registered_agent_definitions() == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_scoped_priority_is_independent_of_registration_order(reverse: bool) -> None:
+    registry = ConversationAgentRegistry()
+    levels: list[AgentDefinitionLevel] = [
+        "programmatic",
+        "plugin",
+        "project",
+        "user",
+        "builtin",
+    ]
+    for start in range(len(levels)):
+        name = f"agent-{start}"
+        candidates = levels[start:]
+        if reverse:
+            candidates = list(reversed(candidates))
+        for level in candidates:
+            definition = AgentDefinition(name=name, description=level, level=level)
+            registry.register_if_absent(
+                name, agent_definition_to_factory(definition), definition
+            )
+        duplicate = AgentDefinition(
+            name=name, description="duplicate", level=levels[start]
+        )
+        assert not registry.register_if_absent(
+            name, agent_definition_to_factory(duplicate), duplicate
+        )
+
+    definitions = registry.get_registered_agent_definitions()
+    assert len(definitions) == len(levels)
+    for definition in definitions:
+        assert definition == registry.get_agent_factory(definition.name).definition
+        assert definition.description == levels[int(definition.name.split("-")[1])]
+
+
+def test_scoped_catalog_and_lookup_agree_with_global_precedence() -> None:
+    registry = ConversationAgentRegistry()
+    for level in ("programmatic", "builtin"):
+        definition = AgentDefinition(name=level, description=level, level=level)
+        register_agent(level, agent_definition_to_factory(definition), definition)
+        local = AgentDefinition(name=level, description="local", level="project")
+        registry.register_if_absent(level, agent_definition_to_factory(local), local)
+
+    fallback = AgentDefinition(
+        name="general-purpose", description="fallback", level="builtin"
+    )
+    register_agent(fallback.name, agent_definition_to_factory(fallback), fallback)
+    assert registry.get_agent_factory(None).definition == fallback
+    assert registry.get_agent_factory("").definition == fallback
+    assert registry.get_agent_factory("default").definition == fallback
+
+    definitions = registry.get_registered_agent_definitions()
+    assert {d.name: d.description for d in definitions} == {
+        "programmatic": "programmatic",
+        "builtin": "local",
+        "general-purpose": "fallback",
+    }
+    for definition in definitions:
+        assert registry.get_agent_factory(definition.name).definition == definition
+    with pytest.raises(
+        ValueError, match="Available types: builtin, general-purpose, programmatic"
+    ):
+        registry.get_agent_factory("missing")
 
 
 def test_register_file_agents_project_priority(tmp_path: Path) -> None:
