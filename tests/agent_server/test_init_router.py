@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from openhands.agent_server.init_router import (
     InitService,
     _build_initialized_config,
 )
+from openhands.agent_server.vscode_service import VSCodeService
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +40,12 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_vscode_service(monkeypatch):
+    """/api/init updates the VSCode service singleton; give each test its own."""
+    monkeypatch.setattr("openhands.agent_server.vscode_service._vscode_service", None)
+
+
 def _reset_conversation_singleton():
     """Some tests build their own ConversationService; reset the module-level
     cache so unrelated tests don't see leftover state."""
@@ -51,6 +59,36 @@ def _reset_bash_singleton():
     from openhands.agent_server import bash_service as bash_mod
 
     bash_mod._bash_event_service = None
+
+
+def _vscode_url_after_init(tmp_path: Path) -> str | None:
+    """Boot a dormant app, deliver a session key through /api/init, and read
+    /api/vscode/url with that key."""
+    _reset_conversation_singleton()
+    cfg = Config(
+        deferred_init=True,
+        conversations_path=tmp_path / "convs",
+        bash_events_dir=tmp_path / "bash",
+    )
+    with TestClient(create_app(cfg)) as client:
+        try:
+            resp = client.post(
+                "/api/init",
+                json={
+                    "session_api_keys": ["user-session-key"],
+                    "conversations_path": str(tmp_path / "u" / "convs"),
+                    "bash_events_dir": str(tmp_path / "u" / "bash"),
+                },
+            )
+            assert resp.status_code == 200
+
+            resp = client.get(
+                "/api/vscode/url", headers={"X-Session-API-Key": "user-session-key"}
+            )
+            assert resp.status_code == 200
+            return resp.json()["url"]
+        finally:
+            _reset_conversation_singleton()
 
 
 class TestConfigDefaults:
@@ -288,6 +326,68 @@ class TestInitServiceTransitions:
         _reset_conversation_singleton()
         _reset_bash_singleton()
 
+    @pytest.mark.asyncio
+    async def test_init_switches_vscode_to_first_session_key(
+        self, tmp_path, monkeypatch
+    ):
+        """VSCode booted with a random token; init switches it to the first
+        session key, which a server that booted with the key would use."""
+        _reset_conversation_singleton()
+        vscode = SimpleNamespace(set_connection_token=AsyncMock())
+        monkeypatch.setattr(
+            "openhands.agent_server.init_router.get_vscode_service", lambda: vscode
+        )
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+
+        await svc.initialize(
+            InitRequest(
+                session_api_keys=["user-key", "second-key"],
+                conversations_path=tmp_path / "u" / "convs",
+                bash_events_dir=tmp_path / "u" / "bash",
+            )
+        )
+        try:
+            vscode.set_connection_token.assert_awaited_once_with("user-key")
+        finally:
+            await svc.teardown()
+            _reset_conversation_singleton()
+
+    @pytest.mark.asyncio
+    async def test_init_without_session_keys_keeps_vscode_token(
+        self, tmp_path, monkeypatch
+    ):
+        """With no session key to switch to, VSCode keeps its boot token."""
+        _reset_conversation_singleton()
+        vscode = SimpleNamespace(set_connection_token=AsyncMock())
+        monkeypatch.setattr(
+            "openhands.agent_server.init_router.get_vscode_service", lambda: vscode
+        )
+        base = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = SimpleNamespace(state=SimpleNamespace(config=base))
+        svc = InitService(app, base_config=base)  # type: ignore[arg-type]
+
+        await svc.initialize(
+            InitRequest(
+                conversations_path=tmp_path / "u" / "convs",
+                bash_events_dir=tmp_path / "u" / "bash",
+            )
+        )
+        try:
+            vscode.set_connection_token.assert_not_awaited()
+        finally:
+            await svc.teardown()
+            _reset_conversation_singleton()
+
 
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
@@ -451,6 +551,34 @@ class TestEndToEndOverLifespan:
                 assert app.state.config.session_api_keys == ["user-session-key"]
             finally:
                 _reset_conversation_singleton()
+
+    def test_vscode_url_uses_session_key_after_init(self, tmp_path, monkeypatch):
+        """After /api/init the VSCode URL's token is the first session key, so
+        an orchestrator holding the key can build the URL itself."""
+
+        async def fake_start(service):
+            # Like start(): a server booted without a session key makes up a
+            # random token.
+            service.connection_token = service.connection_token or "boot-token"
+            return True
+
+        monkeypatch.setattr(VSCodeService, "start", fake_start)
+        monkeypatch.setattr(VSCodeService, "stop", AsyncMock())
+        monkeypatch.setattr(VSCodeService, "is_running", lambda service: True)
+
+        url = _vscode_url_after_init(tmp_path)
+
+        assert url is not None
+        assert "?tkn=user-session-key&" in url
+
+    def test_vscode_url_stays_empty_without_vscode(self, tmp_path, monkeypatch):
+        """Where VSCode never started, as in images that don't ship it,
+        /api/vscode/url still reports no URL after /api/init."""
+        monkeypatch.setattr(
+            VSCodeService, "_check_vscode_available", lambda service: False
+        )
+
+        assert _vscode_url_after_init(tmp_path) is None
 
 
 class TestNonDeferredPathUnchanged:
