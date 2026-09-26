@@ -137,6 +137,8 @@ class WebSocketCallbackClient:
     _thread: threading.Thread | None
     _stop: threading.Event
     _ready: threading.Event
+    _loop: asyncio.AbstractEventLoop | None
+    _task: asyncio.Task[None] | None
 
     def __init__(
         self,
@@ -154,6 +156,8 @@ class WebSocketCallbackClient:
         self._thread = None
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self._loop = None
+        self._task = None
 
     def start(self) -> None:
         if self._thread:
@@ -163,11 +167,21 @@ class WebSocketCallbackClient:
         self._thread.start()
 
     def stop(self) -> None:
-        if not self._thread:
+        thread = self._thread
+        if not thread:
             return
         self._stop.set()
-        self._thread.join(timeout=5)
-        self._thread = None
+        loop = self._loop
+        task = self._task
+        if loop and task and not task.done():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                # The worker may have finished and closed its loop concurrently.
+                pass
+        thread.join(timeout=5)
+        if not thread.is_alive():
+            self._thread = None
 
     def wait_until_ready(self, timeout: float | None = None) -> bool:
         """Wait for WebSocket subscription to complete.
@@ -203,13 +217,21 @@ class WebSocketCallbackClient:
 
     def _run(self) -> None:
         try:
-            asyncio.run(self._client_loop())
-        except RuntimeError:
-            # Fallback in case of an already running loop in rare environments
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._client_loop())
-            loop.close()
+            asyncio.run(self._run_client_loop())
+        except asyncio.CancelledError:
+            # stop() cancels the task to wake a pending WebSocket receive.
+            pass
+        finally:
+            self._task = None
+            self._loop = None
+
+    async def _run_client_loop(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("WebSocket client loop must run in an asyncio task")
+        self._task = task
+        await self._client_loop()
 
     async def _client_loop(self) -> None:
         parsed = urlparse(self.host)
