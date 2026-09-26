@@ -268,6 +268,22 @@ export OH_SECRET_KEY="your-secret-key-here"
 - **If you change this key, previously encrypted secrets cannot be decrypted**
 - Without `OH_SECRET_KEY`, secrets will be redacted (not encrypted) and will be lost on restart
 
+#### Sharing a persistence directory
+
+Agent-server instances that share a persistence directory (by default
+`~/.openhands` for profiles, provider connections, and settings) must share
+the same `OH_SECRET_KEY`. Starting a second server with a different key
+against the same directory leaves existing entries undecryptable: the
+provider-connections list surfaces them as `undecryptable: true` with
+`api_key_set: false`, and writes targeting those entries are rejected to
+preserve the original ciphertext.
+
+To run isolated instances on one host, give each its own directory:
+
+```bash
+export OH_PERSISTENCE_DIR=/tmp/agent-server-b
+```
+
 #### What Gets Encrypted
 
 The following fields are encrypted when `OH_SECRET_KEY` is set:
@@ -390,6 +406,7 @@ uv run pytest tests/agent_server/ --cov=openhands.agent_server
 3. **Configuration not found**: Check the `OPENHANDS_AGENT_SERVER_CONFIG_PATH` environment variable
 4. **CORS errors**: Add your frontend domain to `allow_cors_origins`
 5. **LLM API keys are None after restart**: This happens when `OH_SECRET_KEY` is not set or has changed. Set `OH_SECRET_KEY` before starting the server to encrypt and persist secrets. Note: If you change the key, previously encrypted secrets cannot be decrypted.
+6. **Provider connections show `undecryptable: true`**: Another server instance saved them with a different `OH_SECRET_KEY` against the same persistence directory. Restart with the original key, or isolate instances with `OH_PERSISTENCE_DIR`. The list endpoint keeps working and the ciphertext is preserved; saving over those entries with the wrong key is blocked.
 
 ### Logs
 

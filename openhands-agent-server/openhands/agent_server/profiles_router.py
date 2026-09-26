@@ -74,6 +74,7 @@ class ProfileDetailResponse(BaseModel):
     name: str
     config: dict[str, Any]
     api_key_set: bool = False
+    provider_connection_broken: bool = False
 
 
 class ProfileMutationResponse(BaseModel):
@@ -110,20 +111,37 @@ def _profile_api_key_set(request: Request, llm: LLM) -> bool:
     A profile linked to a provider connection carries no inline key (cleared on
     save), so its key presence lives on the connection.
     """
+    return _profile_key_status(request, llm)[0]
+
+
+def _profile_key_status(request: Request, llm: LLM) -> tuple[bool, bool]:
+    """Return ``(api_key_set, provider_connection_broken)``.
+
+    An undecryptable linked connection degrades to ``(False, True)`` instead
+    of failing the profile read; file-level corruption still maps to 400.
+    """
     if _has_api_key(llm):
-        return True
+        return (True, False)
     connection_id = llm.provider_connection_id
     if not connection_id:
-        return False
+        return (False, False)
     config = get_config(request)
     cipher = get_cipher(request)
     # The provider store read can raise on a corrupted file; map it instead of
     # letting it surface as an unhandled 500 on GET /profiles/{name}.
     with store_errors():
-        connection = get_provider_connections_store(config).get(
+        view = get_provider_connections_store(config).get_tolerant(
             connection_id, cipher=cipher
         )
-    return connection is not None and connection.api_key_value() is not None
+    if view is None:
+        return (False, True)
+    if view.undecryptable:
+        logger.warning(
+            "Profile references undecryptable provider connection",
+            extra={"connection_id": connection_id},
+        )
+        return (False, True)
+    return (view.connection.api_key_value() is not None, False)
 
 
 def _set_active_profile_if_matches(
@@ -198,8 +216,12 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
         config = llm.model_dump(mode="json")
         config["api_key"] = None
 
+    api_key_set, broken = _profile_key_status(request, llm)
     return ProfileDetailResponse(
-        name=name, config=config, api_key_set=_profile_api_key_set(request, llm)
+        name=name,
+        config=config,
+        api_key_set=api_key_set,
+        provider_connection_broken=broken,
     )
 
 

@@ -83,9 +83,12 @@ class ProviderConnectionResponse(BaseModel):
     created_at: int
     updated_at: int
     api_key_set: bool = False
+    undecryptable: bool = False
 
 
-def _to_response(connection: ProviderConnection) -> ProviderConnectionResponse:
+def _to_response(
+    connection: ProviderConnection, undecryptable: bool = False
+) -> ProviderConnectionResponse:
     return ProviderConnectionResponse(
         id=connection.id,
         display_name=connection.display_name,
@@ -93,7 +96,17 @@ def _to_response(connection: ProviderConnection) -> ProviderConnectionResponse:
         base_url=connection.base_url,
         created_at=connection.created_at,
         updated_at=connection.updated_at,
-        api_key_set=connection.api_key_value() is not None,
+        api_key_set=False if undecryptable else connection.api_key_value() is not None,
+        undecryptable=undecryptable,
+    )
+
+
+def _undecryptable_detail(connection_id: str) -> str:
+    return (
+        f"Provider connection '{connection_id}' is encrypted with a different "
+        "OH_SECRET_KEY and cannot be decrypted with the current key. Restart "
+        "the server with the original key to use or rotate it; the stored "
+        "ciphertext was preserved. To isolate instances, set OH_PERSISTENCE_DIR."
     )
 
 
@@ -146,8 +159,8 @@ async def list_provider_connections(
     cipher = get_cipher(request)
     store = get_provider_connections_store(get_config(request))
     with store_errors():
-        connections = store.list(cipher=cipher)
-    return [_to_response(c) for c in connections]
+        views = store.list_tolerant(cipher=cipher)
+    return [_to_response(v.connection, v.undecryptable) for v in views]
 
 
 @provider_connections_router.post(
@@ -198,12 +211,18 @@ async def update_provider_connection(
     cipher = get_cipher(request)
     store = get_provider_connections_store(get_config(request))
     with store_errors():
-        connection = store.get(connection_id, cipher=cipher)
-    if connection is None:
+        view = store.get_tolerant(connection_id, cipher=cipher)
+    if view is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Provider connection '{connection_id}' not found",
         )
+    if view.undecryptable:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_undecryptable_detail(connection_id),
+        )
+    connection = view.connection
 
     # A connection must always have a key, so clearing it is not a valid
     # update. Reject api_key: null explicitly instead of silently dropping it.
@@ -249,12 +268,18 @@ async def delete_provider_connection(
     cipher = get_cipher(request)
     store = get_provider_connections_store(config)
     with store_errors():
-        connection = store.get(connection_id, cipher=cipher)
-    if connection is None:
+        view = store.get_tolerant(connection_id, cipher=cipher)
+    if view is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Provider connection '{connection_id}' not found",
         )
+    if view.undecryptable:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_undecryptable_detail(connection_id),
+        )
+    connection = view.connection
     _raise_if_connection_is_referenced(config, connection_id)
 
     # See update handler: keep the delete-race as 404, map infra errors.

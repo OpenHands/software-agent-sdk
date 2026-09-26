@@ -1740,6 +1740,181 @@ def test_patch_provider_connection_maps_corrupted_file(client, temp_profiles_dir
     assert response.status_code != 500
 
 
+def _client_with_key_and_shared_provider_store(
+    temp_profiles_dir,
+    temp_agent_profiles_dir,
+    temp_settings_dir,
+    monkeypatch,
+    secret_key,
+    provider_store,
+):
+    """Build a TestClient with the given secret key sharing provider_store."""
+    from contextlib import ExitStack
+
+    from pydantic import SecretStr
+
+    reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+    config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=SecretStr(secret_key),
+    )
+    app = create_app(config)
+
+    def make_llm_store():
+        return LLMProfileStore(
+            base_dir=temp_profiles_dir, provider_store=provider_store
+        )
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
+            make_llm_store,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "openhands.agent_server.profiles_router.get_provider_connections_store",
+            lambda config=None: provider_store,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "openhands.agent_server.provider_connections_router."
+            "get_provider_connections_store",
+            lambda config=None: provider_store,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "openhands.agent_server.provider_connections_router.get_llm_profile_store",
+            make_llm_store,
+        )
+    )
+    return TestClient(app), stack
+
+
+def test_list_degrades_undecryptable_entry(
+    temp_profiles_dir,
+    temp_agent_profiles_dir,
+    temp_settings_dir,
+    monkeypatch,
+):
+    """One entry saved under another key degrades instead of failing the list."""
+    import time
+
+    from openhands.sdk.llm.provider_connection_store import ProviderConnection
+    from openhands.sdk.utils.cipher import Cipher
+
+    provider_store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+    now = int(time.time())
+    provider_store.create(
+        ProviderConnection(
+            id="conn-a",
+            display_name="A",
+            provider="custom",
+            api_key=SecretStr("sk-a"),
+            base_url=None,
+            created_at=now,
+            updated_at=now,
+        ),
+        cipher=Cipher("key-a"),
+    )
+    before = (
+        temp_profiles_dir.parent / "provider-connections"
+    ) / "provider_connections.json"
+    before_text = before.read_text()
+
+    client_b, stack = _client_with_key_and_shared_provider_store(
+        temp_profiles_dir,
+        temp_agent_profiles_dir,
+        temp_settings_dir,
+        monkeypatch,
+        "key-b",
+        provider_store,
+    )
+    try:
+        response = client_b.get("/api/llm/provider-connections")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) == 1
+        assert body[0]["api_key_set"] is False
+        assert body[0]["undecryptable"] is True
+        assert before.read_text() == before_text
+    finally:
+        stack.close()
+        reset_stores()
+
+
+def test_patch_undecryptable_entry_blocked(
+    temp_profiles_dir,
+    temp_agent_profiles_dir,
+    temp_settings_dir,
+    monkeypatch,
+):
+    """PATCH targeting an undecryptable entry fails closed without clobbering."""
+    import time
+
+    from openhands.sdk.llm.provider_connection_store import ProviderConnection
+    from openhands.sdk.utils.cipher import Cipher
+
+    provider_store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+    now = int(time.time())
+    provider_store.create(
+        ProviderConnection(
+            id="conn-a",
+            display_name="A",
+            provider="custom",
+            api_key=SecretStr("sk-a"),
+            base_url=None,
+            created_at=now,
+            updated_at=now,
+        ),
+        cipher=Cipher("key-a"),
+    )
+    before_text = (
+        temp_profiles_dir.parent / "provider-connections" / "provider_connections.json"
+    ).read_text()
+
+    gen = _client_with_key_and_shared_provider_store(
+        temp_profiles_dir,
+        temp_agent_profiles_dir,
+        temp_settings_dir,
+        monkeypatch,
+        "key-b",
+        provider_store,
+    )
+    client_b, stack = gen
+    try:
+        response = client_b.patch(
+            "/api/llm/provider-connections/conn-a",
+            json={"display_name": "Renamed"},
+        )
+        assert response.status_code == 400
+        assert "different" in response.json()["detail"]
+        after_text = (
+            temp_profiles_dir.parent
+            / "provider-connections"
+            / "provider_connections.json"
+        ).read_text()
+        assert after_text == before_text
+    finally:
+        stack.close()
+        reset_stores()
+
+
 # ── Pre-flight validation: POST /api/profiles/{name}/validate ────────────────
 
 
