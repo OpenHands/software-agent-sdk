@@ -10,6 +10,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Mapping
+from uuid import uuid4
 
 
 if platform.system() == "Windows":
@@ -195,8 +196,13 @@ class SubprocessTerminal(TerminalInterface):
             f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
         ).encode("utf-8", "ignore")
 
-        self._write_pty(init_cmd + ENTER)
-        time.sleep(1.0)  # Wait for command to take effect
+        ready_marker = f"openhands-ready-{uuid4().hex}"
+        handshake = f"; printf '\\n%s\\n' '{ready_marker}'".encode()
+        self._write_pty(init_cmd + handshake + ENTER)
+        ready_pattern = re.compile(rf"\r?\n{ready_marker}\r?\n")
+        if not self._wait_for_output(ready_pattern) or not self._wait_for_prompt():
+            self.close()
+            raise RuntimeError("PTY shell did not finish initialization")
 
         self.clear_screen()
 

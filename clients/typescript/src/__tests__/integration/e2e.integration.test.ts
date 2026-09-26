@@ -15,7 +15,7 @@
  */
 
 import { Conversation, Workspace, Agent, Event, AgentExecutionStatus } from '../../index';
-import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from './test-config';
+import { getTestConfig, skipIfNoConfig, createTestAgentConfig } from './test-config';
 import {
   waitForAgentIdle,
   sleep,
@@ -58,7 +58,7 @@ describe('End-to-End Integration Tests', () => {
         const expectedContent = 'Hello from e2e test';
         const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -97,7 +97,7 @@ describe('End-to-End Integration Tests', () => {
         const fileName = uniqueFileName('e2e-python', 'py');
         const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -137,7 +137,7 @@ describe('End-to-End Integration Tests', () => {
         const fileName = uniqueFileName('e2e-json', 'json');
         const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -189,7 +189,7 @@ describe('End-to-End Integration Tests', () => {
         // Create original file
         writeWorkspaceFile(fileName, originalContent);
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -230,7 +230,7 @@ describe('End-to-End Integration Tests', () => {
 
         writeWorkspaceFile(fileName, originalContent);
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -276,7 +276,7 @@ describe('End-to-End Integration Tests', () => {
 
         expect(workspaceFileExists(fileName)).toBe(true);
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -316,7 +316,7 @@ describe('End-to-End Integration Tests', () => {
         const fullDirPath = `${config.agentWorkspaceDir}/${dirName}`;
         const fullFilePath = `${fullDirPath}/${fileName}`;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -365,7 +365,7 @@ describe('End-to-End Integration Tests', () => {
         writeWorkspaceFile(file1, 'Content 1');
         writeWorkspaceFile(file2, 'Content 2');
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -415,7 +415,7 @@ describe('End-to-End Integration Tests', () => {
         const fileName = uniqueFileName('e2e-multistep', 'txt');
         const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -459,7 +459,7 @@ describe('End-to-End Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -474,8 +474,8 @@ describe('End-to-End Integration Tests', () => {
         await sleep(500);
 
         await conversation.sendMessage(
-          `Try to read the file "definitely-does-not-exist-${Date.now()}.txt" and ` +
-            `report whether it exists or not.`
+          `Try to read "${config.agentWorkspaceDir}/definitely-does-not-exist-${Date.now()}.txt" ` +
+            `and report whether it exists. Only check this exact path; do not search elsewhere.`
         );
         await conversation.run();
 
@@ -514,7 +514,7 @@ describe('End-to-End Integration Tests', () => {
         const fullPath1 = `${config.agentWorkspaceDir}/${fileName1}`;
         const fullPath2 = `${config.agentWorkspaceDir}/${fileName2}`;
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,
@@ -576,7 +576,7 @@ describe('End-to-End Integration Tests', () => {
         const lines = Array.from({ length: 50 }, (_, i) => `Line ${i + 1}: ${randomContent(50)}`);
         writeWorkspaceFile(fileName, lines.join('\n'));
 
-        const agent = new Agent({ llm: createTestLLMConfig() });
+        const agent = new Agent(createTestAgentConfig());
         const workspace = new Workspace({
           host: config.agentServerUrl,
           workingDir: config.agentWorkspaceDir,

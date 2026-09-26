@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -58,6 +59,24 @@ def test_session_initialization(terminal_type):
     )
     session.initialize()
     session.close()
+
+
+def test_subprocess_waits_for_shell_initialization(tmp_path):
+    shell = tmp_path / "slow-bash"
+    shell.write_text('#!/bin/sh\nsleep 1.2\nexec /bin/bash "$@"\n')
+    shell.chmod(0o755)
+    session = create_terminal_session(
+        work_dir=tmp_path, terminal_type="subprocess", shell_path=str(shell)
+    )
+    try:
+        session.initialize()
+        observation = session.execute(
+            TerminalAction(command="sleep 0.2; printf 'shell-ready\\n'")
+        )
+        assert observation.exit_code == 0
+        assert observation.text.strip() == "shell-ready"
+    finally:
+        session.close()
 
 
 @parametrize_terminal_types
@@ -705,7 +724,10 @@ def test_bash_background_server(terminal_type):
         server_port = 8081
         try:
             # Start the server in background
-            obs = _run_bash_action(session, f"python3 -m http.server {server_port} &")
+            obs = _run_bash_action(
+                session,
+                f"python3 -m http.server {server_port} & test_server_pid=$!",
+            )
             assert obs.metadata.exit_code == 0
 
             # Give the server a moment to be ready
@@ -718,7 +740,7 @@ def test_bash_background_server(terminal_type):
             assert "Directory listing for" in obs.text
 
             # Kill the server
-            obs = _run_bash_action(session, 'pkill -f "http.server"')
+            obs = _run_bash_action(session, 'kill "$test_server_pid"')
             assert obs.metadata.exit_code == 0
 
         finally:
@@ -1034,17 +1056,13 @@ def test_long_output_from_nested_directories(terminal_type):
         )
         session.initialize()
         try:
-            # Create nested directories with many files
-            setup_cmd = (
-                "mkdir -p /tmp/test_dir && cd /tmp/test_dir && "
-                'for i in $(seq 1 100); do mkdir -p "folder_$i"; '
-                'for j in $(seq 1 100); do touch "folder_$i/file_$j.txt"; done; done'
-            )
-            obs = _run_bash_action(session, setup_cmd.strip(), timeout=60)
-            assert obs.metadata.exit_code == 0
+            for i in range(1, 101):
+                folder = Path(temp_dir) / f"folder_{i}"
+                folder.mkdir()
+                for j in range(1, 101):
+                    (folder / f"file_{j}.txt").touch()
 
-            # List the directory structure recursively
-            obs = _run_bash_action(session, "ls -R /tmp/test_dir", timeout=60)
+            obs = _run_bash_action(session, "ls -R .", timeout=60)
             assert obs.metadata.exit_code == 0
 
             # Verify output contains expected files
@@ -1066,10 +1084,7 @@ def test_command_backslash(terminal_type):
         session.initialize()
         try:
             # Create a file with the content "implemented_function"
-            cmd = (
-                "mkdir -p /tmp/test_dir && "
-                'echo "implemented_function" > /tmp/test_dir/file_1.txt'
-            )
+            cmd = 'echo "implemented_function" > file_1.txt'
             obs = _run_bash_action(session, cmd)
             assert obs.metadata.exit_code == 0
 
@@ -1080,12 +1095,12 @@ def test_command_backslash(terminal_type):
                 semicolon = "\\;"  # Escape for tmux
 
             cmd = (
-                "find /tmp/test_dir -type f -exec grep"
+                "find . -type f -exec grep"
                 + f' -l "implemented_function" {{}} {semicolon}'
             )
             obs = _run_bash_action(session, cmd)
             assert obs.metadata.exit_code == 0
-            assert "/tmp/test_dir/file_1.txt" in obs.text
+            assert "./file_1.txt" in obs.text
         finally:
             session.close()
 
