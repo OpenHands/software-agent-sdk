@@ -313,6 +313,20 @@ class LaunchedAgentProfile(BaseModel):
             "null preserves unrestricted behavior for older conversations."
         ),
     )
+    inline: bool = Field(
+        default=False,
+        description=(
+            "True when the conversation was launched from an inline "
+            "`agent_profile` draft rather than a stored profile."
+        ),
+    )
+    llm_profile_ref: str | None = Field(
+        default=None,
+        description=(
+            "Per-launch LLM profile override from `agent_launch_additions`. "
+            "null means the profile's own `llm_profile_ref` was used."
+        ),
+    )
 
     def allows_secret(self, name: str) -> bool:
         return self.secret_refs is None or name in self.secret_refs

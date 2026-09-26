@@ -5,6 +5,9 @@ from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.mediation import (
+    PreparedStart,
+    container_launch_runtime,
+    finish_start,
     prepare_start,
     serialize_start,
 )
@@ -15,8 +18,11 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
-from openhands.sdk.conversation.request import StartConversationRequest
-from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
+    StartConversationRequest,
+)
+from openhands.sdk.profiles import OpenHandsAgentProfile, UnresolvedProfileReferences
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -29,6 +35,13 @@ def config(tmp_path, monkeypatch) -> Config:
         workspace_path=tmp_path / "workspaces",
         secret_key=SecretStr("outer-key"),
         session_api_keys=["outer-session"],
+    )
+
+
+async def _finish(prepared: PreparedStart) -> StartConversationRequest:
+    return await finish_start(
+        prepared,
+        container_launch_runtime(prepared.settings, browser_available=False),
     )
 
 
@@ -53,15 +66,14 @@ async def test_materializes_request_secret_sources(tmp_path, monkeypatch):
         },
     )
 
-    prepared, launched = await prepare_start(
-        request.model_dump(mode="json"), runtime_config
-    )
-    assert launched is None
+    prepared = await prepare_start(request.model_dump(mode="json"), runtime_config)
+    assert prepared.launched is None
     assert looked_up == ["http://127.0.0.1:8123/api/settings/secrets/SELECTED"]
-    assert isinstance(prepared.secrets["SELECTED"], StaticSecret)
+    assert isinstance(prepared.request.secrets["SELECTED"], StaticSecret)
 
+    finished = await _finish(prepared)
     identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
-    payload = serialize_start(prepared, identity)
+    payload = serialize_start(finished, identity)
     assert "selected-value" not in str(payload)
     assert "outer-session" not in str(payload)
     received = StartConversationRequest.model_validate(
@@ -83,8 +95,9 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
             ),
         ),
     )
-    prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
-    context = prepared.agent.agent_context
+    prepared = await prepare_start(request.model_dump(mode="json"), runtime_config)
+    finished = await _finish(prepared)
+    context = finished.agent.agent_context
     assert context is not None
     assert context.secrets is not None
     source = context.secrets["CONTEXT_SECRET"]
@@ -93,7 +106,7 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_profile_uses_existing_resolver_and_secret_allowlist(
+async def test_profile_launch_scopes_secrets_and_stamps_provenance(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
@@ -112,7 +125,7 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     )
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
-        "openhands.agent_server.conversation_service.discover_profile_skills",
+        "openhands.agent_server.agent_launch.discover_profile_skills",
         lambda: [],
     )
     monkeypatch.setattr(
@@ -127,10 +140,60 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
         },
     )
 
-    prepared, launched = await prepare_start(
-        request.model_dump(mode="json"), runtime_config
+    prepared = await prepare_start(request.model_dump(mode="json"), runtime_config)
+    assert set(prepared.request.secrets) == {"ALLOWED"}
+    assert prepared.launched is not None
+    assert prepared.launched.agent_profile_id == profile.id
+    assert prepared.launched.revision == profile.revision
+
+    finished = await _finish(prepared)
+    assert finished.agent_profile_id is None
+    assert set(finished.secrets) == {"ALLOWED"}
+    api_key = finished.agent.llm.api_key
+    assert isinstance(api_key, SecretStr)
+    assert api_key.get_secret_value() == "model-key"
+
+
+@pytest.mark.asyncio
+async def test_dangling_llm_profile_ref_fails_before_any_container_work(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch)
+    profile = OpenHandsAgentProfile(
+        name="docker-dangling-profile",
+        llm_profile_ref="never-saved",
+        tools=[],
     )
-    assert set(prepared.secrets) == {"ALLOWED"}
-    assert prepared.agent_profile_id is None
-    assert launched is not None
-    assert launched.agent_profile_id == profile.id
+    get_agent_profile_store().save(profile)
+    monkeypatch.setattr(
+        "openhands.agent_server.agent_launch.discover_profile_skills",
+        lambda: [],
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=profile.id,
+    )
+
+    with pytest.raises(UnresolvedProfileReferences) as exc_info:
+        await prepare_start(request.model_dump(mode="json"), runtime_config)
+    assert exc_info.value.llm_profile_ref == "never-saved"
+
+
+@pytest.mark.asyncio
+async def test_serialize_start_drops_launch_only_fields(tmp_path, monkeypatch):
+    runtime_config = config(tmp_path, monkeypatch)
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test"), tools=[]),
+        agent_launch_additions=AgentLaunchAdditions(
+            system_message_suffix_append="<RUNTIME_SERVICES/>"
+        ),
+    )
+    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
+
+    payload = serialize_start(request, identity)
+
+    assert "agent_launch_additions" not in payload
+    assert "agent_profile_id" not in payload
+    assert "agent_profile" not in payload
+    assert "agent_settings" not in payload
