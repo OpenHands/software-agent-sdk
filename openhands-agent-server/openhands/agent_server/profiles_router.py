@@ -24,10 +24,9 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import (
-    LLMError,
     LLMRateLimitError,
-    LLMServiceUnavailableError,
     LLMTimeoutError,
+    is_quota_exhaustion_error,
 )
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
@@ -271,9 +270,28 @@ class ValidateProfileResponse(BaseModel):
     error: ValidateProfileError | None = None
 
 
-# Errors that should NOT block saving — they are transient and unrelated to
-# the correctness of the configuration itself.
-_TRANSIENT_ERROR_TYPES = (LLMRateLimitError, LLMTimeoutError)
+_PREFLIGHT_TIMEOUT_SECONDS = 10
+
+
+def _is_transient_validation_error(exc: BaseException) -> bool:
+    if isinstance(exc, (LLMTimeoutError, TimeoutError)):
+        return True
+    if not isinstance(exc, LLMRateLimitError):
+        return False
+
+    # LiteLLM can omit the provider's error code from its message while the
+    # original exception still carries it in the chain.
+    error: BaseException | None = exc
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if is_quota_exhaustion_error(error) or any(
+            marker in str(error).lower()
+            for marker in ("budget_exceeded", "budget has been exceeded")
+        ):
+            return False
+        error = error.__cause__ or error.__context__
+    return True
 
 
 @profiles_router.post(
@@ -291,9 +309,9 @@ async def validate_profile(
     surface errors like invalid model names, missing provider prefixes, bad
     base URLs, and invalid API keys — *before* the profile is saved.
 
-    Transient errors (rate limits, timeouts) are treated as non-blocking: the
-    response is ``valid=True`` with no error, since those don't indicate a
-    misconfigured profile.
+    Transient errors (recoverable rate limits, timeouts) are non-blocking.
+    Exhausted budget or quota returns ``valid=False``. The pre-flight uses a
+    short timeout and disables retries independently of the runtime config.
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
@@ -306,45 +324,50 @@ async def validate_profile(
     ]
 
     try:
-        # Restore runtime subscription credentials, mirroring ``from_persisted``.
-        # The frontend sends auth_type="subscription" but the OAuth access token
-        # lives in the credential store, not in the serialized LLM config. Without
-        # this, the pre-flight sends api_key=None and fails with
-        # "Incorrect API key provided: None".
-        #
-        # Run the synchronous factory (which may do a network token refresh)
-        # off the event loop and inside the handled path so credential errors
-        # surface as ``valid=False`` instead of a 500.
-        if getattr(llm, "auth_type", None) == "subscription":
-            from openhands.sdk.llm.auth.openai import (
-                create_subscription_llm_from_config,
-            )
-
-            llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
-
-        # Mirror the runtime dispatch (see ``LLM.agenerate``) and stay
-        # async so provider I/O doesn't pin the FastAPI event loop.
-        if llm.uses_responses_api():
-            await llm.aresponses(messages=messages, max_tokens=1)
-        else:
-            await llm.acompletion(messages=messages, max_tokens=1)
-    except _TRANSIENT_ERROR_TYPES as exc:
-        # Transient — don't block the save
-        logger.info(
-            f"Profile '{name}' pre-flight hit a transient error "
-            f"({type(exc).__name__}); not blocking save."
+        llm = llm.model_copy(
+            update={
+                "num_retries": 0,
+                "timeout": _PREFLIGHT_TIMEOUT_SECONDS,
+                "fallback_strategy": None,
+            }
         )
-        return ValidateProfileResponse(valid=True)
-    except (
-        # LLMServiceUnavailableError (provider 503) is intentionally treated as
-        # a blocking config error: at this layer a provider outage is
-        # indistinguishable from a wrong base URL, so we prefer a false
-        # negative over silently saving a misconfigured profile.
-        LLMServiceUnavailableError,
-        LLMError,
-    ) as exc:
+        async with asyncio.timeout(_PREFLIGHT_TIMEOUT_SECONDS):
+            # Restore stored OAuth credentials off the event loop, since the
+            # synchronous subscription factory may refresh a token over HTTP.
+            if llm.auth_type == "subscription":
+                from openhands.sdk.llm.auth.openai import (
+                    create_subscription_llm_from_config,
+                )
+
+                llm = await asyncio.to_thread(create_subscription_llm_from_config, llm)
+
+            # Disable LiteLLM/provider retries as well as the SDK retry loop.
+            if llm.uses_responses_api():
+                await llm.aresponses(
+                    messages=messages, max_tokens=1, num_retries=0, max_retries=0
+                )
+            else:
+                await llm.acompletion(
+                    messages=messages, max_tokens=1, num_retries=0, max_retries=0
+                )
+    except Exception as exc:
+        if _is_transient_validation_error(exc):
+            logger.info(
+                f"Profile '{name}' pre-flight hit a transient error "
+                f"({type(exc).__name__}); not blocking save."
+            )
+            return ValidateProfileResponse(valid=True)
+        # Provider outages remain blocking because a wrong base URL can cause them.
         error_type = type(exc).__name__
-        safe_msg = redact_text_secrets(exc.message)
+        message = str(exc) or error_type
+        if llm.auth_type == "subscription" and isinstance(exc, LLMRateLimitError):
+            # Provider messages can echo OAuth tokens that are absent from api_key.
+            message = "The subscription budget or quota is exhausted."
+        if isinstance(llm.api_key, SecretStr):
+            api_key = llm.api_key.get_secret_value()
+            if api_key:
+                message = message.replace(api_key, "<redacted>")
+        safe_msg = redact_text_secrets(message)
         logger.info(f"Profile '{name}' pre-flight failed: {error_type}: {safe_msg}")
         return ValidateProfileResponse(
             valid=False,
@@ -353,19 +376,6 @@ async def validate_profile(
                 message=safe_msg,
             ),
         )
-    except Exception as exc:
-        # Unknown errors — block the save and surface the raw message so the
-        # user can debug, but classify generically.
-        msg = redact_text_secrets(str(exc) or type(exc).__name__)
-        logger.info(f"Profile '{name}' pre-flight failed (unknown): {msg}")
-        return ValidateProfileResponse(
-            valid=False,
-            error=ValidateProfileError(
-                type=type(exc).__name__,
-                message=msg,
-            ),
-        )
-
     return ValidateProfileResponse(valid=True)
 
 
