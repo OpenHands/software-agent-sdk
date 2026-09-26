@@ -222,6 +222,66 @@ async def test_transient_quota_rate_limit_still_retries(
         assert mock_acomp.await_count == 2
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("denied_model", ["gpt-4o", "fallback-model"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        '{"error":{"type":"budget_exceeded","message":"Team limit reached"}}',
+        "Budget has been exceeded! User=u, Team=t. Current cost: 2, Max budget: 1",
+    ],
+)
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm_completion")
+async def test_budget_denial_stops_retries_and_fallbacks(
+    mock_comp, mock_acomp, use_async, denied_model, message
+):
+    attempted_models = []
+
+    def complete(**kwargs):
+        model = kwargs["model"]
+        attempted_models.append(model)
+        if model == denied_model:
+            raise RateLimitError(message=message, llm_provider="openai", model=model)
+        if model == "gpt-4o":
+            raise APIConnectionError(message="down", llm_provider="openai", model=model)
+        return _get_mock_response("must not bypass the budget", model=model)
+
+    mock_comp.side_effect = complete
+    mock_acomp.side_effect = complete
+    primary = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("k"),
+        usage_id="test-budget",
+        fallback_strategy=FallbackStrategy(fallback_llms=["first", "second"]),
+        num_retries=3 if denied_model == "gpt-4o" else 1,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    first_fallback = LLM(
+        model="fallback-model",
+        api_key=SecretStr("k"),
+        usage_id="test-budget-fallback",
+        num_retries=3,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+    _patch_resolve(primary, [first_fallback, _get_llm("second-fallback")])
+
+    with pytest.raises(LLMRateLimitError, match="budget|Budget"):
+        if use_async:
+            await primary.acompletion(_MSGS)
+        else:
+            primary.completion(_MSGS)
+
+    assert attempted_models == (
+        ["gpt-4o"] if denied_model == "gpt-4o" else ["gpt-4o", "fallback-model"]
+    )
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_non_transient_error_skips_fallback(mock_comp):
     """A plain Exception is NOT in LLM_FALLBACK_EXCEPTIONS, so fallback
