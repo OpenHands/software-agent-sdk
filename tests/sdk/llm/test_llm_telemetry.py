@@ -12,7 +12,7 @@ from litellm.types.llms.openai import (
     ResponseAPIUsage,
     ResponsesAPIResponse,
 )
-from litellm.types.utils import ModelResponse, Usage
+from litellm.types.utils import ModelResponse, PromptTokensDetailsWrapper, Usage
 from pydantic import BaseModel, Field, ValidationError
 
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -184,18 +184,65 @@ class TestTelemetryTokenUsage:
 
     def test_record_usage_with_cache_read(self, basic_telemetry):
         """Test token usage recording with cache read tokens."""
-        # Create a mock usage with prompt_tokens_details
-        usage = Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
-
-        # Mock the prompt_tokens_details attribute
-        mock_details = MagicMock()
-        mock_details.cached_tokens = 25
-        usage.prompt_tokens_details = mock_details
+        # Use a real PromptTokensDetailsWrapper rather than a MagicMock: a mock
+        # answers every attribute access, so it cannot catch the case where the
+        # wrapper deletes an unset optional field while leaving its name in
+        # model_fields_set. A model_dump()-based read also breaks on a mock,
+        # because MagicMock().model_dump() returns another mock.
+        usage = Usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            prompt_tokens_details=PromptTokensDetailsWrapper(cached_tokens=25),
+        )
 
         basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
 
         token_usage = basic_telemetry.metrics.token_usages[0]
         assert token_usage.cache_read_tokens == 25
+        assert token_usage.cache_write_tokens == 0
+
+    def test_record_usage_with_deleted_cache_write_field(self, basic_telemetry):
+        """A provider without cache fields must not crash.
+
+        LiteLLM's PromptTokensDetailsWrapper deletes unset optional fields, but its
+        __setattr__ mirroring keeps the name in model_fields_set. Reading the
+        attribute directly therefore raises AttributeError even though the guard
+        passed. This shape raises on the unfixed code at any litellm version, so it
+        is a genuine regression guard, unlike a cached_tokens-only wrapper (which
+        only raises on litellm >= 1.95).
+        """
+        usage = Usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            prompt_tokens_details=PromptTokensDetailsWrapper(
+                cached_tokens=25, cache_creation_tokens=None
+            ),
+        )
+
+        basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_read_tokens == 25
+        assert token_usage.cache_write_tokens == 0
+
+    def test_record_usage_with_cache_write_tokens_naming(self, basic_telemetry):
+        """The cache_write_tokens naming must be counted, not silently recorded as 0."""
+        usage = Usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            prompt_tokens_details=PromptTokensDetailsWrapper(
+                cached_tokens=2, cache_write_tokens=5
+            ),
+        )
+
+        basic_telemetry._record_usage(_snapshot(usage), "test-id", 4096)
+
+        token_usage = basic_telemetry.metrics.token_usages[0]
+        assert token_usage.cache_read_tokens == 2
+        assert token_usage.cache_write_tokens == 5
 
     def test_record_usage_with_cache_write(self, basic_telemetry):
         """Test token usage recording with cache write tokens."""
