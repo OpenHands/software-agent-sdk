@@ -95,9 +95,50 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
     return normalized
 
 
+# Provider labels that describe the SDK/proxy routing layer rather than the
+# upstream that actually serves the request. LiteLLM returns the full OpenAI
+# param set for these (including ``prompt_cache_key`` for Anthropic models),
+# so they must never be used as the ``custom_llm_provider`` hint for param
+# resolution -- doing so re-introduces the 400 UnsupportedParamsError from #5325.
+_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({"litellm_proxy", "openhands"})
+
+
+def _real_litellm_provider(
+    model_info: Mapping[str, Any] | None,
+) -> str | None:
+    """Return the upstream provider that serves the request, if known.
+
+    For ``openhands/`` and ``litellm_proxy/`` aliases the model is routed
+    through a proxy, so the bare model name is unresolvable by LiteLLM and
+    ``get_supported_openai_params`` returns ``None``. The proxy's model info
+    carries the real upstream provider (e.g. ``deepseek``, ``anthropic``) in
+    ``litellm_provider``; threading it into the lookup restores correct param
+    detection. Passthrough labels (``litellm_proxy``/``openhands``) are
+    discarded because LiteLLM over-reports support for them.
+    """
+    if model_info is None:
+        return None
+    provider = model_info.get("litellm_provider")
+    if not isinstance(provider, str):
+        return None
+    provider = provider.strip().lower()
+    if not provider or provider in _PASSTHROUGH_PROVIDERS:
+        return None
+    return provider
+
+
 @cache
-def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
-    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+def _normalized_supported_openai_params(
+    model: str | None, provider_hint: str | None = None
+) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name.
+
+    ``provider_hint`` is the real upstream provider for proxied/aliased models
+    (see ``_real_litellm_provider``). When the bare name is unresolvable --
+    the case for ``openhands/`` and ``litellm_proxy/`` aliases -- the hint is
+    used so param support reflects the provider that actually serves the
+    request instead of silently defaulting to ``False`` (#5328 follow-up).
+    """
     normalized = _normalize_model_for_litellm(model)
     if not normalized:
         return frozenset()
@@ -106,6 +147,11 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
         model=normalized,
         custom_llm_provider=None,
     )
+    if not params and provider_hint:
+        params = get_supported_openai_params(
+            model=normalized,
+            custom_llm_provider=provider_hint,
+        )
     return frozenset(params or ())
 
 
@@ -365,7 +411,8 @@ def get_features(
     overrides: Mapping[str, Any] | None = None,
 ) -> ModelFeatures:
     """Resolve model features from overrides, metadata, and fallbacks."""
-    supported_params = _normalized_supported_openai_params(model)
+    provider_hint = _real_litellm_provider(model_info)
+    supported_params = _normalized_supported_openai_params(model, provider_hint)
     supports_reasoning_effort = _resolved_bool(
         "supports_reasoning_effort",
         overrides=overrides,

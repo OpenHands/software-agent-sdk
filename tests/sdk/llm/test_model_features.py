@@ -557,6 +557,55 @@ def test_prompt_cache_key_override():
 
 
 @pytest.mark.parametrize(
+    "model,provider",
+    [
+        # openhands/ aliases: the bare name is unresolvable by LiteLLM, so the
+        # real upstream provider (from the proxy's model_info) must be threaded
+        # into the lookup. These previously regressed to False after #5328.
+        ("deepseek-chat", "deepseek"),
+        ("minimax-m3", "minimax"),
+        ("qwen3.8-max", "dashscope"),
+        ("kimi-k2.7-code", "moonshot"),
+        ("kimi-k3", "moonshot"),
+        ("trinity-large-thinking", "openrouter"),
+    ],
+)
+def test_prompt_cache_key_resolved_via_provider_hint(model, provider):
+    """Proxied/aliased models resolve prompt_cache_key from the real provider.
+
+    Regression test for the #5328 follow-up: ``openhands/`` and
+    ``litellm_proxy/`` aliases strip to a bare name that LiteLLM cannot resolve,
+    so ``get_supported_openai_params`` returns ``None`` and the param was
+    silently dropped even though the upstream provider accepts it.
+    """
+    features = get_features(model, model_info={"litellm_provider": provider})
+    assert features.supports_prompt_cache_key is True
+
+
+def test_prompt_cache_key_passthrough_provider_not_used():
+    """litellm_proxy/openhands hints over-report and must be ignored.
+
+    LiteLLM returns the full OpenAI param set (including prompt_cache_key) for
+    every model under the litellm_proxy provider -- even Claude. Using it as the
+    hint would re-introduce the 400 UnsupportedParamsError fixed in #5325.
+    """
+    features = get_features(
+        "claude-opus-5-5", model_info={"litellm_provider": "litellm_proxy"}
+    )
+    assert features.supports_prompt_cache_key is False
+
+
+def test_prompt_cache_key_no_provider_hint_falls_back():
+    """Without model_info, bare unresolvable names keep the safe False default.
+
+    This preserves the original safe behavior for callers that cannot supply
+    provider metadata (e.g. an unknown alias with no proxy model_info).
+    """
+    assert get_features("deepseek-chat").supports_prompt_cache_key is False
+    assert get_features("claude-opus-5-5").supports_prompt_cache_key is False
+
+
+@pytest.mark.parametrize(
     "model,expected_retention",
     [
         ("gpt-5.1", True),
