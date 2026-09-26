@@ -305,6 +305,7 @@ def test_browser_toolset_create_waits_for_shared_executor_close():
     def fake_init(self, **kwargs):
         init_configs.append(kwargs.copy())
         self.full_output_save_dir = kwargs.get("full_output_save_dir")
+        self._config = {}
         self._initialized = False
         self._cleanup_initiated = False
         self._close_lock = threading.Lock()

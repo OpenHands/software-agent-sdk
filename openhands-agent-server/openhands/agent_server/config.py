@@ -27,6 +27,7 @@ CONFIG_PATH_ENV = "OPENHANDS_AGENT_SERVER_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = Path("workspace/openhands_agent_server_config.json")
 # 20 minutes, matching the idle timeout used by OpenHands Cloud.
 DEFAULT_CONVERSATION_IDLE_TTL_SECONDS: Final[float] = 20 * 60.0
+ACPSkillSourcing = Literal["native", "openhands_managed"]
 _logger = logging.getLogger(__name__)
 
 
@@ -318,10 +319,6 @@ class Config(BaseModel):
             "For example, '/{runtime_id}/vscode' when using path-based routing."
         ),
     )
-    enable_vnc: bool = Field(
-        default=False,
-        description="Whether to enable VNC desktop functionality",
-    )
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",
@@ -347,6 +344,27 @@ class Config(BaseModel):
         default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
+        ),
+    )
+    conversation_runtime: Literal["local", "docker"] = "local"
+    conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    conversation_container_memory: str | None = "4g"
+    conversation_container_cpus: float | None = Field(default=2.0, gt=0)
+    conversation_container_pids_limit: int | None = Field(default=512, gt=0)
+    conversation_container_startup_timeout: float = Field(default=120, gt=0)
+
+    acp_skill_sourcing: ACPSkillSourcing = Field(
+        default="native",
+        description=(
+            "Who supplies an ACP agent's skills. 'native' (the default, for a "
+            "host-local agent-server): nobody but the ACP CLI — it reads the "
+            "user's own home configuration and the repository, so OpenHands "
+            "injects none of its managed skills. 'openhands_managed' (for "
+            "container runtimes, where that host configuration is absent): also "
+            "inject the user/org/public/marketplace skills the server "
+            "discovers. Project/repository skills are never injected either way "
+            "— the CLI reads AGENTS.md itself (#4019). Set explicitly per "
+            "deployment; the agent-server image sets 'openhands_managed'."
         ),
     )
     registered_marketplaces: list[MarketplaceRegistration] = Field(
