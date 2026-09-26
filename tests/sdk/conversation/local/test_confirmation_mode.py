@@ -37,6 +37,7 @@ from openhands.sdk.llm import (
 )
 from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import (
     Tool,
     ToolDefinition,
@@ -690,3 +691,104 @@ class TestConfirmationMode:
         assert conversation_with_analyzer.confirmation_policy_active
         # True because both conditions are met
         assert conversation_with_analyzer.is_confirmation_mode_active
+
+
+def _conversation_waiting_for_confirmation() -> LocalConversation:
+    """Build a conversation that has one pending action awaiting confirmation."""
+    register_tool("test_tool", ConfirmationTestTool)
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="I'll execute test_command")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_1",
+                        name="test_tool",
+                        arguments='{"command": "test_command"}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant",
+                content=[TextContent(text="Acknowledged.")],
+            ),
+        ]
+    )
+    conversation = Conversation(agent=Agent(llm=llm, tools=[Tool(name="test_tool")]))
+    conversation.set_confirmation_policy(AlwaysConfirm())
+    conversation.send_message("execute a command")
+    conversation.run()
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+    )
+    return conversation
+
+
+@pytest.mark.parametrize(
+    "follow_up",
+    [
+        "Wait — do NOT run that. Cancel the marker request.",
+        "yes",
+    ],
+)
+def test_send_message_while_waiting_supersedes_pending_actions(follow_up: str):
+    """A new user message while WAITING is not consent; pending actions drop."""
+    conversation = _conversation_waiting_for_confirmation()
+
+    conversation.send_message(follow_up)
+
+    rejects = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, UserRejectObservation)
+    ]
+    assert len(rejects) == 1
+    assert rejects[0].rejection_reason == "Superseded by a new user message"
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    assert ConversationState.get_unmatched_actions(conversation.state.events) == []
+
+    conversation.run()
+
+    executed = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, ObservationEvent)
+    ]
+    assert executed == []
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    user_texts = [
+        event.llm_message.content[0].text
+        for event in conversation.state.events
+        if isinstance(event, MessageEvent)
+        and event.source == "user"
+        and event.llm_message.content
+        and isinstance(event.llm_message.content[0], TextContent)
+    ]
+    assert follow_up in user_texts
+
+
+def test_run_without_new_message_still_confirms_pending_actions():
+    """Calling run() with no new message remains the explicit confirm path."""
+    conversation = _conversation_waiting_for_confirmation()
+
+    conversation.run()
+
+    executed = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, ObservationEvent)
+    ]
+    assert len(executed) == 1
+    observation = executed[0].observation
+    assert isinstance(observation, MockConfirmationModeObservation)
+    assert observation.result == "Executed: test_command"
+    rejects = [
+        event
+        for event in conversation.state.events
+        if isinstance(event, UserRejectObservation)
+    ]
+    assert rejects == []
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
