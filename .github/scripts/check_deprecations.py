@@ -2,12 +2,20 @@
 """Static analysis for deprecation deadlines.
 
 This script scans Python deprecation metadata (`deprecated`, `warn_deprecated`,
-`warn_cleanup`) and agent-server REST routes marked `deprecated=True`. It fails
-when a version-based deprecation schedule provides less than 5 minor releases of
-runway, or when the current project version has reached or passed a feature's
-removal marker. This catches invalid schedules when they are introduced and later
-ensures legacy shims and overdue deprecated REST endpoints are cleaned up before
-release.
+`warn_cleanup`), agent-server REST routes marked `deprecated=True`, and Pydantic
+`Field(deprecated=True, ...)` declarations whose description carries the same
+versioned schedule wording. It fails when a version-based deprecation schedule
+provides less than 5 minor releases of runway, or when the current project
+version has reached or passed a feature's removal marker. This catches invalid
+schedules when they are introduced and later ensures legacy shims, overdue
+deprecated REST endpoints, and overdue deprecated schema fields are cleaned up
+before release.
+
+Not every `Field(deprecated=True)` declares a version-based schedule -- some are
+open-ended backward-compatibility aliases with no planned removal. Only fields
+whose description matches the "Deprecated since vX.Y.Z and scheduled for
+removal in vA.B.C." wording are subject to the runway/overdue check; others are
+left alone.
 """
 
 from __future__ import annotations
@@ -87,7 +95,9 @@ class DeprecationRecord:
     deprecated_in: str | None
     path: Path
     line: int
-    kind: Literal["decorator", "warn_call", "cleanup_call", "rest_route"]
+    kind: Literal[
+        "decorator", "warn_call", "cleanup_call", "rest_route", "pydantic_field"
+    ]
     package: str
 
 
@@ -328,6 +338,60 @@ def _gather_rest_route_deprecations(
             )
 
 
+def _gather_pydantic_field_deprecations(
+    tree: ast.AST, path: Path, *, package: str
+) -> Iterator[DeprecationRecord]:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+
+        for stmt in node.body:
+            if not isinstance(stmt, ast.AnnAssign):
+                continue
+            if not isinstance(stmt.target, ast.Name) or not isinstance(
+                stmt.value, ast.Call
+            ):
+                continue
+
+            call = stmt.value
+            func = call.func
+            if isinstance(func, ast.Name):
+                call_name = func.id
+            elif isinstance(func, ast.Attribute):
+                call_name = func.attr
+            else:
+                continue
+            if call_name != "Field":
+                continue
+
+            deprecated_value = _extract_kw(call, "deprecated")
+            if (
+                not isinstance(deprecated_value, ast.Constant)
+                or deprecated_value.value is not True
+            ):
+                continue
+
+            description = _extract_string_literal(_extract_kw(call, "description"))
+            if description is None:
+                continue
+
+            match = REST_ROUTE_DEPRECATION_RE.search(" ".join(description.split()))
+            if match is None:
+                # No version-based schedule declared; treat as an open-ended
+                # backward-compatibility alias, not subject to this check.
+                continue
+
+            yield DeprecationRecord(
+                identifier=f"{node.name}.{stmt.target.id}",
+                removed_in=match.group("removed").rstrip("."),
+                deprecated_in=match.group("deprecated").rstrip("."),
+                path=path,
+                line=stmt.lineno,
+                kind="pydantic_field",
+                package=package,
+            )
+
+
 def _gather_decorators(
     tree: ast.AST, path: Path, *, package: str
 ) -> Iterator[DeprecationRecord]:
@@ -467,6 +531,16 @@ def _collect_rest_route_records(
     return records
 
 
+def _collect_pydantic_field_records(
+    files: Iterable[Path], *, package: str
+) -> list[DeprecationRecord]:
+    records: list[DeprecationRecord] = []
+    for path in files:
+        tree = ast.parse(path.read_text())
+        records.extend(_gather_pydantic_field_deprecations(tree, path, package=package))
+    return records
+
+
 def _version_ge(current: str, target: str) -> bool:
     try:
         return pkg_version.parse(current) >= pkg_version.parse(target)
@@ -584,6 +658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         records = _collect_records(files, package=package.name)
         if package.name == "openhands-agent-server":
             records.extend(_collect_rest_route_records(files, package=package.name))
+        records.extend(_collect_pydantic_field_records(files, package=package.name))
 
         overdue.extend(r for r in records if _should_fail(current_version, r))
         invalid_runway.extend(

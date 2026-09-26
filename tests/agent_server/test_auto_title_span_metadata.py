@@ -144,7 +144,13 @@ def test_auto_title_llm_span_joins_the_conversation_trace() -> None:
     assert len(llm_spans) == 1
     title_llm = llm_spans[0]
 
-    assert title_llm["parent"] == "conversation.generate_title"
+    sdk_llm_spans = [span for span in probe["spans"] if span["name"] == "llm.gpt-4o"]
+    assert len(sdk_llm_spans) == 1
+    sdk_llm = sdk_llm_spans[0]
+
+    assert sdk_llm["parent"] == "conversation.generate_title"
+    assert title_llm["parent"] == "llm.gpt-4o"
+    assert sdk_llm["trace_id"] == probe["conversation_trace_id"]
     assert title_llm["trace_id"] == probe["conversation_trace_id"]
 
     # Spelled out, not derived from OPERATION_METADATA_KEY: this exact attribute

@@ -109,7 +109,7 @@ def _resolve_local_source(url: str) -> Path:
 
 
 def _apply_subpath(base_path: Path, subpath: str | None, context: str) -> Path:
-    """Apply a subpath to a base path, validating it exists.
+    """Apply a subpath to a base path, validating it exists and stays inside.
 
     Args:
         base_path: The root path.
@@ -120,12 +120,16 @@ def _apply_subpath(base_path: Path, subpath: str | None, context: str) -> Path:
         The final path (base_path if no subpath, otherwise base_path/subpath).
 
     Raises:
-        ExtensionFetchError: If subpath doesn't exist.
+        ExtensionFetchError: If subpath escapes base_path or doesn't exist.
     """
     if not subpath:
         return base_path
 
     final_path = base_path / subpath.strip("/")
+    # Containment: a subpath must not climb out of the base via ".." or a symlink.
+    resolved_base = base_path.resolve()
+    if not final_path.resolve().is_relative_to(resolved_base):
+        raise ExtensionFetchError(f"Subdirectory '{subpath}' escapes {context}")
     if not final_path.exists():
         raise ExtensionFetchError(f"Subdirectory '{subpath}' not found in {context}")
     return final_path
@@ -191,13 +195,8 @@ def fetch_with_resolution(
     source_type, url = parse_extension_source(source)
 
     if source_type == SourceType.LOCAL:
-        if repo_path is not None:
-            raise ExtensionFetchError(
-                f"repo_path is not supported for local extension sources. "
-                f"Specify the full path directly instead of "
-                f"source='{source}' + repo_path='{repo_path}'"
-            )
-        return _resolve_local_source(url), None
+        base_path = _resolve_local_source(url)
+        return _apply_subpath(base_path, repo_path, f"local source '{source}'"), None
 
     git = git_helper if git_helper is not None else GitHelper()
 

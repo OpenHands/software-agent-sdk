@@ -50,14 +50,24 @@ def test_fetch_generic_error_raises_plugin_fetch_error(tmp_path: Path):
         )
 
 
-def test_fetch_local_with_repo_path_raises_plugin_fetch_error(
+def test_fetch_local_with_repo_path_resolves_subdirectory(tmp_path: Path):
+    """A local monorepo source plus repo_path resolves to the subdirectory."""
+    plugin_dir = tmp_path / "monorepo"
+    (plugin_dir / "plugins" / "my-plugin").mkdir(parents=True)
+
+    result = fetch_plugin(str(plugin_dir), repo_path="plugins/my-plugin")
+
+    assert result == (plugin_dir / "plugins" / "my-plugin").resolve()
+
+
+def test_fetch_local_with_missing_repo_path_raises_plugin_fetch_error(
     tmp_path: Path,
 ):
-    """repo_path rejection for local sources surfaces as PluginFetchError."""
+    """A repo_path that does not exist surfaces as PluginFetchError."""
     plugin_dir = tmp_path / "monorepo"
     plugin_dir.mkdir()
 
-    with pytest.raises(PluginFetchError, match="repo_path is not supported for local"):
+    with pytest.raises(PluginFetchError, match="not found in local source"):
         fetch_plugin(str(plugin_dir), repo_path="plugins/my-plugin")
 
 
@@ -91,10 +101,11 @@ def test_plugin_fetch_delegates(tmp_path: Path):
     assert result == plugin_dir.resolve()
 
 
-def test_plugin_fetch_local_with_repo_path_raises_error(tmp_path: Path):
-    """Plugin.fetch() raises PluginFetchError for local + repo_path."""
+def test_plugin_fetch_local_with_repo_path_resolves_subdirectory(tmp_path: Path):
+    """Plugin.fetch() composes a local source with repo_path."""
     plugin_dir = tmp_path / "monorepo"
-    plugin_dir.mkdir()
+    (plugin_dir / "plugins" / "my-plugin").mkdir(parents=True)
 
-    with pytest.raises(PluginFetchError, match="repo_path is not supported for local"):
-        Plugin.fetch(str(plugin_dir), repo_path="plugins/my-plugin")
+    result = Plugin.fetch(str(plugin_dir), repo_path="plugins/my-plugin")
+
+    assert result == (plugin_dir / "plugins" / "my-plugin").resolve()
