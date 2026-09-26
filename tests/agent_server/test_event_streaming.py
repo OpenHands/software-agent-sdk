@@ -9,6 +9,7 @@ import pytest
 from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 from pydantic import SecretStr
 
+from openhands.agent_server import conversation_service
 from openhands.agent_server import server_details_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
@@ -37,24 +38,16 @@ def _make_chunk(
 
 
 class _CollectorSubscriber(Subscriber):
-    """Subscriber that opts into deltas and collects events for assertions."""
-
-    receives_streaming_deltas = True
+    """Collects whatever bus it is attached to."""
 
     def __init__(self):
-        self.events: list[Event] = []
+        self.events: list[Event | StreamingDeltaEvent] = []
 
-    async def __call__(self, event: Event):
+    async def __call__(self, event: Event | StreamingDeltaEvent):
         self.events.append(event)
 
     async def close(self):
         pass
-
-
-class _PlainSubscriber(_CollectorSubscriber):
-    """Collector that keeps the default: it must never observe a delta."""
-
-    receives_streaming_deltas = False
 
 
 @pytest.fixture
@@ -137,7 +130,7 @@ async def test_callback_publishes_delta(
     event_service, tmp_path, chunk_kwargs, expected_content, expected_reasoning
 ):
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
 
@@ -154,7 +147,7 @@ async def test_callback_publishes_delta(
 async def test_callback_ignores_delta_with_no_content_fields(event_service, tmp_path):
     """Chunks where both content and reasoning_content are None are dropped."""
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
 
@@ -169,7 +162,7 @@ async def test_callback_ignores_delta_with_no_content_fields(event_service, tmp_
 async def test_callback_forwards_empty_string_delta(event_service, tmp_path):
     """Empty-string chunks (legitimate at stream boundaries) must be forwarded."""
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
     callback(_make_chunk(content=""))
@@ -184,7 +177,7 @@ async def test_callback_forwards_empty_string_delta(event_service, tmp_path):
 async def test_callback_handles_none_choices(event_service, tmp_path):
     """Some providers emit keepalive chunks with choices=None."""
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
     keepalive = ModelResponseStream(id="k", choices=[], model="test-model")
@@ -266,7 +259,7 @@ async def test_acp_string_token_callback_publishes_delta(tmp_path):
         conversations_dir=tmp_path / "conversations",
     )
     collector = _CollectorSubscriber()
-    service._pub_sub.subscribe(collector)
+    service._delta_pub_sub.subscribe(collector)
     (tmp_path / "workspace").mkdir(exist_ok=True)
 
     with _mock_local_conversation() as MockConv:
@@ -291,7 +284,7 @@ async def test_acp_string_token_callback_publishes_delta(tmp_path):
 @pytest.mark.asyncio
 async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
     collector = _CollectorSubscriber()
-    event_service._pub_sub.subscribe(collector)
+    event_service._delta_pub_sub.subscribe(collector)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
 
@@ -307,19 +300,46 @@ async def test_multiple_chunks_produce_multiple_events(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deltas_only_reach_subscribers_that_opted_in(event_service, tmp_path):
-    """Deltas reach only subscribers that opted in, never the rest of the bus."""
+async def test_deltas_never_reach_the_durable_bus(event_service, tmp_path):
+    """Durable subscribers must never see a delta."""
     streaming = _CollectorSubscriber()
-    plain = _PlainSubscriber()
-    event_service._pub_sub.subscribe(streaming)
-    event_service._pub_sub.subscribe(plain)
+    durable = _CollectorSubscriber()
+    event_service._delta_pub_sub.subscribe(streaming)
+    event_service._pub_sub.subscribe(durable)
 
     callback = await _start_and_capture_callback(event_service, tmp_path)
     callback(_make_chunk(content="Hello"))
     await asyncio.sleep(0.05)
 
     assert [e for e in streaming.events if isinstance(e, StreamingDeltaEvent)]
-    assert not [e for e in plain.events if isinstance(e, StreamingDeltaEvent)]
+    assert not [e for e in durable.events if isinstance(e, StreamingDeltaEvent)]
+
+
+@pytest.mark.asyncio
+async def test_deltas_reset_the_idle_timer(event_service):
+    """A stream with no durable events must still keep the pod alive (#4695)."""
+    subscriber = conversation_service._DeltaSubscriber(service=event_service)
+    event_service._delta_pub_sub.subscribe(subscriber)
+    event_service._last_active_monotonic = time.monotonic() - 600
+
+    with patch.object(conversation_service, "update_last_execution_time") as heartbeat:
+        await event_service._delta_pub_sub(StreamingDeltaEvent(content="tok"))
+
+    heartbeat.assert_called_once_with()
+    assert event_service.idle_seconds() < 1
+
+
+@pytest.mark.asyncio
+async def test_delta_heartbeat_is_throttled(event_service):
+    """Deltas arrive at token rate; the heartbeat must not."""
+    subscriber = conversation_service._DeltaSubscriber(service=event_service)
+    event_service._delta_pub_sub.subscribe(subscriber)
+
+    with patch.object(conversation_service, "update_last_execution_time") as heartbeat:
+        for _ in range(100):
+            await event_service._delta_pub_sub(StreamingDeltaEvent(content="tok"))
+
+    heartbeat.assert_called_once_with()
 
 
 # The runtime-api reaps a managed pod once /server_info reports this much
