@@ -591,7 +591,7 @@ def _extract_and_validate_params(
 #     <tool_call>list_skills
 #     </tool_call>
 _TOOL_CALL_WRAPPER_PATTERN = re.compile(
-    r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*\n(?=\s*(?:<parameter=|</tool_call>|\Z))"
+    r"<tool_call>\s*([A-Za-z_][\w.-]*)\s*\n(?=\s*(?:<parameter=|</tool_call>))"
 )
 
 

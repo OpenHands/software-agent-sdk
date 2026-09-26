@@ -1048,7 +1048,6 @@ def test_tool_call_wrapper_normalized_to_function_call(content):
     [
         "<tool_call>finish\n</tool_call>",
         "All done.\n<tool_call>finish\n</tool_call>",
-        "All done.\n<tool_call>finish\n",
     ],
 )
 def test_tool_call_wrapper_without_parameters_normalized(content):
