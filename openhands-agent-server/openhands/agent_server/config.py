@@ -319,10 +319,6 @@ class Config(BaseModel):
             "For example, '/{runtime_id}/vscode' when using path-based routing."
         ),
     )
-    enable_vnc: bool = Field(
-        default=False,
-        description="Whether to enable VNC desktop functionality",
-    )
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",
@@ -350,6 +346,13 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    conversation_runtime: Literal["local", "docker"] = "local"
+    conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    conversation_container_memory: str | None = "4g"
+    conversation_container_cpus: float | None = Field(default=2.0, gt=0)
+    conversation_container_pids_limit: int | None = Field(default=512, gt=0)
+    conversation_container_startup_timeout: float = Field(default=120, gt=0)
+
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
         description=(

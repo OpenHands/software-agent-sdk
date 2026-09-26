@@ -130,6 +130,29 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         assert isinstance(data, dict)
         return data
 
+    def start_command(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+        timeout: float = 30,
+    ) -> str:
+        """Start a command and return its ID without waiting for completion."""
+        return self._execute(self._start_command_generator(command, cwd, timeout))
+
+    def get_command_output(
+        self, command_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Read the latest output; a missing exit code means it is still running."""
+        return self._execute(self._get_command_output_generator(command_id))
+
+    def get_runtime_session_key(self) -> str:
+        """Get the scoped worker credential for this conversation runtime."""
+        return self._execute(self._runtime_lifecycle_generator(release=False))
+
+    def release_runtime(self) -> None:
+        """Release execution resources while retaining conversation history."""
+        self._execute(self._runtime_lifecycle_generator(release=True))
+
     def execute_command(
         self,
         command: str,
@@ -155,7 +178,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     def file_upload(
         self,
-        source_path: str | Path,
+        source_path: str | Path | bytes,
         destination_path: str | Path,
     ) -> FileOperationResult:
         """Upload a file to the remote system.
@@ -163,7 +186,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Reads the local file and sends it to the remote system via HTTP API.
 
         Args:
-            source_path: Path to the local source file
+            source_path: Local file path or in-memory bytes
             destination_path: Path where the file should be uploaded on remote system
 
         Returns:
@@ -431,7 +454,12 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_secrets(self, names: list[str] | None = None) -> dict[str, "LookupSecret"]:
+    def get_secrets(
+        self,
+        names: list[str] | None = None,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> dict[str, "LookupSecret"]:
         """Build ``LookupSecret`` references for the agent-server's secrets.
 
         Fetches the list of available secret **names** from the agent-server
@@ -445,6 +473,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Args:
             names: Optional list of secret names to include. If ``None``,
                 all available secrets are returned.
+            agent_profile_id: Optional agent profile whose ``secret_refs``
+                restrict the names returned by the agent server.
 
         Returns:
             A dictionary mapping secret names to ``LookupSecret`` instances.
@@ -467,7 +497,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        response = self.client.get("/api/settings/secrets", headers=self._headers)
+        request_kwargs: dict[str, Any] = {"headers": self._headers}
+        if agent_profile_id is not None:
+            request_kwargs["params"] = {"agent_profile_id": agent_profile_id}
+        response = self.client.get("/api/settings/secrets", **request_kwargs)
         response.raise_for_status()
 
         # Validate response using shared SDK model
@@ -692,7 +725,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             "load_project": load_project,
             "load_org": load_org,
             "project_dir": project_dir,
-            "org_config": None,
             "sandbox_config": None,
         }
 
@@ -854,6 +886,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
+        base_context: "AgentContext | None" = None,
     ) -> tuple[list["Skill"], "AgentContext"]:
         """Load skills via the agent-server's /api/skills endpoint.
 
@@ -874,6 +907,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             load_project: Load project skills from workspace directories.
             load_org: Load organization-level skills.
             timeout: Request timeout in seconds.
+            base_context: Existing AgentContext to preserve. All of its
+                fields survive except `skills` and `load_public_skills`,
+                which this method always sets based on whether skills
+                were found. Defaults to None, which starts from a fresh
+                AgentContext — today's behavior.
 
         Returns:
             Tuple of (list of Skill objects, AgentContext).
@@ -926,11 +964,20 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if loaded_skills:
             logger.debug(f"Skills: {[s.name for s in loaded_skills]}")
 
-        # Create AgentContext - fall back to public skills if none loaded
+        # Update `base_context` (or start fresh if none given) with the
+        # newly loaded skills — every other field the caller configured is
+        # preserved. Fall back to public skills if none loaded.
+        base = base_context if base_context is not None else AgentContext()
         if loaded_skills:
-            agent_context = AgentContext(skills=loaded_skills, load_public_skills=False)
+            agent_context = base.model_copy(
+                update={"skills": loaded_skills, "load_public_skills": False}
+            )
         else:
             logger.warning("No skills loaded, falling back to public skills")
-            agent_context = AgentContext(skills=[], load_public_skills=True)
+            agent_context = base.model_copy(
+                update={"skills": [], "load_public_skills": True}
+            )
 
-        return loaded_skills, agent_context
+        # ``model_copy`` skips validators, so re-run the resolution that
+        # applies ``load_*_skills`` and the ``disabled_skills`` deny-list.
+        return loaded_skills, agent_context.resolve_auto_skills()

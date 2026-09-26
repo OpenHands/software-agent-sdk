@@ -1,7 +1,10 @@
-"""Persisted settings schema migration coverage.
+"""Telemetry consent stays in ``misc_settings``.
 
-Telemetry consent lives in ``misc_settings.telemetry.consent`` and does not
-require a schema bump. Schema v4 advances the nested agent-settings format.
+Consent lives in ``misc_settings.telemetry.consent``, which needs no typed
+field and no dedicated schema change because ``misc_settings`` already exists
+and is already persisted. (The persisted-settings schema version has since
+advanced for unrelated reasons — see ``PERSISTED_SETTINGS_SCHEMA_VERSION`` — but
+never because of consent.)
 """
 
 from datetime import datetime

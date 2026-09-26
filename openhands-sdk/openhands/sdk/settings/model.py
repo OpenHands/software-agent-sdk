@@ -42,6 +42,7 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
 )
@@ -684,15 +685,22 @@ def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
-    """Drop persisted runtime timestamps while preserving an explicit no-time value."""
+    """Drop the deprecated ``llm.modify_params`` compatibility field.
 
+    ``LLM.modify_params`` was deprecated in v1.42.0 and removed in v1.47.0
+    (LiteLLM parameter modification is enabled process-wide). Persisted payloads
+    written by older releases still carry ``llm.modify_params``; drop it here so
+    the migrated payload is a clean current-schema shape. (``LLM`` itself uses
+    ``extra="ignore"``, so an un-migrated field would also be dropped on load,
+    but migrations should still emit canonical payloads rather than lean on
+    lenient validation.)
+    """
     migrated = dict(payload)
-    agent_context = migrated.get("agent_context")
-    if isinstance(agent_context, Mapping):
-        agent_context = dict(agent_context)
-        if agent_context.get("current_datetime") is not None:
-            agent_context.pop("current_datetime")
-        migrated["agent_context"] = agent_context
+    llm = migrated.get("llm")
+    if isinstance(llm, Mapping):
+        llm = dict(llm)
+        llm.pop("modify_params", None)
+        migrated["llm"] = llm
     migrated["schema_version"] = 6
     return migrated
 
@@ -1232,7 +1240,9 @@ class ConversationSettings(BaseModel):
 
 AgentKind = Literal["openhands", "llm", "acp"]
 
-ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
+ACPServerKind = Literal[
+    "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
+]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
@@ -1320,6 +1330,50 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    enable_classify_and_switch_llm_tool: bool = Field(
+        default=False,
+        description=(
+            "Enable the built-in route_task_to_model tool, which routes the "
+            "task to the best LLM profile using the active meta-profile. When no "
+            "active_meta_profile is set, the first available meta-profile is used."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable intelligent model routing tool",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description=(
+            "Name of the active meta-profile (in ~/.openhands/meta-profiles) used "
+            "by the route_task_to_model tool to route tasks to LLM profiles."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Active meta-profile",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
+    meta_profile: MetaProfile | None = Field(
+        default=None,
+        description=(
+            "Inline configuration for the active meta-profile. Cloud runtimes "
+            "use this field because their ephemeral filesystem does not contain "
+            "the control plane's meta-profile store."
+        ),
+    )
+    meta_profile_llms: dict[str, LLM] = Field(
+        default_factory=dict,
+        description=(
+            "Resolved LLM configurations referenced by the active meta-profile. "
+            "Cloud control planes hydrate this map for ephemeral runtimes."
+        ),
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
@@ -1403,7 +1457,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
+        from openhands.sdk.tool import Tool
+        from openhands.sdk.tool.builtins import (
+            BUILT_IN_TOOLS,
+            ClassifyAndSwitchLLMTool,
+            SwitchLLMTool,
+        )
         from openhands.sdk.tool.defaults import default_tool_specs
 
         # Single defaulting point: None = the canonical default set (honoring
@@ -1417,6 +1476,21 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
+
+        # The routing tool needs the active meta-profile name, which the
+        # name-only ``include_default_tools`` path cannot pass, so add it as a
+        # ``Tool`` spec carrying the param. When no meta-profile is active, the
+        # tool falls back to the first available one, so we still wire it.
+        tools = list(tools)
+        if self.enable_classify_and_switch_llm_tool:
+            params: dict[str, Any] = {}
+            if self.active_meta_profile:
+                params["active_meta_profile"] = self.active_meta_profile
+            if self.meta_profile:
+                params["meta_profile"] = self.meta_profile.model_dump(mode="json")
+            if self.meta_profile_llms:
+                params["meta_profile_llms"] = self.meta_profile_llms
+            tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
