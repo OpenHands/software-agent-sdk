@@ -1,0 +1,60 @@
+{
+  "passed": true,
+  "outcome": "PASS",
+  "offline": true,
+  "offline_case": "normal",
+  "model": "TestLLM",
+  "checks": {
+    "notes_committed_without_history_answer": true,
+    "source_events_hidden": true,
+    "answers_absent_from_active_context": true,
+    "reset_completed_before_retrieval": true,
+    "notes_read_after_reset": true,
+    "hidden_history_search_after_reset": true,
+    "hidden_history_read_after_reset": true,
+    "answer_exact_match": true
+  },
+  "request_policy": {
+    "max_total_attempts": 12,
+    "min_interval_seconds": 6,
+    "attempts_per_completion": 3,
+    "retry_wait_seconds": [
+      20,
+      40
+    ]
+  },
+  "scope": "Post-reset native tool retrieval; no quality comparison or restart test",
+  "expected": {
+    "note_value": "NOTE-3957dc3868ae6d54",
+    "history_value": "HIST-1cdb22a0060681a1"
+  },
+  "conversation_id": "c0251e68-f769-48c2-8eab-d1e40a3f9605",
+  "source_event_ids": [
+    "6ac0742c-89a5-4608-bd88-a8dd7940a32b",
+    "a015b8c0-2278-41e1-a8d2-69c5c96c0dba"
+  ],
+  "notes_version_id": "129b3d91-47d7-452e-8a42-6303dc46c277",
+  "reset_event_id": "8441d92b-9aef-4249-aaba-fa9e63bc47a8",
+  "answer": "{\"note_value\": \"NOTE-3957dc3868ae6d54\", \"history_value\": \"HIST-1cdb22a0060681a1\"}",
+  "execution_status": "finished",
+  "runtime_error_codes": [],
+  "metrics": {
+    "model_name": "default",
+    "accumulated_cost": 0.0,
+    "max_budget_per_task": null,
+    "accumulated_token_usage": {
+      "model": "default",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 0,
+      "context_window": 0,
+      "per_turn_token": 0,
+      "response_id": ""
+    },
+    "costs": [],
+    "response_latencies": [],
+    "token_usages": []
+  }
+}

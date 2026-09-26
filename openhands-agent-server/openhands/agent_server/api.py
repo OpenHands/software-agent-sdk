@@ -96,6 +96,7 @@ from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
+from openhands.sdk.io.storage_safety import StorageSafetyError
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
@@ -545,6 +546,12 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
+
+    @api.exception_handler(StorageSafetyError)
+    async def _storage_safety_handler(
+        _request: Request, exc: StorageSafetyError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=507, content=exc.to_dict())
 
     @api.exception_handler(CredentialBindingActivationRequired)
     async def _credential_binding_activation_required_handler(

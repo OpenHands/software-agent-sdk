@@ -1,0 +1,51 @@
+
+> @openhands/typescript-client@1.49.5 prepare
+> npm run clean && npm run build
+
+
+> @openhands/typescript-client@1.49.5 clean
+> rimraf dist
+
+
+> @openhands/typescript-client@1.49.5 build
+> tsc && node ./scripts/copy-json-assets.mjs && node ./scripts/rewrite-relative-imports.mjs
+
+copy-json-assets: copied 1 file(s) to dist/
+
+added 202 packages, and audited 203 packages in 3s
+
+70 packages are looking for funding
+  run `npm fund` for details
+
+6 vulnerabilities (1 moderate, 5 high)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+npm warn install-scripts 2 packages have install scripts not yet covered by allowScripts:
+npm warn install-scripts   @openrouter/sdk@1.2.147 (postinstall: node scripts/check-types.js || true)
+npm warn install-scripts   fsevents@2.3.3 (install: (install scripts present))
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+
+> @openhands/typescript-client@1.49.5 build
+> tsc && node ./scripts/copy-json-assets.mjs && node ./scripts/rewrite-relative-imports.mjs
+
+copy-json-assets: copied 1 file(s) to dist/
+
+> @openhands/typescript-client@1.49.5 test
+> vitest run --config vitest.config.ts
+
+
+ RUN  v5.0.0 /Users/yuexiao/software-agent-sdk/clients/typescript
+
+
+ Test Files  21 passed (21)
+      Tests  338 passed (338)
+   Start at  10:33:09
+   Duration  1.70s (import 68%, transform 16%, tests 16%, worker 1%)
+

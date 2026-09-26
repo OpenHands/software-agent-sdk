@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import Condensation, HistoryIndexEvent
 from openhands.sdk.llm import LLM, Message
 
 
@@ -575,7 +575,7 @@ def prepare_llm_messages(
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
-) -> list[Message] | Condensation: ...
+) -> list[Message] | Condensation | HistoryIndexEvent: ...
 
 
 def prepare_llm_messages(
@@ -583,7 +583,7 @@ def prepare_llm_messages(
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
-) -> list[Message] | Condensation:
+) -> list[Message] | Condensation | HistoryIndexEvent:
     """Prepare LLM messages from a conversation view.
 
     This utility function extracts the common logic for preparing conversation
@@ -620,7 +620,7 @@ def prepare_llm_messages(
             case View():
                 llm_convertible_events = condensation_result.events
 
-            case Condensation():
+            case Condensation() | HistoryIndexEvent():
                 return condensation_result
 
     # Convert events to messages
@@ -643,7 +643,7 @@ async def aprepare_llm_messages(
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
-) -> list[Message] | Condensation:
+) -> list[Message] | Condensation | HistoryIndexEvent:
     """Async variant of :func:`prepare_llm_messages`.
 
     Calls ``condenser.acondense()`` so that condensers backed by an LLM can
@@ -657,7 +657,7 @@ async def aprepare_llm_messages(
         match condensation_result:
             case View():
                 llm_convertible_events = condensation_result.events
-            case Condensation():
+            case Condensation() | HistoryIndexEvent():
                 return condensation_result
 
     messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)

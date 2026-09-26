@@ -14,6 +14,8 @@ import type {
   ConversationSearchResponse,
   ForkConversationRequest,
   NavigateConversationRequest,
+  RecoverStorageRequest,
+  RecoverStorageResponse,
   SetConfirmationPolicyRequest,
   SetSecurityAnalyzerRequest,
   StartGoalRequest,
@@ -291,6 +293,21 @@ export class ConversationClient {
     const response = await this.client.post<Success>(
       `/api/conversations/${conversationId}/condense`,
       {}
+    );
+    return response.data;
+  }
+
+  /**
+   * Reconcile storage failure after inspection without restarting execution.
+   * Requires a server with storage recovery support; does not start a run.
+   */
+  async recoverStorage(
+    conversationId: string,
+    request: RecoverStorageRequest = {}
+  ): Promise<RecoverStorageResponse> {
+    const response = await this.client.post<RecoverStorageResponse>(
+      `/api/conversations/${conversationId}/storage/recover`,
+      request
     );
     return response.data;
   }

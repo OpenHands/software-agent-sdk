@@ -14,6 +14,8 @@ from openhands.sdk.event import (
     LLMConvertibleEvent,
 )
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.condenser import ContextWindowReminderEvent, HistoryIndexEvent
+from openhands.sdk.event.types import EventID
 
 
 logger = getLogger(__name__)
@@ -31,6 +33,9 @@ class View(BaseModel):
 
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
+
+    latest_condensation_id: EventID | None = None
+    reminded_window_ids: set[EventID | None] = Field(default_factory=set)
 
     def __len__(self) -> int:
         return len(self.events)
@@ -121,6 +126,16 @@ class View(BaseModel):
             case Condensation():
                 self.events = event.apply(self.events)
                 self.unhandled_condensation_request = False
+                self.latest_condensation_id = event.id
+
+            case HistoryIndexEvent():
+                self.events = event.apply(self.events)
+                self.unhandled_condensation_request = False
+                self.latest_condensation_id = event.id
+
+            case ContextWindowReminderEvent():
+                self.reminded_window_ids.add(event.window_id)
+                self.events.append(event)
 
             case CondensationRequest():
                 self.unhandled_condensation_request = True

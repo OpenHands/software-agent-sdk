@@ -1,0 +1,27 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/yuexiao/software-agent-sdk
+configfile: pyproject.toml
+plugins: anyio-4.11.0, libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 202 items
+
+tests/sdk/test_settings.py ............................................. [ 22%]
+........................................................................ [ 57%]
+............................                                             [ 71%]
+tests/sdk/agent/test_notes_retrieval.py .....                            [ 74%]
+tests/sdk/context/condenser/test_notes_retrieval_condenser.py .......... [ 79%]
+                                                                         [ 79%]
+tests/sdk/agent/test_critic_storage_safety.py ..                         [ 80%]
+tests/sdk/conversation/local/test_storage_safety.py ..............       [ 87%]
+tests/sdk/conversation/local/test_auth_error_friendly_message.py ....    [ 89%]
+tests/sdk/io/test_storage_safety.py .....                                [ 91%]
+tests/sdk/llm/test_auth_refresh_retry.py .................               [100%]
+
+=============================== warnings summary ===============================
+tests/sdk/test_settings.py::test_notes_settings_run_with_required_tools[defaults]
+  /Users/yuexiao/software-agent-sdk/openhands-tools/openhands/tools/terminal/impl.py:115: UserWarning: tmux is not installed. Falling back to subprocess-based terminal, which may be less stable. For best agent performance, install tmux (e.g. `apt-get install tmux` or `brew install tmux`).
+    self._session = create_terminal_session(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 202 passed, 1 warning in 4.01s ========================

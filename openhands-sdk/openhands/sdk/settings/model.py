@@ -318,6 +318,50 @@ class NoOpCondenserSettings(CondenserSettings):
         return NoOpCondenser()
 
 
+class NotesRetrievalCondenserSettings(CondenserSettings):
+    """Opt-in context windows backed by durable notes and history retrieval."""
+
+    condenser_kind: Literal["notes_retrieval"] = Field(
+        default="notes_retrieval",
+        description="Use notes and history retrieval instead of an LLM summary.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description="Token ceiling; None uses the selected model's input limit.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
+    keep_first: int = Field(
+        default=4,
+        ge=0,
+        description="Minimum number of initial events retained across windows.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
+    keep_recent: int = Field(
+        default=8,
+        ge=0,
+        description="Minimum number of recent events retained across windows.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
+    reminder_fraction: float = Field(
+        default=0.8,
+        gt=0,
+        lt=1,
+        description="Context budget fraction at which to request progress notes.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
+        if not self.enabled:
+            return None
+        from openhands.sdk.context.condenser import NotesRetrievalCondenser
+
+        return NotesRetrievalCondenser(
+            **self.model_dump(exclude={"enabled", "condenser_kind"})
+        )
+
+
 def _condenser_settings_discriminator(value: Any) -> str:
     """Discriminator for :data:`CondenserSettingsConfig`.
 
@@ -334,7 +378,8 @@ def _condenser_settings_discriminator(value: Any) -> str:
 
 CondenserSettingsConfig = Annotated[
     Annotated[LLMSummarizingCondenserSettings, Tag("llm_summarizing")]
-    | Annotated[NoOpCondenserSettings, Tag("no_op")],
+    | Annotated[NoOpCondenserSettings, Tag("no_op")]
+    | Annotated[NotesRetrievalCondenserSettings, Tag("notes_retrieval")],
     Discriminator(_condenser_settings_discriminator),
 ]
 """Discriminated union over the condenser-settings variants."""
@@ -1446,6 +1491,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.tool.builtins import (
             BUILT_IN_TOOLS,
             ClassifyAndSwitchLLMTool,
+            ContextNotesTool,
+            ConversationHistoryTool,
             SwitchLLMTool,
         )
         from openhands.sdk.tool.defaults import default_tool_specs
@@ -1479,6 +1526,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
+        if isinstance(self.condenser, NotesRetrievalCondenserSettings) and (
+            condenser is not None
+        ):
+            configured_names = {tool.name for tool in tools}
+            for tool_class in (ContextNotesTool, ConversationHistoryTool):
+                if tool_class.__name__ not in configured_names:
+                    tools.append(Tool(name=tool_class.__name__))
         return Agent(
             llm=llm,
             tools=tools,

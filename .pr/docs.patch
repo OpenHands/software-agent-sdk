@@ -1,0 +1,298 @@
+diff --git a/docs.json b/docs.json
+index 21af0a8..cfeaa2b 100644
+--- a/docs.json
++++ b/docs.json
+@@ -353,6 +353,7 @@
+               "sdk/guides/plugins",
+               "sdk/guides/convo-persistence",
+               "sdk/guides/context-condenser",
++              "sdk/guides/convo-notes-and-history",
+               "sdk/guides/persistent-memory",
+               "sdk/guides/agent-settings",
+               "sdk/guides/parallel-tool-execution",
+@@ -881,4 +882,4 @@
+       "destination": "/openhands/usage/automations/overview"
+     }
+   ]
+-}
+\ No newline at end of file
++}
+diff --git a/sdk/guides/context-condenser.mdx b/sdk/guides/context-condenser.mdx
+index 5ffadce..d19f5b9 100644
+--- a/sdk/guides/context-condenser.mdx
++++ b/sdk/guides/context-condenser.mdx
+@@ -19,6 +19,9 @@ The context condenser solves this by intelligently summarizing older parts of th
+ 
+ ## Default Implementation: `LLMSummarizingCondenser`
+ 
++For an opt-in mode that saves agent-written notes and retrieves original events
++after a context reset, see [Notes, History Retrieval, And Storage Protection](/sdk/guides/convo-notes-and-history).
++
+ OpenHands SDK provides `LLMSummarizingCondenser` as the default condenser implementation. This condenser uses an LLM to generate summaries of conversation history when it exceeds the configured size limit.
+ 
+ ### How It Works
+diff --git a/sdk/guides/convo-notes-and-history.mdx b/sdk/guides/convo-notes-and-history.mdx
+new file mode 100644
+index 0000000..de9fa28
+--- /dev/null
++++ b/sdk/guides/convo-notes-and-history.mdx
+@@ -0,0 +1,259 @@
++---
++title: "Notes, History Retrieval, And Storage Protection"
++description: "Keep editable notes across context windows, retrieve original events, and pause before local disks fill."
++---
++
++`NotesRetrievalCondenser` is an opt-in alternative to the default summarizing
++condenser. It reminds the agent to save notes before a context reset, then replaces
++older context with an index pointing to notes and retrievable history. The original
++events remain in the conversation's event log.
++
++## Enable Notes And Retrieval
++
++Use an [already configured LLM](/sdk/getting-started) with the optional native tools:
++
++```python
++from openhands.sdk import (
++    Agent,
++    Conversation,
++    NotesRetrievalCondenser,
++    StorageSafetyConfig,
++)
++
++# Use your configured LLM and add your task tool specs to tools.
++agent = Agent(
++    llm=llm,
++    tools=[],
++    include_default_tools=[
++        "FinishTool",
++        "ThinkTool",
++        "ContextNotesTool",
++        "ConversationHistoryTool",
++        "NewContextTool",
++    ],
++    condenser=NotesRetrievalCondenser(max_size=240),
++)
++conversation = Conversation(
++    agent=agent,
++    workspace=".",
++    persistence_dir="./.conversations",
++    storage_safety=StorageSafetyConfig(min_free_ratio=0.05),
++)
++```
++
++The notes and history tools are required by this condenser. `NewContextTool` is
++optional: it lets the agent request a reset after a complete batch of tool results
++has been recorded. Threshold-based resets still apply without that tool. These are
++native SDK tools; no MCP server is required.
++
++The condenser can send one reminder per context window before its hard threshold.
++`max_size` limits the number of events in the active view. For token pressure, the
++effective limit is the smaller of `max_tokens` (when configured) and the model's
++known input limit. `reminder_fraction` defaults to `0.8` of either threshold.
++An input that jumps directly past a hard threshold may reset without a reminder.
++The condenser keeps
++the configured initial and recent events, system prompts, the latest user message,
++and complete tool exchanges. If those protected events alone prevent a smaller
++context that fits the budget, it raises an error instead of repeatedly resetting.
++
++Use a persistent local directory for restart durability. An in-memory conversation
++does not provide durable storage. The default condenser and existing conversations
++remain unchanged unless the new features are selected explicitly.
++
++## Enable Through Settings
++
++For settings-based launches, select `NotesRetrievalCondenserSettings`. The settings
++factory adds `ContextNotesTool` and `ConversationHistoryTool` when this condenser
++is enabled, including when `tools` is omitted or empty. Existing explicit specs
++for either tool are retained without duplication. Other configured tools and the
++stored settings are unchanged.
++
++```python
++from openhands.sdk import OpenHandsAgentSettings
++from openhands.sdk.settings import NotesRetrievalCondenserSettings
++
++settings = OpenHandsAgentSettings(
++    llm=llm,
++    condenser=NotesRetrievalCondenserSettings(enabled=True, max_size=240),
++)
++agent = settings.create_agent()
++```
++
++As with other settings-based agents, the runtime must register the default task
++tools before starting a conversation. The Agent Server handles that registration;
++standalone SDK applications can call
++`openhands.tools.preset.default.register_default_tools(enable_browser=False)`.
++Use `tools=[]` if no task tools are needed; the two required memory tools are still
++added while this condenser is enabled.
++
++`NewContextTool` remains optional and must be selected explicitly for manual
++resets. Disabled notes settings do not add either memory tool. Direct `Agent(...)`
++construction still requires explicit memory tools, as shown above.
++
++## Write Long Notes Without Truncation
++
++The agent calls `context_notes` with a `command`:
++
++| Command | Behavior |
++| --- | --- |
++| `write` | Replace the current notes with `content`. |
++| `append` | Append exactly the supplied `content`, including any desired newline. |
++| `read` | Return a page with text, `version_id`, `total_chars`, and `next_offset`. |
++
++Each write or append accepts up to 16,000 characters. An oversized mutation fails
++as a whole and leaves the current notes unchanged. Longer notes can be saved with
++a write followed by multiple appends; there is no 16,000-character aggregate cap.
++Append events store only the new piece, not another copy of the cumulative notes.
++
++Reads default to 4,000 characters and allow up to 8,000. Reuse the returned
++`version_id` with subsequent offsets to read a consistent version. A version is
++the ID of a successfully committed notes observation. Normal secret masking applies.
++Reads, failed writes, and uncommitted actions do not create notes versions.
++
++A mutation becomes durable only when the agent loop commits its successful
++observation to persistent storage. Calling `conversation.execute_tool()` directly
++with `write` or `append` returns an observation without committing it, so it does
++not save notes. Direct `read` calls can inspect already committed notes.
++
++Mutations in a tool batch commit in call order. A read in that same batch sees the
++previously committed notes; read again in the next turn to observe the mutations.
++Versions are scoped to the active conversation branch.
++
++## Retrieve Earlier Events
++
++`conversation_history` searches literal text in the current conversation's active
++branch and reads events by ID, including events removed from the model's context.
++Search previews and reads are bounded and paginated; the source event is not
++truncated. Provider reasoning and internal state are not exposed by this tool.
++The retrieval tools' own traffic is excluded from history search to avoid echoes.
++
++Store useful event IDs in notes rather than copying large tool outputs. Event
++files remain the source of truth for recovery and branching: do not delete
++individual JSON files to free space. Condensation changes the model's view, not
++the disk contents.
++
++## Pause Below Five Percent Free Space
++
++`StorageSafetyConfig` is independent of condensation and disabled by default.
++When enabled, it checks the filesystem holding local persistence and the local
++workspace. The ratio uses available bytes for the current process divided by total
++filesystem capacity. `min_free_ratio` defaults to `0.05` and can be configured.
++Below the selected threshold, new work is refused. Known writes that would cross
++the threshold are also refused, allowing for the complete temporary file needed
++by atomic replacement.
++
++Active runs check every five seconds and at execution boundaries. Already-started
++results and stop metadata may use the remaining space. The watchdog does not kill
++in-flight asynchronous tool operations. After freeing space or expanding storage,
++explicitly call `run()` or `arun()` again; the runtime rechecks capacity before
++resuming. It does not automatically delete notes, old versions, or events.
++
++Catch `StorageSafetyError` for structured diagnostics (`code`, free and total
++bytes, threshold, pending write size, and shortage). An optional
++`storage_safety_callback` receives errors independently of event persistence.
++
++This is an early-stop mechanism, not an operating-system disk quota. Other
++processes or an already-running command can still exhaust the remaining space.
++Committed records are retained. Outputs not yet persisted when the disk fails
++cannot be guaranteed recoverable after process exit.
++
++Checks apply at SDK-controlled admission and persistence boundaries. For a custom
++`AgentBase` implementation or an ACP agent, calls and file writes inside the custom
++step or external process may be opaque to the SDK. The SDK cannot admit or stop
++each of those internal operations separately. Use operating-system or container
++limits when you need an enforced disk quota.
++
++## Server Configuration And Recovery
++
++Set deployment configuration for all server conversations:
++
++```bash
++export OH_STORAGE_SAFETY_MIN_FREE_RATIO=0.05
++```
++
++Remote conversations use the server's disk checks, not the client's free space.
++Conversation request settings do not disable the deployment policy, and delegated
++tasks inherit it.
++Low-space HTTP requests return status `507` with structured diagnostics. Failures
++during background runs also reach connected clients without requiring a new event
++to be written successfully.
++
++A normal capacity pause only needs space and an explicit retry. An actual write
++failure requires inspection: a tool may have changed files even though its result
++was not recorded. Inspect those effects, then reconcile without rerunning the tool:
++
++<Tabs>
++<Tab title="Python">
++
++```python
++conversation.recover_storage(acknowledge_unknown_outcomes=True)
++# Write-failure recovery leaves the conversation paused. Resume separately:
++conversation.run()
++```
++
++</Tab>
++<Tab title="TypeScript">
++
++For an existing `RemoteConversation` connected to a supporting Agent Server:
++
++```typescript
++await conversation.recoverStorage({
++  acknowledge_unknown_outcomes: true,
++  // For ambiguous crash history only, choose an inspected event:
++  // head_event_id: "inspected-event-id",
++});
++// Recovery refreshes remote state but does not start a run:
++await conversation.run();
++```
++
++The client and server must both include the recovery API. The lower-level
++`ConversationClient.recoverStorage(conversationId, request)` returns the server's
++success response. HTTP errors preserve structured diagnostics in
++`HttpError.response`.
++
++</Tab>
++</Tabs>
++
++For Agent Server, use `POST /api/conversations/{id}/storage/recover` with
++`{"acknowledge_unknown_outcomes": true}`, then separately call the conversation's
++`run` endpoint. Recovery records missing outcomes as unknown; it does not execute
++the original tools again. Ambiguous branches require manual inspection.
++
++If a restart finds events beyond the saved branch head, recovery does not guess
++which branch to select. Inspect the events and pass an explicit `head_event_id`
++along with `acknowledge_unknown_outcomes=True` (or both fields in the HTTP body).
++A normal capacity pause preserves the current branch head.
++If no write failed, `recover_storage()` also preserves the execution status;
++an idle conversation remains idle. Actual write-failure recovery leaves it paused.
++Neither form of recovery starts a run automatically. The HTTP endpoint returns
++`409` if the run is active or further review is needed, and `507` if storage is
++still unavailable.
++
++Creating or reopening a protected `LocalConversation` also checks capacity. If
++free space is still below the threshold, that operation fails closed. You can
++inspect existing event files without creating a conversation or starting an agent:
++
++```python
++from pathlib import Path
++
++from openhands.sdk.conversation.event_store import EventLog
++from openhands.sdk.io import LocalFileStore
++
++# Use the existing directory containing base_state.json and events/.
++conversation_dir = Path("/path/to/.conversations/<conversation-id-hex>")
++if not conversation_dir.is_dir():
++    raise FileNotFoundError(conversation_dir)
++
++events = EventLog(LocalFileStore(str(conversation_dir)))
++for event in events:
++    print(event.id, event.kind, event.parent_id)
++```
++
++This snippet reads records without running tools or deleting files. It does not
++guarantee the underlying filesystem remains readable after an I/O failure. Missing
++or corrupt records need inspection before recovery. Python `RemoteConversation`
++also exposes `recover_storage(acknowledge_unknown_outcomes=True,
++head_event_id=...)`, forwarding recovery to the server.
++
++See the [runnable example](https://github.com/OpenHands/software-agent-sdk/blob/main/examples/01_standalone_sdk/notes_retrieval/main.py)
++and [conversation persistence guide](/sdk/guides/convo-persistence).

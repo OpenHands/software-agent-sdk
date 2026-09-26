@@ -1,6 +1,10 @@
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import (
+    Condensation,
+    ContextWindowReminderEvent,
+    HistoryIndexEvent,
+)
 from openhands.sdk.llm import LLM
 
 
@@ -42,21 +46,23 @@ class PipelineCondenser(CondenserBase):
     condensers: list[CondenserBase]
     """The list of condensers to apply in order."""
 
-    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
-        result: View | Condensation = view
+    def condense(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> View | Condensation | HistoryIndexEvent:
+        result: View | Condensation | HistoryIndexEvent = view
         for condenser in self.condensers:
-            if isinstance(result, Condensation):
+            if isinstance(result, (Condensation, HistoryIndexEvent)):
                 break
             result = condenser.condense(result, agent_llm=agent_llm)
         return result
 
     async def acondense(
         self, view: View, agent_llm: LLM | None = None
-    ) -> View | Condensation:
+    ) -> View | Condensation | HistoryIndexEvent:
         """Async variant of :meth:`condense`."""
-        result: View | Condensation = view
+        result: View | Condensation | HistoryIndexEvent = view
         for condenser in self.condensers:
-            if isinstance(result, Condensation):
+            if isinstance(result, (Condensation, HistoryIndexEvent)):
                 break
             result = await condenser.acondense(result, agent_llm=agent_llm)
         return result
@@ -65,3 +71,15 @@ class PipelineCondenser(CondenserBase):
         return any(
             condenser.handles_condensation_requests() for condenser in self.condensers
         )
+
+    def get_reminder(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> ContextWindowReminderEvent | None:
+        for condenser in self.condensers:
+            reminder = condenser.get_reminder(view, agent_llm)
+            if reminder is not None:
+                return reminder
+        return None
+
+    def required_tools(self) -> frozenset[str]:
+        return frozenset().union(*(c.required_tools() for c in self.condensers))

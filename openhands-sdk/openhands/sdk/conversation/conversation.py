@@ -16,6 +16,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.hooks import HookConfig
+from openhands.sdk.io.storage_safety import StorageSafetyCallback, StorageSafetyConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
@@ -66,6 +67,8 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: str | Path | LocalWorkspace = "workspace/project",
+        storage_safety: StorageSafetyConfig | None = None,
+        storage_safety_callback: StorageSafetyCallback | None = None,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
@@ -124,6 +127,8 @@ class Conversation:
         agent: AgentBase,
         *,
         workspace: str | Path | LocalWorkspace | RemoteWorkspace = "workspace/project",
+        storage_safety: StorageSafetyConfig | None = None,
+        storage_safety_callback: StorageSafetyCallback | None = None,
         plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
@@ -153,6 +158,11 @@ class Conversation:
         )
 
         if isinstance(workspace, RemoteWorkspace):
+            if storage_safety is not None or storage_safety_callback is not None:
+                raise ValueError(
+                    "Configure storage safety on the remote agent server, "
+                    "not on the client filesystem"
+                )
             # For RemoteConversation, persistence_dir should not be used.
             if persistence_dir is not None:
                 raise ValueError(
@@ -213,6 +223,8 @@ class Conversation:
 
         return LocalConversation(
             agent=agent,
+            storage_safety=storage_safety,
+            storage_safety_callback=storage_safety_callback,
             plugins=plugins,
             conversation_id=conversation_id,
             callbacks=callbacks,

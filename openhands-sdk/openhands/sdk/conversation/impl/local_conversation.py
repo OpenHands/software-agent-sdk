@@ -3,8 +3,9 @@ import atexit
 import contextlib
 import copy
 import json
+import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -45,14 +46,22 @@ from openhands.sdk.event import (
     EventID,
     InterruptEvent,
     MessageEvent,
+    ObservationBaseEvent,
     ObservationEvent,
     PauseEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import FileStore, LocalFileStore
+from openhands.sdk.io.storage_safety import (
+    StorageSafetyCallback,
+    StorageSafetyConfig,
+    StorageSafetyController,
+    StorageSafetyError,
+)
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
@@ -125,6 +134,7 @@ _RUNTIME_MCP_TIMEOUT_SECS = 30
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
 
 ASK_AGENT_LLM_USAGE_ID: Final[str] = "ask-agent-llm"
+_STORAGE_CHECK_INTERVAL = 5.0
 
 
 def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
@@ -240,6 +250,8 @@ class LocalConversation(BaseConversation):
         mcp_tool_provider: MCPToolProvider | None = None,
         profile_store_dir: str | Path | None = None,
         stream_callbacks: list[StreamProgressCallbackType] | None = None,
+        storage_safety: StorageSafetyConfig | None = None,
+        storage_safety_callback: StorageSafetyCallback | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -302,6 +314,10 @@ class LocalConversation(BaseConversation):
                 for state and EventLog storage.
             profile_store_dir: Optional directory containing saved LLM profiles.
                 Defaults to ``~/.openhands/profiles``.
+            storage_safety: Optional local disk admission policy. Requires local
+                persistent storage; omitted by default.
+            storage_safety_callback: Receives storage-stop diagnostics even when
+                persistence is unavailable. May run on the watchdog thread.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -312,6 +328,13 @@ class LocalConversation(BaseConversation):
         self._cancel_token = None
         self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
+        self._storage_safety: StorageSafetyController | None = None
+        self._storage_safety_callback = storage_safety_callback
+        self._storage_run_active = False
+        self._storage_started_actions: set[str] = set()
+        self._storage_actions_lock = threading.Lock()
+        self._storage_recovery_required = False
+        self._storage_cold_recovery = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -374,6 +397,24 @@ class LocalConversation(BaseConversation):
         )
         self.workspace = workspace
         ws_path = Path(self.workspace.working_dir)
+        if storage_safety is not None:
+            if file_store is not None and not isinstance(file_store, LocalFileStore):
+                raise ValueError("Storage safety requires a LocalFileStore")
+            if file_store is None and persistence_dir is None:
+                raise ValueError("Storage safety requires local persistent storage")
+            if isinstance(file_store, LocalFileStore):
+                storage_path = file_store.root
+            else:
+                assert persistence_dir is not None
+                storage_path = self.get_persistence_dir(persistence_dir, desired_id)
+            self._storage_safety = StorageSafetyController(
+                [ws_path, storage_path], storage_safety, self._notify_storage_stop
+            )
+            self._storage_safety.check()
+            if file_store is None:
+                file_store = LocalFileStore(storage_path)
+            assert isinstance(file_store, LocalFileStore)
+            file_store.storage_safety = self._storage_safety
         if not ws_path.exists():
             ws_path.mkdir(parents=True, exist_ok=True)
         self._state = ConversationState.create(
@@ -389,6 +430,31 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+        self._state._storage_safety = self._storage_safety
+        if self._storage_safety is not None:
+            branch = self._state.active_branch()
+            branch_ids = {event.id for event in branch}
+            leaf = self._state._resolve_active_leaf()
+            leaf_index = self._state.events.get_index(leaf) if leaf is not None else -1
+            self._storage_cold_recovery = (
+                self._state.execution_status == ConversationExecutionStatus.RUNNING
+                and any(
+                    event.id not in branch_ids
+                    and not isinstance(event, ConversationStateUpdateEvent)
+                    for event in self._state.events[leaf_index + 1 :]
+                )
+            )
+            self._storage_recovery_required = self._storage_cold_recovery or (
+                self._state.execution_status
+                in (
+                    ConversationExecutionStatus.RUNNING,
+                    ConversationExecutionStatus.ERROR,
+                )
+                and bool(ConversationState.get_unmatched_actions(branch))
+            )
+            if self._storage_recovery_required:
+                self._state._persistence_suspended = True
+                self._state.execution_status = ConversationExecutionStatus.ERROR
         # base_state.json is the source of truth for the agent. On resume with
         # ``agent=None`` the state holds the persisted agent; adopt it here so
         # ``self.agent`` and ``self._state.agent`` are the same object.
@@ -420,7 +486,27 @@ class LocalConversation(BaseConversation):
             # regions), so updating state here is thread-safe.
             # Single chokepoint: stamps parent_id (catching any event a hook
             # swapped in downstream of _tree_stamping) and advances HEAD.
-            self._state.append_event(e)
+            reserve = (
+                self._storage_safety.use_shutdown_reserve()
+                if self._storage_safety is not None
+                and (
+                    isinstance(
+                        e,
+                        (
+                            ObservationBaseEvent,
+                            PauseEvent,
+                            InterruptEvent,
+                            ConversationStateUpdateEvent,
+                        ),
+                    )
+                    or self._storage_run_active
+                    and e.source == "agent"
+                    or isinstance(e, ConversationErrorEvent)
+                )
+                else contextlib.nullcontext()
+            )
+            with reserve:
+                self._state.append_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -433,9 +519,7 @@ class LocalConversation(BaseConversation):
         # (e.g. a PubSub publish), so no subscriber is told about an event that
         # is not on disk yet. compose_callbacks' plain for-loop has no
         # try/except, so if persist raises here, the callbacks after it in the
-        # list never run. The visualizer is prepended below and so still renders
-        # ahead of persist — that is local terminal output, not an announcement
-        # a client can act on.
+        # list never run. Protected conversations also render only after persist.
         composed_list = [_default_callback] + callback_list
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
@@ -443,8 +527,10 @@ class LocalConversation(BaseConversation):
             self._visualizer = visualizer
             # Initialize the visualizer with conversation state
             self._visualizer.initialize(self._state)
-            composed_list = [self._visualizer.on_event] + composed_list
-            # visualizer should happen first for visibility
+            if self._storage_safety is None:
+                composed_list = [self._visualizer.on_event] + composed_list
+            else:
+                composed_list.insert(1, self._visualizer.on_event)
         elif isinstance(visualizer, type) and issubclass(
             visualizer, ConversationVisualizerBase
         ):
@@ -452,13 +538,15 @@ class LocalConversation(BaseConversation):
             self._visualizer = visualizer()
             # Initialize with state
             self._visualizer.initialize(self._state)
-            composed_list = [self._visualizer.on_event] + composed_list
-            # visualizer should happen first for visibility
+            if self._storage_safety is None:
+                composed_list = [self._visualizer.on_event] + composed_list
+            else:
+                composed_list.insert(1, self._visualizer.on_event)
         else:
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Compose the base callback chain (visualizer -> default -> user callbacks)
+        # Compose persistence, visualization and caller callbacks.
         base_callback = BaseConversation.compose_callbacks(composed_list)
         self._base_callback = base_callback  # Store for _ensure_plugins_loaded
 
@@ -547,6 +635,224 @@ class LocalConversation(BaseConversation):
             conversation_tags=tags,
         )
         self.delete_on_close = delete_on_close
+
+    @property
+    def storage_safety_config(self) -> StorageSafetyConfig | None:
+        """Local storage policy to inherit when creating sub-conversations."""
+        return self._storage_safety.config if self._storage_safety is not None else None
+
+    def _notify_storage_stop(self, error: StorageSafetyError) -> None:
+        if self._storage_safety_callback is not None:
+            self._storage_safety_callback(error)
+
+    def check_storage_safety(self) -> None:
+        """Refuse new execution after a low-space or persistence failure."""
+        if self._storage_safety is not None:
+            self._storage_safety.check()
+
+    def run_admitted_tool(
+        self, action: ActionEvent, run: Callable[[], list[Event]]
+    ) -> list[Event]:
+        """Check admission on the worker thread without acquiring the state lock."""
+        if self._storage_safety is None:
+            return run()
+        try:
+            self.check_storage_safety()
+        except StorageSafetyError:
+            return [
+                AgentErrorEvent(
+                    tool_name=action.tool_name,
+                    tool_call_id=action.tool_call_id,
+                    error=(
+                        "Tool was not started because storage safety stopped execution."
+                    ),
+                    classification=AGENT_OUTCOME,
+                )
+            ]
+        with self._storage_actions_lock:
+            self._storage_started_actions.add(action.id)
+        return run()
+
+    @contextlib.contextmanager
+    def _storage_run(self) -> Iterator[None]:
+        controller = self._storage_safety
+        if controller is None:
+            yield
+            return
+        stopped = threading.Event()
+
+        def watch() -> None:
+            while not stopped.wait(_STORAGE_CHECK_INTERVAL):
+                try:
+                    controller.check()
+                except StorageSafetyError:
+                    return
+
+        watcher: threading.Thread | None = None
+        try:
+            previous_error = controller.error
+            with self._state:
+                if self._state._persistence_suspended or (
+                    previous_error is not None
+                    and previous_error.code == "StorageWriteFailed"
+                ):
+                    self._storage_recovery_required = True
+            controller.resume()
+            if self._storage_recovery_required:
+                raise StorageSafetyError(
+                    "StorageRecoveryRequired",
+                    str(self._state.persistence_dir),
+                    min_free_ratio=controller.config.min_free_ratio,
+                    detail=(
+                        "Tool outcomes may be missing after a persistence failure. "
+                        "Inspect the workspace, then call recover_storage("
+                        "acknowledge_unknown_outcomes=True) before resuming."
+                    ),
+                )
+            with self._storage_actions_lock:
+                self._storage_started_actions.clear()
+            self._storage_run_active = True
+            watcher = threading.Thread(target=watch, daemon=True)
+            watcher.start()
+            yield
+            controller.check()
+        except StorageSafetyError as exc:
+            self._finish_storage_stop(exc)
+            raise
+        finally:
+            self._storage_run_active = False
+            stopped.set()
+            if watcher is not None:
+                watcher.join(timeout=1)
+
+    def _finish_storage_stop(self, error: StorageSafetyError) -> None:
+        controller = self._storage_safety
+        assert controller is not None
+        controller.stop(error)
+        with self._state:
+            if error.code in ("StorageWriteFailed", "StorageRecoveryRequired"):
+                self._state._persistence_suspended = True
+                self._storage_recovery_required = True
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                return
+            try:
+                with controller.use_shutdown_reserve():
+                    for action in ConversationState.get_unmatched_actions(
+                        self._state.active_branch()
+                    ):
+                        with self._storage_actions_lock:
+                            started = action.id in self._storage_started_actions
+                        self._on_event(
+                            AgentErrorEvent(
+                                tool_name=action.tool_name,
+                                tool_call_id=action.tool_call_id,
+                                error=(
+                                    "Tool outcome is unknown after storage stopped "
+                                    "execution; inspect its effects before retrying."
+                                    if started
+                                    else "Tool was not started: storage safety stopped "
+                                    "execution."
+                                ),
+                                classification=AGENT_OUTCOME,
+                            )
+                        )
+                    self._state.execution_status = ConversationExecutionStatus.PAUSED
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=error.code,
+                            detail=json.dumps(error.to_dict()),
+                        )
+                    )
+            except StorageSafetyError as exc:
+                self._state._persistence_suspended = True
+                self._storage_recovery_required = True
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                raise exc from error
+
+    def recover_storage(
+        self,
+        *,
+        acknowledge_unknown_outcomes: bool = False,
+        head_event_id: EventID | None = None,
+    ) -> None:
+        """Reconcile committed events after inspecting any uncertain tool effects.
+
+        Missing outcomes are recorded as unknown, never replayed as tool calls.
+        This does not restart execution; call ``run`` or ``arun`` explicitly.
+        A cold restart with events beyond the persisted HEAD requires an explicit
+        ``head_event_id`` after inspecting the history; no branch is guessed.
+        """
+        controller = self._storage_safety
+        if controller is None:
+            return
+        if self._storage_run_active:
+            raise RuntimeError(
+                "Cannot recover storage while the conversation is running"
+            )
+        previous_error = controller.error
+        with self._state:
+            requires_recovery = (
+                self._storage_recovery_required
+                or self._state._persistence_suspended
+                or previous_error is not None
+                and previous_error.code == "StorageWriteFailed"
+            )
+        if head_event_id is not None and not acknowledge_unknown_outcomes:
+            raise ValueError("Explicit recovery HEAD selection requires acknowledgment")
+        if not requires_recovery and head_event_id is None:
+            controller.resume()
+            return
+        if not acknowledge_unknown_outcomes:
+            raise ValueError(
+                "Inspect tool effects and acknowledge unknown outcomes first"
+            )
+        if self._storage_cold_recovery and head_event_id is None:
+            raise ValueError(
+                "Persisted events extend beyond HEAD; inspect the history and "
+                "supply head_event_id explicitly"
+            )
+        with self._state:
+            if head_event_id is not None and head_event_id not in self._state.events:
+                raise ValueError(f"Unknown recovery head_event_id: {head_event_id}")
+        if requires_recovery:
+            self._storage_recovery_required = True
+        controller.resume()
+        with self._state:
+            state = self._state
+            assert state._fs is not None
+            state._events = EventLog(state._fs)
+            state._events.set_write_guard(state._write_guard)
+            if head_event_id is not None:
+                if head_event_id not in state.events:
+                    raise ValueError(f"Unknown recovery head_event_id: {head_event_id}")
+                state.events.path_to_root(head_event_id)
+                state.leaf_event_id = head_event_id
+                state.head_is_empty = False
+            state.rebuild_view()
+            state._persistence_suspended = False
+            with controller.use_shutdown_reserve():
+                for action in ConversationState.get_unmatched_actions(
+                    state.active_branch()
+                ):
+                    self._on_event(
+                        AgentErrorEvent(
+                            tool_name=action.tool_name,
+                            tool_call_id=action.tool_call_id,
+                            error=(
+                                "Storage recovery: the tool's outcome was not "
+                                "committed. It may have completed; verify effects "
+                                "before retrying."
+                            ),
+                            classification=AGENT_OUTCOME,
+                        )
+                    )
+                state.execution_status = ConversationExecutionStatus.PAUSED
+                state._save_base_state(state._fs)
+            self._storage_recovery_required = False
+            self._storage_cold_recovery = False
+            with self._storage_actions_lock:
+                self._storage_started_actions.clear()
 
     def _tree_stamping(
         self, inner: ConversationCallbackType
@@ -821,6 +1127,7 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If ``from_event_id`` is not an event in this conversation.
         """
+        self.check_storage_safety()
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
         # its own object graph. Required because __init__ binds
@@ -851,6 +1158,9 @@ class LocalConversation(BaseConversation):
             if source_persistence is not None:
                 source_path = Path(source_persistence)
                 fork_persistence = str(source_path.parent)
+            elif self._storage_safety is not None:
+                assert isinstance(self._state._fs, LocalFileStore)
+                fork_persistence = str(Path(self._state._fs.root).parent)
 
             # Build the fork conversation (empty – no events yet)
             fork_conv = LocalConversation(
@@ -858,6 +1168,8 @@ class LocalConversation(BaseConversation):
                 workspace=self.workspace,
                 plugins=self._plugin_specs,
                 persistence_dir=fork_persistence,
+                storage_safety=self.storage_safety_config,
+                storage_safety_callback=self._storage_safety_callback,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
                 stuck_detection=self._stuck_detector is not None,
@@ -1817,6 +2129,7 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
+        self.check_storage_safety()
         # ACPAgent startup can take much longer than a normal send_message()
         # round-trip because it launches and initializes a subprocess-backed
         # session. Defer that work to run() so enqueueing the user message
@@ -1902,6 +2215,11 @@ class LocalConversation(BaseConversation):
 
     @observe(name="conversation.run")
     def run(self) -> None:
+        """Run the agent, enforcing any configured local storage safety policy."""
+        with self._storage_run():
+            self._run()
+
+    def _run(self) -> None:
         """Runs the conversation until the agent finishes.
 
         In confirmation mode:
@@ -1931,6 +2249,7 @@ class LocalConversation(BaseConversation):
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
+                self.check_storage_safety()
                 with self._state:
                     # Pause attempts to acquire the state lock
                     # Before value can be modified step can be taken
@@ -2041,6 +2360,8 @@ class LocalConversation(BaseConversation):
                             )
                         )
                         break
+        except StorageSafetyError:
+            raise
         except LLMAuthenticationError as e:
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
@@ -2088,6 +2409,11 @@ class LocalConversation(BaseConversation):
 
     @observe(name="conversation.arun")
     async def arun(self) -> None:
+        """Run asynchronously with the same storage safety policy as ``run``."""
+        with self._storage_run():
+            await self._arun()
+
+    async def _arun(self) -> None:
         """Async variant of :meth:`run`.
 
         Uses ``agent.astep()`` for non-blocking LLM I/O while keeping the
@@ -2148,6 +2474,7 @@ class LocalConversation(BaseConversation):
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
+                self.check_storage_safety()
                 acp_step_user_message_id: str | None = None
                 acp_step_user_message: MessageEvent | None = None
                 with self._state:
@@ -2556,6 +2883,8 @@ class LocalConversation(BaseConversation):
 
                 self._state.execution_status = ConversationExecutionStatus.PAUSED
                 self._on_event(InterruptEvent())
+        except StorageSafetyError:
+            raise
         except LLMAuthenticationError as e:
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
@@ -2863,6 +3192,7 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        self.check_storage_safety()
         # Ensure agent is initialized (needs tools_map)
         self._ensure_agent_ready()
 
@@ -2947,6 +3277,7 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If no user messages are found in the conversation.
         """
+        self.check_storage_safety()
         effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
             events=self._state.active_branch(),
@@ -2963,6 +3294,7 @@ class LocalConversation(BaseConversation):
         Raises ValueError if no compatible condenser exists.
         """
 
+        self.check_storage_safety()
         # Check if condenser is configured and handles condensation requests
         if (
             self.agent.condenser is None
@@ -3039,6 +3371,7 @@ class LocalConversation(BaseConversation):
             KeyError: If a tool from the original conversation is not available.
                 This is a configuration error (different from execution failure).
         """
+        self.check_storage_safety()
         # Ensure agent is initialized (loads plugins and initializes tools)
         self._ensure_agent_ready()
 
@@ -3055,6 +3388,7 @@ class LocalConversation(BaseConversation):
         for event in self._state.events:
             if not isinstance(event, ActionEvent):
                 continue
+            self.check_storage_safety()
             if event.action is None:
                 # Skip actions that failed validation during original run
                 continue
@@ -3135,6 +3469,7 @@ class LocalConversation(BaseConversation):
             KeyError: If the tool is not found in the agent's tools
             NotImplementedError: If the tool has no executor
         """
+        self.check_storage_safety()
         # Ensure agent is initialized (loads plugins and initializes tools)
         self._ensure_agent_ready()
 
@@ -3149,6 +3484,7 @@ class LocalConversation(BaseConversation):
         # Execute the tool
         if not tool.executor:
             raise NotImplementedError(f"Tool '{tool_name}' has no executor")
+        self.check_storage_safety()
         return tool(action, self)
 
     def __del__(self) -> None:

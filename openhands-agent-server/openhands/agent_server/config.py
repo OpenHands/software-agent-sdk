@@ -15,6 +15,7 @@ from openhands.agent_server.env_parser import (
     merge,
 )
 from openhands.agent_server.telemetry_types import DeploymentKind
+from openhands.sdk.io.storage_safety import StorageSafetyConfig
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
 
@@ -254,6 +255,14 @@ class Config(BaseModel):
         default=Path("workspace/conversations"),
         description=(
             "The location of the directory where conversations and events are stored."
+        ),
+    )
+    storage_safety: StorageSafetyConfig | None = Field(
+        default=None,
+        description=(
+            "Deployment-owned local disk protection for all conversations. "
+            "When enabled, low free space blocks new work until explicitly resumed "
+            "after cleanup or expansion."
         ),
     )
     workspace_path: Path = Field(

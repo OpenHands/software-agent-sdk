@@ -1,0 +1,1860 @@
+{
+  "configuration": {
+    "version": 2,
+    "repeats": 2,
+    "model": "gemini/gemini-3.5-flash-lite",
+    "config_sha256": "96130ebbef73e7de5c21f4f8015c7aebbe4d0f9f9519289266c8bf5ed95e5e1b",
+    "offline": true
+  },
+  "protocol": "Paired synthetic exact recall after one explicit reset. Compare configured strategies, not equal retained-token budgets. Three scenarios; descriptive results only.",
+  "quality_evidence": false,
+  "planned_runs": 18,
+  "budget_usd": 1.0,
+  "max_requests": 250,
+  "request_interval": 6.0,
+  "provider_attempts": 0,
+  "artifacts_root": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289",
+  "runs": [
+    {
+      "condition": "summary",
+      "scenario": "exact_identifier",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "8ebf332f-c262-4243-a747-bfd47037fe93",
+        "5935f3e2-5cd7-4871-a802-5d1f8a3f72a4"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23875,
+        "all_prior_raw_messages_hidden": false
+      },
+      "elapsed_seconds": 0.03524583298712969,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/summary-exact_identifier-0-13873a0d",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 71659,
+      "storage_growth_after_reset_bytes": 26384,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "exact_identifier",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "ae8683fe-cd31-497a-8d7c-4ef428c10dbb",
+        "18109192-5d67-4bc5-8823-2819adad5bf1"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03051979187875986,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_only-exact_identifier-0-f288d54a",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 161,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 66738,
+      "storage_growth_after_reset_bytes": 20035,
+      "notes_chars": 38
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "exact_identifier",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "3fdf8d05-f442-4476-9a6e-f207b7df0459",
+        "072de4a1-c7e6-46a8-99f5-b307a98ac019"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.032829999923706055,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_history-exact_identifier-0-effc661e",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 826,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 69828,
+      "storage_growth_after_reset_bytes": 22253,
+      "notes_chars": 38
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "superseded_fact",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "debbfc3f-cacb-41e1-9be8-39f3c0e12187",
+        "98d68a47-2dc5-4010-af36-7da522f7eaaa"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.0408630829770118,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_only-superseded_fact-0-d94dfe12",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 151,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 66668,
+      "storage_growth_after_reset_bytes": 20014,
+      "notes_chars": 28
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "superseded_fact",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "0f750d84-0a48-43dc-b65c-d8582b4a4be5",
+        "8da9c330-5017-4ffd-a220-68c2f25a9e72"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03815358295105398,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_history-superseded_fact-0-56751f3e",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 1087,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 70044,
+      "storage_growth_after_reset_bytes": 22518,
+      "notes_chars": 28
+    },
+    {
+      "condition": "summary",
+      "scenario": "superseded_fact",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "0084aa7c-4ef3-40e2-947a-3aae4882b867",
+        "901d4aed-d43c-4575-aa89-b370711653e5"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23865,
+        "all_prior_raw_messages_hidden": false
+      },
+      "elapsed_seconds": 0.028353416826575994,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/summary-superseded_fact-0-991d87bf",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 71619,
+      "storage_growth_after_reset_bytes": 26353,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "compound_constraints",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "46acf844-e34a-455c-98c0-a19b28bf766f",
+        "89d38046-fccc-4901-856f-0fbbe9987322"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03275029105134308,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_history-compound_constraints-0-4a16da93",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 1249,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 70479,
+      "storage_growth_after_reset_bytes": 22704,
+      "notes_chars": 61
+    },
+    {
+      "condition": "summary",
+      "scenario": "compound_constraints",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "5a1a75b8-38ff-4269-9fd7-88fc258898ad",
+        "fbb8cbd1-2899-4cbb-a194-a532c5d0cd8a"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23902,
+        "all_prior_raw_messages_hidden": false
+      },
+      "elapsed_seconds": 0.027115375036373734,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/summary-compound_constraints-0-b616f705",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 71817,
+      "storage_growth_after_reset_bytes": 26466,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "compound_constraints",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "cc8cdf60-3fd7-4c3a-9e32-58f1beafd9db",
+        "bcbe6685-28d5-4d2a-a0a1-413dc20eecc0"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03146204212680459,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_only-compound_constraints-0-e7c10fa5",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 188,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 67001,
+      "storage_growth_after_reset_bytes": 20098,
+      "notes_chars": 61
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "exact_identifier",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "61a8dd21-ebe5-4f56-9855-449bc0be6fe1",
+        "fa496a01-baf8-4026-8206-d921529b8324"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03030425007455051,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_only-exact_identifier-1-9e7d2ecc",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 161,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 66738,
+      "storage_growth_after_reset_bytes": 20035,
+      "notes_chars": 38
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "exact_identifier",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "3c64b8dd-57da-4115-a32a-bd25b0e4a52e",
+        "39f1ea6e-aa44-40cb-b986-57ae5c08ecde"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03201099997386336,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_history-exact_identifier-1-336a4f01",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 826,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 69828,
+      "storage_growth_after_reset_bytes": 22253,
+      "notes_chars": 38
+    },
+    {
+      "condition": "summary",
+      "scenario": "exact_identifier",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "1f881c17-644c-4331-a0ce-06dc8a59d52d",
+        "edefac13-d41e-4577-ab6a-22b17e082c8b"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23875,
+        "all_prior_raw_messages_hidden": false
+      },
+      "elapsed_seconds": 0.027489249827340245,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/summary-exact_identifier-1-f833027b",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 71659,
+      "storage_growth_after_reset_bytes": 26384,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "superseded_fact",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "6bf5b88a-0341-43fd-870a-9d383a42777d",
+        "fd8e9506-3a54-491d-9465-795fd71b575f"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.030655500013381243,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_history-superseded_fact-1-5c719412",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 1087,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 70044,
+      "storage_growth_after_reset_bytes": 22518,
+      "notes_chars": 28
+    },
+    {
+      "condition": "summary",
+      "scenario": "superseded_fact",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "9aef26f3-ca68-4943-9adb-7b48d1916054",
+        "4dc673c9-229c-4294-9f48-3b22382dd668"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23865,
+        "all_prior_raw_messages_hidden": false
+      },
+      "elapsed_seconds": 0.027385582914575934,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/summary-superseded_fact-1-ed1930bc",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 71619,
+      "storage_growth_after_reset_bytes": 26353,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "superseded_fact",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "d4ff6b36-c829-4d0a-a60c-7c298491744b",
+        "2b2931dd-8725-4b46-a8c5-062200b85b0f"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.031167624983936548,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_only-superseded_fact-1-91e10d9d",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 151,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 66668,
+      "storage_growth_after_reset_bytes": 20014,
+      "notes_chars": 28
+    },
+    {
+      "condition": "summary",
+      "scenario": "compound_constraints",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "6a733f95-0403-4d37-9592-6eaf04377b84",
+        "96093853-e078-4023-a77f-82630faa7f8b"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23902,
+        "all_prior_raw_messages_hidden": false
+      },
+      "elapsed_seconds": 0.02503820788115263,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/summary-compound_constraints-1-f23bf690",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 71817,
+      "storage_growth_after_reset_bytes": 26466,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "compound_constraints",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "9cd1df8d-66ce-4685-824a-d882c3419f3c",
+        "fd347a9c-38df-4739-9564-74fff4fe4238"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.029469124972820282,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_only-compound_constraints-1-d7c8dde2",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 188,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 67001,
+      "storage_growth_after_reset_bytes": 20098,
+      "notes_chars": 61
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "compound_constraints",
+      "repeat": 1,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "9f33087d-0dbc-4e42-8fc6-0f957b5b8c18",
+        "e1faa476-34a3-4096-a1e3-c692dcd44f05"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "elapsed_seconds": 0.03233441594056785,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/comparison-v2-offline/runs/run-uwzu9289/notes_history-compound_constraints-1-4c503bb9",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 1249,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 70479,
+      "storage_growth_after_reset_bytes": 22704,
+      "notes_chars": 61
+    }
+  ],
+  "interrupted_trials": [],
+  "active_trial": null,
+  "completed_runs": 18,
+  "complete_paired_groups": 6,
+  "summary": {
+    "summary": {
+      "paired_samples": 6,
+      "exact_matches": 6,
+      "exact_match_rate": 1.0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 430190,
+      "retrieval_response_utf8_bytes": 0,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0.17062766547314823
+    },
+    "notes_only": {
+      "paired_samples": 6,
+      "exact_matches": 6,
+      "exact_match_rate": 1.0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 400814,
+      "retrieval_response_utf8_bytes": 1000,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0.1937859170138836
+    },
+    "notes_history": {
+      "paired_samples": 6,
+      "exact_matches": 6,
+      "exact_match_rate": 1.0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 420702,
+      "retrieval_response_utf8_bytes": 6324,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0.19873478985391557
+    }
+  },
+  "sdk_reported_cost_usd": 0.0,
+  "estimated_cost_usd": null,
+  "cost_estimate_complete": false,
+  "excluded_or_pending_runs": 0,
+  "status": "COMPLETE"
+}

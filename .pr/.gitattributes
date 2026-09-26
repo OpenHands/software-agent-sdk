@@ -1,0 +1,3 @@
+# Preserve captured terminal output and unified patch context exactly.
+*.log -whitespace
+*.patch -whitespace
