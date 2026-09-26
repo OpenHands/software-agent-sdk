@@ -498,7 +498,13 @@ def test_conversation_info_classifies_every_conversation_state_field():
     assert set(ConversationState.model_fields) == (
         ConversationInfo.STATE_FIELDS | ConversationInfo.INTERNAL_STATE_FIELDS
     )
+
+
+def test_public_state_fields_exist_on_conversation_info():
     assert ConversationInfo.STATE_FIELDS <= set(ConversationInfo.model_fields)
+
+
+def test_internal_state_fields_are_not_exposed():
     assert ConversationInfo.INTERNAL_STATE_FIELDS.isdisjoint(
         ConversationInfo.model_fields
     )

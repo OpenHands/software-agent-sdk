@@ -350,32 +350,11 @@ class _ConversationInfoBase(BaseModel):
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
 
-    STATE_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "id",
-            "agent",
-            "workspace",
-            "persistence_dir",
-            "max_iterations",
-            "stuck_detection",
-            "execution_status",
-            "confirmation_policy",
-            "security_analyzer",
-            "activated_knowledge_skills",
-            "invoked_skills",
-            "blocked_actions",
-            "blocked_messages",
-            "last_user_message_id",
-            "leaf_event_id",
-            "stats",
-            "secret_registry",
-            "tags",
-            "agent_state",
-            "hook_config",
-        }
-    )
     INTERNAL_STATE_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"activated_path_rules", "head_is_empty"}
+    )
+    STATE_FIELDS: ClassVar[frozenset[str]] = (
+        frozenset(ConversationState.model_fields) - INTERNAL_STATE_FIELDS
     )
     STORED_METADATA_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
