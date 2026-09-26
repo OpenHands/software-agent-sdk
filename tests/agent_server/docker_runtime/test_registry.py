@@ -23,7 +23,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 def registry(
-    tmp_path, monkeypatch, idle_ttl: float | None = 1200
+    tmp_path, monkeypatch, idle_ttl: float | None = 1200, **config
 ) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     return DockerConversationRegistry(
@@ -32,6 +32,7 @@ def registry(
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
             conversation_idle_ttl_seconds=idle_ttl,
+            **config,
         )
     )
 
@@ -409,3 +410,78 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("HOME") - 1 : command.index("HOME") + 1
     ]
     assert env["OH_SECRET_KEY"] != "outer-key"
+
+
+def build_command(runtime, monkeypatch):
+    """Run _build_container with docker faked; return (command, env, container)."""
+    conversation_id = uuid4()
+    runtime.provisioning.create(conversation_id)
+    commands = []
+    docker_calls = []
+
+    def run(command, **kwargs):
+        commands.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(
+            command, 0, stdout="container-id\n", stderr=""
+        )
+
+    def execute(command):
+        docker_calls.append(command[:2])
+        if command[:2] == ["docker", "port"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="127.0.0.1:32123\n", stderr=""
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="true\n", stderr="")
+
+    monkeypatch.setattr("subprocess.run", run)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.execute_command", execute
+    )
+    monkeypatch.setattr(runtime, "_wait_until_ready", lambda container: None)
+    result = runtime._build_container(conversation_id)
+    command, env = commands[0]
+    return conversation_id, command, env, result, docker_calls
+
+
+def test_container_on_a_network_is_reached_by_name_without_a_published_port(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch, conversation_container_network="runtimes")
+
+    conversation_id, command, _, result, docker_calls = build_command(
+        runtime, monkeypatch
+    )
+
+    name = command[command.index("--name") + 1]
+    assert ["--network", "runtimes"] == command[
+        command.index("--network") : command.index("--network") + 2
+    ]
+    assert "-p" not in command
+    assert result.host == f"http://{name}:8000"
+    assert ["docker", "port"] not in docker_calls
+    assert f"ai.openhands.conversation-id={conversation_id}" in command
+
+
+def test_extra_mounts_and_env_reach_the_container_but_not_runtime_keys(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TOOLS_HOME", "/opt/tools")
+    monkeypatch.setenv("OH_SECRET_KEY", "outer-secret")
+    runtime = registry(
+        tmp_path,
+        monkeypatch,
+        conversation_container_volumes=["/srv/tools:/opt/tools:ro"],
+        conversation_container_env=["TOOLS_HOME", "OH_SECRET_KEY", "UNSET_NAME"],
+    )
+
+    _, command, env, _, _ = build_command(runtime, monkeypatch)
+
+    mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
+    assert mounts[-1] == "/srv/tools:/opt/tools:ro"
+    assert env["TOOLS_HOME"] == "/opt/tools"
+    assert ["-e", "TOOLS_HOME"] == command[
+        command.index("TOOLS_HOME") - 1 : command.index("TOOLS_HOME") + 1
+    ]
+    assert env["OH_SECRET_KEY"] != "outer-secret"
+    assert command.count("OH_SECRET_KEY") == 1
+    assert "UNSET_NAME" not in command

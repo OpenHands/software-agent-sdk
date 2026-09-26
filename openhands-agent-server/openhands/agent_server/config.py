@@ -352,6 +352,31 @@ class Config(BaseModel):
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)
     conversation_container_startup_timeout: float = Field(default=120, gt=0)
+    conversation_container_network: str | None = Field(
+        default=None,
+        description=(
+            "Docker network to start conversation containers on. When set, the "
+            "server reaches each container by name on this network instead of "
+            "through a port published on the Docker host's loopback, so it also "
+            "works when the server itself runs in a container on that network."
+        ),
+    )
+    conversation_container_volumes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra `docker run -v` mounts for every conversation container, for "
+            "example `/srv/tools:/opt/tools:ro`. Host paths are as the Docker "
+            "daemon sees them."
+        ),
+    )
+    conversation_container_env: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of environment variables to pass from the server to every "
+            "conversation container. Variables the runtime sets itself (its "
+            "keys, paths and HOME) cannot be overridden."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
