@@ -8,9 +8,30 @@ can import them for its public ``ConversationInfo`` schema without importing
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+@runtime_checkable
+class _ModelInfoWithModelId(Protocol):
+    model_id: str
+
+
+@runtime_checkable
+class _ModelInfoWithValue(Protocol):
+    value: str
+
+
+@runtime_checkable
+class _ModelInfoWithName(Protocol):
+    name: str | None
+
+
+@runtime_checkable
+class _ModelInfoWithDescription(Protocol):
+    description: str | None
 
 
 class ACPModelInfo(BaseModel):
@@ -61,9 +82,38 @@ class ACPModelInfo(BaseModel):
         for a ``models``-capability ``ModelInfo``, ``"value"`` for a
         ``configOptions`` select option.
         """
-        model_id = getattr(raw, id_attr, None)
-        name = getattr(raw, "name", None)
-        description = getattr(raw, "description", None)
+        if isinstance(raw, ACPModelInfo):
+            if id_attr == "model_id":
+                return raw
+            return cls(
+                model_id=raw.model_id,
+                name=raw.name,
+                description=raw.description,
+            )
+
+        model_id = None
+        name = None
+        description = None
+
+        if isinstance(raw, Mapping):
+            model_id = raw.get(id_attr)
+            name = raw.get("name")
+            description = raw.get("description")
+        else:
+            if id_attr == "model_id" and isinstance(raw, _ModelInfoWithModelId):
+                model_id = raw.model_id
+            elif id_attr == "value" and isinstance(raw, _ModelInfoWithValue):
+                model_id = raw.value
+            elif isinstance(raw, _ModelInfoWithModelId):
+                model_id = raw.model_id
+            elif isinstance(raw, _ModelInfoWithValue):
+                model_id = raw.value
+
+            if isinstance(raw, _ModelInfoWithName):
+                name = raw.name
+            if isinstance(raw, _ModelInfoWithDescription):
+                description = raw.description
+
         return cls(
             model_id=model_id if isinstance(model_id, str) else "",
             name=name if isinstance(name, str) else None,

@@ -65,7 +65,7 @@ def _segment_hash(source: str, node: ast.Call) -> str:
 
 def violations(path: Path) -> list[tuple[int, str, str]]:
     """Return ``(lineno, name, segment_hash)`` for each forbidden call in *path*."""
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     result: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
@@ -88,7 +88,7 @@ def _parse_baseline(content: str) -> Baseline:
 def _load_baseline() -> Baseline:
     if not BASELINE_FILE.exists():
         return Counter()
-    return _parse_baseline(BASELINE_FILE.read_text())
+    return _parse_baseline(BASELINE_FILE.read_text(encoding="utf-8"))
 
 
 def _load_baseline_from_git(ref: str) -> Baseline:
@@ -113,7 +113,7 @@ def _write_baseline(entries: list[tuple[str, str, str]]) -> None:
         {"file": file, "name": name, "hash": digest}
         for file, name, digest in sorted(entries)
     ]
-    BASELINE_FILE.write_text(json.dumps(payload, indent=4) + "\n")
+    BASELINE_FILE.write_text(json.dumps(payload, indent=4) + "\n", encoding="utf-8")
 
 
 SDK_ROOT = "openhands-sdk"
@@ -122,7 +122,9 @@ SDK_ROOT = "openhands-sdk"
 def _discover_sdk_files() -> list[str]:
     """Return all Python files under the SDK root, relative to the repo root."""
     root = Path(__file__).resolve().parent.parent
-    return [str(p.relative_to(root)) for p in sorted(root.glob(f"{SDK_ROOT}/**/*.py"))]
+    return [
+        p.relative_to(root).as_posix() for p in sorted(root.glob(f"{SDK_ROOT}/**/*.py"))
+    ]
 
 
 def _current_entries(
@@ -131,8 +133,9 @@ def _current_entries(
     """Return all current violations across *paths* as ``(file, name, hash, line)``."""
     entries: list[tuple[str, str, str, int]] = []
     for raw_path in paths:
+        posix_path = Path(raw_path).as_posix()
         for line, name, digest in violations(Path(raw_path)):
-            entries.append((raw_path, name, digest, line))
+            entries.append((posix_path, name, digest, line))
     return entries
 
 
@@ -177,7 +180,7 @@ def main(argv: list[str]) -> int:
 
     baseline = _load_baseline()
     current_counter = Counter((file, name, digest) for file, name, digest, _ in current)
-    checked_files = set(paths)
+    checked_files = {Path(p).as_posix() for p in paths}
 
     # New violations: occurrences that exceed the baseline count for each key.
     new_violations: list[tuple[str, int, str]] = []
