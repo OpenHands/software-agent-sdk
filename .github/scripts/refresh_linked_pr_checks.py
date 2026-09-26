@@ -150,7 +150,9 @@ def main() -> int:
         )
         if body_result.returncode != 0:
             continue
-        if issue_number not in extract_linked_issue_numbers(body_result.stdout):
+        if (repo.lower(), issue_number) not in extract_linked_issue_numbers(
+            body_result.stdout, repo
+        ):
             # Cross-referenced but not treated as a linked issue by the gate;
             # nothing to refresh.
             continue
