@@ -185,6 +185,76 @@ def test_docker_network(mock_docker_workspace):
         assert run_cmd[network_index + 1] == network_name
 
 
+def test_docker_workspace_publishes_ports_on_loopback(mock_docker_workspace):
+    with (
+        patch(
+            "openhands.workspace.docker.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch.object(DockerWorkspace, "_wait_for_health"),
+    ):
+        with patch.object(DockerWorkspace, "_start_container"):
+            workspace = DockerWorkspace(
+                server_image="test:latest",
+                host_port=8010,
+                extra_ports=True,
+                detach_logs=False,
+            )
+        workspace, mock_exec = workspace, mock_docker_workspace()[1]
+        mock_exec.reset_mock()
+        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
+
+        workspace._start_container("test:latest", None)
+
+        run_cmd = next(
+            call[0][0] for call in mock_exec.call_args_list if "run" in call[0][0]
+        )
+        assert "127.0.0.1:8010:8000" in run_cmd
+        assert "127.0.0.1:8011:8001" in run_cmd
+        assert run_cmd[run_cmd.index("--host") + 1] == "0.0.0.0"
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, None),
+        ({"SESSION_API_KEY": "legacy-key"}, "legacy-key"),
+        ({"OH_SESSION_API_KEYS_0": "current-key"}, "current-key"),
+        (
+            {
+                "SESSION_API_KEY": "legacy-key",
+                "OH_SESSION_API_KEYS_0": "current-key",
+            },
+            "legacy-key",
+        ),
+    ],
+)
+def test_docker_workspace_uses_forwarded_session_key(
+    mock_docker_workspace, monkeypatch, env, expected
+):
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    with (
+        patch(
+            "openhands.workspace.docker.workspace.check_port_available",
+            return_value=True,
+        ),
+        patch.object(DockerWorkspace, "_wait_for_health"),
+    ):
+        workspace, mock_exec = mock_docker_workspace()
+        workspace.host_port = 8010
+        workspace.detach_logs = False
+        mock_exec.reset_mock()
+        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
+
+        workspace._start_container("test:latest", None)
+
+    assert workspace.api_key == expected
+
+
 # ===========================================================================
 # health_check_timeout tests for DockerWorkspace and ApptainerWorkspace
 # ===========================================================================
