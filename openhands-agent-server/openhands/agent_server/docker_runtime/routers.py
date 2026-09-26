@@ -17,6 +17,7 @@ from openhands.agent_server.docker_runtime.mediation import (
     materialize_secrets,
     prepare_start,
     serialize_start,
+    stage_title_profile,
 )
 from openhands.agent_server.docker_runtime.proxy import (
     bridge_websocket,
@@ -139,6 +140,13 @@ async def start_conversation(
         if launched is not None and identity.launched_agent_profile is None:
             identity = identity.model_copy(update={"launched_agent_profile": launched})
             registry.provisioning.save(identity)
+        await asyncio.to_thread(
+            stage_title_profile,
+            prepared,
+            identity,
+            registry.provisioning,
+            registry.config,
+        )
         container = await registry.get_or_create(conversation_id)
         payload = serialize_start(prepared, identity)
         async with httpx.AsyncClient(timeout=60) as client:

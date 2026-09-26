@@ -351,8 +351,7 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
-        runtime_dir = self.provisioning.runtime_dir(conversation_id)
-        persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
+        persistence_dir = self.provisioning.persistence_dir(conversation_id)
         conversation_dir = self.conversation_dir(conversation_id)
         workspace_dir = self.workspace_dir(conversation_id)
         for directory in (persistence_dir, conversation_dir, workspace_dir):

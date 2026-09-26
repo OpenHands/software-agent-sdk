@@ -2,8 +2,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -23,8 +24,13 @@ from openhands.agent_server.docker_runtime.routers import (
 )
 from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.workspace import LocalWorkspace
 
 
 def test_docker_mode_replaces_local_conversation_execution_routes(tmp_path):
@@ -418,3 +424,203 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
     request.app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
         conversation_id
     )
+
+
+class _DockerStartHarness:
+    """Docker start route with the container and the inner HTTP boundary faked.
+
+    The inner double behaves like the real inner server for what these tests
+    observe: a successful start writes ``meta.json`` into the conversation
+    directory, and a repeated start for the same id returns the existing
+    conversation. ``inner_fails`` makes the inner request fail so a creation
+    attempt stays incomplete.
+    """
+
+    def __init__(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+        self.config = Config(
+            conversations_path=tmp_path / "conversations",
+            workspace_path=tmp_path / "workspaces",
+            secret_key=SecretStr("outer-key"),
+        )
+        self.host_store = get_llm_profile_store()
+        self.save_host_profile("title-aux", "openai/aux", "aux-secret")
+        self.registry = DockerConversationRegistry(self.config)
+        self.seen: dict = {}
+        self.posted: list[dict] = []
+        self.inner_fails = False
+        harness = self
+
+        async def get_or_create(conversation_id):
+            harness.seen["profiles_when_container_starts"] = harness.runtime_profiles(
+                conversation_id
+            )
+            harness.seen["identity"] = harness.registry.provisioning.load(
+                conversation_id
+            )
+            return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+        monkeypatch.setattr(self.registry, "get_or_create", get_or_create)
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return None
+
+            async def post(self, url, **kwargs):
+                if harness.inner_fails:
+                    raise httpx.ConnectError("inner runtime unavailable")
+                harness.posted.append({"url": url, **kwargs})
+                conversation_id = kwargs["json"]["conversation_id"]
+                conversation_dir = harness.registry.conversation_dir(
+                    UUID(conversation_id)
+                )
+                conversation_dir.mkdir(parents=True, exist_ok=True)
+                (conversation_dir / "meta.json").write_text("{}")
+                return SimpleNamespace(
+                    status_code=200,
+                    content=b"{}",
+                    is_error=False,
+                    json=lambda: {"id": conversation_id},
+                )
+
+        monkeypatch.setattr(
+            "openhands.agent_server.docker_runtime.routers.httpx.AsyncClient",
+            FakeClient,
+        )
+        app = FastAPI()
+        app.state.conversation_registry = self.registry
+        app.state.conversation_service = AsyncMock()
+        app.include_router(docker_conversation_router, prefix="/api")
+        self.client = TestClient(app)
+
+    def save_host_profile(self, name: str, model: str, api_key: str) -> None:
+        self.host_store.save(
+            name,
+            LLM(model=model, api_key=SecretStr(api_key)),
+            include_secrets=True,
+            cipher=self.config.cipher,
+        )
+
+    def start(self, conversation_id: UUID, title_llm_profile: str | None):
+        body = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="test"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/workspace"),
+            title_llm_profile=title_llm_profile,
+        ).model_dump(mode="json")
+        return self.client.post("/api/conversations", json=body)
+
+    def runtime_profiles(self, conversation_id: UUID) -> list[str]:
+        profiles = self.registry.provisioning.persistence_dir(conversation_id)
+        return sorted(path.name for path in (profiles / "profiles").glob("*.json"))
+
+    def runtime_profile_bytes(self, conversation_id: UUID, name: str) -> bytes:
+        profiles = self.registry.provisioning.persistence_dir(conversation_id)
+        return (profiles / "profiles" / f"{name}.json").read_bytes()
+
+    def load_runtime_profile(self, conversation_id: UUID, name: str) -> LLM:
+        identity = self.registry.provisioning.load(conversation_id)
+        profiles = self.registry.provisioning.persistence_dir(conversation_id)
+        return LLMProfileStore(base_dir=profiles / "profiles").load(
+            name, cipher=identity.cipher
+        )
+
+
+def test_start_conversation_stages_the_title_profile_before_the_runtime_starts(
+    tmp_path, monkeypatch
+):
+    harness = _DockerStartHarness(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    response = harness.start(conversation_id, "title-aux")
+
+    assert response.status_code == 200
+    assert harness.seen["profiles_when_container_starts"] == ["title-aux.json"]
+    staged = harness.load_runtime_profile(conversation_id, "title-aux")
+    assert isinstance(staged.api_key, SecretStr)
+    assert staged.api_key.get_secret_value() == "aux-secret"
+    # The wire contract is unchanged: the runtime still receives only the name.
+    assert harness.posted[-1]["json"]["title_llm_profile"] == "title-aux"
+    assert "aux-secret" not in json.dumps(harness.posted[-1]["json"])
+
+
+def test_start_conversation_with_a_missing_title_profile_still_creates_the_runtime(
+    tmp_path, monkeypatch
+):
+    harness = _DockerStartHarness(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    response = harness.start(conversation_id, "absent")
+
+    assert response.status_code == 200
+    assert harness.seen["profiles_when_container_starts"] == []
+    assert not harness.registry.provisioning.persistence_dir(conversation_id).exists()
+    assert harness.posted[-1]["json"]["title_llm_profile"] == "absent"
+
+
+def test_repeated_start_keeps_the_original_title_profile_snapshot(
+    tmp_path, monkeypatch
+):
+    harness = _DockerStartHarness(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    assert harness.start(conversation_id, "title-aux").status_code == 200
+    original = harness.runtime_profile_bytes(conversation_id, "title-aux")
+
+    harness.save_host_profile("title-aux", "openai/host-edit", "rotated-secret")
+    assert harness.start(conversation_id, "title-aux").status_code == 200
+
+    assert harness.runtime_profile_bytes(conversation_id, "title-aux") == original
+    staged = harness.load_runtime_profile(conversation_id, "title-aux")
+    assert staged.model == "openai/aux"
+    assert isinstance(staged.api_key, SecretStr)
+    assert staged.api_key.get_secret_value() == "aux-secret"
+
+
+def test_repeated_start_with_another_profile_does_not_add_it(tmp_path, monkeypatch):
+    harness = _DockerStartHarness(tmp_path, monkeypatch)
+    harness.save_host_profile("other", "openai/other", "other-secret")
+    conversation_id = uuid4()
+    assert harness.start(conversation_id, "title-aux").status_code == 200
+
+    assert harness.start(conversation_id, "other").status_code == 200
+
+    assert harness.runtime_profiles(conversation_id) == ["title-aux.json"]
+    # The request itself is still forwarded unchanged; the runtime decides.
+    assert harness.posted[-1]["json"]["title_llm_profile"] == "other"
+
+
+def test_repeated_start_does_not_seed_a_conversation_created_without_a_profile(
+    tmp_path, monkeypatch
+):
+    harness = _DockerStartHarness(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    assert harness.start(conversation_id, None).status_code == 200
+
+    assert harness.start(conversation_id, "title-aux").status_code == 200
+
+    assert harness.runtime_profiles(conversation_id) == []
+
+
+@pytest.mark.parametrize("retried_profile", [None, "other"], ids=["none", "other"])
+def test_retry_after_a_failed_creation_stages_only_the_retried_profile(
+    tmp_path, monkeypatch, retried_profile
+):
+    harness = _DockerStartHarness(tmp_path, monkeypatch)
+    harness.save_host_profile("other", "openai/other", "other-secret")
+    conversation_id = uuid4()
+    harness.inner_fails = True
+    assert harness.start(conversation_id, "title-aux").status_code == 502
+    assert harness.runtime_profiles(conversation_id) == ["title-aux.json"]
+    assert not harness.registry.conversation_dir(conversation_id).exists()
+
+    harness.inner_fails = False
+    assert harness.start(conversation_id, retried_profile).status_code == 200
+
+    expected = [] if retried_profile is None else [f"{retried_profile}.json"]
+    assert harness.runtime_profiles(conversation_id) == expected
