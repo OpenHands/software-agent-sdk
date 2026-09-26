@@ -528,3 +528,173 @@ def test_format_value_long_string_char_truncated() -> None:
     out = _format_value("q" * (_MAX_REDUCE_INPUT_CHARS + 100))
     assert out.endswith("[truncated workflow intermediate results]")
     assert len(out) <= _MAX_REDUCE_INPUT_CHARS + 60
+
+
+def test_run_dag_basic_linear_dependency() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+    nodes = {
+        "step1": {
+            "prompt": "first step",
+            "subagent_type": "analyst",
+        },
+        "step2": {
+            "prompt": "second step using {step1}",
+            "depends_on": ["step1"],
+            "subagent_type": "writer",
+        },
+    }
+    results = asyncio.run(ctx.run_dag(nodes))
+    assert results["step1"] == "result:first step"
+    assert results["step2"] == "result:second step using result:first step"
+    assert manager.prompts == [
+        "analyst: first step",
+        "writer: second step using result:first step",
+    ]
+
+
+def test_run_dag_diamond_concurrency() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+    nodes = {
+        "root": {"prompt": "init"},
+        "branch_a": {"prompt": "do A after {root}", "depends_on": ["root"]},
+        "branch_b": {"prompt": "do B after {root}", "depends_on": ["root"]},
+        "join": {
+            "prompt": "merge {branch_a} and {branch_b}",
+            "depends_on": ["branch_a", "branch_b"],
+        },
+    }
+    results = asyncio.run(ctx.run_dag(nodes))
+    assert results["root"] == "result:init"
+    assert results["branch_a"] == "result:do A after result:init"
+    assert results["branch_b"] == "result:do B after result:init"
+    assert results["join"] == (
+        "result:merge result:do A after result:init and "
+        "result:do B after result:init"
+    )
+    # Root must execute first, join must execute last
+    assert manager.prompts[0] == "general-purpose: init"
+    assert set(manager.prompts[1:3]) == {
+        "general-purpose: do A after result:init",
+        "general-purpose: do B after result:init",
+    }
+    assert manager.prompts[3] == (
+        "general-purpose: merge result:do A after result:init and "
+        "result:do B after result:init"
+    )
+
+
+def test_run_dag_callable_prompt() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+    nodes = {
+        "prep": {"prompt": "setup data"},
+        "process": {
+            "prompt": lambda res: f"custom {res['prep'].upper()}",
+            "depends_on": ["prep"],
+        },
+    }
+    results = asyncio.run(ctx.run_dag(nodes))
+    assert results["process"] == "result:custom RESULT:SETUP DATA"
+
+
+def test_run_dag_cycle_detection() -> None:
+    ctx = _context(_FakeTaskManager())
+    nodes = {
+        "a": {"prompt": "a", "depends_on": ["b"]},
+        "b": {"prompt": "b", "depends_on": ["a"]},
+    }
+    with pytest.raises(ValueError, match="DAG contains cycles"):
+        asyncio.run(ctx.run_dag(nodes))
+
+
+def test_run_dag_self_dependency_raises() -> None:
+    ctx = _context(_FakeTaskManager())
+    nodes = {
+        "a": {"prompt": "a", "depends_on": ["a"]},
+    }
+    with pytest.raises(ValueError, match="cannot depend on itself"):
+        asyncio.run(ctx.run_dag(nodes))
+
+
+def test_run_dag_unknown_dependency_raises() -> None:
+    ctx = _context(_FakeTaskManager())
+    nodes = {
+        "a": {"prompt": "a", "depends_on": ["nonexistent"]},
+    }
+    with pytest.raises(ValueError, match="depends on unknown node"):
+        asyncio.run(ctx.run_dag(nodes))
+
+
+def test_run_dag_empty_nodes_raises() -> None:
+    ctx = _context(_FakeTaskManager())
+    with pytest.raises(ValueError, match="requires at least one node"):
+        asyncio.run(ctx.run_dag({}))
+
+
+def test_run_dag_invalid_spec_raises() -> None:
+    ctx = _context(_FakeTaskManager())
+    with pytest.raises(ValueError, match="specification must be a dict"):
+        asyncio.run(ctx.run_dag({"bad": "not-a-dict"}))  # type: ignore[arg-type]
+
+
+def test_run_dag_prunes_downstream_on_failure() -> None:
+    class FailingTaskManager(_FakeTaskManager):
+        def start_task(
+            self,
+            prompt: str,
+            subagent_type: str = "default",
+            resume: str | None = None,
+            description: str | None = None,
+            conversation: LocalConversation | None = None,
+        ) -> _FakeTask:
+            self.prompts.append(f"{subagent_type}: {prompt}")
+            if "fail" in prompt:
+                return _FakeTask(error="upstream task failed")
+            return _FakeTask(result=f"result:{prompt}")
+
+    manager = FailingTaskManager()
+    ctx = _context(manager)
+    nodes = {
+        "good": {"prompt": "run independent good"},
+        "failing": {"prompt": "run failing task"},
+        "child_of_failing": {
+            "prompt": "should be skipped {failing}",
+            "depends_on": ["failing"],
+        },
+    }
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        asyncio.run(ctx.run_dag(nodes))
+
+    assert "run_dag" in str(exc_info.value)
+    # The failing node raised, and child_of_failing was pruned
+    error_messages = [str(e) for e in exc_info.value.exceptions]
+    assert any("upstream task failed" in msg for msg in error_messages)
+    assert any(
+        "skipped because dependency 'failing' failed" in msg
+        for msg in error_messages
+    )
+    # child_of_failing was never dispatched to manager
+    dispatched_prompts = set(manager.prompts)
+    assert "general-purpose: run independent good" in dispatched_prompts
+    assert "general-purpose: run failing task" in dispatched_prompts
+    assert not any("should be skipped" in p for p in dispatched_prompts)
+
+
+def test_run_dag_reachable_from_script() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+    script = """
+async def main(wf):
+    nodes = {
+        "spec": {"prompt": "design API"},
+        "impl": {"prompt": "build from {spec}", "depends_on": ["spec"]},
+    }
+    results = await wf.run_dag(nodes)
+    return results["impl"]
+"""
+    result = execute_workflow_script(script, ctx)
+    assert result == "result:build from result:design API"
+
