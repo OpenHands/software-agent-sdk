@@ -70,6 +70,17 @@ class ConversationRuntimeInfo(BaseModel):
     runtime_error: ConversationRuntimeError | None = None
 
 
+class ConversationSuspendStatus(BaseModel):
+    """Result of querying whether a conversation runtime can be suspended."""
+
+    suspendable: bool = Field(
+        ...,
+        description=(
+            "Whether the conversation runtime is idle and eligible for suspension."
+        ),
+    )
+
+
 class ServerErrorEvent(Event):
     """Event emitted by the agent server when a server-level error occurs.
 

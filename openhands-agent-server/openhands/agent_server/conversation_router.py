@@ -35,6 +35,7 @@ from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
     ConversationSortOrder,
+    ConversationSuspendStatus,
     ForkConversationRequest,
     NavigateConversationRequest,
     SendMessageRequest,
@@ -205,6 +206,34 @@ async def reprovision_local_conversation_runtime(
     return await get_local_conversation_runtime(
         conversation_id, request, conversation_service
     )
+
+
+@conversation_router.get(
+    "/{conversation_id}/suspend-check",
+    response_model=ConversationSuspendStatus,
+    responses={404: {"description": "Conversation not found"}},
+)
+async def check_conversation_suspendable(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationSuspendStatus:
+    """Check if the conversation is idle and eligible for runtime suspension.
+
+    A conversation is suspendable when:
+    1. Its execution status is terminal (FINISHED, ERROR, STUCK).
+    2. It has no active agent run, goal loop, or external WebSocket subscribers.
+    """
+    conversation = await conversation_service.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation not found")
+
+    if not conversation.execution_status.is_terminal():
+        return ConversationSuspendStatus(suspendable=False)
+
+    if not conversation_service.is_conversation_idle_evictable(conversation_id):
+        return ConversationSuspendStatus(suspendable=False)
+
+    return ConversationSuspendStatus(suspendable=True)
 
 
 @conversation_router.get(

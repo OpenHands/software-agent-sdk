@@ -54,6 +54,8 @@ The server can be configured using environment variables or a JSON configuration
 | `OPENHANDS_AGENT_SERVER_CONFIG_PATH` | Path to JSON configuration file | `workspace/openhands_agent_server_config.json` |
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
 | `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
+| `OH_CONVERSATION_RUNTIME` | Conversation runtime execution mode: `local` (in-process) or `docker` (isolated per-conversation containers). | `local` |
+| `OH_CONVERSATION_IDLE_TTL_SECONDS` | Seconds an idle terminal conversation runtime stays active before suspension (Docker) or in-memory eviction (local). Set to empty/null to disable. | `1200.0` |
 | `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
 | `OH_TELEMETRY_EXPORTER` | Where events go: `none`, `posthog`, or `http`. See [Telemetry](#telemetry). | `none` |
 | `OH_TELEMETRY_POSTHOG_API_KEY` | PostHog project API key. Required by the `posthog` exporter. | None |
@@ -358,6 +360,30 @@ workspace/
 └── project/                    # Agent workspace
     └── (agent files and outputs)
 ```
+
+## Docker Conversation Runtime Lifecycle
+
+When the agent server is configured with `OH_CONVERSATION_RUNTIME=docker`, each conversation executes in an isolated Docker container running an internal agent-server instance. This architecture ensures complete execution isolation, private workspace mounts, and dedicated credential boundaries.
+
+### Container Lifecycle & Automatic Suspension
+
+1. **On-Demand Provisioning**: Containers are not pre-warmed for every conversation in storage. Instead, `DockerConversationRegistry.get_or_create()` starts a container on-demand when the conversation is first created or accessed by an incoming request.
+2. **Active Lease Tracking**: When an HTTP request is received (such as sending a message, updating settings, or proxying workspace files) or a WebSocket subscriber connects, an active lease is acquired on the runtime. As long as any request is actively streaming or any socket is connected, the container is never suspended.
+3. **Idle Detection**: A background task periodically evaluates running containers against `OH_CONVERSATION_IDLE_TTL_SECONDS`. It queries the inner container's `/api/conversations/{id}/suspend-check` endpoint to verify that:
+   - The conversation is in a terminal state (`finished`, `error`, `stuck`).
+   - No agent run or goal loop is in progress.
+   - No external WebSocket subscribers or active request leases exist.
+4. **Atomic Suspension**: If the container is verified idle, its snapshot token is validated under lock, and the container is stopped via `docker stop`. If a request arrives during the probe, the suspension is aborted atomically and the container continues serving traffic.
+5. **Transparent Resume**: When an interaction occurs on a suspended conversation, `get_or_create()` recreates the container, mounts the existing workspace and persistence data, and resumes seamlessly.
+
+### Runtime Suspension vs. Conversation Deletion
+
+It is essential to distinguish between **suspending a runtime** and **deleting a conversation**:
+
+| Operation | Trigger | What Happens to Docker Container | Persisted Conversation Data & Workspace | Resumable? |
+|---|---|---|---|---|
+| **Runtime Suspension** | Automatic after idle timeout (`OH_CONVERSATION_IDLE_TTL_SECONDS`) or manual runtime release | Stopped and released to reclaim CPU, RAM, and writable layers | **Preserved intact** on the host filesystem (bind-mounted events, metadata, workspace files, credentials) | **Yes** — automatically recreated on next request with same conversation ID and full history |
+| **Conversation Deletion** | `DELETE /api/conversations/{id}` | Stopped and destroyed immediately | **Permanently removed** from the host filesystem (conversation directory, metadata, and outer-owned state) | **No** — conversation is deleted from the catalog |
 
 ## Development
 

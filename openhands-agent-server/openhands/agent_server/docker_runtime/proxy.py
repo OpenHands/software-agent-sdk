@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+import inspect
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -74,6 +75,17 @@ def strip_auth_query(path: str) -> str:
     )
 
 
+async def _invoke_close(callback: Callable[[], Any] | None) -> None:
+    if callback is None:
+        return
+    try:
+        res = callback()
+        if inspect.isawaitable(res):
+            await res
+    except Exception:
+        logger.debug("Error in proxy on_close callback", exc_info=True)
+
+
 async def proxy_http(
     request: Request,
     workspace: ProxyTarget,
@@ -81,7 +93,7 @@ async def proxy_http(
     upstream_path: str,
     timeout: float | None = None,
     body: bytes | None = None,
-    on_close: Callable[[], Awaitable[None]] | None = None,
+    on_close: Callable[[], Any] | None = None,
 ) -> StreamingResponse:
     """Forward ``request`` to the per-conversation container.
 
@@ -95,10 +107,10 @@ async def proxy_http(
         timeout: Per-request timeout in seconds. ``None`` (the default) means
             no read timeout — conversation event streams can be long-lived.
         body: Replacement request body. By default the incoming body is streamed.
-        on_close: Awaited once the streamed response is fully consumed or the
-            client disconnects. Callers use this to release a session
-            attachment that must outlive the route handler (see
-            ``DockerConversationRegistry.attach_session``).
+        on_close: Awaited or invoked once the streamed response is fully consumed,
+            client disconnects, or connection fails. Callers use this to release
+            a session attachment or lease that must outlive the route handler
+            (see ``DockerConversationRegistry.attach_session``).
 
     Notes:
         A fresh :class:`httpx.AsyncClient` is created per request. We avoid a
@@ -140,6 +152,7 @@ async def proxy_http(
         )
     except BaseException as exc:
         await stack.aclose()
+        await _invoke_close(on_close)
         if not isinstance(exc, httpx.HTTPError):
             raise
         logger.warning("Conversation upstream connection failed")
@@ -154,8 +167,7 @@ async def proxy_http(
                 yield chunk
         finally:
             await stack.aclose()
-            if on_close is not None:
-                await on_close()
+            await _invoke_close(on_close)
 
     return StreamingResponse(
         _response_body(),

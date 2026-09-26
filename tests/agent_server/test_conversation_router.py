@@ -2742,3 +2742,88 @@ def test_runtime_requires_existing_conversation(
     )
     response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
     assert response.status_code == 404
+
+
+def test_suspend_check_not_found(client, mock_conversation_service):
+    cid = uuid4()
+    mock_conversation_service.get_conversation.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.get(f"/api/conversations/{cid}/suspend-check")
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.FINISHED,
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    ],
+)
+def test_suspend_check_terminal_and_evictable(
+    client, mock_conversation_service, status
+):
+    cid = uuid4()
+    conv = MagicMock()
+    conv.execution_status = status
+    mock_conversation_service.get_conversation.return_value = conv
+    mock_conversation_service.is_conversation_idle_evictable.return_value = True
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.get(f"/api/conversations/{cid}/suspend-check")
+        assert response.status_code == 200
+        assert response.json() == {"suspendable": True}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.RUNNING,
+        ConversationExecutionStatus.IDLE,
+        ConversationExecutionStatus.PAUSED,
+    ],
+)
+def test_suspend_check_non_terminal(client, mock_conversation_service, status):
+    cid = uuid4()
+    conv = MagicMock()
+    conv.execution_status = status
+    mock_conversation_service.get_conversation.return_value = conv
+    mock_conversation_service.is_conversation_idle_evictable.return_value = True
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.get(f"/api/conversations/{cid}/suspend-check")
+        assert response.status_code == 200
+        assert response.json() == {"suspendable": False}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_suspend_check_terminal_not_evictable(client, mock_conversation_service):
+    cid = uuid4()
+    conv = MagicMock()
+    conv.execution_status = ConversationExecutionStatus.FINISHED
+    mock_conversation_service.get_conversation.return_value = conv
+    mock_conversation_service.is_conversation_idle_evictable.return_value = False
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        response = client.get(f"/api/conversations/{cid}/suspend-check")
+        assert response.status_code == 200
+        assert response.json() == {"suspendable": False}
+    finally:
+        client.app.dependency_overrides.clear()

@@ -439,6 +439,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(conversation_catalog_router)
     conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
+
     api_router.include_router(credential_binding_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)

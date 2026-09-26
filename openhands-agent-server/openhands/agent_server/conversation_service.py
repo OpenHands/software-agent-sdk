@@ -1282,6 +1282,19 @@ class ConversationService:
             )
         return await self._conversation_info(conversation_id, record)
 
+    def is_conversation_idle_evictable(self, conversation_id: UUID) -> bool:
+        """Check if an active event service for this conversation is idle evictable.
+
+        Returns True if no event service exists or if the event service reports
+        idle evictable (no active runs, goal loops, or external subscribers).
+        """
+        if self._event_services is None:
+            return True
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return True
+        return event_service.is_idle_evictable()
+
     async def get_acp_conversation(
         self, conversation_id: UUID
     ) -> ConversationInfo | None:
