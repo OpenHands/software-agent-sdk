@@ -137,5 +137,7 @@ def test_judge_goal_sends_system_then_user():
     system_text = llm.captured_messages[0].content[0].text
     user_text = llm.captured_messages[1].content[0].text
     assert "STRICT JSON" in system_text
+    assert '"score"' in system_text
+    assert "{{" not in system_text
     assert "<objective>" in user_text
     assert "build it" in user_text
