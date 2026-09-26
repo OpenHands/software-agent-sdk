@@ -169,19 +169,19 @@ def _non_multimodal_image_message(model: str) -> Message:
 def _replace_latest_user_images_with_references(
     messages: list[Message],
 ) -> list[Message]:
-    """Replace image content in the latest user message with textual references.
+    """Replace images in the most recent user message containing images.
 
-    When a non-vision model receives images, this function converts the image
-    attachments into text placeholders that reference the inspect_image_with_vision
-    tool. This allows the agent to acknowledge the images and inform the user that
-    a vision-capable tool is available for inspection.
+    Searches backward, skipping user messages without images. Each image URL
+    becomes a textual reference to the inspect_image_with_vision tool, with a
+    zero-based image index within the selected message.
 
     Args:
         messages: List of conversation messages to process.
 
     Returns:
-        A new list of messages with image content in the latest user message
-        replaced by textual references. Other messages are unchanged.
+        A new list with the selected message copied and its images replaced.
+        Other messages and non-image content are unchanged. If no user message
+        contains images, returns a shallow copy of the original list.
     """
     rewritten = list(messages)
     for index in range(len(rewritten) - 1, -1, -1):
