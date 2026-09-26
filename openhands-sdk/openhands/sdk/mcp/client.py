@@ -1,18 +1,35 @@
 """Minimal sync helpers on top of fastmcp.Client, preserving original behavior."""
 
 import asyncio
+import contextlib
 import inspect
-from collections.abc import Callable, Iterator, Sequence
-from typing import TYPE_CHECKING, Any
+import os
+import signal
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from types import CoroutineType
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from anyio.abc import Process
 from fastmcp import Client as AsyncMCPClient
+from fastmcp.client.transports import StdioTransport
+from fastmcp.client.transports.base import ClientTransport
+from fastmcp.client.transports.config import MCPConfigTransport
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.exceptions import MCPError
 from openhands.sdk.utils.async_executor import AsyncExecutor
 
 
 if TYPE_CHECKING:
     from openhands.sdk.mcp.tool import MCPToolDefinition
+
+
+logger = get_logger(__name__)
+
+
+class _ExitStackInternals(Protocol):
+    _exit_callbacks: Iterable[tuple[bool, Callable[..., Any]]]
 
 
 ToolsReconciledCallback = Callable[
@@ -89,12 +106,111 @@ class MCPClient(AsyncMCPClient):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
+    def _get_transport_subprocess_pids(self) -> list[int]:
+        """Extract PIDs owned by active FastMCP stdio transports.
+
+        FastMCP retains each stdio context manager on the connection task's
+        ``AsyncExitStack``. Its async-generator frame owns the exact process
+        object, so this avoids matching another client's subprocess by command.
+        """
+        pids: list[int] = []
+        pending: list[ClientTransport] = [self.transport]
+        seen: set[int] = set()
+
+        while pending:
+            transport = pending.pop()
+            if id(transport) in seen:
+                continue
+            seen.add(id(transport))
+
+            if isinstance(transport, MCPConfigTransport):
+                pending.extend(transport._transports)
+            if not isinstance(transport, StdioTransport):
+                continue
+
+            task = transport._connect_task
+            coroutine = task.get_coro() if task is not None else None
+            frame = coroutine.cr_frame if isinstance(coroutine, CoroutineType) else None
+            stack = frame.f_locals.get("stack") if frame is not None else None
+            stack_internals = (
+                cast(_ExitStackInternals, stack)
+                if isinstance(stack, contextlib.AsyncExitStack)
+                else None
+            )
+            transport_pids: list[int] = []
+            callbacks = (
+                stack_internals._exit_callbacks if stack_internals is not None else ()
+            )
+            for _, callback in callbacks:
+                if not inspect.ismethod(callback):
+                    continue
+                manager = callback.__self__
+                if not isinstance(manager, contextlib._AsyncGeneratorContextManager):
+                    continue
+                generator = manager.gen
+                if not inspect.isasyncgen(generator):
+                    continue
+                generator_frame = generator.ag_frame
+                process = (
+                    cast(Process | None, generator_frame.f_locals.get("process"))
+                    if generator_frame is not None
+                    else None
+                )
+                pid = process.pid if process is not None else None
+                if isinstance(pid, int):
+                    transport_pids.append(pid)
+            if task is not None and not task.done() and not transport_pids:
+                logger.warning("Could not extract active stdio transport process PID")
+            pids.extend(transport_pids)
+
+        return list(dict.fromkeys(pids))
+
+    @staticmethod
+    def _kill_process_group(pid: int) -> None:
+        """Kill a process and its group (SIGTERM then SIGKILL)."""
+        try:
+            os.kill(pid, 0)
+            pgid = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pgid, sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError, OSError):
+                    return
+            if sig == signal.SIGTERM:
+                time.sleep(0.5)
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError, OSError):
+                return
+
+    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
+        """Kill stdio MCP subprocesses captured before async close."""
+        if not pids:
+            return
+        logger.debug(
+            "MCPClient: force-killing %d stdio subprocess(es) after async close: %s",
+            len(pids),
+            pids,
+        )
+        for pid in pids:
+            self._kill_process_group(pid)
+
     def sync_close(self) -> None:
         """
         Synchronously close the MCP client and cleanup resources.
 
         This will attempt to call the async close() method if available,
         then shutdown the background event loop. Safe to call multiple times.
+
+        As a safety net, any stdio MCP subprocesses that survived the async
+        close (due to timeout or portal-thread abandonment) are killed
+        unconditionally before the executor is shut down.  See issue #4598.
         """
         if self._closed:
             return
@@ -106,9 +222,19 @@ class MCPClient(AsyncMCPClient):
             except Exception:
                 pass  # Ignore close errors during cleanup
 
-        # Always cleanup the executor
-        self._executor.close()
-        self._closed = True
+        try:
+            # Capture only processes still owned by active transports after close.
+            # This avoids acting on an exited process's PID if the OS reuses it.
+            subprocess_pids = self._get_transport_subprocess_pids()
+            self._force_kill_subprocesses(subprocess_pids)
+        except Exception:
+            logger.warning(
+                "Error force-killing stdio subprocesses during MCPClient cleanup",
+                exc_info=True,
+            )
+        finally:
+            self._executor.close()
+            self._closed = True
 
     def __del__(self):
         """Cleanup on deletion."""
