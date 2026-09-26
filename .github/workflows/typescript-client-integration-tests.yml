@@ -34,10 +34,10 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
 
             - name: Use Node.js 22.x
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
                   node-version: 22.x
                   cache: npm
@@ -50,7 +50,7 @@ jobs:
                   python-version: '3.13'
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
             - name: Install dependencies
               run: npm ci
@@ -70,10 +70,10 @@ jobs:
                   uv sync --frozen
                   uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
                       --build-ctx-only --arch amd64 \
-                      --base-image nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      --base-image python-node-runtime
 
             - name: Build agent-server image from this branch
-              uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
               with:
                   context: ${{ steps.agent_server_ctx.outputs.build_context }}
                   file: ${{ steps.agent_server_ctx.outputs.dockerfile }}
@@ -87,7 +87,7 @@ jobs:
                   # Scope server.yml populates with mode=max on push to main.
                   cache-from: type=gha,scope=agent-server-python-amd64
                   build-args: |
-                      BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
+                      BASE_IMAGE=python-node-runtime
                       OPENHANDS_BUILD_GIT_SHA=${{ github.event.pull_request.head.sha || github.sha }}
                       OPENHANDS_BUILD_GIT_REF=${{ github.head_ref != '' && format('refs/heads/{0}', github.head_ref) || github.ref }}
                       INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
@@ -166,7 +166,7 @@ jobs:
 
             - name: Upload test results
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: integration-test-results
                   path: |
@@ -198,10 +198,10 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
 
             - name: Use Node.js 22.x
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
                   node-version: 22.x
                   cache: npm
@@ -251,7 +251,7 @@ jobs:
               run: |
                   # Just check that the TypeScript client can connect
                   # This doesn't need a real LLM key
-                  npm run test -- --testPathPatterns="index.test.ts" --passWithNoTests
+                  npm run test -- index.test.ts --passWithNoTests
 
             - name: Cleanup
               if: always()

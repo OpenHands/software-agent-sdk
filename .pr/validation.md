@@ -3,6 +3,22 @@
 Base: `9c3571a694547734002518bd94b3cb41a187f9b6`. Tested on macOS with Python 3.13.13.
 Updated with upstream `76e9e250` before the prompt-cache regression fix.
 
+## Revalidation after syncing main (2026-09-26)
+
+Merged upstream `a350dc73ef9b4d3a801ffab2aed211a04d2120a9` without conflicts.
+The serialization fix and cache-marker regression coverage remain unchanged
+relative to current main. On macOS with Python 3.13.13:
+
+- `uv sync --frozen --group dev`: passed.
+- `uv run pytest tests/sdk/llm -q`: **1090 passed, 14 warnings**.
+- `.venv/bin/python .pr/repro_chat_content.py`: **4/4 HTTP cases passed**.
+- `.venv/bin/python .pr/repro_prompt_cache.py`: **6/6 cache markers retained**.
+- `uv run pre-commit run --all-files --show-diff-on-failure`: all checks passed.
+
+The HTTP runs still use a strict loopback endpoint. They are not real-provider,
+provider-cache-hit, or benchmark evidence. Additional live evaluation, if required
+by the maintainer, needs a configured model service.
+
 ## Prompt-cache regression follow-up
 
 The review correctly identified that filtering a trailing blank tool block could
