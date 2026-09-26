@@ -26,6 +26,8 @@ class RuntimeIdentity(BaseModel):
     api_key: SecretStr
     encryption_key: SecretStr
     workspace_path: Path
+    worktree_repository_path: Path | None = None
+    worktree_git_common_dir_path: Path | None = None
     launched_agent_profile: LaunchedAgentProfile | None = None
 
     @field_serializer("api_key", "encryption_key")

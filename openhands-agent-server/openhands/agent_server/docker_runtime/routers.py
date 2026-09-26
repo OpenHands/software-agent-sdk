@@ -33,8 +33,11 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
 )
 from openhands.agent_server.utils import safe_rmtree
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
+from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
@@ -136,6 +139,39 @@ async def start_conversation(
     try:
         prepared, launched = await prepare_start(body, registry.config)
         identity = registry.provisioning.create(conversation_id, host_workspace)
+        if prepared.worktree:
+            try:
+                validate_git_repository(identity.workspace_path)
+                repo_root = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                        identity.workspace_path,
+                    )
+                ).resolve()
+                git_common_dir = Path(
+                    run_git_command(
+                        ["git", "--no-pager", "rev-parse", "--git-common-dir"],
+                        identity.workspace_path,
+                    )
+                )
+                if not git_common_dir.is_absolute():
+                    git_common_dir = identity.workspace_path / git_common_dir
+                git_common_dir = git_common_dir.resolve()
+            except (GitCommandError, GitRepositoryError):
+                pass
+            else:
+                identity = identity.model_copy(
+                    update={
+                        "worktree_repository_path": repo_root,
+                        "worktree_git_common_dir_path": git_common_dir,
+                    }
+                )
+                registry.provisioning.save(identity)
+                prepared = prepared.model_copy(
+                    update={
+                        "workspace": LocalWorkspace(working_dir=identity.workspace_path)
+                    }
+                )
         if launched is not None and identity.launched_agent_profile is None:
             identity = identity.model_copy(update={"launched_agent_profile": launched})
             registry.provisioning.save(identity)
@@ -245,6 +281,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     # partially deleted state.
     try:
         await registry.stop(conversation_id)
+        await asyncio.to_thread(registry.cleanup_worktree, conversation_id)
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)

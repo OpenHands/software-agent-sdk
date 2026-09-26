@@ -23,6 +23,7 @@ from openhands.agent_server.docker_runtime.routers import (
 )
 from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
 
@@ -283,6 +284,105 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
     )
     assert not conversation_dir.exists()
     assert not runtime_dir.exists()
+
+
+@pytest.mark.parametrize("head_state", ["expected", "switched", "detached"])
+def test_delete_unregisters_host_worktree_before_removing_runtime(
+    tmp_path, monkeypatch, head_state
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    run_git_command(["git", "init", "-b", "main"], repository)
+    run_git_command(["git", "config", "user.name", "Test User"], repository)
+    run_git_command(["git", "config", "user.email", "test@example.com"], repository)
+    run_git_command(["git", "commit", "--allow-empty", "-m", "initial"], repository)
+
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    identity = registry.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    registry.provisioning.save(identity)
+    conversation_dir = registry.conversation_dir(conversation_id)
+    conversation_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    runtime_dir = registry.provisioning.runtime_dir(conversation_id)
+    worktree_root = runtime_dir / "worktrees" / str(conversation_id) / repository.name
+    worktree_root.parent.mkdir(parents=True)
+    branch = f"openhands/{conversation_id}"
+    run_git_command(
+        ["git", "worktree", "add", "-b", branch, str(worktree_root), "main"],
+        repository,
+    )
+    if head_state == "switched":
+        run_git_command(["git", "switch", "-c", "agent-changed-branch"], worktree_root)
+    elif head_state == "detached":
+        run_git_command(["git", "checkout", "--detach"], worktree_root)
+    registry.stop = AsyncMock()
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    with TestClient(app) as client:
+        response = client.delete(f"/api/conversations/{conversation_id}")
+
+    assert response.status_code == 200
+    worktree_state = run_git_command(
+        ["git", "worktree", "list", "--porcelain"], repository
+    )
+    assert str(worktree_root) not in worktree_state
+    assert "prunable" not in worktree_state
+    assert run_git_command(["git", "branch", "--list", branch], repository) == ""
+    assert not runtime_dir.exists()
+
+
+def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    run_git_command(["git", "init", "-b", "main"], repository)
+    run_git_command(["git", "config", "user.name", "Test User"], repository)
+    run_git_command(["git", "config", "user.email", "test@example.com"], repository)
+    run_git_command(["git", "commit", "--allow-empty", "-m", "initial"], repository)
+
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    identity = registry.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    registry.provisioning.save(identity)
+    worktree_root = (
+        registry.provisioning.runtime_dir(conversation_id)
+        / "worktrees"
+        / str(conversation_id)
+        / repository.name
+    )
+    worktree_root.parent.mkdir(parents=True)
+    branch = f"openhands/{conversation_id}"
+    run_git_command(
+        ["git", "worktree", "add", "-b", branch, str(worktree_root), "main"],
+        repository,
+    )
+
+    registry.cleanup_worktree(conversation_id)
+    registry.cleanup_worktree(conversation_id)
+
+    worktree_state = run_git_command(
+        ["git", "worktree", "list", "--porcelain"], repository
+    )
+    assert str(worktree_root) not in worktree_state
+    assert "prunable" not in worktree_state
+    assert run_git_command(["git", "branch", "--list", branch], repository) == ""
 
 
 @pytest.mark.asyncio
