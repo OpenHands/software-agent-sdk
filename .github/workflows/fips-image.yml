@@ -1,0 +1,54 @@
+---
+name: FIPS-enabled agent server image
+
+on:
+    pull_request:
+        paths:
+            - .github/workflows/fips-image.yml
+            - openhands-agent-server/openhands/agent_server/docker/Dockerfile.fips
+            - openhands-agent-server/openhands/agent_server/docker/fips-entrypoint.sh
+            - openhands-agent-server/openhands/agent_server/docker/openssl-fips.cnf
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build-and-verify:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 300
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: docker/setup-buildx-action@v4
+
+            - name: Build FIPS-enabled image
+              uses: docker/build-push-action@v7
+              with:
+                  context: .
+                  file: openhands-agent-server/openhands/agent_server/docker/Dockerfile.fips
+                  target: binary-fips
+                  load: true
+                  tags: agent-server:fips-test
+                  cache-from: type=gha,scope=agent-server-fips-amd64
+                  cache-to: type=gha,scope=agent-server-fips-amd64,mode=max
+
+            - name: Verify FIPS provider and runtimes
+              run: |
+                  docker run --rm --entrypoint fips-entrypoint agent-server:fips-test sh -c '
+                    openssl list -providers
+                    openssl dgst -sha256 /etc/ssl/openssl-fips.cnf >/dev/null
+                    ! openssl dgst -md5 /etc/ssl/openssl-fips.cnf >/dev/null 2>&1
+                    python -c '\''import ctypes; lib = ctypes.CDLL("libcrypto.so.3"); lib.EVP_default_properties_is_fips_enabled.restype = ctypes.c_int; assert lib.EVP_default_properties_is_fips_enabled(None) == 1'\''
+                    node -e '\''const c = require("crypto"); if (c.getFips() !== 1) process.exit(1); c.createHash("sha256").update("ok").digest(); try { c.createHash("md5"); process.exit(1); } catch {}'\''
+                  '
+
+            - name: Scan image with Trivy
+              uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+              with:
+                  image-ref: agent-server:fips-test
+                  format: table
+                  severity: CRITICAL,HIGH
+                  exit-code: '0'
+                  ignore-unfixed: true
+                  version: v0.74.0
