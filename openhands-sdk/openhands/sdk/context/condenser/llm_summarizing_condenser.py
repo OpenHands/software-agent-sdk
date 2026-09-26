@@ -318,8 +318,16 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 
-        # Find actual forgetting_start: smallest manipulation index >= keep_first
-        forgetting_start = view.manipulation_indices.find_next(self.keep_first)
+        # The leading SystemPromptEvent must never be forgotten, otherwise the
+        # condensed view would open with a non-system message. Floor the start
+        # of the forgetting range just past it (this also covers keep_first=0).
+        protected_prefix = self.keep_first
+        system_idx = _leading_system_prompt_index(view.events)
+        if system_idx is not None:
+            protected_prefix = max(protected_prefix, system_idx + 1)
+
+        # Find actual forgetting_start: smallest manipulation index >= protected_prefix
+        forgetting_start = view.manipulation_indices.find_next(protected_prefix)
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
         forgetting_end = view.manipulation_indices.find_next(naive_end)

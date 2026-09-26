@@ -350,11 +350,13 @@ export interface RenameProfileRequest {
 
 /**
  * Meta-profiles: declarative model-routing configurations consumed by the
- * ``classify_and_switch_llm`` tool (agent-server ``/api/meta-profiles``).
+ * ``route_task_to_model`` tool (agent-server ``/api/meta-profiles``).
  *
- * Every model reference (``classifier_model``, ``default_model`` and each
- * class's ``model``) is the name of a saved LLM profile, not a raw model
- * string.
+ * Every model reference (``classifier_model`` and each class's ``model``) is
+ * the name of a saved LLM profile, not a raw model string. Direct-routing
+ * meta-profiles set ``prompt_template`` (rendered with ``{{ instance_text }}``
+ * and optional ``{{ model_table }}``) instead of ``classes``; the two modes are
+ * mutually exclusive.
  */
 export interface MetaProfileClass {
   description: string;
@@ -365,15 +367,17 @@ export interface MetaProfileClass {
 export interface MetaProfile {
   /** Name of the saved LLM profile used to classify the task. */
   classifier_model: string;
-  /** Name of the saved LLM profile to use when no class matches. */
-  default_model: string;
-  classes: MetaProfileClass[];
+  /** Ordered list of task classes and their target profiles (structured mode). */
+  classes?: MetaProfileClass[];
+  /** Direct-routing prompt template; must include ``{{ instance_text }}``. */
+  prompt_template?: string | null;
+  /** Text inserted into ``{{ model_table }}`` for direct-routing prompts. */
+  model_table?: string | null;
 }
 
 export interface MetaProfileInfo {
   name: string;
   classifier_model: string | null;
-  default_model: string | null;
   num_classes: number;
 }
 
