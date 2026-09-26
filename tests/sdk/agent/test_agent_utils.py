@@ -92,9 +92,13 @@ def test_prepare_llm_messages_without_condenser(
 def test_prepare_llm_messages_with_additional_messages(
     mock_events_to_messages, sample_events, sample_messages
 ):
-    """Test prepare_llm_messages with additional messages."""
-    # Copy to avoid mutation issues with the extend() inside prepare_llm_messages.
-    mock_events_to_messages.return_value = sample_messages.copy()
+    """Additional user message merges into trailing user turn to keep cache prefix."""
+    mock_events_to_messages.return_value = [
+        Message(
+            role="user",
+            content=[TextContent(text="My previous msg")],
+        )
+    ]
     view = View(events=sample_events)
 
     additional_messages = [
@@ -106,8 +110,43 @@ def test_prepare_llm_messages_with_additional_messages(
 
     result = prepare_llm_messages(view, additional_messages=additional_messages)
 
-    assert result == sample_messages + additional_messages
+    assert isinstance(result, list)
+    assert len(result) == 1
+    texts = [c.text for c in result[0].content if isinstance(c, TextContent)]
+    assert texts == [
+        "My previous msg",
+        "Additional question",
+    ]
     mock_events_to_messages.assert_called_once_with(view.events)
+
+
+@patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
+def test_prepare_llm_messages_additional_not_merged_after_assistant(
+    mock_events_to_messages, sample_events
+):
+    """Additional user message stays separate after a non-user turn."""
+    base_messages = [
+        Message(
+            role="assistant",
+            content=[TextContent(text="Working on it")],
+        )
+    ]
+    mock_events_to_messages.return_value = base_messages.copy()
+    view = View(events=sample_events)
+
+    additional_messages = [
+        Message(
+            role="user",
+            content=[TextContent(text="Additional question")],
+        )
+    ]
+
+    result = prepare_llm_messages(view, additional_messages=additional_messages)
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[0].role == "assistant"
+    assert result[1].role == "user"
 
 
 @patch("openhands.sdk.event.base.LLMConvertibleEvent.events_to_messages")
