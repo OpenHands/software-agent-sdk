@@ -1,5 +1,6 @@
 import json
 import shutil
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -489,6 +490,41 @@ def test_validate_agent_settings_v5_preserves_explicit_no_datetime() -> None:
     settings = validate_agent_settings(
         {
             "schema_version": 5,
+            "agent_kind": "acp",
+            "acp_server": "codex",
+            "agent_context": {"current_datetime": None},
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime is None
+
+
+def test_validate_agent_settings_v6_drops_persisted_runtime_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 6,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "agent_context": {"current_datetime": "2024-03-15T14:30:00Z"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.agent_context is not None
+    assert settings.agent_context.current_datetime is not None
+    assert settings.agent_context.current_datetime != datetime.fromisoformat(
+        "2024-03-15T14:30:00+00:00"
+    )
+
+
+def test_validate_agent_settings_v6_preserves_explicit_no_datetime() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 6,
             "agent_kind": "acp",
             "acp_server": "codex",
             "agent_context": {"current_datetime": None},

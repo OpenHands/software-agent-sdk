@@ -470,7 +470,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 6
+AGENT_SETTINGS_SCHEMA_VERSION = 7
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -694,6 +694,20 @@ def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
             agent_context.pop("current_datetime")
         migrated["agent_context"] = agent_context
     migrated["schema_version"] = 6
+    return migrated
+
+
+def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop persisted runtime timestamps while preserving an explicit no-time value."""
+
+    migrated = dict(payload)
+    agent_context = migrated.get("agent_context")
+    if isinstance(agent_context, Mapping):
+        agent_context = dict(agent_context)
+        if agent_context.get("current_datetime") is not None:
+            agent_context.pop("current_datetime")
+        migrated["agent_context"] = agent_context
+    migrated["schema_version"] = 7
     return migrated
 
 
@@ -993,6 +1007,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
     5: _migrate_agent_settings_v5_to_v6,
+    6: _migrate_agent_settings_v6_to_v7,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,

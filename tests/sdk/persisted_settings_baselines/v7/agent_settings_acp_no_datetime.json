@@ -5,7 +5,7 @@
     "acp_server": "codex",
     "agent_context.current_datetime": null
   },
-  "schema_version": 6,
+  "schema_version": 7,
   "agent_kind": "acp",
   "acp_server": "codex",
   "agent_context": {

@@ -142,7 +142,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 3
+PERSISTED_SETTINGS_SCHEMA_VERSION = 4
 
 
 class PersistedSettings(BaseModel):
@@ -332,8 +332,10 @@ class PersistedSettings(BaseModel):
         - **v1**: ``agent_settings`` + ``conversation_settings`` plus
           ``active_profile``.
         - **v2**: adds the opaque ``misc_settings`` container.
-        - **v3** (current): advances nested agent settings to schema 6, which
-          stops persisting runtime ``current_datetime`` values.
+        - **v3**: advances nested agent settings to schema 6, which stops
+          persisting runtime ``current_datetime`` values.
+        - **v4** (current): advances nested agent settings to schema 7 and
+          preserves an explicit ``current_datetime=None`` value.
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
