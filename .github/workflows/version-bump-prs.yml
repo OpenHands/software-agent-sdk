@@ -508,11 +508,37 @@ jobs:
                     echo "✅ PR created for $REPO"
                   fi
 
+            - name: Mint GitHub App token (scoped to OpenHands/enterprise)
+              # The job-level OPENHANDS_BOT_GITHUB_PAT_PUBLIC PAT does not have
+              # push scope for enterprise, so `git push` 403s (run 36142114681).
+              # Write to enterprise via the shared release App
+              # (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) instead — the same
+              # org-level App enterprise's own release.yml uses to author its
+              # release PRs/tags (via OpenHands/release-actions/release-please),
+              # proving it is installed on OpenHands/enterprise with
+              # Contents + Pull requests write. This mirrors the bump-cloud-chart
+              # job's App-token pattern for OpenHands-Cloud. Unlike the
+              # release-please caller (which runs inside enterprise and omits
+              # `repositories:`), this job runs in software-agent-sdk, so the
+              # token MUST be explicitly scoped to `enterprise` or it would be
+              # valid only for this repo and the push would 403 again.
+              id: enterprise-app-token
+              uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+              with:
+                  app-id: ${{ secrets.RELEASE_APP_ID }}
+                  private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+                  owner: OpenHands
+                  repositories: enterprise
+
             - name: Create PR for enterprise repo
               id: enterprise_pr
               continue-on-error: true
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
+                  # Override the job-level PAT with the enterprise-scoped App token
+                  # so the clone, push, and `gh pr create` all authenticate as the
+                  # release App (which has write access to OpenHands/enterprise).
+                  GH_TOKEN: ${{ steps.enterprise-app-token.outputs.token }}
               run: |
                   set -euo pipefail
 
