@@ -26,6 +26,8 @@ export interface ConversationClientOptions {
   host: string;
   apiKey?: string;
   timeout?: number;
+  /** Additional bounded time to reconcile a lost create response. Default: 120s. */
+  creationRecoveryTimeout?: number;
 }
 
 /**
@@ -54,10 +56,12 @@ export class ConversationClient {
   public readonly host: string;
   public readonly apiKey?: string;
   private readonly client: HttpClient;
+  private readonly creationRecoveryTimeout: number;
 
   constructor(options: ConversationClientOptions) {
     this.host = options.host.replace(/\/$/, '');
     this.apiKey = options.apiKey;
+    this.creationRecoveryTimeout = options.creationRecoveryTimeout ?? 120000;
     this.client = new HttpClient({
       baseUrl: this.host,
       apiKey: this.apiKey,
@@ -68,8 +72,31 @@ export class ConversationClient {
   async createConversation<TConversation = ConversationInfo>(
     payload: CreateConversationPayload
   ): Promise<TConversation> {
-    const response = await this.client.post<TConversation>('/api/conversations', payload);
-    return response.data;
+    try {
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    } catch (error) {
+      // A lost response does not mean the initial message was not executed.
+      // Reconcile by the caller's stable id; never replay the POST.
+      if (!(error instanceof HttpError) && typeof payload.conversation_id === 'string') {
+        const deadline = Date.now() + this.creationRecoveryTimeout;
+        do {
+          try {
+            const response = await this.client.get<TConversation>(
+              `/api/conversations/${encodeURIComponent(payload.conversation_id)}`,
+              { timeout: Math.max(1, Math.min(1000, deadline - Date.now())) }
+            );
+            return response.data;
+          } catch (recoveryError) {
+            if (recoveryError instanceof HttpError && recoveryError.status !== 404) break;
+          }
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
+        } while (Date.now() < deadline);
+      }
+      throw error;
+    }
   }
 
   async searchConversations(
