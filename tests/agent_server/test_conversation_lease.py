@@ -149,6 +149,9 @@ def test_claim_writes_owner_host_and_pid(tmp_path: Path) -> None:
 
     assert payload.get("owner_host") == socket.gethostname()
     assert payload.get("owner_pid") == os.getpid()
+    assert (
+        payload.get("owner_process_token") == conversation_lease_module._PROCESS_TOKEN
+    )
 
 
 def test_claim_takes_over_when_previous_owner_pid_is_dead(
@@ -304,3 +307,33 @@ def test_claim_self_pid_match_is_not_treated_as_dead(tmp_path: Path) -> None:
     )
     with pytest.raises(ConversationLeaseHeldError):
         secondary.claim()
+
+
+def test_claim_takes_over_when_pid_was_reused_by_a_new_process(
+    tmp_path: Path,
+) -> None:
+    """A restarted process can reuse the PID from a stale lease."""
+    conversation_dir = tmp_path / "conversation"
+    primary = ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="primary",
+        ttl_seconds=3600.0,
+    )
+    primary_claim = primary.claim()
+
+    payload = _read_lease_payload(conversation_dir)
+    forged = dict(payload)
+    forged["owner_process_token"] = "previous-process"
+    forged["owner_pid"] = os.getpid()
+    (conversation_dir / LEASE_FILE_NAME).write_text(json.dumps(forged))
+
+    secondary = ConversationLease(
+        conversation_dir=conversation_dir,
+        owner_instance_id="secondary",
+    )
+    secondary_claim = secondary.claim()
+
+    new_payload = _read_lease_payload(conversation_dir)
+    assert secondary_claim.takeover is True
+    assert secondary_claim.generation == primary_claim.generation + 1
+    assert new_payload["owner_instance_id"] == "secondary"
