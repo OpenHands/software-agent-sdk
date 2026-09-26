@@ -1,11 +1,35 @@
-"""PowerShell-backed terminal backend for Windows."""
+"""PowerShell-backed terminal backend for Windows.
+
+Design notes (see ``windows_console`` for the Win32 side):
+
+* The command-completion sentinel is emitted by PowerShell's ``prompt``
+  function, exactly like the bash backends use ``PS1``.  A sentinel that is
+  appended to the command line itself is lost whenever the line does not run
+  to completion (Ctrl+C, ``throw``, ``-ErrorAction Stop``,
+  ``$ErrorActionPreference = 'Stop'``), which left the session believing the
+  command was still running forever.  A prompt-level sentinel reappears
+  whenever the shell is ready for input, no matter how the previous command
+  ended.
+* The shell gets a private hidden console (``CREATE_NO_WINDOW``) and is
+  **not** created with ``CREATE_NEW_PROCESS_GROUP``: that flag disables Ctrl+C
+  for the new process and everything it spawns.  Ctrl+C handling is also
+  re-enabled from inside the shell so it works regardless of what the agent
+  process itself inherited.
+* Interrupts escalate with bounded waits: console Ctrl+C -> terminate the
+  descendant process tree -> Ctrl+C again.  If the shell still does not come
+  back to a prompt it is declared unresponsive and the session controller
+  recreates it, so one bad command can never poison the session.
+* The shell and its descendants live in a job object, which gives an exact
+  process-tree view and an atomic teardown without WMI queries, and which
+  never kills the shell's own console host (that leaves PowerShell alive but
+  wedged).
+"""
 
 import codecs
 import json
 import os
 import platform
 import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -16,12 +40,13 @@ from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
-    HISTORY_LIMIT,
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
     normalize_terminal_env,
 )
+from openhands.tools.terminal.metadata import CmdOutputMetadata
+from openhands.tools.terminal.terminal import windows_console
 from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
     parse_ctrl_key,
@@ -30,13 +55,25 @@ from openhands.tools.terminal.terminal.interface import (
 
 logger = get_logger(__name__)
 
-_READ_CHUNK_SIZE = 1024
+_READ_CHUNK_SIZE = 4096
 _READER_THREAD_TIMEOUT_SECONDS = 1.0
-_SCREEN_CLEAR_DELAY_SECONDS = 0.2
-_SETUP_DELAY_SECONDS = 0.5
-_SETUP_POLL_INTERVAL_SECONDS = 0.05
-_MAX_SETUP_WAIT_SECONDS = 2.0
-_INTERRUPT_GRACE_SECONDS = 0.5
+_PROMPT_POLL_INTERVAL_SECONDS = 0.05
+# Upper bound for the first prompt after start-up.  PowerShell 5.1 can take a
+# few seconds on a cold or loaded machine; this is a cap, not a wait.
+_STARTUP_PROMPT_TIMEOUT_SECONDS = 30.0
+# How long each interrupt escalation step waits for the prompt to come back.
+_INTERRUPT_PROMPT_WAIT_SECONDS = 3.0
+_CTRL_C_HELPER_TIMEOUT_SECONDS = 5.0
+_PROCESS_EXIT_WAIT_SECONDS = 5.0
+# Screen buffer budget in characters (the tmux backend keeps 10k lines).
+_OUTPUT_BUFFER_MAX_CHARS = 1_000_000
+
+_PS1_BEGIN_MARKER = CMD_OUTPUT_PS1_BEGIN.strip()
+_PS1_END_MARKER = CMD_OUTPUT_PS1_END.strip()
+# What the prompt function writes at the end of every metadata block.  The
+# leading newline is what distinguishes a real prompt from the same text
+# appearing inside an echoed command line.
+_PROMPT_END_SEQUENCE = "\n" + _PS1_END_MARKER
 
 _WINDOWS_SPECIALS: dict[str, str] = {
     "ENTER": "\n",
@@ -57,6 +94,72 @@ _WINDOWS_SPECIALS: dict[str, str] = {
 }
 
 
+def _ps_single_quote(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _ps_split_literal(text: str) -> str:
+    """Return a PowerShell expression that evaluates to *text*.
+
+    PowerShell echoes every line it reads from a pipe, so the init script must
+    not contain the marker strings verbatim or the echo itself would look like
+    a prompt.  Splitting the literal in two keeps the markers out of the echo.
+    """
+    half = len(text) // 2
+    return f"({_ps_single_quote(text[:half])} + {_ps_single_quote(text[half:])})"
+
+
+def build_powershell_init_script() -> str:
+    """Return the statements sent to a fresh PowerShell session.
+
+    Each statement is a complete single line so PowerShell never waits at the
+    ``>>`` continuation prompt while reading them from the stdin pipe.
+    """
+    # 1. Re-enable Ctrl+C for this process (and, by inheritance, everything it
+    #    spawns).  The flag is inherited from the parent and is set by
+    #    CREATE_NEW_PROCESS_GROUP, so we cannot rely on what we got.
+    enable_ctrl_c = (
+        "try { Add-Type -Namespace OpenHandsTerminal -Name ConsoleCtrl "
+        '-MemberDefinition \'[DllImport("kernel32.dll", SetLastError = true)] '
+        "public static extern bool SetConsoleCtrlHandler(System.IntPtr handler, "
+        "bool add);' -ErrorAction Stop; "
+        "[void][OpenHandsTerminal.ConsoleCtrl]::SetConsoleCtrlHandler("
+        "[System.IntPtr]::Zero, $false) } "
+        'catch { Write-Host "[openhands] Ctrl+C could not be enabled: $_" }'
+    )
+    # 2. UTF-8 in and out: the reader decodes UTF-8 and native tools emit it.
+    utf8 = (
+        "try { $oh_utf8 = New-Object System.Text.UTF8Encoding($false); "
+        "[Console]::OutputEncoding = $oh_utf8; $global:OutputEncoding = $oh_utf8 } "
+        "catch { }"
+    )
+    # 3. The prompt function emits the metadata block.  `$?` must be read
+    #    before anything else runs.  The END marker is the prompt string
+    #    itself, so the screen ends with it whenever the shell is idle.
+    begin = _ps_split_literal(_PS1_BEGIN_MARKER)
+    end = f'({_ps_split_literal(_PS1_END_MARKER)} + "`n")'
+    prompt = (
+        "function global:prompt { "
+        "$oh_ok = $?; "
+        "$oh_ec = $global:LASTEXITCODE; "
+        "$global:LASTEXITCODE = $null; "
+        "$oh_code = if ($null -ne $oh_ec) { $oh_ec } elseif ($oh_ok) { 0 } else { 1 }; "
+        "try { $oh_cwd = (Get-Location).Path.Replace('\\', '/') } "
+        "catch { $oh_cwd = $null }; "
+        "try { $oh_py = (Get-Command python -ErrorAction SilentlyContinue | "
+        "Select-Object -First 1 -ExpandProperty Source) } catch { $oh_py = $null }; "
+        "$oh_meta = @{ pid = $PID; exit_code = $oh_code; username = $env:USERNAME; "
+        "hostname = $env:COMPUTERNAME; working_dir = $oh_cwd; "
+        "py_interpreter_path = $oh_py }; "
+        "try { $oh_json = ConvertTo-Json $oh_meta -Compress } "
+        "catch { $oh_json = '{\"exit_code\":' + $oh_code + '}' }; "
+        f'Write-Host ("`n" + {begin} + "`n" + $oh_json); '
+        f"return {end} "
+        "}"
+    )
+    return "\n".join([enable_ctrl_c, utf8, prompt]) + "\n"
+
+
 class WindowsTerminal(TerminalInterface):
     """Persistent PowerShell session for Windows terminal execution."""
 
@@ -65,7 +168,6 @@ class WindowsTerminal(TerminalInterface):
     output_lock: threading.Lock
     reader_thread: threading.Thread | None
     shell_path: str
-    _command_running_event: threading.Event
     _stop_reader: threading.Event
     _decoder: codecs.IncrementalDecoder
 
@@ -78,14 +180,30 @@ class WindowsTerminal(TerminalInterface):
     ):
         super().__init__(work_dir, username)
         self.process = None
-        self.output_buffer = deque(maxlen=HISTORY_LIMIT)
+        self.output_buffer = deque()
         self.output_lock = threading.Lock()
         self.reader_thread = None
         self.shell_path = shell_path
         self._env = normalize_terminal_env(env)
-        self._command_running_event = threading.Event()
         self._stop_reader = threading.Event()
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._buffer_chars = 0
+        # Monotonic count of metadata blocks (prompts) seen on the stream, and
+        # the value it had when the current command was submitted.  A command
+        # is running exactly while ``_prompt_seq <= _seq_at_send``.
+        self._prompt_seq = 0
+        self._seq_at_send = 0
+        self._marker_carry = ""
+        self._job: windows_console.WindowsJob | None = None
+        # The shell and its own console host: never terminated by
+        # ``_kill_descendants`` (killing conhost wedges PowerShell).
+        self._protected_pids: set[int] = set()
+        self._wedged = False
+        self._interrupt_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def initialize(self) -> None:
         """Start a persistent PowerShell process and prepare prompt metadata."""
@@ -99,8 +217,9 @@ class WindowsTerminal(TerminalInterface):
             if startupinfo_cls is not None:
                 startupinfo = startupinfo_cls()
                 startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            # A private hidden console for the shell and its children.  Do NOT
+            # add CREATE_NEW_PROCESS_GROUP: it disables Ctrl+C for the tree.
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         env = build_terminal_env(self._env)
         env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -118,97 +237,95 @@ class WindowsTerminal(TerminalInterface):
             startupinfo=startupinfo,
             creationflags=creationflags,
         )
+        self._attach_job()
 
         self._stop_reader.clear()
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
         self._initialized = True
 
-        self._wait_for_startup_output()
+        self._write_to_stdin(build_powershell_init_script())
+        if not self._wait_for_prompt_after(0, _STARTUP_PROMPT_TIMEOUT_SECONDS):
+            logger.warning(
+                "PowerShell did not print its first prompt within %.0fs; "
+                "continuing with a seeded metadata block",
+                _STARTUP_PROMPT_TIMEOUT_SECONDS,
+            )
+        self._record_protected_pids()
         self.clear_screen()
         logger.debug("Windows terminal initialized with work dir: %s", self.work_dir)
 
-    def _wait_for_startup_output(self) -> None:
-        deadline = time.time() + _MAX_SETUP_WAIT_SECONDS
-        while time.time() < deadline:
-            time.sleep(_SETUP_POLL_INTERVAL_SECONDS)
-            with self.output_lock:
-                if self.output_buffer:
-                    break
-        time.sleep(_SETUP_DELAY_SECONDS)
-        self._get_buffered_output(clear=True)
+    def _attach_job(self) -> None:
+        if platform.system() != "Windows" or self.process is None:
+            return
+        handle = getattr(self.process, "_handle", None)
+        if handle is None:
+            return
+        job = windows_console.WindowsJob()
+        if job.active and job.assign(int(handle)):
+            self._job = job
+        else:
+            job.close()
+            logger.warning(
+                "Could not place PowerShell in a job object; falling back to "
+                "parent-pid process-tree enumeration"
+            )
 
-    def _preserve_latest_metadata_block(self) -> bool:
-        ps1_begin = CMD_OUTPUT_PS1_BEGIN.strip()
-        ps1_end = CMD_OUTPUT_PS1_END.strip()
-        with self.output_lock:
-            output = "".join(self.output_buffer)
-            start_index = output.rfind(ps1_begin)
-            end_index = output.rfind(ps1_end)
-            if start_index == -1 or end_index == -1 or end_index < start_index:
-                self.output_buffer.clear()
-                return False
-
-            end_index += len(ps1_end)
-            self.output_buffer.clear()
-            self.output_buffer.append(output[start_index:end_index] + "\n")
-            return True
-
-    def _seed_metadata_prompt(self) -> None:
-        env = os.environ
-        metadata = {
-            "pid": self.process.pid if self.process is not None else -1,
-            "exit_code": 0,
-            "username": env.get("USERNAME"),
-            "hostname": env.get("COMPUTERNAME"),
-            "working_dir": os.path.realpath(self.work_dir).replace("\\", "/"),
-            "py_interpreter_path": shutil.which("python"),
-        }
-        prompt = (
-            f"{CMD_OUTPUT_PS1_BEGIN.strip()}\n"
-            f"{json.dumps(metadata, separators=(',', ':'))}\n"
-            f"{CMD_OUTPUT_PS1_END.strip()}\n"
-        )
-        with self.output_lock:
-            self.output_buffer.clear()
-            self.output_buffer.append(prompt)
+    def _record_protected_pids(self) -> None:
+        if self.process is None:
+            return
+        protected = {self.process.pid}
+        if self._job is not None:
+            protected.update(self._job.pids() or [])
+        else:
+            for pid, ppid, name in windows_console.snapshot_processes():
+                if ppid == self.process.pid and name.lower() == "conhost.exe":
+                    protected.add(pid)
+        self._protected_pids = protected
 
     def close(self) -> None:
-        """Stop the PowerShell process and background reader."""
+        """Stop the PowerShell process tree and the background reader."""
         if self._closed:
             return
-
+        self._closed = True
         self._stop_reader.set()
-        self._terminate_child_processes()
 
-        if self.process is not None:
-            try:
-                if self.process.stdin is not None:
-                    self.process.stdin.close()
-            except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdin: %s", exc)
+        process = self.process
+        if process is not None:
+            if self._job is not None and process.poll() is None:
+                self._job.terminate()
+            elif process.poll() is None:
+                self._kill_descendants()
+                try:
+                    process.kill()
+                except OSError as exc:
+                    logger.debug("Error killing PowerShell process: %s", exc)
+            for stream in (process.stdin, process.stdout):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except (OSError, ValueError) as exc:
+                    logger.debug("Error closing PowerShell pipe: %s", exc)
 
         if self.reader_thread and self.reader_thread.is_alive():
             self.reader_thread.join(timeout=_READER_THREAD_TIMEOUT_SECONDS)
 
-        if self.process is not None:
+        if process is not None:
             try:
-                if self.process.stdout is not None:
-                    self.process.stdout.close()
-            except (OSError, ValueError) as exc:
-                logger.debug("Error closing PowerShell stdout: %s", exc)
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5.0)
+                process.wait(timeout=_PROCESS_EXIT_WAIT_SECONDS)
             except subprocess.TimeoutExpired:
-                logger.warning("PowerShell process did not terminate, forcing kill")
-                self.process.kill()
+                logger.warning("PowerShell process did not exit after termination")
             except Exception as exc:
-                logger.debug("Error terminating PowerShell process: %s", exc)
-            finally:
-                self.process = None
+                logger.debug("Error waiting for PowerShell process: %s", exc)
+            self.process = None
 
-        self._closed = True
+        if self._job is not None:
+            self._job.close()
+            self._job = None
+
+    # ------------------------------------------------------------------
+    # Input
+    # ------------------------------------------------------------------
 
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send text or supported control sequences to the PowerShell session."""
@@ -229,11 +346,9 @@ class WindowsTerminal(TerminalInterface):
             return
 
         stripped_text = text.rstrip()
-        if stripped_text:
-            self._command_running_event.set()
-            command = f"{stripped_text}; {self._metadata_suffix()}"
-        else:
-            command = text
+        command = stripped_text if stripped_text else text
+        with self.output_lock:
+            self._seq_at_send = self._prompt_seq
 
         if enter:
             if "\n" in stripped_text or "\r" in stripped_text:
@@ -245,42 +360,6 @@ class WindowsTerminal(TerminalInterface):
                 command += "\n"
         self._write_to_stdin(command)
 
-    def _metadata_suffix(self) -> str:
-        ps1_begin = self._escape_single_quoted(CMD_OUTPUT_PS1_BEGIN.strip())
-        ps1_end = self._escape_single_quoted(CMD_OUTPUT_PS1_END.strip())
-        commands = [
-            "$oh1 = $?",
-            "$oh2 = $LASTEXITCODE",
-            f"Write-Host '{ps1_begin}'",
-            (
-                "$exit_code = if ($null -ne $oh2) { "
-                "$oh2 "
-                "} elseif ($oh1) { 0 } else { 1 }"
-            ),
-            (
-                "$py_path = (Get-Command python -ErrorAction SilentlyContinue | "
-                "Select-Object -ExpandProperty Source)"
-            ),
-            (
-                "$meta = @{"
-                "pid=$PID; "
-                "exit_code=$exit_code; "
-                "username=$env:USERNAME; "
-                "hostname=$env:COMPUTERNAME; "
-                "working_dir=(Get-Location).Path.Replace('\\', '/'); "
-                "py_interpreter_path=if ($py_path) { $py_path } else { $null }"
-                "}"
-            ),
-            "Write-Host (ConvertTo-Json $meta -Compress)",
-            f"Write-Host '{ps1_end}'",
-            "$global:LASTEXITCODE = $null",
-        ]
-        return "; ".join(commands)
-
-    @staticmethod
-    def _escape_single_quoted(text: str) -> str:
-        return text.replace("'", "''")
-
     def _write_to_stdin(self, text: str) -> None:
         if self.process is None or self.process.stdin is None:
             raise RuntimeError("PowerShell stdin is not available")
@@ -290,6 +369,10 @@ class WindowsTerminal(TerminalInterface):
         except (BrokenPipeError, OSError) as exc:
             logger.error("Failed to write to PowerShell stdin: %s", exc)
             raise RuntimeError("Failed to write to PowerShell session") from exc
+
+    # ------------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------------
 
     def _read_output(self) -> None:
         if self.process is None or self.process.stdout is None:
@@ -303,8 +386,7 @@ class WindowsTerminal(TerminalInterface):
                     break
                 decoded = self._decoder.decode(chunk, final=False)
                 if decoded:
-                    with self.output_lock:
-                        self.output_buffer.append(decoded)
+                    self._append_output(decoded)
             except (ValueError, OSError) as exc:
                 logger.debug("PowerShell output reading stopped: %s", exc)
                 break
@@ -315,16 +397,32 @@ class WindowsTerminal(TerminalInterface):
         try:
             final = self._decoder.decode(b"", final=True)
             if final:
-                with self.output_lock:
-                    self.output_buffer.append(final)
+                self._append_output(final)
         except Exception as exc:
             logger.debug("Error flushing PowerShell decoder: %s", exc)
+
+    def _append_output(self, decoded: str) -> None:
+        with self.output_lock:
+            self.output_buffer.append(decoded)
+            self._buffer_chars += len(decoded)
+            # Count prompts as they stream by; a marker may straddle two chunks.
+            joined = self._marker_carry + decoded
+            seen = joined.count(_PROMPT_END_SEQUENCE)
+            if seen:
+                self._prompt_seq += seen
+            self._marker_carry = joined[-(len(_PROMPT_END_SEQUENCE) - 1) :]
+            while (
+                self._buffer_chars > _OUTPUT_BUFFER_MAX_CHARS
+                and len(self.output_buffer) > 1
+            ):
+                self._buffer_chars -= len(self.output_buffer.popleft())
 
     def _get_buffered_output(self, clear: bool) -> str:
         with self.output_lock:
             output = "".join(self.output_buffer)
             if clear:
                 self.output_buffer.clear()
+                self._buffer_chars = 0
             return output
 
     def read_screen(self) -> str:
@@ -332,123 +430,173 @@ class WindowsTerminal(TerminalInterface):
         return self._get_buffered_output(clear=False)
 
     def clear_screen(self) -> None:
-        """Clear the visible screen and reset buffered output."""
+        """Drop everything except the latest metadata block."""
         if self.process is None or self.process.poll() is not None:
             return
-
         if not self._preserve_latest_metadata_block():
             self._seed_metadata_prompt()
-        time.sleep(_SCREEN_CLEAR_DELAY_SECONDS)
-        self._command_running_event.clear()
 
-    def _terminate_child_processes(self) -> bool:
-        """Terminate descendants of the persistent PowerShell process."""
-        if (
-            platform.system() != "Windows"
-            or self.process is None
-            or self.process.poll() is not None
-        ):
-            return False
-
-        script = f"""
-$root = {self.process.pid}
-$childrenByParent = @{{}}
-Get-CimInstance Win32_Process | ForEach-Object {{
-    $parentId = [int]$_.ParentProcessId
-    if (-not $childrenByParent.ContainsKey($parentId)) {{
-        $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[int]
-    }}
-    $childrenByParent[$parentId].Add([int]$_.ProcessId)
-}}
-$toStop = New-Object System.Collections.Generic.List[int]
-function Add-Descendants([int]$processId) {{
-    if (-not $childrenByParent.ContainsKey($processId)) {{ return }}
-    foreach ($childId in $childrenByParent[$processId]) {{
-        if ($childId -eq $PID) {{ continue }}
-        $toStop.Add($childId)
-        Add-Descendants $childId
-    }}
-}}
-Add-Descendants $root
-for ($i = $toStop.Count - 1; $i -ge 0; $i--) {{
-    Stop-Process -Id $toStop[$i] -Force -ErrorAction SilentlyContinue
-}}
-if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
-"""
-        startupinfo = None
-        startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
-        if startupinfo_cls is not None:
-            startupinfo = startupinfo_cls()
-            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-        try:
-            result = subprocess.run(
-                [self.shell_path, "-NoLogo", "-NoProfile", "-Command", script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5.0,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            logger.debug("Failed to terminate PowerShell child processes: %s", exc)
-            return False
-
-    def interrupt(self) -> bool:
-        """Interrupt the active command if the process is still alive."""
-        if self.process is None or self.process.poll() is not None:
-            return False
-
-        # Kill descendants while they are still attached to the persistent
-        # PowerShell process. CTRL_BREAK can interrupt the waiting script first,
-        # leaving launched child processes alive but no longer discoverable as
-        # descendants of the shell.
-        terminated_children = self._terminate_child_processes()
-
-        sent_ctrl_break = False
-        ctrl_break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
-        if platform.system() == "Windows" and ctrl_break_event is not None:
-            try:
-                self.process.send_signal(ctrl_break_event)
-                sent_ctrl_break = True
-            except Exception as exc:
-                logger.debug("Failed to send CTRL_BREAK_EVENT: %s", exc)
-
-        if sent_ctrl_break:
-            time.sleep(_INTERRUPT_GRACE_SECONDS)
-
-        terminated_children = self._terminate_child_processes() or terminated_children
-        sent_ctrl_c_input = False
-        if not sent_ctrl_break and not terminated_children:
-            try:
-                self._write_to_stdin(_WINDOWS_SPECIALS["C-C"])
-                sent_ctrl_c_input = True
-            except RuntimeError as exc:
-                logger.debug("Failed to write Ctrl+C to PowerShell stdin: %s", exc)
+    def _preserve_latest_metadata_block(self) -> bool:
+        """Keep only the last well-formed metadata block in the buffer."""
+        with self.output_lock:
+            output = "".join(self.output_buffer)
+            matches = CmdOutputMetadata.matches_ps1_metadata(output)
+            if not matches:
+                self.output_buffer.clear()
+                self._buffer_chars = 0
                 return False
 
-        self._command_running_event.clear()
-        return sent_ctrl_break or terminated_children or sent_ctrl_c_input
+            block = output[matches[-1].start() : matches[-1].end()] + "\n"
+            self.output_buffer.clear()
+            self.output_buffer.append(block)
+            self._buffer_chars = len(block)
+            return True
+
+    def _seed_metadata_prompt(self) -> None:
+        env = os.environ
+        metadata = {
+            "pid": self.process.pid if self.process is not None else -1,
+            "exit_code": 0,
+            "username": env.get("USERNAME"),
+            "hostname": env.get("COMPUTERNAME"),
+            "working_dir": os.path.realpath(self.work_dir).replace("\\", "/"),
+            "py_interpreter_path": shutil.which("python"),
+        }
+        prompt = (
+            f"{_PS1_BEGIN_MARKER}\n"
+            f"{json.dumps(metadata, separators=(',', ':'))}\n"
+            f"{_PS1_END_MARKER}\n"
+        )
+        with self.output_lock:
+            self.output_buffer.clear()
+            self.output_buffer.append(prompt)
+            self._buffer_chars = len(prompt)
+
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
+
+    def _prompt_count(self) -> int:
+        with self.output_lock:
+            return self._prompt_seq
+
+    def _wait_for_prompt_after(self, seq: int, timeout: float) -> bool:
+        """Block until a prompt newer than *seq* has been printed."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._prompt_count() > seq:
+                return True
+            if self.process is None or self.process.poll() is not None:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_PROMPT_POLL_INTERVAL_SECONDS)
 
     def is_running(self) -> bool:
         """Return whether a command is still running in the PowerShell session."""
         if not self._initialized or self.process is None:
             return False
         if self.process.poll() is not None:
-            self._command_running_event.clear()
             return False
+        with self.output_lock:
+            return self._prompt_seq <= self._seq_at_send
 
-        content = self.read_screen()
-        if CMD_OUTPUT_PS1_END.rstrip() in content:
-            self._command_running_event.clear()
-            return False
-        return self._command_running_event.is_set()
+    def is_alive(self) -> bool:
+        """Return whether the shell can still accept commands."""
+        return (
+            self._initialized
+            and not self._closed
+            and not self._wedged
+            and self.process is not None
+            and self.process.poll() is None
+        )
 
     def is_powershell(self) -> bool:
         return True
+
+    # ------------------------------------------------------------------
+    # Interrupt
+    # ------------------------------------------------------------------
+
+    def _kill_descendants(self) -> bool:
+        """Terminate every process under the shell except the shell and its conhost."""  # noqa: E501
+        if platform.system() != "Windows" or self.process is None:
+            return False
+        pids: list[int] | None = None
+        if self._job is not None:
+            pids = self._job.pids()
+        if pids is None:
+            pids = windows_console.descendant_pids(self.process.pid)
+        victims = [
+            pid
+            for pid in pids
+            if pid != self.process.pid and pid not in self._protected_pids
+        ]
+        killed = False
+        for pid in victims:
+            if windows_console.terminate_pid(pid):
+                killed = True
+        logger.debug("Terminated %d descendant process(es): %s", len(victims), victims)
+        return killed
+
+    def interrupt(self) -> bool:
+        """Interrupt the running command and wait for the prompt to come back.
+
+        Two things must both happen: the shell must return to a prompt, and
+        the command's process subtree must be gone (a child launched with
+        ``Start-Process`` runs on its own console, so Ctrl+C returns the
+        prompt but leaves the child alive — the tree kill is what stops it,
+        mirroring ``killpg(SIGINT)`` on POSIX).  So Ctrl+C and a descendant
+        sweep are always paired, and the step escalates on failure.  When the
+        shell still will not come back it is marked unresponsive
+        (``is_alive()`` -> ``False``) so the session controller recreates it
+        rather than retrying forever.
+        """
+        if self.process is None or self.process.poll() is not None:
+            return False
+
+        with self._interrupt_lock:
+            running = self.is_running()
+            seq = self._prompt_count()
+
+            delivered = windows_console.send_console_ctrl_c(
+                self.process.pid, timeout=_CTRL_C_HELPER_TIMEOUT_SECONDS
+            )
+            if not delivered:
+                logger.debug("Console Ctrl+C could not be delivered to PowerShell")
+            # Give Ctrl+C a moment to unwind the pipeline before enumerating the
+            # tree, so a child that reacts to Ctrl+C is not double-reported.
+            prompt_back = self._wait_for_prompt_after(
+                seq, _INTERRUPT_PROMPT_WAIT_SECONDS if running else 0.0
+            )
+            # Always take the subtree down: Ctrl+C does not reach children on
+            # their own console (Start-Process) or children that ignore it.
+            self._kill_descendants()
+
+            if not running:
+                # Nothing was running (idle Ctrl+C): make it idempotent.
+                return True
+            if prompt_back or self._wait_for_prompt_after(
+                seq, _INTERRUPT_PROMPT_WAIT_SECONDS
+            ):
+                return True
+
+            # Prompt still hasn't returned: try Ctrl+C once more after the tree
+            # has been torn down, then give up and let the session recreate us.
+            windows_console.send_console_ctrl_c(
+                self.process.pid, timeout=_CTRL_C_HELPER_TIMEOUT_SECONDS
+            )
+            if self._wait_for_prompt_after(seq, _INTERRUPT_PROMPT_WAIT_SECONDS):
+                return True
+
+            if self.process.poll() is not None:
+                return False
+            logger.warning(
+                "PowerShell did not return to a prompt after Ctrl+C and "
+                "process-tree termination; marking the terminal unresponsive"
+            )
+            self._wedged = True
+            return False
 
     def __enter__(self) -> "WindowsTerminal":
         self.initialize()
