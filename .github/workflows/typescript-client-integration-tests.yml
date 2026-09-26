@@ -189,6 +189,7 @@ jobs:
               run: |
                   docker stop agent-server || true
                   docker rm agent-server || true
+                  sudo chown -R "$USER:$USER" ${{ env.HOST_WORKSPACE_DIR }} || true
                   rm -rf ${{ env.HOST_WORKSPACE_DIR }} || true
 
   # Separate job for quick smoke test without LLM
