@@ -29,7 +29,7 @@ def test_get_user_persistence_dir_honors_env(
     assert get_user_persistence_dir() == tmp_path
 
 
-def test_get_user_persistence_dir_resolved_at_call_time(
+def test_get_user_persistence_dir_reads_environment_at_call_time(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
