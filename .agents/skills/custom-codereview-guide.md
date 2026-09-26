@@ -43,6 +43,17 @@ Backend behavior and endpoints must be defined in Python before being exposed by
 generated or handwritten clients. If a change belongs to another repository,
 recommend moving it rather than adding a second implementation here.
 
+### New AI providers
+
+Treat new provider-specific integrations as out of scope unless the provider is broadly popular
+and commonly used by OpenHands users. Prefer the existing generic provider interfaces and reusable
+extension points over maintaining a long tail of provider-specific code in the SDK.
+
+When reviewing an issue or pull request that adds a provider below this bar, recommend marking it
+out of scope and closing it politely. Do not approve or merge it solely because the implementation
+is technically correct. Reconsider only when there is credible evidence of broad user demand and a
+maintainable integration benefit.
+
 For a change that crosses layers, trace the value or operation through every
 affected public entry point. Check factories, constructors, registries,
 serialization, REST/WebSocket transport, the TypeScript client, and resume or
