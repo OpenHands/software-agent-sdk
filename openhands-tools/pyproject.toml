@@ -12,7 +12,10 @@ dependencies = [
     "cachetools",
     "libtmux>=0.53.0",
     "pydantic>=2.11.7",
-    "browser-use>=0.8.0",
+    # 0.12+ pins exact openai versions (==2.16.0 or ==2.26.0) incompatible with
+    # our openai>=2.33.0 floor; keep to 0.11.x until upstream relaxes its pin.
+    # See: https://github.com/OpenHands/software-agent-sdk/issues/5152
+    "browser-use>=0.8.0,<0.12",
     "func-timeout>=4.3.5",
     "tom-swe>=1.0.3",
 ]
