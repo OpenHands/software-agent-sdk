@@ -78,10 +78,12 @@ def test_validate_pdf_file(tmp_path):
     with open(pdf_file, "w") as f:
         f.write("%PDF-1.4\nThis is a fake PDF file for testing")
 
-    # the is_binary function is not accurate for PDF files
-    assert not is_binary(str(pdf_file))
+    # binaryornot classifies any .pdf by extension/signature as binary, so the
+    # file editor must fall back to content-based text detection.
+    assert is_binary(str(pdf_file))
 
-    # PDF is a supported file type, so no exception should be raised
+    # PDF is a supported file type when its content is text, so no exception
+    # should be raised
     editor.validate_file(pdf_file)
 
 

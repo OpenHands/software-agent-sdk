@@ -8,7 +8,7 @@ dependencies = [
     "openhands-sdk",
     "tree-sitter>=0.24",
     "tree-sitter-bash>=0.23",
-    "binaryornot>=0.4.4",
+    "binaryornot>=0.6.0",
     "cachetools",
     "libtmux>=0.53.0",
     "pydantic>=2.11.7",
