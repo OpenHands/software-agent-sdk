@@ -186,6 +186,8 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
     "grok-code-fast-1",
     # DeepSeek R1 family
     "deepseek-r1-0528",
+    # OpenAI models on Bedrock (gpt-oss, gpt-5.x, gpt-6) reject stopSequences
+    "openai.gpt-",
 ]
 
 # Models that should use the OpenAI Responses API path by default
