@@ -125,15 +125,25 @@ async def test_stop_bash_command_terminates_group_and_records_output(
     tmp_path: Path,
 ):
     marker = tmp_path / "stop_cleanup_ran"
+    ready = tmp_path / "shell_ready"
     resp = await client.post(
         "/api/bash/start_bash_command",
         json={
-            "command": f"trap 'touch {marker}; exit 0' TERM; sleep 30",
+            "command": (
+                f"trap 'touch {marker}; exit 0' TERM; touch {ready}; sleep 30"
+            ),
             "timeout": 60,
         },
     )
     assert resp.status_code == 200, resp.text
     cmd_id = resp.json()["id"]
+
+    # Wait until the shell has installed its TERM trap: stopping earlier
+    # would signal a shell that cannot run cleanup yet.
+    ready_deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert time.monotonic() < ready_deadline, "shell never became ready"
+        await asyncio.sleep(0.1)
 
     stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
     assert stop.status_code == 200, stop.text
