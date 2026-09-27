@@ -1381,8 +1381,7 @@ class LocalConversation(BaseConversation):
             )
         except Exception as exc:
             logger.warning(
-                "MCP server startup failed for %s; continuing without "
-                "its tools: %s",
+                "MCP server startup failed for %s; continuing without its tools: %s",
                 ", ".join(sorted(mcp_config)),
                 exc,
             )
