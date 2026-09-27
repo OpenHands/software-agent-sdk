@@ -83,7 +83,11 @@ class InstalledCanvasExtensionResponse(BaseModel):
     )
     source: str = Field(description="Original source (e.g., 'github:owner/repo')")
     requested_ref: str | None = Field(
-        default=None, description="Branch, tag, or commit requested at install time"
+        default=None,
+        description=(
+            "Branch, tag, or commit requested at install time. None means no "
+            "ref was requested (tracking the source's default branch)."
+        ),
     )
     resolved_ref: str | None = Field(
         default=None, description="Resolved git commit SHA"
