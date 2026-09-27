@@ -128,7 +128,7 @@ async def test_stop_bash_command_terminates_group_and_records_output(
     resp = await client.post(
         "/api/bash/start_bash_command",
         json={
-            "command": (f"trap 'touch {marker}; exit 0' TERM; sleep 30 & wait"),
+            "command": f"trap 'touch {marker}; exit 0' TERM; sleep 30",
             "timeout": 60,
         },
     )
@@ -144,6 +144,31 @@ async def test_stop_bash_command_terminates_group_and_records_output(
 
     await asyncio.sleep(0.2)  # let the trap's filesystem write land
     assert marker.exists(), "SIGTERM trap did not run; stop skipped escalation."
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_terminates_descendants(
+    client: httpx.AsyncClient,
+):
+    """A background child holding the pipes must die with the group.
+
+    With a pid-only kill the surviving child would keep stdout open and
+    the command would never publish a terminal output; only a process
+    group signal finishes promptly.
+    """
+    resp = await client.post(
+        "/api/bash/start_bash_command",
+        json={"command": "sleep 60 & sleep 45", "timeout": 120},
+    )
+    assert resp.status_code == 200, resp.text
+    cmd_id = resp.json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+
+    items = await _wait_for_command_exit(client, UUID(cmd_id))
+    assert any(e.get("exit_code") is not None for e in items)
 
 
 @posix_only
