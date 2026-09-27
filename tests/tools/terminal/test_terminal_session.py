@@ -829,6 +829,34 @@ done && echo "success"
 
 
 @parametrize_terminal_types
+def test_chained_script_with_multiple_heredocs(terminal_type):
+    command = """printf start; python - <<'PY'
+print('first')
+PY
+printf middle; python - <<'PY'
+print('second')
+PY
+printf done
+"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 0
+            assert "startfirst" in obs.text
+            assert "middle" in obs.text
+            assert "second" in obs.text
+            assert "done" in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
 def test_multiple_multiline_commands(terminal_type):
     """Test that multiple commands separated by newlines are rejected."""
     with tempfile.TemporaryDirectory() as temp_dir:

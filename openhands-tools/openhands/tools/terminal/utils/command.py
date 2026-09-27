@@ -30,15 +30,21 @@ _PRESERVE_TYPES: frozenset[str] = frozenset(
 _ESCAPE_PATTERN: re.Pattern[bytes] = re.compile(rb"\\([;&|<>])")
 
 
+def _ends_with_heredoc(node: Node) -> bool:
+    if node.type == "heredoc_end":
+        return True
+    return bool(node.named_children) and _ends_with_heredoc(node.named_children[-1])
+
+
 def split_bash_commands(commands: str) -> list[str]:
     """Split a multi-statement bash input into top-level statements.
 
     Statements separated by a newline (with or without intermediate
-    whitespace/comments) become separate entries; statements joined by
-    ``;``, ``&&``, ``||``, ``|``, or ``&`` stay together. Comments and
-    whitespace between two statements are folded into the preceding
-    entry. On parse failure the input is returned as a single-element
-    list.
+    whitespace/comments) become separate entries, except after a completed
+    heredoc. Statements joined by ``;``, ``&&``, ``||``, ``|``, or ``&`` stay
+    together. Comments and whitespace between two statements are folded into
+    the preceding entry. On parse failure the input is returned as a
+    single-element list.
     """
     if not commands.strip():
         return [""]
@@ -61,7 +67,9 @@ def split_bash_commands(commands: str) -> list[str]:
 
     boundaries = [statements[0].start_byte]
     for cur, nxt in zip(statements, statements[1:]):
-        if b"\n" in source[cur.end_byte : nxt.start_byte]:
+        if b"\n" in source[cur.end_byte : nxt.start_byte] and not _ends_with_heredoc(
+            cur
+        ):
             boundaries.append(nxt.start_byte)
     boundaries.append(len(source))
 
