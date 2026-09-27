@@ -1,0 +1,185 @@
+{
+  "revision": "bcbea576d8d3caca067e8c5cb274f6e314e53cb4",
+  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "config": {
+    "max_concurrent_runs": 2,
+    "conversation_runtime": "local",
+    "conversations_path": "/tmp/run-limit-live-d3t6zsb1/conversations",
+    "workspace_path": "/tmp/run-limit-live-d3t6zsb1/workspace",
+    "session_api_keys": [],
+    "enable_vscode": false,
+    "preload_tools": false
+  },
+  "server_pid": 1517866,
+  "server_url": "http://127.0.0.1:44467",
+  "limit": 2,
+  "entrypoint": "create",
+  "initial_http_statuses": [
+    201,
+    429,
+    201,
+    429,
+    429,
+    429
+  ],
+  "attempt_http_statuses": [
+    [
+      201,
+      429,
+      201,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      429,
+      429
+    ],
+    [
+      429,
+      429,
+      201,
+      201
+    ],
+    [
+      429,
+      429
+    ],
+    [
+      429,
+      429
+    ],
+    [
+      429,
+      429
+    ],
+    [
+      429,
+      429
+    ],
+    [
+      429,
+      429
+    ],
+    [
+      429,
+      429
+    ],
+    [
+      201,
+      201
+    ]
+  ],
+  "conversations": [
+    "c2d92360-abe4-4bc7-91ea-520b6689913a",
+    "433a575b-080f-4f2b-89ef-e311f06d0e7e",
+    "983c26f4-e5e4-4be4-94b5-304ccff30102",
+    "b737c957-66b3-4a30-8514-f8c0053c29d9",
+    "a956951e-60ae-4098-8fea-6ef8d3e7ea11",
+    "8e8e87aa-997c-4e13-89a1-b4c6046cce30"
+  ],
+  "peak_active_llm_requests": 2,
+  "final_statuses": [
+    "finished",
+    "finished",
+    "finished",
+    "finished",
+    "finished",
+    "finished"
+  ],
+  "expected": "respected",
+  "samples": [
+    {
+      "event": "enter",
+      "time": 1810926.738685988,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1810926.73941589,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1810928.738892274,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1810928.739588781,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1810929.032871372,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1810929.035897834,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1810931.033147678,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1810931.036174212,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1810931.363644524,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1810931.393735324,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1810933.363877639,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1810933.393946451,
+      "active": 0
+    }
+  ]
+}

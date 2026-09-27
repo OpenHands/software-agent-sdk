@@ -1,0 +1,115 @@
+{
+  "revision": "3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14",
+  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "config": {
+    "max_concurrent_runs": 2,
+    "conversation_runtime": "local",
+    "conversations_path": "/tmp/run-limit-live-gzl_g6uy/conversations",
+    "workspace_path": "/tmp/run-limit-live-gzl_g6uy/workspace",
+    "session_api_keys": [],
+    "enable_vscode": false,
+    "preload_tools": false
+  },
+  "server_pid": 1515434,
+  "server_url": "http://127.0.0.1:55891",
+  "limit": 2,
+  "entrypoint": "create",
+  "initial_http_statuses": [
+    201,
+    201,
+    201,
+    201,
+    201,
+    201
+  ],
+  "attempt_http_statuses": [
+    [
+      201,
+      201,
+      201,
+      201,
+      201,
+      201
+    ]
+  ],
+  "conversations": [
+    "a2e6ae67-e458-457d-8059-2363c545a7b9",
+    "3660486c-0fe0-4732-90d0-5e04c07ee0d3",
+    "43dfbd3e-b73f-4ff4-b1cc-d0a5ba6858f3",
+    "f7cd209c-aa3a-4e59-9806-f4b573bb7855",
+    "b0732d61-4fd4-4c3e-bcfe-e0bea2821770",
+    "85821f6f-ee63-49db-bdc0-b7154de5dc27"
+  ],
+  "peak_active_llm_requests": 6,
+  "final_statuses": [
+    "finished",
+    "finished",
+    "finished",
+    "finished",
+    "finished",
+    "finished"
+  ],
+  "expected": "exceeded",
+  "samples": [
+    {
+      "event": "enter",
+      "time": 1810893.165693218,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1810893.167300536,
+      "active": 2
+    },
+    {
+      "event": "enter",
+      "time": 1810893.168680197,
+      "active": 3
+    },
+    {
+      "event": "enter",
+      "time": 1810893.169478003,
+      "active": 4
+    },
+    {
+      "event": "enter",
+      "time": 1810893.170640256,
+      "active": 5
+    },
+    {
+      "event": "enter",
+      "time": 1810893.171083683,
+      "active": 6
+    },
+    {
+      "event": "exit",
+      "time": 1810895.165900976,
+      "active": 5
+    },
+    {
+      "event": "exit",
+      "time": 1810895.168286694,
+      "active": 4
+    },
+    {
+      "event": "exit",
+      "time": 1810895.168910904,
+      "active": 3
+    },
+    {
+      "event": "exit",
+      "time": 1810895.169644387,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1810895.170813541,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1810895.171235959,
+      "active": 0
+    }
+  ]
+}
