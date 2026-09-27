@@ -1125,6 +1125,28 @@ def test_bash_command_endpoint_with_live_server(server_env):
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
+def test_stop_bash_command_endpoint_with_live_server(server_env):
+    """Stop a long-running command through the live server end to end."""
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/test_workspace"
+    )
+    command_id = workspace.start_command("sleep 30", timeout=60.0)
+    workspace.stop_command(command_id)
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        output = workspace.get_command_output(command_id)
+        if output is not None and output.get("exit_code") is not None:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail(f"command {command_id} did not finish after stop")
+
+
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     """Integration test for file upload through live server.
 

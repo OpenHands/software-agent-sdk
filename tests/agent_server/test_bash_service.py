@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -89,6 +90,118 @@ async def test_bash_timeout_runs_sigterm_trap(
     assert marker.exists(), "SIGTERM trap did not run; cleanup skipped."
     assert "Command timed out" in caplog.text
     assert secret not in caplog.text
+
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stop tests need the Unix process-group backend.",
+)
+
+
+async def _wait_for_command_exit(
+    client: httpx.AsyncClient, cmd_id: UUID, deadline: float = 8.0
+) -> list[dict]:
+    """Poll bash events until the command publishes a terminal output."""
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        items = (
+            await client.get(
+                "/api/bash/bash_events/search",
+                params={"command_id__eq": str(cmd_id)},
+            )
+        ).json()["items"]
+        if any(
+            e["kind"] == "BashOutput" and e.get("exit_code") is not None for e in items
+        ):
+            return items
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"command {cmd_id} did not finish")
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_terminates_group_and_records_output(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+):
+    marker = tmp_path / "stop_cleanup_ran"
+    resp = await client.post(
+        "/api/bash/start_bash_command",
+        json={
+            "command": (f"trap 'touch {marker}; exit 0' TERM; sleep 30 & wait"),
+            "timeout": 60,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    cmd_id = resp.json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+    assert stop.json() == {"success": True}
+
+    items = await _wait_for_command_exit(client, UUID(cmd_id))
+    assert any(e.get("exit_code") is not None for e in items)
+
+    await asyncio.sleep(0.2)  # let the trap's filesystem write land
+    assert marker.exists(), "SIGTERM trap did not run; stop skipped escalation."
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_leaves_concurrent_command_running(
+    client: httpx.AsyncClient,
+):
+    first = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "sleep 30", "timeout": 60},
+        )
+    ).json()["id"]
+    second = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "sleep 30", "timeout": 60},
+        )
+    ).json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{first}/stop")
+    assert stop.status_code == 200, stop.text
+    await _wait_for_command_exit(client, UUID(first))
+
+    others = (
+        await client.get(
+            "/api/bash/bash_events/search",
+            params={"command_id__eq": second},
+        )
+    ).json()["items"]
+    assert not any(
+        e["kind"] == "BashOutput" and e.get("exit_code") is not None for e in others
+    ), "concurrent command was affected by the stop"
+
+    stop_second = await client.post(f"/api/bash/bash_commands/{second}/stop")
+    assert stop_second.status_code == 200, stop_second.text
+    await _wait_for_command_exit(client, UUID(second))
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_idempotent_for_finished_and_unknown(
+    client: httpx.AsyncClient,
+):
+    unknown = await client.post(f"/api/bash/bash_commands/{uuid4()}/stop")
+    assert unknown.status_code == 404, unknown.text
+
+    cmd_id = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "echo hi", "timeout": 10},
+        )
+    ).json()["id"]
+    await _wait_for_command_exit(client, UUID(cmd_id))
+
+    for _ in range(2):
+        stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+        assert stop.status_code == 200, stop.text
 
 
 async def test_bash_execution_error_log_omits_command(
