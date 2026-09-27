@@ -103,15 +103,17 @@ VERIFIED_QWEN_MODELS = [
 
 # OpenRouter routes other vendors' models. Entries are the OpenRouter id with
 # the ``openrouter/`` prefix stripped (so ``anthropic/claude-opus-5`` here
-# corresponds to ``openrouter/anthropic/claude-opus-5``). Only the frontier
-# routes the OpenHands proxy itself serves are kept; the long tail stays in the
-# unverified catalog.
+# corresponds to ``openrouter/anthropic/claude-opus-5``), and every entry must
+# be a real LiteLLM catalog id (``openrouter/<entry>`` must resolve in
+# ``get_supported_llm_models()``) so the route has known context-window
+# metadata. Only the frontier routes the OpenHands proxy itself serves are
+# kept; the long tail stays in the unverified catalog.
 VERIFIED_OPENROUTER_MODELS = [
     "anthropic/claude-opus-5",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-haiku-4.5",
     "openai/gpt-6-astra",
-    "openai/gpt-5.6",
+    "openai/gpt-5.6-sol",
     "openai/gpt-5.3-codex",
     "openai/gpt-5.2-codex",
     "deepseek/deepseek-chat",

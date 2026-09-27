@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
+    get_supported_llm_models,
     get_unverified_models,
 )
 from openhands.sdk.llm.utils.verified_models import (
@@ -137,8 +138,27 @@ def test_openrouter_is_a_verified_provider():
     assert VERIFIED_MODELS["openrouter"]
     assert "anthropic/claude-opus-5" in VERIFIED_MODELS["openrouter"]
     assert "openai/gpt-6-astra" in VERIFIED_MODELS["openrouter"]
+    # Entries must be real catalog ids (no alias-only ids like ``openai/gpt-5.6``).
+    assert "openai/gpt-5.6-sol" in VERIFIED_MODELS["openrouter"]
     # Entries must not carry the openrouter/ prefix (it is the provider key).
     assert not any(m.startswith("openrouter/") for m in VERIFIED_MODELS["openrouter"])
+
+
+def test_openrouter_entries_are_real_catalog_ids():
+    """Every OpenRouter verified entry must resolve to a real LiteLLM catalog
+    model (``openrouter/<entry>``), so the route has known context-window
+    metadata for condensation. An alias-only id like ``openai/gpt-5.6`` that no
+    catalog exposes must not be listed.
+    """
+    catalog = set(get_supported_llm_models())
+    missing = [
+        entry
+        for entry in VERIFIED_MODELS["openrouter"]
+        if f"openrouter/{entry}" not in catalog
+    ]
+    assert not missing, (
+        f"OpenRouter verified entries are not real LiteLLM catalog ids: {missing}"
+    )
 
 
 def test_nemotron_3_super_uses_full_infra_name():
