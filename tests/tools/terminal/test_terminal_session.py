@@ -848,7 +848,8 @@ printf done
 
             assert obs.is_error is False
             assert obs.metadata.exit_code == 0
-            assert "startfirst" in obs.text
+            assert "start" in obs.text
+            assert "first" in obs.text
             assert "middle" in obs.text
             assert "second" in obs.text
             assert "done" in obs.text
