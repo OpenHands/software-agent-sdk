@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Protocol
 
 import httpx
@@ -11,10 +11,10 @@ import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
-from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
+from pydantic import PrivateAttr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient, ToolsReconciledCallback
@@ -118,34 +118,52 @@ def _oauth_auth_from_authentication_config(
     )
 
 
-class _PackageRemoteMCPServer(RemoteMCPServer):
-    """A package-declared remote server whose headers stay on its own origin.
+class _HookedRemoteMCPServer(RemoteMCPServer):
+    """A remote server whose HTTP client runs OpenHands' httpx event hooks.
 
-    Agent Plugins §7.2.1: configured headers must not follow a redirect to a
-    different origin. httpx strips only ``Authorization`` there, so this
-    server's HTTP client drops every configured header name from any request
-    that leaves the configured origin.
+    Every server keeps error response bodies readable. A package-declared
+    server also keeps its headers on its own origin (Agent Plugins §7.2.1):
+    httpx strips only ``Authorization`` on a cross-origin redirect, so every
+    configured header name is dropped from any request that leaves it.
     """
+
+    _bind_headers_to_origin: bool = PrivateAttr(default=False)
 
     def to_transport(self):  # type: ignore[override]
         transport = super().to_transport()
-        if isinstance(transport, StreamableHttpTransport) and self.headers:
-            transport.httpx_client_factory = _origin_bound_client_factory(
-                self.url, tuple(self.headers)
+        request_hooks = []
+        if self._bind_headers_to_origin and self.headers:
+            request_hooks.append(
+                _drop_headers_off_origin(self.url, tuple(self.headers))
             )
+        transport.httpx_client_factory = _mcp_http_client_factory(request_hooks)
         return transport
 
 
-def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
+def _drop_headers_off_origin(url: str, header_names: tuple[str, ...]):
     origin = _origin(httpx.URL(url))
 
-    async def drop_headers_off_origin(request: httpx.Request) -> None:
+    async def hook(request: httpx.Request) -> None:
         # Request hooks run on every redirect hop, after httpx has copied the
         # previous request's headers onto the next one.
         if _origin(request.url) != origin:
             for name in header_names:
                 request.headers.pop(name, None)
 
+    return hook
+
+
+async def _read_error_response_body(response: httpx.Response) -> None:
+    # MCP transports stream responses and call ``raise_for_status()`` before
+    # reading them, so without this the ``HTTPStatusError`` loses the server's
+    # explanation (e.g. GitLab's 403 reason) to ``ResponseNotRead``.
+    if response.is_error:
+        await response.aread()
+
+
+def _mcp_http_client_factory(
+    request_hooks: list[Callable[[httpx.Request], Awaitable[None]]],
+):
     def factory(
         headers: dict[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
@@ -153,7 +171,10 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
         **_: object,
     ) -> httpx.AsyncClient:
         client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-        client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
+        client.event_hooks = {
+            "request": request_hooks,
+            "response": [_read_error_response_body],
+        }
         return client
 
     return factory
@@ -175,10 +196,10 @@ def _prepare_mcp_config(
 
     for server_name, server_spec in mcp_config.items():
         server = prepared.mcpServers.get(server_name)
-        if server_spec.literal_values and isinstance(server, RemoteMCPServer):
-            prepared.mcpServers[server_name] = _PackageRemoteMCPServer.model_validate(
-                server.model_dump()
-            )
+        if isinstance(server, RemoteMCPServer):
+            hooked = _HookedRemoteMCPServer.model_validate(server.model_dump())
+            hooked._bind_headers_to_origin = server_spec.literal_values
+            prepared.mcpServers[server_name] = hooked
 
     for server_name, server_spec in mcp_config.items():
         auth = server_spec.auth

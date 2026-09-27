@@ -1,12 +1,15 @@
 """Tests for MCP utils functionality - integration tests with real MCP servers."""
 
 import asyncio
+import json
 import logging
 import socket
 import sys
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Literal
 from unittest.mock import MagicMock, patch
@@ -27,6 +30,7 @@ from openhands.sdk.mcp.config import (
     MCPHeaderAuthCredential,
     MCPNoneAuthCredential,
     MCPOAuthAuthCredential,
+    MCPServer,
     coerce_mcp_config,
     to_fastmcp_mcp_config,
 )
@@ -184,6 +188,36 @@ class MCPTestServer:
             # Daemon thread will clean up automatically when process exits
             self._server_thread = None
         self.port = None
+
+
+@contextmanager
+def rejecting_http_server(
+    status: int, headers: dict[str, str], body: bytes
+) -> Iterator[str]:
+    """Serve ``status``/``headers``/``body`` for every request; yield the URL."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_DELETE = do_POST
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/mcp"
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 @pytest.fixture
@@ -678,6 +712,21 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
         assert len(tools) == 0  # No tools from failed connection
     except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, MCPError):
         pass  # Expected connection errors are acceptable
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+def test_create_mcp_tools_http_error_keeps_response_body_readable(
+    transport: Literal["http", "sse"],
+):
+    body = b'{"message": "MCP server not enabled for any of your groups"}'
+    with rejecting_http_server(403, {"Content-Type": "application/json"}, body) as url:
+        config = {"rejecting": MCPServer(url=url, transport=transport)}
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            with create_mcp_tools(config, timeout=10):
+                pass
+
+    assert exc_info.value.response.status_code == 403
+    assert exc_info.value.response.json() == json.loads(body)
 
 
 def test_create_mcp_tools_stdio_server():
