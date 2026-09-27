@@ -31,6 +31,7 @@ from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
 )
+from tests.agent_server.stress.budgets import CONCURRENT_CONVERSATIONS
 from tests.agent_server.stress.probe import ResourceProbe
 
 
@@ -44,7 +45,12 @@ async def conversation_service(tmp_path: Path) -> AsyncIterator[ConversationServ
     """
     persist_dir = tmp_path / "persist"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    service = ConversationService(conversations_dir=persist_dir)
+    # The parallelism benchmark admits its entire configured workload;
+    # test_run_admission.py separately verifies rejection beyond capacity.
+    service = ConversationService(
+        conversations_dir=persist_dir,
+        max_concurrent_runs=CONCURRENT_CONVERSATIONS.n_conversations,
+    )
     async with service:
         yield service
 
