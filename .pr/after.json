@@ -1,0 +1,96 @@
+{
+  "revision": "d1f9772e9a6df1e15487d9a5833e2f80903d910a",
+  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "config": {
+    "max_concurrent_runs": 2,
+    "conversation_runtime": "local",
+    "conversations_path": "/tmp/run-limit-live-88lb7y5b/conversations",
+    "workspace_path": "/tmp/run-limit-live-88lb7y5b/workspace",
+    "session_api_keys": [],
+    "enable_vscode": false,
+    "preload_tools": false
+  },
+  "server_pid": 1427666,
+  "server_url": "http://127.0.0.1:48891",
+  "limit": 2,
+  "conversations": [
+    "844a52da-fde8-423e-ac71-17f2bfbebb0f",
+    "5da9d8ba-2683-4329-851b-5f45b3b5584a",
+    "f05344d9-269d-4e30-9281-8840a0bd3703",
+    "37bc87d5-d360-42f2-bf53-4fa1e7176c93",
+    "6c97e58d-6cb2-45b0-a334-6c463dff9f6a",
+    "ed8e6264-be9d-4fa4-9fe9-6cf9f8e22596"
+  ],
+  "peak_active_llm_requests": 2,
+  "final_statuses": [
+    "finished",
+    "finished",
+    "finished",
+    "finished",
+    "finished",
+    "finished"
+  ],
+  "expected": "respected",
+  "samples": [
+    {
+      "event": "enter",
+      "time": 1809171.666864839,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1809171.671357453,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1809173.667139346,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809173.672109336,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1809173.92609518,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1809173.930583368,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1809175.932226832,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809175.932463512,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1809176.141575544,
+      "active": 1
+    },
+    {
+      "event": "enter",
+      "time": 1809176.14304796,
+      "active": 2
+    },
+    {
+      "event": "exit",
+      "time": 1809178.141775049,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809178.143236378,
+      "active": 0
+    }
+  ]
+}

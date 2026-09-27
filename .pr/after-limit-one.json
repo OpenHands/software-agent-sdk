@@ -1,0 +1,72 @@
+{
+  "revision": "d1f9772e9a6df1e15487d9a5833e2f80903d910a",
+  "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "config": {
+    "max_concurrent_runs": 1,
+    "conversation_runtime": "local",
+    "conversations_path": "/tmp/run-limit-live-sq613wyh/conversations",
+    "workspace_path": "/tmp/run-limit-live-sq613wyh/workspace",
+    "session_api_keys": [],
+    "enable_vscode": false,
+    "preload_tools": false
+  },
+  "server_pid": 1430069,
+  "server_url": "http://127.0.0.1:46395",
+  "limit": 1,
+  "conversations": [
+    "fe0243ae-e3b3-4efe-a577-db95315334fa",
+    "12afa8de-b47b-4fcc-812f-10e06cff8584",
+    "14fa0ef0-2faa-4f47-a3ae-ea029e4110f5",
+    "0f29597b-e8dd-494c-87cf-5518f1e45a84"
+  ],
+  "peak_active_llm_requests": 1,
+  "final_statuses": [
+    "finished",
+    "finished",
+    "finished",
+    "finished"
+  ],
+  "expected": "respected",
+  "samples": [
+    {
+      "event": "enter",
+      "time": 1809217.111090906,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809219.111319789,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1809219.243608139,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809221.243930335,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1809221.34096258,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809223.341175912,
+      "active": 0
+    },
+    {
+      "event": "enter",
+      "time": 1809223.433867942,
+      "active": 1
+    },
+    {
+      "event": "exit",
+      "time": 1809225.434083224,
+      "active": 0
+    }
+  ]
+}
