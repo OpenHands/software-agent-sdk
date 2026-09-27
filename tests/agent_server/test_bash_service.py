@@ -129,9 +129,7 @@ async def test_stop_bash_command_terminates_group_and_records_output(
     resp = await client.post(
         "/api/bash/start_bash_command",
         json={
-            "command": (
-                f"trap 'touch {marker}; exit 0' TERM; touch {ready}; sleep 30"
-            ),
+            "command": (f"trap 'touch {marker}; exit 0' TERM; touch {ready}; sleep 30"),
             "timeout": 60,
         },
     )
