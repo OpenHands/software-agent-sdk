@@ -82,6 +82,9 @@ class InstalledCanvasExtensionResponse(BaseModel):
         default=False, description="Whether the canvas extension is enabled"
     )
     source: str = Field(description="Original source (e.g., 'github:owner/repo')")
+    requested_ref: str | None = Field(
+        default=None, description="Branch, tag, or commit requested at install time"
+    )
     resolved_ref: str | None = Field(
         default=None, description="Resolved git commit SHA"
     )
@@ -111,6 +114,7 @@ class InstalledCanvasExtensionResponse(BaseModel):
             description=info.description,
             enabled=info.enabled,
             source=info.source,
+            requested_ref=info.requested_ref,
             resolved_ref=info.resolved_ref,
             repo_path=info.repo_path,
             installed_at=info.installed_at,
