@@ -1,0 +1,22 @@
+# uv run python .pr/agent_plugin_mcp_matrix.py
+# Agent Plugins package servers (literal_values=True) x {header, no header} x {success, failure}
+
+## before (unmodified a350dc73e)
+== header-success: url=https://huggingface.co/mcp headers=['X-Plugin-Test'] literal_values=True
+   OK: 4 tools
+== noheader-success: url=https://huggingface.co/mcp headers=none literal_values=True
+   OK: 4 tools
+== header-failure: url=https://gitlab.com/api/v4/mcp headers=['X-Plugin-Test'] literal_values=True
+   HTTPStatusError 401; body='<ResponseNotRead>'
+== noheader-failure: url=https://gitlab.com/api/v4/mcp headers=none literal_values=True
+   HTTPStatusError 401; body='<ResponseNotRead>'
+
+## after (this PR)
+== header-success: url=https://huggingface.co/mcp headers=['X-Plugin-Test'] literal_values=True
+   OK: 4 tools
+== noheader-success: url=https://huggingface.co/mcp headers=none literal_values=True
+   OK: 4 tools
+== header-failure: url=https://gitlab.com/api/v4/mcp headers=['X-Plugin-Test'] literal_values=True
+   HTTPStatusError 401; body='{"message":"401 Unauthorized"}'
+== noheader-failure: url=https://gitlab.com/api/v4/mcp headers=none literal_values=True
+   HTTPStatusError 401; body='{"message":"401 Unauthorized"}'
