@@ -7,7 +7,13 @@ from openhands.sdk.event import ActionEvent
 
 def get_env(key: str) -> str | None:
     """Get an environment variable from the environment or the dotenv file."""
-    return os.getenv(key) or dotenv_values().get(key)
+    value = os.getenv(key)
+    if value is not None:
+        return value
+    try:
+        return dotenv_values().get(key)
+    except (OSError, AssertionError):
+        return None
 
 
 def extract_action_name(action_event: ActionEvent) -> str:
