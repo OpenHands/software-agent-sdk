@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import Generator
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -412,12 +413,12 @@ def test_mcp_test_remote_unreachable(client: TestClient):
     assert body["error_kind"] in {"connection", "timeout"}
 
 
-def test_mcp_test_surfaces_http_error_body(client: TestClient):
-    """A rejecting server's reason should reach the user, not a bare name.
+def test_mcp_test_surfaces_http_error_status(client: TestClient):
+    """A rejecting server's status should reach the user, not a bare name.
 
-    Regression test for GitLab-style 403s ("MCP server not enabled ..."):
-    the probe must report the HTTP status and body instead of only the
-    exception type.
+    Regression test for GitLab-style 403s (MCP not enabled server-side):
+    the probe must report the HTTP status with a permission hint instead
+    of only the exception type.
     """
 
     class ForbiddenHandler(http.server.BaseHTTPRequestHandler):
@@ -429,7 +430,7 @@ def test_mcp_test_surfaces_http_error_body(client: TestClient):
             self.end_headers()
             self.wfile.write(payload)
 
-        def log_message(self, *args: object) -> None:
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
     server = http.server.HTTPServer(("127.0.0.1", 0), ForbiddenHandler)
@@ -456,7 +457,7 @@ def test_mcp_test_surfaces_http_error_body(client: TestClient):
     body = response.json()
     assert body["ok"] is False
     assert "403" in body["error"]
-    assert "not enabled" in body["error"]
+    assert "permission" in body["error"]
 
 
 # ---------------------------------------------------------------------------

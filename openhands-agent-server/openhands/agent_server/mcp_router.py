@@ -525,26 +525,26 @@ def _run_tool_call(
 def _http_error_detail(exc: BaseException) -> str | None:
     """Summarize an HTTP failure carried by a probe exception, if any.
 
-    Some servers reject MCP requests with a plain HTTP error whose body
-    names the actionable cause (e.g. GitLab's 403 "MCP server not enabled
-    for any of your groups"). The exception name alone hides that reason,
-    so extract status plus a truncated body when one is attached.
+    Servers can reject MCP requests with a plain HTTP error (e.g.
+    GitLab's 403 when MCP is not enabled). The exception name alone
+    hides the status, sending users to debug auth instead of
+    permissions, so surface the status plus a short hint. The response
+    body is not available here: by the time the client raises, its
+    stream is already closed.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        response = getattr(current, "response", None)
-        status_code = getattr(response, "status_code", None)
+        response: Any = getattr(current, "response", None)
+        status_code: Any = getattr(response, "status_code", None)
         if isinstance(status_code, int):
-            try:
-                body = response.text.strip()
-            except Exception:
-                body = ""
-            detail = f"HTTP {status_code} from MCP server"
-            if body:
-                detail += f": {body[:300]}"
-            return detail
+            hint = {
+                401: "authentication required - check credentials or re-run OAuth",
+                403: "request refused - check the server-side permission settings",
+                404: "endpoint or session not found",
+            }.get(status_code, "request failed")
+            return f"HTTP {status_code} from MCP server: {hint}"
         current = current.__cause__ or current.__context__
     return None
 
