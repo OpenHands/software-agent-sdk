@@ -26,6 +26,7 @@ from openhands.agent_server.telemetry.factory import (
 )
 from openhands.agent_server.telemetry.models import (
     TELEMETRY_SCHEMA_VERSION,
+    DeploymentKind,
     DiagnosticEvent,
     RuntimeProperties,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "TELEMETRY_SCHEMA_VERSION",
     "BufferedTelemetrySink",
     "ConversationTelemetryContext",
+    "DeploymentKind",
     "DiagnosticEvent",
     "DISTINCT_ID_HEADER",
     "DiagnosticEventFactory",

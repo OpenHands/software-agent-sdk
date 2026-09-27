@@ -56,7 +56,6 @@ def _make_stored(state: ConversationState) -> StoredConversation:
     workspace = LocalWorkspace(working_dir=state.workspace.working_dir)
     return StoredConversation(
         id=state.id,
-        agent=state.agent,
         workspace=workspace,
         title="Test",
         metrics=None,

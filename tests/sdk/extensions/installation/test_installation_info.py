@@ -30,7 +30,25 @@ def test_installation_info_from_extension():
 
     assert info.enabled
 
+    assert info.requested_ref is None
     assert info.resolved_ref is None
     assert info.repo_path is None
 
     assert datetime.fromisoformat(info.installed_at)
+
+
+def test_installation_info_from_extension_with_refs():
+    """Test requested_ref and resolved_ref are recorded when provided."""
+    extension = MockExtension(
+        name="name", version="0.1.2", description="Test extension please ignore"
+    )
+    info = InstallationInfo.from_extension(
+        extension,
+        source="github:owner/repo",
+        install_path=Path.cwd(),
+        requested_ref="v1.0.0",
+        resolved_ref="abc123deadbeef",
+    )
+
+    assert info.requested_ref == "v1.0.0"
+    assert info.resolved_ref == "abc123deadbeef"

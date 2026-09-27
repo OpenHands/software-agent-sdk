@@ -19,11 +19,12 @@ import os
 from openhands.sdk import ImageContent, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 
 
 IMAGE_URL = "https://www.python.org/static/opengraph-icon-200x200.png"
 
-agent = ACPAgent(acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+agent = ACPAgent(acp_command=list(ACP_PROVIDERS["claude-code"].default_command))
 
 try:
     cwd = os.getcwd()

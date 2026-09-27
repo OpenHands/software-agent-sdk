@@ -21,6 +21,21 @@ def test_command_hook_valid():
     assert h.command == "echo hi"
 
 
+def test_prompt_hook_valid():
+    hook = HookDefinition(type=HookType.PROMPT, prompt="Block destructive commands")
+    assert hook.type == HookType.PROMPT
+    assert hook.command == ""
+
+
+def test_prompt_hook_preserves_command_rest_contract():
+    hook = HookDefinition(type=HookType.PROMPT, prompt="Block destructive commands")
+    schema = HookDefinition.model_json_schema()
+
+    assert "command" in schema["required"]
+    assert schema["properties"]["command"] == {"title": "Command", "type": "string"}
+    assert hook.model_dump()["command"] == ""
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -52,6 +67,18 @@ def test_agent_hook_valid(kwargs):
         ),
         ({"type": "agent", "system_prompt": "A" * 100}, f"agent-hook:{'A' * 20}"),
         ({"type": "agent"}, "agent-hook:agent"),
+        (
+            {
+                "type": "prompt",
+                "name": "block-deletions",
+                "prompt": "Block rm -rf",
+            },
+            "prompt-hook:block-deletions",
+        ),
+        (
+            {"type": "prompt", "prompt": "Block destructive shell commands"},
+            "prompt-hook:Block destructive sh",
+        ),
     ],
     ids=[
         "command",
@@ -59,6 +86,8 @@ def test_agent_hook_valid(kwargs):
         "agent-prompt-prefix",
         "agent-prompt-truncated",
         "agent-fallback",
+        "prompt-named",
+        "prompt-policy-prefix",
     ],
 )
 def test_display_command(kwargs, expected):
@@ -92,9 +121,21 @@ def test_multiple_agent_hooks_are_distinguishable():
             {"type": "agent", "command": "echo hi"},
             "'command' must not be set when type is 'agent'",
         ),
+        (
+            {
+                "type": "prompt",
+                "prompt": "Evaluate this event",
+                "command": "echo hi",
+            },
+            "'command' must not be set when type is 'prompt'",
+        ),
         ({"type": "command"}, "'command' is required"),
     ],
-    ids=["agent-rejects-command", "command-requires-command"],
+    ids=[
+        "agent-rejects-command",
+        "prompt-rejects-command",
+        "command-requires-command",
+    ],
 )
 def test_hook_definition_validation_errors(kwargs, match):
     with pytest.raises(Exception, match=match):
@@ -104,6 +145,13 @@ def test_hook_definition_validation_errors(kwargs, match):
 def test_agent_hook_rejects_async():
     with pytest.raises(Exception, match="not supported for agent hooks"):
         HookDefinition.model_validate({"type": "agent", "async": True})
+
+
+def test_prompt_hook_rejects_async():
+    with pytest.raises(Exception, match="not supported for prompt hooks"):
+        HookDefinition.model_validate(
+            {"type": "prompt", "prompt": "Evaluate this event", "async": True}
+        )
 
 
 def test_agent_hook_from_json():

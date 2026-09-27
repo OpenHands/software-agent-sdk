@@ -123,12 +123,15 @@ def audit_pr(
     if not reviewed_head:
         latest = approvals[-1]
         reviewer = (latest.get("user") or {}).get("login", "?")
-        approved_on = _short(latest.get("commit_id"))
+        approved_sha = latest.get("commit_id")
+        approved_on = _short(approved_sha)
+        merged_head = _short(head_sha)
+        diff_link = _compare_link(repo, approved_sha, head_sha, merged_head)
         return (
             "changed-after-approval",
             (
                 f"last approval by @{reviewer} was on {approved_on}, but merged "
-                f"head was {_short(head_sha)} — commits landed after review"
+                f"head was {diff_link} — commits landed after review"
             ),
         )
 
@@ -137,6 +140,17 @@ def audit_pr(
 
 def _short(sha: object) -> str:
     return str(sha)[:9] if sha else "?"
+
+
+def _compare_link(repo: str, base: object, head: object, label: str) -> str:
+    """Markdown link to the GitHub compare page between *base* and *head*.
+
+    Falls back to plain text if either SHA is missing so the report never
+    breaks on a sparse API response.
+    """
+    if not base or not head:
+        return label
+    return f"[{label}](https://github.com/{repo}/compare/{base}...{head})"
 
 
 def main() -> int:

@@ -16,11 +16,15 @@ two security-critical checks around it:
 
 import re
 from pathlib import Path
+from typing import Final
 
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 
+
+# Filename a canvas extension's manifest is loaded from, at its package root.
+MANIFEST_FILENAME: Final[str] = "canvas-extension.json"
 
 # Absolute, kebab-case, multi-segment UI route, e.g. "/dashboard/settings".
 _PAGE_PATH_PATTERN: re.Pattern[str] = re.compile(

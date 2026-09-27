@@ -4,6 +4,11 @@ from openhands.sdk.llm.auth import (
     OAuthCredentials,
     OpenAISubscriptionAuth,
 )
+from openhands.sdk.llm.cleanup_profile import (
+    CLEANUP_PROFILE_NAME,
+    aclean_outward_text,
+    clean_outward_text,
+)
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
@@ -23,6 +28,12 @@ from openhands.sdk.llm.message import (
     ThinkingBlock,
     content_to_str,
 )
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfile,
+    MetaProfileClass,
+    MetaProfileLimitExceeded,
+    MetaProfileStore,
+)
 from openhands.sdk.llm.router import RouterLLM
 from openhands.sdk.llm.streaming import (
     AsyncTokenCallbackType,
@@ -30,6 +41,7 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot, TokenUsage
+from openhands.sdk.llm.utils.runtime_metadata import ModelRuntimeMetadata
 from openhands.sdk.llm.utils.unverified_models import (
     UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
     get_unverified_models,
@@ -44,6 +56,9 @@ __all__ = [
     "OpenAISubscriptionAuth",
     "OPENAI_CODEX_MODELS",
     # Core
+    "CLEANUP_PROFILE_NAME",
+    "aclean_outward_text",
+    "clean_outward_text",
     "FallbackStrategy",
     "LLMResponse",
     "LLM",
@@ -52,6 +67,10 @@ __all__ = [
     "LLMProfileLoader",
     "LLMProfileMutator",
     "LLMProfileStore",
+    "MetaProfile",
+    "MetaProfileClass",
+    "MetaProfileLimitExceeded",
+    "MetaProfileStore",
     "RouterLLM",
     "RegistryEvent",
     # Messages
@@ -71,6 +90,8 @@ __all__ = [
     "Metrics",
     "MetricsSnapshot",
     "TokenUsage",
+    # Runtime metadata
+    "ModelRuntimeMetadata",
     # Models
     "VERIFIED_MODELS",
     "UNVERIFIED_MODELS_EXCLUDING_BEDROCK",

@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class HookType(StrEnum):
     """Types of hooks that can be executed."""
 
     COMMAND = "command"  # Shell command executed via subprocess
-    PROMPT = "prompt"  # LLM-based evaluation (future)
+    PROMPT = "prompt"  # Single-completion LLM evaluation
     AGENT = "agent"  # Agent-based evaluation with tool access
 
 
@@ -89,6 +90,10 @@ class HookDefinition(BaseModel):
             raise ValueError("'command' is required when type is 'command'")
         if self.type == HookType.PROMPT and not self.prompt:
             raise ValueError("'prompt' is required when type is 'prompt'")
+        if self.type == HookType.PROMPT and self.command:
+            raise ValueError("'command' must not be set when type is 'prompt'")
+        if self.type == HookType.PROMPT and self.async_:
+            raise ValueError("'async' is not supported for prompt hooks")
         if self.type == HookType.AGENT and self.command:
             raise ValueError(
                 "'command' must not be set when type is 'agent'; "
@@ -103,11 +108,14 @@ class HookDefinition(BaseModel):
         """Human-readable label for this hook used in logs and events."""
         if self.command:
             return self.command
+        prefix = f"{self.type.value}-hook"
         if self.name is not None:
-            return f"agent-hook:{self.name}"
-        if self.system_prompt:
-            return f"agent-hook:{self.system_prompt[:20]}"
-        return "agent-hook:agent"
+            return f"{prefix}:{self.name}"
+        if self.type == HookType.PROMPT and self.prompt:
+            return f"{prefix}:{self.prompt[:20]}"
+        if self.type == HookType.AGENT and self.system_prompt:
+            return f"{prefix}:{self.system_prompt[:20]}"
+        return f"{prefix}:{self.type.value}"
 
 
 class HookMatcher(BaseModel):
@@ -285,7 +293,7 @@ class HookConfig(BaseModel):
             base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
                 base_dir / ".openhands" / "hooks.json",
-                Path.home() / ".openhands" / "hooks.json",
+                get_user_persistence_dir() / "hooks.json",
             ]
             for search_path in search_paths:
                 if search_path.exists():

@@ -15,6 +15,7 @@ from uuid import UUID
 from openhands.agent_server.server_details_router import ServerInfo
 from openhands.agent_server.telemetry.models import (
     TELEMETRY_SCHEMA_VERSION,
+    DeploymentKind,
     DiagnosticEvent,
     DiagnosticProperties,
     EventName,
@@ -64,7 +65,11 @@ def _python_version() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
-def build_runtime_properties(*, deferred_init: bool) -> RuntimeProperties:
+def build_runtime_properties(
+    *,
+    deferred_init: bool,
+    deployment_kind: DeploymentKind = "local",
+) -> RuntimeProperties:
     """Snapshot the coarse runtime facts shared by every event."""
     # Versions and build metadata come from ServerInfo's own field defaults, so
     # /server_info and telemetry can never disagree about what is running.
@@ -78,6 +83,7 @@ def build_runtime_properties(*, deferred_init: bool) -> RuntimeProperties:
         python_version=_python_version(),
         platform=_platform_token(),
         deferred_init=deferred_init,
+        deployment_kind=deployment_kind,
     )
 
 
@@ -137,11 +143,13 @@ class DiagnosticEventFactory:
         *,
         user_id: str | None = None,
         occurred_at: datetime | None = None,
+        insert_id: str | None = None,
     ) -> DiagnosticEvent:
         return DiagnosticEvent(
             event_name=event_name,
             schema_version=TELEMETRY_SCHEMA_VERSION,
             occurred_at=occurred_at or utc_now(),
+            insert_id=insert_id,
             distinct_id=self.distinct_id(user_id),
             runtime=self._runtime,
             properties=properties,

@@ -215,3 +215,10 @@ tests/integration/api_compliance/outputs/
 
 # Agent-generated temp
 .agent_tmp/
+
+# TypeScript client build and test outputs
+clients/typescript/node_modules/
+clients/typescript/dist/
+clients/typescript/coverage/
+clients/typescript/.audit/
+clients/typescript/junit.xml

@@ -31,12 +31,23 @@ body:
           required: true
 
     - type: textarea
-      id: proposed-solution
+      id: desired-behavior
       attributes:
-          label: Proposed Solution
+          label: Desired Behavior
           description: Describe your ideal solution. What should this feature do? How should it work?
           placeholder: |
               Example - Add a StateManager class that allows saving and loading agent state to/from disk or database. Provide methods like save_state(), load_state(), and clear_state(). Support multiple backend options (JSON files, SQLite, Redis, etc.).
+      validations:
+          required: true
+
+    - type: textarea
+      id: acceptance-criteria
+      attributes:
+          label: Acceptance Criteria
+          description: List the testable checklist item(s) that would prove this feature is complete.
+          placeholder: |
+              - [ ] Saving agent state to disk works end-to-end
+              - [ ] A new Agent restores state from a previously saved snapshot
       validations:
           required: true
 

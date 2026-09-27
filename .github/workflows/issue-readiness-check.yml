@@ -1,0 +1,73 @@
+---
+name: Ready-for-dev Label Policy
+
+# The issue-triage automation and repository writers may grant ready-for-dev.
+# Labels from any other actor are removed.
+
+on:
+    issues:
+        types: [labeled, unlabeled]
+
+concurrency:
+    group: ready-for-dev-policy-${{ github.event.issue.number }}
+    cancel-in-progress: false
+
+jobs:
+    enforce-label-policy:
+        name: Enforce ready-for-dev label policy
+        if: >-
+            github.event.issue.state == 'open'
+            && github.event.issue.pull_request == null
+            && github.event.label.name == 'ready-for-dev'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+        permissions:
+            issues: write
+        outputs:
+            refresh-linked-prs: ${{ steps.policy.outputs.refresh-linked-prs }}
+        steps:
+            - name: Check label actor
+              id: policy
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  ACTION: ${{ github.event.action }}
+                  ACTOR: ${{ github.event.sender.login }}
+                  REPOSITORY: ${{ github.repository }}
+                  ISSUE_NUMBER: ${{ github.event.issue.number }}
+              run: |
+                  set -euo pipefail
+
+                  if [ "$ACTION" = "unlabeled" ]; then
+                    echo "refresh-linked-prs=true" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  permission="$(gh api "repos/$REPOSITORY/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || true)"
+                  case "$permission" in
+                    write|maintain|admin)
+                      echo "refresh-linked-prs=true" >> "$GITHUB_OUTPUT"
+                      ;;
+                    *)
+                      gh issue edit "$ISSUE_NUMBER" --repo "$REPOSITORY" --remove-label ready-for-dev
+                      echo "refresh-linked-prs=false" >> "$GITHUB_OUTPUT"
+                      ;;
+                  esac
+
+    refresh-linked-pr-gates:
+        name: Refresh PR gates for linked issues
+        needs: enforce-label-policy
+        if: needs.enforce-label-policy.outputs.refresh-linked-prs == 'true'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            pull-requests: read
+            actions: write
+        steps:
+            - name: Checkout trusted workflow scripts
+              uses: actions/checkout@v7
+
+            - name: Re-run PR description checks for linked open PRs
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: python .github/scripts/refresh_linked_pr_checks.py

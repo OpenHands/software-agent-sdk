@@ -85,9 +85,11 @@ class RevokedBinding(MemoryBinding):
         super().__init__(value)
         self.authorization_revision = 0
         self.rejected = True
+        self.rejection_observed = threading.Event()
 
     async def replace(self, expected_version: str, value: str) -> str:
         if self.rejected:
+            self.rejection_observed.set()
             raise CredentialAuthorizationRejected("rejected")
         return await super().replace(expected_version, value)
 
@@ -98,6 +100,38 @@ class RevokedBinding(MemoryBinding):
 
 class FailingBinding(MemoryBinding):
     async def replace(self, expected_version: str, value: str) -> str:
+        self.replace_calls += 1
+        raise CredentialSyncError("unavailable")
+
+
+class FlakyBinding(MemoryBinding):
+    def __init__(self, value: str) -> None:
+        super().__init__(value)
+        self.first_replace_failed = threading.Event()
+
+    async def replace(self, expected_version: str, value: str) -> str:
+        if not self.first_replace_failed.is_set():
+            self.first_replace_failed.set()
+            raise CredentialSyncError("temporarily unavailable")
+        return await super().replace(expected_version, value)
+
+
+class DisappearingBinding(MemoryBinding):
+    def __init__(self, value: str) -> None:
+        super().__init__(value)
+        self.failed_replace = False
+        self.failed_loads = 0
+
+    async def load(self) -> ResolvedCredential:
+        if not self.failed_replace:
+            return await super().load()
+        self.failed_loads += 1
+        if self.failed_loads == 1:
+            raise CredentialSyncError("unavailable")
+        raise CredentialNeedsReauthentication("missing")
+
+    async def replace(self, expected_version: str, value: str) -> str:
+        self.failed_replace = True
         raise CredentialSyncError("unavailable")
 
 
@@ -239,6 +273,57 @@ def test_unstable_read_does_not_poison_lifecycle() -> None:
     lifecycle.close()
 
 
+def test_monitor_recovers_after_transient_writeback_failure() -> None:
+    rotated = _auth("refresh-r1")
+    binding = FlakyBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    try:
+        lifecycle.path.write_text(rotated, encoding="utf-8")
+        assert binding.first_replace_failed.wait(2)
+        assert runtime._monitor.is_alive()
+        _wait_for_value(binding, rotated)
+        lifecycle.flush()
+    finally:
+        lifecycle.close()
+
+
+def test_monitor_logs_persistent_writeback_failure_once() -> None:
+    binding = FailingBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    try:
+        with patch(
+            "openhands.sdk.agent.acp_file_credentials.logger.warning"
+        ) as warning:
+            lifecycle.path.write_text(_auth("refresh-r1"), encoding="utf-8")
+            deadline = time.monotonic() + 2
+            while binding.replace_calls < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert binding.replace_calls >= 2
+            assert runtime._monitor.is_alive()
+            assert warning.call_count == 1
+    finally:
+        lifecycle.discard()
+
+
+def test_monitor_stops_when_recovery_probe_requires_reauthentication() -> None:
+    binding = DisappearingBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    lifecycle.path.write_text(_auth("refresh-r1"), encoding="utf-8")
+    assert runtime._monitor is not None
+    runtime._monitor.join(timeout=2)
+
+    assert not runtime._monitor.is_alive()
+    with pytest.raises(CredentialNeedsReauthentication, match="missing"):
+        lifecycle.flush()
+    lifecycle.discard()
+
+
 def test_unchanged_file_does_not_write() -> None:
     binding = MemoryBinding(_auth("refresh-r0"))
     lifecycle, _ = _lifecycle(binding, SecretRegistry())
@@ -259,7 +344,7 @@ def test_ambiguous_committed_write_converges() -> None:
     lifecycle.close()
 
 
-def test_exhausted_writeback_failure_is_sticky() -> None:
+def test_writeback_failure_is_retried_after_successful_load() -> None:
     binding = FailingBinding(_auth("refresh-r0"))
     lifecycle, _ = _lifecycle(binding, SecretRegistry())
     assert lifecycle.path is not None
@@ -274,6 +359,7 @@ def test_exhausted_writeback_failure_is_sticky() -> None:
     with pytest.raises(CredentialSyncError, match="unavailable"):
         lifecycle.close()
 
+    assert binding.replace_calls == 3
     assert runtime_dir.exists()
     lifecycle.discard()
     assert not runtime_dir.exists()
@@ -329,6 +415,22 @@ def test_reauthorization_clears_authorization_rejection() -> None:
 
     assert binding.value == _auth("refresh-r1")
     lifecycle.close()
+
+
+def test_monitor_recovers_after_reauthorization() -> None:
+    rotated = _auth("refresh-r1")
+    binding = RevokedBinding(_auth("refresh-r0"))
+    lifecycle, _ = _lifecycle(binding, SecretRegistry())
+    assert lifecycle.path is not None
+    runtime = cast(Any, lifecycle)
+    try:
+        lifecycle.path.write_text(rotated, encoding="utf-8")
+        assert binding.rejection_observed.wait(2)
+        assert runtime._monitor.is_alive()
+        binding.reauthorize()
+        _wait_for_value(binding, rotated)
+    finally:
+        lifecycle.close()
 
 
 def test_runtime_state_does_not_serialize_binding_values() -> None:

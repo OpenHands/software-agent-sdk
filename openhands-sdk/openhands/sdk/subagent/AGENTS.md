@@ -14,15 +14,17 @@ without reverse-engineering `LocalConversation` and the loader.
 
 - **File-based agents**: Markdown files (`*.md`) with YAML frontmatter.
 - **Plugin agents**: `Plugin.agents` (already parsed by the plugin loader; registered here).
-- **Programmatic agents**: `register_agent(...)` (highest precedence, never overwritten).
-- **Built-in agents**: `subagent/builtins/*.md` (lowest precedence; used only as a fallback).
+- **Programmatic agents**: explicit `register_agent(...)` calls.
+- **Built-in agents**: supplied by `openhands-tools`, outside this SDK package.
 
 Relevant implementation files:
 
 - `load.py`: filesystem discovery + parse-error handling.
 - `schema.py`: Markdown/YAML schema and parsing rules.
 - `registry.py`: registry API + “first registration wins” semantics.
-- `conversation/impl/local_conversation.py`: the **call order** that establishes precedence.
+- `conversation/impl/local_conversation.py`: lazy plugin and file-agent registration.
+- `openhands-tools/openhands/tools/preset/default.py`: built-in agent discovery and
+  registration.
 
 ## Invariant 1: discovery locations & file rules
 
@@ -69,20 +71,22 @@ This is enforced by using:
 
 ### Effective precedence order
 
-When a `LocalConversation` becomes ready, it establishes the following priority:
+`LocalConversation._ensure_agent_ready()` establishes this order for agents loaded
+as part of conversation initialization:
 
-1. **Programmatic** `register_agent(...)` (pre-existing; must never be overwritten)
-2. **Plugin-provided** agents (`Plugin.agents` → `register_plugin_agents`)
-3. **Project** file-based agents
+1. Existing registry entries, including explicit `register_agent(...)` calls
+2. Plugin-provided agents (`Plugin.agents` → `register_plugin_agents`)
+3. Project file-based agents
    - `{project}/.agents/agents/*.md` then `{project}/.openhands/agents/*.md`
-4. **User** file-based agents
+4. User file-based agents
    - `~/.agents/agents/*.md` then `~/.openhands/agents/*.md`
-5. **SDK built-ins** (`subagent/builtins/*.md`)
 
-This is the order implemented by:
-
-- `LocalConversation._ensure_plugins_loaded()` → registers plugin agents
-- `LocalConversation._register_file_based_agents()` → registers project/user file agents, then built-ins
+Built-ins are discovered and registered separately by `openhands-tools` through
+`register_builtins_agents()`. Because all non-programmatic sources use
+`register_agent_if_absent(...)`, whichever source registers a name first keeps it.
+Call built-in registration after higher-priority sources if built-ins should act as
+fallbacks. The agent-server registers built-ins during tool-router import, before
+per-conversation file discovery.
 
 ### Deduplication rules inside file-based loading
 
@@ -103,12 +107,20 @@ Supported YAML frontmatter keys (see `AgentDefinition.load` in `schema.py`):
 
 - `name` (default: filename stem)
 - `description`
-- `tools` (default: `[]`)
-  - accepts either a string (`tools: ReadTool`) or a list
-- `model` (default: `inherit`)
-  - `inherit` means “use the parent agent’s LLM instance”
-  - any other string means “copy parent LLM and override the `model` field”
+- `tools` (default: `[]`): one tool name or a list of names
+- `skills` (default: `[]`): a comma-separated string or a list of skill names
+- `model` (default: `inherit`): `inherit` reuses the parent LLM; another value is
+  loaded as an LLM profile name from `profile_store_dir` or the default profile store
 - `color` (optional)
+- `max_iteration_per_run` (optional, positive integer)
+- `max_budget_per_run` (optional, positive number in USD)
+- `hooks` (optional hook configuration)
+- `profile_store_dir` (optional custom LLM profile directory)
+- `mcp_config` (optional MCP server map); `mcp_servers` is a deprecated alias
+- `permission_mode` (optional): `always_confirm`, `never_confirm`, or `confirm_risky`;
+  omission inherits the parent confirmation policy
+- `condenser` (optional): omission uses the default summarizing condenser; `none` or
+  `false` disables condensation; a mapping configures a condenser
 
 **Unknown keys are preserved** in `AgentDefinition.metadata`.
 
@@ -122,13 +134,13 @@ Currently, when the agent is instantiated, this is applied as:
 
 meaning it is appended to the parent system message (not a complete replacement).
 
-### Tools mapping
+### Tool and skill resolution
 
-`tools` values are stored as tool names (`list[str]`) and mapped at instantiation time to:
+`tools` values remain names until factory instantiation. Each name must already be
+registered; unknown tools raise `ValueError`. Valid names become `Tool(name=...)`.
 
-- `Tool(name=tool_name)`
-
-No validation is performed at load time beyond “stringification”.
+`skills` resolve when the factory is created. Project skills take priority over user
+skills, public skills are excluded, and an unknown skill raises `ValueError`.
 
 ### Trigger examples in description
 
@@ -148,9 +160,9 @@ description: |
   <example>please review this PR</example>
   <example>can you do a security review?</example>
 tools:
-  - ReadTool
-  - GrepTool
+  - terminal
 model: inherit
+permission_mode: confirm_risky
 color: purple
 # Any extra keys are preserved in `metadata`:
 audience: maintainers

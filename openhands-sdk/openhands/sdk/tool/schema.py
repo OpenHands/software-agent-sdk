@@ -3,7 +3,7 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
-from pydantic import ConfigDict, Field, create_model
+from pydantic import ConfigDict, Field, PrivateAttr, create_model
 from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -141,8 +141,12 @@ def _process_schema_node(
         non_null_types = [
             t
             for t in node["anyOf"]
-            if not isinstance(t, dict) or t.get("type") != "null"
+            if t is True or (isinstance(t, dict) and t.get("type") != "null")
         ]
+        if not non_null_types and any(t is False for t in node["anyOf"]):
+            # Every branch rejects: keep `false`'s reject-all meaning rather
+            # than silently widening the parameter to accept-all.
+            non_null_types = [False]
         if non_null_types:
             # Process the first non-null type
             processed = _process_schema_node(non_null_types[0], defs, _visiting)
@@ -330,6 +334,12 @@ class Schema(DiscriminatedUnionMixin):
 
 class Action(Schema, ABC):
     """Base schema for input action."""
+
+    _structured_output: dict[str, Any] | None = PrivateAttr(default=None)
+
+    @property
+    def structured_output(self) -> dict[str, Any] | None:
+        return self._structured_output
 
     @property
     def visualize(self) -> Text:

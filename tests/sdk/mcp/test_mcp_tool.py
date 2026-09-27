@@ -440,3 +440,85 @@ class TestMCPTool:
         assert isinstance(self.tool.executor, MCPToolExecutor)
         assert self.tool.executor.tool_name == "test_tool"
         assert self.tool.executor.client == self.mock_client
+
+
+def test_action_type_cache_is_bounded():
+    """A tool whose schema keeps changing must not grow the cache forever."""
+    from openhands.sdk.mcp.tool import (
+        _MCP_ACTION_TYPE_CACHE_MAX,
+        _create_mcp_action_type,
+        _mcp_dynamic_action_type,
+    )
+
+    for i in range(_MCP_ACTION_TYPE_CACHE_MAX + 50):
+        tool = mcp.types.Tool(
+            name="churning_tool",
+            description="d",
+            inputSchema={
+                "type": "object",
+                "properties": {f"field_{i}": {"type": "string"}},
+            },
+        )
+        _create_mcp_action_type(tool)
+
+    assert len(_mcp_dynamic_action_type) <= _MCP_ACTION_TYPE_CACHE_MAX
+
+
+def test_action_type_cache_serializes_get_and_evict(monkeypatch):
+    """A cache hit must not observe a concurrent eviction of the same key.
+
+    Forces the exact interleaving a real race could produce: pause inside
+    the cache-hit path (after `.get()`, before `.move_to_end()`) and let a
+    second thread try to evict that same entry. Without the lock this
+    raises KeyError from `move_to_end`; with it, the second thread blocks
+    until the first thread's critical section completes.
+    """
+    import threading
+    import time
+    from collections import OrderedDict
+
+    import openhands.sdk.mcp.tool as tool_module
+
+    paused = threading.Event()
+
+    class PausingDict(OrderedDict):
+        def get(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            result = super().get(*args, **kwargs)
+            if result is not None and not paused.is_set():
+                paused.set()
+                time.sleep(0.3)
+            return result
+
+    monkeypatch.setattr(tool_module, "_MCP_ACTION_TYPE_CACHE_MAX", 1)
+    monkeypatch.setattr(tool_module, "_mcp_dynamic_action_type", PausingDict())
+
+    shared_tool = mcp.types.Tool(
+        name="shared", description="d", inputSchema={"type": "object"}
+    )
+    other_tool = mcp.types.Tool(
+        name="other", description="d", inputSchema={"type": "object"}
+    )
+    tool_module._create_mcp_action_type(shared_tool)  # seed the cache
+
+    errors: list[Exception] = []
+
+    def hit():
+        try:
+            tool_module._create_mcp_action_type(shared_tool)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    def evict():
+        paused.wait(2.0)
+        try:
+            tool_module._create_mcp_action_type(other_tool)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=hit), threading.Thread(target=evict)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+
+    assert not errors

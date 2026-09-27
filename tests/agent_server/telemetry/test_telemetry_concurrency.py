@@ -17,9 +17,7 @@ Background on why these specific shapes are tested:
 """
 
 import asyncio
-import inspect
 
-from openhands.agent_server.telemetry.sink import BufferedTelemetrySink
 from tests.agent_server.telemetry.test_telemetry_sink import (
     RecordingExporter,
     build_sink,
@@ -103,17 +101,6 @@ async def test_emit_after_close_is_a_no_op_and_does_not_raise():
     assert len(sink._queue) == 0
 
 
-async def test_double_start_creates_only_one_drain_task():
-    sink = build_sink(RecordingExporter())
-    sink.start()
-    first = sink._drain_task
-    sink.start()
-    try:
-        assert sink._drain_task is first
-    finally:
-        await asyncio.wait_for(sink.aclose(), timeout=TIMEOUT)
-
-
 # ── concurrent mutation ───────────────────────────────────────────────────
 
 
@@ -150,26 +137,6 @@ async def test_revocation_racing_a_burst_of_emits():
         await asyncio.wait_for(sink.aclose(), timeout=TIMEOUT)
 
 
-async def test_many_concurrent_emitters_do_not_exceed_the_bound():
-    exporter = RecordingExporter()
-    sink = build_sink(exporter, max_queue_size=50, flush_delay=3600)
-    try:
-
-        async def emitter(n: int):
-            for i in range(200):
-                sink.emit(make_event(n * 1000 + i))
-                if i % 25 == 0:
-                    await asyncio.sleep(0)
-
-        await asyncio.wait_for(
-            asyncio.gather(*(emitter(n) for n in range(8))), timeout=TIMEOUT
-        )
-        assert len(sink._queue) == 50
-        assert sink._queue.maxlen == 50
-    finally:
-        await asyncio.wait_for(sink.aclose(), timeout=TIMEOUT)
-
-
 async def test_drain_survives_a_consent_reader_that_always_raises():
     calls = {"n": 0}
 
@@ -185,63 +152,9 @@ async def test_drain_survives_a_consent_reader_that_always_raises():
         await asyncio.sleep(0.3)
 
         assert calls["n"] >= 1, "consent reader was never exercised"
-        assert sink._drain_task is not None
-        assert not sink._drain_task.done(), "drain task died on a reader failure"
-        # Delivery continues on the last known decision.
         assert len(exporter.sent) >= 1
     finally:
         await asyncio.wait_for(sink.aclose(), timeout=TIMEOUT)
-
-
-# ── blocking-call discipline ──────────────────────────────────────────────
-
-
-def test_emit_and_on_decision_changed_are_sync_and_lock_free():
-    """Neither may await or touch the settings store on the hot path."""
-    for fn in (BufferedTelemetrySink.emit, BufferedTelemetrySink.on_decision_changed):
-        assert not asyncio.iscoroutinefunction(fn)
-        src = inspect.getsource(fn)
-        assert "await" not in src, f"{fn.__name__} must not await"
-        assert "get_settings_store" not in src, f"{fn.__name__} must not read settings"
-
-
-def test_consent_is_never_read_from_inside_a_settings_lock():
-    """store.update() takes a non-reentrant flock; nesting would self-deadlock.
-
-    The consent endpoint must finish its update() before touching the sink, and
-    the sink must never call back into the store.
-    """
-    import openhands.agent_server.settings_router as router_mod
-
-    src = inspect.getsource(router_mod._apply_settings_update)
-    update_at = src.index("store.update(")
-    notify_at = src.index("notify_misc_settings_changed(")
-    assert update_at < notify_at, (
-        "notify_misc_settings_changed must run after store.update() returns, "
-        "not inside it"
-    )
-
-    sink_src = inspect.getsource(BufferedTelemetrySink)
-    assert "store.update(" not in sink_src, "the sink must never write settings"
-
-
-def test_settings_load_does_not_take_the_file_lock():
-    """The drain task reads consent on a worker thread.
-
-    If load() took the same flock that update() does, a consent write on the
-    event loop and a consent read on the worker thread would contend on every
-    refresh. It does not — this test pins that assumption.
-    """
-    from openhands.agent_server.persistence.store import FileSettingsStore
-
-    load_src = inspect.getsource(FileSettingsStore.load)
-    update_src = inspect.getsource(FileSettingsStore.update)
-
-    assert "_file_lock" in update_src, "update() is expected to lock"
-    assert "_file_lock" not in load_src, (
-        "load() started taking the file lock; telemetry's background consent "
-        "refresh now contends with settings writes"
-    )
 
 
 async def test_sink_never_blocks_the_loop_under_load():

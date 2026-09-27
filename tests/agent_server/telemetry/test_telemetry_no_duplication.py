@@ -74,6 +74,21 @@ def test_no_deployment_mode_concept_remains():
     assert "deployment_mode" not in m.RuntimeProperties.model_fields
 
 
+def test_deployment_kind_is_a_runtime_property_not_a_mode():
+    import openhands.agent_server.config as config_mod
+
+    assert (
+        config_mod.TelemetrySpec(deployment_kind="remote").deployment_kind == "remote"
+    )
+    assert m.RuntimeProperties.model_fields["deployment_kind"].default == "local"
+    assert (
+        build_runtime_properties(
+            deferred_init=False, deployment_kind="remote"
+        ).deployment_kind
+        == "remote"
+    )
+
+
 def test_versions_match_server_info():
     """Telemetry and /server_info must never disagree about what is running."""
     from openhands.agent_server.server_details_router import ServerInfo

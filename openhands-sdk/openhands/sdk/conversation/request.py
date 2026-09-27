@@ -41,7 +41,6 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -91,14 +90,16 @@ class AgentLaunchAdditions(BaseModel):
     )
 
 
-class StartConversationRequest(BaseModel):
-    """Payload to create a new conversation.
+class ConversationConfig(BaseModel):
+    """Shared conversation configuration — everything except the agent.
 
-    Supports any concrete :class:`AgentBase` implementation, including regular
-    OpenHands agents and ACP agents. Clients may provide either a concrete
-    ``agent`` payload or an ``agent_settings`` payload; when ``agent_settings``
-    is provided without ``agent``, the settings are validated with the
-    ``agent_kind`` discriminator and converted to the appropriate agent type.
+    This is the common base for :class:`StartConversationRequest` (which adds the
+    ``agent``/``agent_settings``/``agent_profile_id`` family) and the
+    agent-server's ``StoredConversation`` (which does NOT persist the agent —
+    the agent's single source of truth is ``ConversationState`` /
+    ``base_state.json``). Keeping the agent off this base is what makes the
+    duplication structurally impossible rather than something a reviewer has to
+    remember to exclude.
     """
 
     workspace: LocalWorkspace = Field(
@@ -277,6 +278,23 @@ class StartConversationRequest(BaseModel):
         ),
     )
 
+
+class StartConversationRequest(ConversationConfig):
+    """Payload to create a new conversation.
+
+    Extends :class:`ConversationConfig` with the agent specification. Supports
+    any concrete :class:`AgentBase` implementation, including regular OpenHands
+    agents and ACP agents. Clients may provide either a concrete ``agent``
+    payload or an ``agent_settings`` payload; when ``agent_settings`` is provided
+    without ``agent``, the settings are validated with the ``agent_kind``
+    discriminator and converted to the appropriate agent type.
+
+    Note: the agent lives here on the *request*, deliberately not on
+    ``ConversationConfig``. The persisted record (``StoredConversation``) does
+    not carry the agent — its single source of truth is ``ConversationState`` /
+    ``base_state.json``.
+    """
+
     agent_settings: dict[str, Any] | None = Field(
         default=None,
         exclude=True,
@@ -343,24 +361,3 @@ class StartConversationRequest(BaseModel):
         if value is None:
             return None
         return handler(value)
-
-
-class StartACPConversationRequest(StartConversationRequest):
-    """Deprecated compatibility alias for ACP-capable start requests.
-
-    Use :class:`StartConversationRequest` instead. It now supports both regular
-    OpenHands agents and ACP agents through the same request contract.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        warn_deprecated(
-            "StartACPConversationRequest",
-            deprecated_in="1.36.0",
-            removed_in="1.41.0",
-            details=(
-                "Use StartConversationRequest instead. It supports both regular "
-                "OpenHands agents and ACP agents through the same request contract."
-            ),
-            stacklevel=2,
-        )
-        super().__init__(*args, **kwargs)
