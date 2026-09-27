@@ -21,7 +21,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -226,7 +226,7 @@ async def exercise(args):
                                     )
                                     assert response.status_code == 404, response.text
                                     assert not (
-                                        root / "conversations" / cid
+                                        root / "conversations" / UUID(cid).hex
                                     ).exists(), cid
                         else:
                             assert not pending, initial_codes
