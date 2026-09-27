@@ -522,6 +522,33 @@ def _run_tool_call(
     return MCPToolCallResult(is_error=bool(result.isError), text=text)
 
 
+def _http_error_detail(exc: BaseException) -> str | None:
+    """Summarize an HTTP failure carried by a probe exception, if any.
+
+    Some servers reject MCP requests with a plain HTTP error whose body
+    names the actionable cause (e.g. GitLab's 403 "MCP server not enabled
+    for any of your groups"). The exception name alone hides that reason,
+    so extract status plus a truncated body when one is attached.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            try:
+                body = response.text.strip()
+            except Exception:
+                body = ""
+            detail = f"HTTP {status_code} from MCP server"
+            if body:
+                detail += f": {body[:300]}"
+            return detail
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _probe_mcp_server(
     request: MCPTestRequest,
     cipher: Cipher | None,
@@ -594,6 +621,14 @@ def _probe_mcp_server(
     except Exception as exc:  # noqa: BLE001 - we want to surface anything else
         # Any other exception is unexpected but should still return a
         # structured response: the UI can't recover from a 500.
+        http_detail = _http_error_detail(exc)
+        if http_detail is not None:
+            logger.info(
+                "MCP test got HTTP error for server %r: %s",
+                request.name,
+                http_detail,
+            )
+            return MCPTestFailure(error=http_detail, error_kind="connection")
         logger.warning(
             "MCP test failed unexpectedly for server %r",
             request.name,
