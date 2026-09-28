@@ -9,7 +9,7 @@ Moreover, it registers the two tool classes TaskTool (the individual tool)
 and TaskToolSet (the entry-point that wires up a TaskManager-backed executor).
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import Field
@@ -18,6 +18,7 @@ from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.subagent import get_factory_info, get_registered_agent_definitions
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import (
     Action,
     DeclaredResources,
@@ -26,9 +27,11 @@ from openhands.sdk.tool import (
     ToolDefinition,
     register_tool,
 )
+from openhands.sdk.tool.defaults import canonical_tool_name
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.task.impl import TaskExecutor
     from openhands.tools.task.manager import ConfirmationHandler
@@ -224,8 +227,9 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
     @classmethod
     def create(
         cls,
-        conv_state: "ConversationState",  # noqa: ARG003
+        conv_state: "ConversationState",
         confirmation_handler: "ConfirmationHandler | None" = None,
+        restrict_to_parent_tools: bool = False,
     ) -> list[ToolDefinition]:
         """Create the task tool.
 
@@ -235,15 +239,24 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 confirmation policy requires user approval.  Receives
                 `(task_id, pending_actions)` and must return `True` to
                 approve or `False` to reject.
+            restrict_to_parent_tools: Only offer sub-agents whose tools the
+                parent agent also has.
 
         Returns:
             List containing a single TaskTool.
         """
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
-        agent_types_info = get_factory_info()
+        allows_agent = (
+            _within_tools_of(conv_state.agent) if restrict_to_parent_tools else None
+        )
+        agent_types_info = get_factory_info(allows_agent)
 
-        registered = {d.name for d in get_registered_agent_definitions()}
+        registered = {
+            d.name
+            for d in get_registered_agent_definitions()
+            if allows_agent is None or allows_agent(d)
+        }
         task_tool_examples = "\n".join(
             ex for name, ex in TASK_TOOL_EXAMPLES.items() if name in registered
         )
@@ -253,7 +266,9 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             task_tool_examples=task_tool_examples,
         )
 
-        manager = TaskManager(confirmation_handler=confirmation_handler)
+        manager = TaskManager(
+            confirmation_handler=confirmation_handler, allows_agent=allows_agent
+        )
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []
@@ -264,6 +279,19 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             )
         )
         return tools
+
+
+def _within_tools_of(agent: "AgentBase") -> Callable[[AgentDefinition], bool]:
+    parent_tools = {
+        canonical_tool_name(name)
+        for name in (
+            *(tool.name for tool in agent.tools),
+            *agent.include_default_tools,
+        )
+    }
+    return lambda definition: all(
+        canonical_tool_name(name) in parent_tools for name in definition.tools
+    )
 
 
 # Automatically register when this module is imported

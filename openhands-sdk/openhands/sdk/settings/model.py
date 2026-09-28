@@ -1444,11 +1444,10 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool import Tool
         from openhands.sdk.tool.builtins import (
-            BUILT_IN_TOOL_CLASSES,
-            BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME,
             BUILT_IN_TOOLS,
             ClassifyAndSwitchLLMTool,
             SwitchLLMTool,
+            builtin_tool_class,
         )
         from openhands.sdk.tool.defaults import (
             SUB_AGENT_TOOL_NAME,
@@ -1470,13 +1469,11 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         # filter_tools_regex.
         tools: list[Tool] = []
         for spec in specs:
-            builtin = BUILT_IN_TOOL_CLASSES.get(
-                spec.name
-            ) or BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME.get(spec.name)
+            builtin = builtin_tool_class(spec.name)
             if builtin is None:
                 tools.append(spec)
             elif spec.params:
-                tools.append(spec)
+                tools.append(Tool(name=builtin.__name__, params=spec.params))
                 if builtin.__name__ in include_default_tools:
                     include_default_tools.remove(builtin.__name__)
             elif builtin.__name__ not in include_default_tools:
@@ -1497,13 +1494,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             if ClassifyAndSwitchLLMTool.__name__ in include_default_tools:
                 include_default_tools.remove(ClassifyAndSwitchLLMTool.__name__)
             tools = [
-                spec
-                for spec in tools
-                if spec.name
-                not in (
-                    ClassifyAndSwitchLLMTool.__name__,
-                    ClassifyAndSwitchLLMTool.name,
-                )
+                spec for spec in tools if spec.name != ClassifyAndSwitchLLMTool.__name__
             ]
             tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
 

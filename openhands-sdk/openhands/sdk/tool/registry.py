@@ -163,14 +163,9 @@ def resolve_tool(
         resolver = _REG.get(tool_spec.name)
 
     if resolver is None:
-        from openhands.sdk.tool.builtins import (
-            BUILT_IN_TOOL_CLASSES,
-            BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME,
-        )
+        from openhands.sdk.tool.builtins import builtin_tool_class
 
-        tool_class = BUILT_IN_TOOL_CLASSES.get(
-            tool_spec.name
-        ) or BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME.get(tool_spec.name)
+        tool_class = builtin_tool_class(tool_spec.name)
         if tool_class is None:
             raise KeyError(f"ToolDefinition '{tool_spec.name}' is not registered")
         resolver = _resolver_from_subclass(tool_spec.name, tool_class)
@@ -224,6 +219,13 @@ def seal_tool_catalog() -> None:
         _SEALED_CATALOG = {
             name: (_TOOL_CLASSES[name], _USABILITY_REG[name]) for name in _REG
         }
+
+
+def unseal_tool_catalog() -> None:
+    """Let the catalog track registrations again."""
+    global _SEALED_CATALOG
+    with _LOCK:
+        _SEALED_CATALOG = None
 
 
 def list_tool_catalog() -> list[ToolCatalogEntry]:

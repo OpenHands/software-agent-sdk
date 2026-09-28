@@ -8,6 +8,7 @@
  */
 
 import type { ACPProviderKey } from './acp';
+import type { MCPJsonValue } from './api';
 
 // ── Shared supporting types ──────────────────────────────────────────────────
 
@@ -31,7 +32,7 @@ export interface ProfileVerificationSettings {
 /** A tool selected by name, with optional `create()` params. */
 export interface ProfileToolSpec {
   name: string;
-  params?: Record<string, unknown>;
+  params?: Record<string, MCPJsonValue>;
 }
 
 // ── Profile variants ─────────────────────────────────────────────────────────

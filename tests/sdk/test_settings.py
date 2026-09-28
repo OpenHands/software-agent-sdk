@@ -1031,6 +1031,18 @@ def test_selected_builtin_reaches_the_agent_by_class_name(name: str) -> None:
     assert agent.include_default_tools.count("SwitchLLMTool") == 1
 
 
+def test_builtin_with_params_reaches_the_agent_by_class_name() -> None:
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"),
+        tools=[Tool(name="finish", params={"response_schema": {"type": "object"}})],
+    ).create_agent()
+
+    assert agent.tools == [
+        Tool(name="FinishTool", params={"response_schema": {"type": "object"}})
+    ]
+    assert "FinishTool" not in agent.include_default_tools
+
+
 def test_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
     """The switch only ever fed the default set."""
     explicit = OpenHandsAgentSettings(

@@ -369,43 +369,80 @@ def fold_tool_switches_into_tools(
     if tools is None and not enable_sub_agents and enable_switch_llm_tool:
         return None
     # "The standard set plus/minus one tool" is not expressible, so pin it.
-    entries = (
-        [_as_tool(tool) for tool in tools]
-        if tools is not None
-        else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
-    )
+    entries = _pinned_standard_set() if tools is None else _as_tools(tools)
+    # `enable_sub_agents` only ever applied to the default set.
+    if enable_sub_agents and tools is None:
+        entries = _with_tool(entries, SUB_AGENT_TOOL_NAME)
+    if enable_switch_llm_tool:
+        return _with_tool(entries, SWITCH_LLM_TOOL_NAME)
+    return _without_tool(entries, SWITCH_LLM_TOOL_NAME)
+
+
+def _apply_tool_switch_requests(
+    tools: Sequence[dict[str, Any] | Tool] | None,
+    *,
+    enable_sub_agents: bool,
+    enable_switch_llm_tool: bool,
+) -> list[Tool] | None:
+    """Apply switches sent with a current profile; a default value changes nothing."""
+    if tools is None:
+        return fold_tool_switches_into_tools(
+            None,
+            enable_sub_agents=enable_sub_agents,
+            enable_switch_llm_tool=enable_switch_llm_tool,
+        )
+    entries = _as_tools(tools)
+    if enable_sub_agents:
+        entries = _with_tool(entries, SUB_AGENT_TOOL_NAME)
     if not enable_switch_llm_tool:
-        entries = [
-            entry
-            for entry in entries
-            if canonical_tool_name(entry.name) != SWITCH_LLM_TOOL_NAME
-        ]
-    for enabled, name in (
-        # `enable_sub_agents` only ever applied to the default set.
-        (enable_sub_agents and tools is None, SUB_AGENT_TOOL_NAME),
-        (enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
-    ):
-        selected = {canonical_tool_name(entry.name) for entry in entries}
-        if enabled and name not in selected:
-            entries.append(Tool(name=name))
+        entries = _without_tool(entries, SWITCH_LLM_TOOL_NAME)
     return entries
 
 
-def _as_tool(tool: dict[str, Any] | Tool) -> Tool:
-    return tool if isinstance(tool, Tool) else Tool.model_validate(tool)
+def _pinned_standard_set() -> list[Tool]:
+    return [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
+
+
+def _as_tools(tools: Sequence[dict[str, Any] | Tool]) -> list[Tool]:
+    return [
+        tool if isinstance(tool, Tool) else Tool.model_validate(tool) for tool in tools
+    ]
+
+
+def _with_tool(entries: list[Tool], name: str) -> list[Tool]:
+    if any(canonical_tool_name(entry.name) == name for entry in entries):
+        return entries
+    return [*entries, Tool(name=name)]
+
+
+def _without_tool(entries: list[Tool], name: str) -> list[Tool]:
+    return [entry for entry in entries if canonical_tool_name(entry.name) != name]
 
 
 _RETIRED_TOOL_SWITCHES = ("enable_sub_agents", "enable_switch_llm_tool")
 
 
-def _fold_retired_tool_switches(payload: dict[str, Any]) -> dict[str, Any]:
+def _pop_tool_switch(payload: dict[str, Any], key: str, default: bool) -> bool:
+    value = payload.pop(key, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"AgentProfile.{key} must be a boolean.")
+    return value
+
+
+def _fold_retired_tool_switches(
+    payload: dict[str, Any],
+    fold: Callable[..., list[Tool] | None],
+) -> dict[str, Any]:
     migrated = dict(payload)
-    sub_agents = migrated.pop("enable_sub_agents", False) is True
-    switch_llm = migrated.pop("enable_switch_llm_tool", True) is not False
-    if migrated.get("agent_kind", "openhands") == "openhands":
-        stored = migrated.get("tools")
-        migrated["tools"] = fold_tool_switches_into_tools(
-            stored if isinstance(stored, list) else None,
+    sub_agents = _pop_tool_switch(migrated, "enable_sub_agents", False)
+    switch_llm = _pop_tool_switch(migrated, "enable_switch_llm_tool", True)
+    stored = migrated.get("tools")
+    # Anything else is left for validation to reject.
+    if migrated.get("agent_kind", "openhands") == "openhands" and (
+        stored is None or isinstance(stored, list)
+    ):
+        migrated["tools"] = fold(
+            stored,
             enable_sub_agents=sub_agents,
             enable_switch_llm_tool=switch_llm,
         )
@@ -414,7 +451,7 @@ def _fold_retired_tool_switches(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     """Fold the retired tool switches into ``tools``."""
-    migrated = _fold_retired_tool_switches(payload)
+    migrated = _fold_retired_tool_switches(payload, fold_tool_switches_into_tools)
     migrated["schema_version"] = 3
     return migrated
 
@@ -475,7 +512,7 @@ def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
             removed_in="1.55.0",
             details="Select tools with `tools` instead.",
         )
-        migrated = _fold_retired_tool_switches(migrated)
+        migrated = _fold_retired_tool_switches(migrated, _apply_tool_switch_requests)
     return migrated
 
 

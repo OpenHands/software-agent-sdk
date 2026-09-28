@@ -50,9 +50,9 @@ def resolve_tool_specs(
 
 def canonical_tool_name(name: str) -> str:
     """Return the tool name a spec resolves to, collapsing built-in class names."""
-    from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
+    from openhands.sdk.tool.builtins import builtin_tool_class
 
-    tool_class = BUILT_IN_TOOL_CLASSES.get(name)
+    tool_class = builtin_tool_class(name)
     return tool_class.name if tool_class is not None else name
 
 
@@ -69,10 +69,6 @@ def default_tool_specs(
     enable_browser: bool = False,
 ) -> list[Tool]:
     """Default tool specs for an OpenHands agent whose settings carry no tools.
-
-    ``enable_sub_agents`` is retained for the legacy ``agent_settings`` path,
-    where the switch still exists; agent profiles select the sub-agent tool set
-    in ``tools`` instead.
 
     Deterministic: the same inputs yield the same specs on every runtime.
     Browser is off by default (see :data:`BROWSER_TOOL_NAME` — the serving

@@ -166,6 +166,51 @@ def test_openhands_profile_tools_selection_is_used_as_given(
     assert settings.create_agent().tools == []
 
 
+def test_openhands_explicit_browser_is_dropped_where_it_cannot_run(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="pinned",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal"), Tool(name="browser_tool_set")],
+    )
+
+    def resolved(browser_available: bool) -> list[str]:
+        settings = resolve_agent_profile(
+            profile,
+            llm_store=llm_store,
+            mcp_config={},
+            available_skills=None,
+            browser_available=browser_available,
+        )
+        assert isinstance(settings, OpenHandsAgentSettings)
+        return [tool.name for tool in settings.tools or []]
+
+    assert resolved(True) == ["terminal", "browser_tool_set"]
+    assert resolved(False) == ["terminal"]
+
+
+def test_openhands_selected_sub_agents_are_restricted_to_the_profile_tools(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="delegating",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal"), Tool(name="task_tool_set")],
+    )
+
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config={}, available_skills=None
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.tools == [
+        Tool(name="terminal"),
+        Tool(name="task_tool_set", params={"restrict_to_parent_tools": True}),
+    ]
+    assert profile.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
+
+
 def test_openhands_copies_verification(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:

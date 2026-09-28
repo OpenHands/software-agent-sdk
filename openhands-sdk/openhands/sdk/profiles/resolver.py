@@ -47,7 +47,13 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool.defaults import resolve_tool_specs
+from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    SUB_AGENT_TOOL_NAME,
+    canonical_tool_name,
+    resolve_tool_specs,
+)
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -225,6 +231,22 @@ def _acp_credential_channels(
     return info.api_key_env_var, info.base_url_env_var, file_names
 
 
+def _profile_tool_specs(
+    tools: list[Tool] | None, *, browser_available: bool
+) -> list[Tool]:
+    specs: list[Tool] = []
+    for spec in resolve_tool_specs(tools, enable_browser=browser_available):
+        name = canonical_tool_name(spec.name)
+        if name == BROWSER_TOOL_NAME and not browser_available:
+            continue
+        if name == SUB_AGENT_TOOL_NAME:
+            spec = spec.model_copy(
+                update={"params": {**spec.params, "restrict_to_parent_tools": True}}
+            )
+        specs.append(spec)
+    return specs
+
+
 def _build_openhands_settings(
     profile: OpenHandsAgentProfile,
     llm: LLM,
@@ -250,9 +272,8 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": resolve_tool_specs(
-            profile.tools,
-            enable_browser=browser_available,
+        "tools": _profile_tool_specs(
+            profile.tools, browser_available=browser_available
         ),
         "agent_context": AgentContext(
             skills=filtered_skills,
@@ -336,8 +357,8 @@ def resolve_agent_profile(
     deployment leaves skill sourcing to the CLI. Unlike the ``mcp_server_refs``
     allow-list, the ``disabled_skills`` deny-list can never dangle, so this
     never raises for skills. ``cipher`` decrypts the referenced LLM profile.
-    ``browser_available`` adds the browser tool set to a default toolset; the
-    caller probes the runtime the agent will run on.
+    ``browser_available`` says whether the runtime the agent will run on can
+    use the browser tool set; the caller probes it.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).

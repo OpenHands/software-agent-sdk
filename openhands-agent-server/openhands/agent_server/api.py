@@ -97,7 +97,7 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
-from openhands.sdk.tool import seal_tool_catalog
+from openhands.sdk.tool import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
@@ -306,6 +306,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
+        unseal_tool_catalog()
         emit_server_stopped()
         await shutdown_telemetry_sink()
 

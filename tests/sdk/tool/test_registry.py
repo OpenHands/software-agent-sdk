@@ -14,6 +14,7 @@ from openhands.sdk.tool.registry import (
     list_usable_tools,
     resolve_tool,
     seal_tool_catalog,
+    unseal_tool_catalog,
 )
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
@@ -313,3 +314,12 @@ def test_client_tool_cannot_take_a_builtin_name(name):
 
     resolved = resolve_tool(Tool(name="switch_llm"), _create_mock_conv_state())
     assert type(resolved[0]).__name__ == "SwitchLLMTool"
+
+
+def test_unsealed_catalog_tracks_registrations_again():
+    seal_tool_catalog()
+    unseal_tool_catalog()
+
+    register_tool("catalog_after_unseal", _SimpleHelloTool)
+
+    assert "catalog_after_unseal" in _catalog()

@@ -512,6 +512,55 @@ def test_current_payload_with_default_switches_keeps_tools_unset() -> None:
     assert profile.tools is None
 
 
+def _current_payload(**fields: object) -> dict[str, object]:
+    return {
+        "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+        "name": "oh",
+        "llm_profile_ref": "d",
+        **fields,
+    }
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [[{"name": "terminal"}], [], [{"name": "terminal"}, {"name": "task_tool_set"}]],
+)
+def test_current_payload_resent_default_switches_leave_an_explicit_list_alone(
+    tools: list[dict[str, object]],
+) -> None:
+    """A client that always sends the switch defaults must not re-add tools."""
+    profile = validate_agent_profile(
+        _current_payload(
+            tools=tools, enable_sub_agents=False, enable_switch_llm_tool=True
+        )
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == [t["name"] for t in tools]
+
+
+def test_current_payload_turning_sub_agents_on_extends_an_explicit_list() -> None:
+    profile = validate_agent_profile(
+        _current_payload(tools=[{"name": "terminal"}], enable_sub_agents=True)
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == ["terminal", "task_tool_set"]
+
+
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_current_payload_rejects_a_non_boolean_switch(value: object) -> None:
+    with pytest.raises(TypeError, match="enable_switch_llm_tool"):
+        validate_agent_profile(_current_payload(enable_switch_llm_tool=value))
+
+
+def test_retired_switch_does_not_mask_malformed_tools() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            _current_payload(tools="terminal", enable_switch_llm_tool=False)
+        )
+
+
 def test_rejects_newer_schema_version() -> None:
     with pytest.raises(ValueError, match="newer than supported"):
         validate_agent_profile(

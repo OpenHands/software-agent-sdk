@@ -35,6 +35,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.subagent.schema import AgentDefinition
 
 
 if TYPE_CHECKING:
@@ -98,9 +99,11 @@ class TaskManager:
     def __init__(
         self,
         confirmation_handler: ConfirmationHandler | None = None,
+        allows_agent: Callable[[AgentDefinition], bool] | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
+        self._allows_agent = allows_agent
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
@@ -209,7 +212,7 @@ class TaskManager:
                     f"Available tasks: {', '.join(sorted(self._tasks))}"
                 )
 
-            factory = get_agent_factory(subagent_type)
+            factory = self._get_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
             with detached_delegate_context() as link:
@@ -251,7 +254,7 @@ class TaskManager:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
         2. The parent conversation's ``max_iteration_per_run``
         """
-        factory = get_agent_factory(subagent_type)
+        factory = self._get_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
         effective_max_iter = (
@@ -355,8 +358,17 @@ class TaskManager:
         Raises:
             ValueError: If the subagent type is invalid.
         """
+        return self._get_sub_agent_from_factory(self._get_factory(subagent_type))
+
+    def _get_factory(self, subagent_type: str) -> AgentFactory:
         factory = get_agent_factory(subagent_type)
-        return self._get_sub_agent_from_factory(factory)
+        if self._allows_agent is not None and not self._allows_agent(
+            factory.definition
+        ):
+            raise ValueError(
+                f"Agent '{subagent_type}' uses tools this agent does not have."
+            )
+        return factory
 
     def _get_sub_agent_from_factory(self, factory: "AgentFactory") -> Agent:
         """Create a sub-agent from an AgentFactory."""
