@@ -3,11 +3,12 @@
 # NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
 # PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
 # characters to underscores, breaking libtmux's format parsing.
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
+ARG BASE_IMAGE=python-node-runtime
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
 ARG PORT=8000
+ARG NPM_VERSION=11.19.1
 # Opt-in build flag for the Vertex AI extra (`openhands-sdk[vertex]`). Off by
 # default to keep the published image lean. Pass `--build-arg ENABLE_VERTEX=1`
 # to bundle google-cloud-aiplatform so the resulting binary supports
@@ -25,6 +26,72 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
 ARG INSTALL_CAPABILITIES=vscode,browser,docker
+
+####################################################################################
+# Canonical Python + Node runtime
+#
+# Start from Debian itself and copy only the language runtimes from their official
+# images. The final stage installs only the shared libraries required by Python
+# and Node; developer and package-manager tooling is added by the agent-server
+# stages below when needed. Package upgrades resolve against a dated snapshot so
+# newly published Debian packages have a three-day observation period.
+####################################################################################
+FROM python:3.13.15-slim-trixie AS python-runtime
+FROM node:24.21.0-trixie-slim AS node-runtime
+FROM debian:trixie-slim AS python-node-runtime
+ARG NPM_VERSION
+ARG DEBIAN_SNAPSHOT=20260920T000000Z
+
+COPY --from=python-runtime /usr/local /usr/local
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
+
+RUN set -eux; \
+    ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
+    ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx; \
+    ln -sfn ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        'Check-Valid-Until: no' \
+        > /etc/apt/sources.list.d/debian.sources; \
+    apt-get update; \
+    apt-get upgrade -y; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libbz2-1.0 \
+        libdb5.3t64 \
+        libffi8 \
+        libgcc-s1 \
+        libgdbm6t64 \
+        liblzma5 \
+        libncursesw6 \
+        libreadline8t64 \
+        libsqlite3-0 \
+        libssl3t64 \
+        libstdc++6 \
+        libtinfo6 \
+        libuuid1 \
+        libzstd1 \
+        netbase \
+        tzdata \
+        zlib1g; \
+    rm -rf /var/lib/apt/lists/*; \
+    python3 --version; \
+    node --version; \
+    npm --version
 
 ####################################################################################
 # Builder (source mode)
@@ -48,9 +115,9 @@ ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
 # uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
-# first release with the PT_GNU_STACK fix. Pin to 0.11.6 (latest at time of
+# first release with the PT_GNU_STACK fix. Pin to 0.12.15 (latest eligible at time of
 # writing) rather than :latest so builds are reproducible.
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
  && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
@@ -110,6 +177,7 @@ RUN test -x /agent-server/dist/openhands-agent-server
 ####################################################################################
 FROM python:3.13-bookworm AS acp-providers
 ARG INSTALL_ACP_PROVIDERS
+ARG NPM_VERSION
 # A fresh top-level path, not nested under a directory (e.g. /opt) that base
 # images commonly already populate (SWE-bench images ship /opt/miniconda3):
 # COPY --from=<stage> only produces a byte-identical layer across different
@@ -138,18 +206,19 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ARCH=$(uname -m); \
     case "$ARCH" in \
-      x86_64|amd64) NARCH=x64; NODE_SHA256=c0649af18e6a24f6fe5535a3e86b341dd49a8e71117c8b68bde973ef834f16f2;; \
-      aarch64|arm64) NARCH=arm64; NODE_SHA256=0b2d9f564b6594222a62c82e1df2efe119dd4a4aff29644f4dd325bf360b6bcc;; \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8;; \
       *) echo "Unsupported architecture for ACP providers: '$ARCH'" >&2; exit 1;; \
     esac; \
-    NODE_TARBALL="/tmp/node-v22.19.0-linux-${NARCH}.tar.xz"; \
+    NODE_TARBALL="/tmp/node-v22.23.2-linux-${NARCH}.tar.xz"; \
     curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
-        "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
+        "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL"; \
     echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c -; \
     tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL"; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
-    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install -g $PACKAGES; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
+    PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
       # a wrong binary_name is otherwise invisible until someone launches the
@@ -168,9 +237,8 @@ RUN set -eux; \
 
 ####################################################################################
 # Base image (minimal)
-# It includes only basic packages and the UV runtime.
-# No Docker, no browser, no VSCode Web.
-# Suitable for running in headless/evaluation mode.
+# It includes only the packages required to run the agent server and its Bash
+# and Git APIs. Development tools and optional capabilities live in base-image.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
 ARG USERNAME UID GID PORT
@@ -184,57 +252,55 @@ ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 # Install base packages and create user
 RUN set -eux; \
     # Install base packages across the most common package managers, since
-    # benchmark base images aren't always Debian-based. `tini` is added on
-    # apt/apk where it's reliably available; on the other paths the kernel-
-    # reaping behaviour falls back to dumb-init's absence (the agent server
-    # is short-lived enough on non-Debian images that PID 1 zombie reaping
-    # has not been observed to matter — revisit if it does).
+    # benchmark base images aren't always Debian-based. `tini` comes from the
+    # distro on apt/apk; the rpm/zypper families have no tini in their base
+    # repos, so those paths fall through to the static-binary install below.
+    # Every path must end with a working `tini` on PATH, because the ENTRYPOINT
+    # of this image invokes it unconditionally.
     if command -v apt-get >/dev/null 2>&1; then \
         apt-get -o Acquire::Retries=5 update; \
         apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            bash ca-certificates curl wget sudo apt-utils git jq tmux tar \
-            build-essential coreutils util-linux procps findutils grep sed \
-            tini apt-transport-https gnupg lsb-release xz-utils; \
+            bash ca-certificates git tini tmux; \
         rm -rf /var/lib/apt/lists/*; \
     elif command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache \
-            bash ca-certificates curl wget sudo git jq tmux tar build-base \
-            coreutils util-linux procps findutils grep sed tini gnupg shadow xz; \
+        apk add --no-cache bash ca-certificates git shadow tini tmux; \
     elif command -v microdnf >/dev/null 2>&1; then \
-        microdnf install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        microdnf install -y bash ca-certificates curl git shadow-utils tmux; \
         microdnf clean all; \
     elif command -v dnf >/dev/null 2>&1; then \
-        dnf install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        dnf install -y bash ca-certificates curl git shadow-utils tmux; \
         dnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
-        yum install -y \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps-ng findutils grep sed shadow-utils \
-            gnupg2 xz; \
+        yum install -y bash ca-certificates curl git shadow-utils tmux; \
         yum clean all; \
     elif command -v zypper >/dev/null 2>&1; then \
         zypper --non-interactive install --no-recommends \
-            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
-            coreutils util-linux procps findutils grep sed shadow gpg2 xz; \
+            bash ca-certificates curl git shadow tmux; \
         zypper clean --all; \
     else \
         echo "Unsupported base image: no known package manager found" >&2; \
         exit 1; \
     fi; \
+    # Static tini fallback for the package managers that don't ship it. Pinned
+    # to a release-published sha256 per arch, mirroring the Node payload above.
+    if ! command -v tini >/dev/null 2>&1; then \
+        ARCH=$(uname -m); \
+        case "$ARCH" in \
+          x86_64|amd64) TARCH=amd64; TINI_SHA256=c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee;; \
+          aarch64|arm64) TARCH=arm64; TINI_SHA256=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9;; \
+          *) echo "Unsupported architecture for tini: '$ARCH'" >&2; exit 1;; \
+        esac; \
+        curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused \
+            "https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-${TARCH}" \
+            -o /usr/local/bin/tini; \
+        echo "$TINI_SHA256  /usr/local/bin/tini" | sha256sum -c -; \
+        chmod 755 /usr/local/bin/tini; \
+    fi; \
+    # Fail the build rather than ship an image whose ENTRYPOINT cannot exec.
+    tini --version; \
     grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
     grep -Eq "^${USERNAME}:" /etc/passwd || \
         useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
-    # Best-effort: add user to a sudo group when one exists (Debian-style
-    # `sudo` group). On Alpine/RHEL/SUSE there is no `sudo` group by default,
-    # and the NOPASSWD sudoers line below grants sudo regardless of group.
-    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
-    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers; \
     mkdir -p /workspace/project; \
     chown -R "${USERNAME}:${USERNAME}" /workspace
 
@@ -274,10 +340,6 @@ RUN if ! "$ACP_NODE_DIR/bin/node" --version >/dev/null 2>&1; then \
 RUN mkdir -p /etc/claude-code && \
     echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
-# since the agent might use it to perform other work (e.g. tools that use Python)
-COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
-
 USER ${USERNAME}
 WORKDIR /
 # Locale settings required for libtmux to work with PyInstaller builds
@@ -298,6 +360,47 @@ ARG USERNAME
 ARG INSTALL_CAPABILITIES
 
 USER root
+
+# Full images are general-purpose development environments. Keep compilers,
+# package/repository helpers, and command-line utilities out of binary-minimal.
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get -o Acquire::Retries=5 update; \
+        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+            apt-transport-https apt-utils build-essential coreutils curl \
+            findutils gnupg grep jq lsb-release procps sed sudo tar util-linux \
+            wget xz-utils; \
+        rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache \
+            build-base coreutils curl findutils gnupg grep jq procps sudo tar \
+            util-linux wget xz; \
+    elif command -v microdnf >/dev/null 2>&1; then \
+        microdnf install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        microdnf clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        dnf install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+        yum install -y \
+            coreutils curl findutils gcc gcc-c++ gnupg2 grep jq make procps-ng \
+            sed sudo tar util-linux wget xz; \
+        yum clean all; \
+    elif command -v zypper >/dev/null 2>&1; then \
+        zypper --non-interactive install --no-recommends \
+            coreutils curl findutils gcc gcc-c++ gpg2 grep jq make procps sed \
+            sudo tar util-linux wget xz; \
+        zypper clean --all; \
+    fi; \
+    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
+    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Keep uv as part of the full development environment, but not binary-minimal.
+COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /uvx /bin/
 
 # Fail fast on a typo'd capability name before spending any time on the
 # installs below (each block only checks for ITS OWN keyword's presence, so
@@ -320,7 +423,7 @@ ENV EDITOR=code \
     VISUAL=code \
     GIT_EDITOR="code --wait" \
     OPENVSCODE_SERVER_ROOT=/openhands/.openvscode-server
-ARG RELEASE_TAG="openvscode-server-v1.98.2"
+ARG RELEASE_TAG="openvscode-server-v1.109.5"
 ARG RELEASE_ORG="gitpod-io"
 # The --mount=from=builder on the extensions RUN below is unconditional at
 # the Dockerfile level, so BuildKit still builds the full `builder` stage
