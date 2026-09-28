@@ -553,7 +553,10 @@ async def materialize_agent_profile(
     mcp_config = settings.agent_settings.mcp_config
 
     inputs = await asyncio.to_thread(
-        gather_profile_launch_inputs, profile, config.acp_skill_sourcing
+        gather_profile_launch_inputs,
+        profile,
+        config.acp_skill_sourcing,
+        config.conversation_runtime,
     )
     if inputs.skill_discovery_error is not None:
         logger.warning(

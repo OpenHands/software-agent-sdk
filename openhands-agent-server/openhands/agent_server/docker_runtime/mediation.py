@@ -80,6 +80,7 @@ async def prepare_start(
             config.cipher,
             settings.agent_settings.mcp_config,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            conversation_runtime=config.conversation_runtime,
         )
         secrets = request.secrets
         if allowed is not None:

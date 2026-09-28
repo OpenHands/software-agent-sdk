@@ -1,10 +1,6 @@
-"""Deployment inputs an agent profile is resolved against.
+"""Deployment inputs an agent profile is resolved against."""
 
-Shared by conversation launch and the materialize preview so both resolve a
-profile against the same skill catalog and runtime capabilities.
-"""
-
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from openhands.agent_server.config import ACPSkillSourcing
 from openhands.agent_server.skills_service import discover_profile_skills
@@ -22,12 +18,9 @@ class ProfileLaunchInputs(NamedTuple):
 def gather_profile_launch_inputs(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     acp_skill_sourcing: ACPSkillSourcing,
+    conversation_runtime: Literal["local", "docker"] = "local",
 ) -> ProfileLaunchInputs:
-    """Discover the skill catalog and probe this runtime for ``profile``.
-
-    An ACP profile only gets the managed skill catalog where its CLI cannot read
-    the user's own configuration (#4019).
-    """
+    """Discover the skill catalog and the browser availability for ``profile``."""
     available_skills = None
     discovery_error = None
     if profile.agent_kind == "openhands" or acp_skill_sourcing == "openhands_managed":
@@ -38,7 +31,8 @@ def gather_profile_launch_inputs(
     return ProfileLaunchInputs(
         available_skills=available_skills,
         skill_discovery_error=discovery_error,
-        browser_available=(
-            profile.agent_kind == "openhands" and is_tool_usable(BROWSER_TOOL_NAME)
-        ),
+        # This process cannot see a container's chromium; there the browser
+        # tool set degrades to no tools if it is missing.
+        browser_available=profile.agent_kind == "openhands"
+        and (conversation_runtime == "docker" or is_tool_usable(BROWSER_TOOL_NAME)),
     )

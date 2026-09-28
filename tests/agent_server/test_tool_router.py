@@ -69,3 +69,23 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
         }
         & selectable
     )
+
+
+def test_docker_runtime_catalog_does_not_report_host_usability(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openhands.agent_server.tool_router import tool_router
+
+    monkeypatch.setattr(
+        "openhands.sdk.tool.registry._check_tool_usable", lambda name, checker: False
+    )
+    app = FastAPI()
+    app.state.config = SimpleNamespace(conversation_runtime="docker")
+    app.include_router(tool_router, prefix="/api")
+
+    entries = TestClient(app).get("/api/tools/catalog").json()["tools"]
+
+    assert entries and all(entry["usable"] for entry in entries)

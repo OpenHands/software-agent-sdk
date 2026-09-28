@@ -1,6 +1,6 @@
 """Tool router for OpenHands SDK."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from openhands.sdk.tool.registry import (
@@ -36,10 +36,15 @@ class ToolCatalogResponse(BaseModel):
 
 
 @tool_router.get("/catalog")
-async def get_tool_catalog() -> ToolCatalogResponse:
+async def get_tool_catalog(request: Request) -> ToolCatalogResponse:
     """List the tools this server offers for configuring an agent.
 
-    Clients offer the ``user_selectable`` entries; ``usable`` says whether this
-    server's runtime can run the tool.
+    Clients offer the ``user_selectable`` entries; ``usable`` says whether the
+    runtime conversations run in can run the tool.
     """
-    return ToolCatalogResponse(tools=list_tool_catalog())
+    entries = list_tool_catalog()
+    config = getattr(request.app.state, "config", None)
+    if config is not None and config.conversation_runtime == "docker":
+        # This process cannot probe the conversation containers.
+        entries = [entry.model_copy(update={"usable": True}) for entry in entries]
+    return ToolCatalogResponse(tools=entries)
