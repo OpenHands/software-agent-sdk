@@ -266,7 +266,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             return self
         if self._is_handler_for_current_class(handler):
             result = handler(self)
-            return result
+            return self._include_default_tools_provenance(result)
 
         # Delegate to the implementing class
         result = self.model_dump(
@@ -280,6 +280,13 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             round_trip=info.round_trip,
             serialize_as_any=info.serialize_as_any,
         )
+        return self._include_default_tools_provenance(result)
+
+    def _include_default_tools_provenance(self, result: Any) -> Any:
+        """Retain AgentBase's explicit/default selection across serialization."""
+        explicit = getattr(self, "_include_default_tools_explicit", None)
+        if explicit is not None and isinstance(result, dict):
+            result["_include_default_tools_explicit"] = explicit
         return result
 
     def _is_handler_for_current_class(
