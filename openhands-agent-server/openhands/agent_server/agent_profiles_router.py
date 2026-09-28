@@ -22,7 +22,10 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     store_errors,
 )
-from openhands.agent_server.agent_launch import launch_runtime
+from openhands.agent_server.agent_launch import (
+    launch_runtime,
+    server_acp_skill_sourcing,
+)
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -34,10 +37,6 @@ from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
-)
-from openhands.sdk.llm.meta_profile_store import (
-    MetaProfileStore,
-    default_meta_profile_dir,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
@@ -536,16 +535,10 @@ async def materialize_agent_profile(
     cipher = get_cipher(request)
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    # The same runtime a launch on this server would use, so the preview cannot
-    # disagree with it. A Docker-runtime deployment launches in a container,
-    # which sources its skills from the server (#4019).
-    runtime = launch_runtime(
+    runtime = await asyncio.to_thread(
+        launch_runtime,
         settings,
-        acp_skill_sourcing=(
-            "openhands_managed"
-            if config.conversation_runtime == "docker"
-            else config.acp_skill_sourcing
-        ),
+        acp_skill_sourcing=server_acp_skill_sourcing(config),
     )
 
     # Discover skills off the event loop. A discovery failure must not 500 the
@@ -567,7 +560,6 @@ async def materialize_agent_profile(
         available_skills=available_skills,
         cipher=cipher,
         runtime=runtime,
-        meta_profile_store=MetaProfileStore(base_dir=default_meta_profile_dir()),
     )
     if discovery_error is not None:
         diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")

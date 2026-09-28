@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.persistence.models import PersistedSettings
 from openhands.agent_server.persistence.store import (
     get_agent_profile_store,
@@ -21,10 +22,6 @@ from openhands.agent_server.persistence.store import (
 from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import StartConversationRequest
-from openhands.sdk.llm.meta_profile_store import (
-    MetaProfileStore,
-    default_meta_profile_dir,
-)
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentLaunchCatalog,
@@ -55,12 +52,20 @@ class LaunchSource:
 def _error_text(exc: Exception) -> str:
     # A ValidationError's str() echoes the rejected input.
     if isinstance(exc, ValidationError):
-        return "; ".join(err["msg"] for err in exc.errors())
+        return "; ".join(
+            f"{'.'.join(map(str, err['loc']))}: {err['msg']}"
+            if err["loc"]
+            else err["msg"]
+            for err in exc.errors()
+        )
     return str(exc)
 
 
-def _meta_profile_store() -> MetaProfileStore:
-    return MetaProfileStore(base_dir=default_meta_profile_dir())
+def server_acp_skill_sourcing(config: Config) -> ACPSkillSourcing:
+    """The ACP skill sourcing a launch on this server gets."""
+    if config.conversation_runtime == "docker":
+        return "openhands_managed"
+    return config.acp_skill_sourcing
 
 
 def launch_runtime(
@@ -117,7 +122,6 @@ def profile_catalog(
         mcp_config=settings.agent_settings.mcp_config,
         skills=skills,
         cipher=cipher,
-        meta_profile_store=_meta_profile_store(),
     )
 
 
@@ -154,9 +158,7 @@ def load_launch_source(
             raise AgentLaunchError(
                 f"Invalid agent_settings: {_error_text(exc)}"
             ) from exc
-        profile, catalog = agent_settings_launch_source(
-            agent_settings, meta_profile_store=_meta_profile_store()
-        )
+        profile, catalog = agent_settings_launch_source(agent_settings)
         return LaunchSource(source=profile, catalog=catalog, profile_origin=None)
 
     return LaunchSource(
@@ -175,13 +177,7 @@ def apply_launch(
     *,
     build_agent: bool = True,
 ) -> tuple[StartConversationRequest, AgentLaunchPlan]:
-    """Resolve ``source`` and fold the result into a request carrying only ``agent``.
-
-    A profile source's ``secret_refs`` filter ``request.secrets`` here, so a
-    caller cannot widen them. A raw ``agent`` carries no scope of its own: a
-    conversation bound to a profile only through ``OH_RUNTIME_LAUNCHED_PROFILE``
-    is filtered on resume rather than here (#5193).
-    """
+    """Resolve ``source`` into a request carrying only ``agent`` and scoped secrets."""
     try:
         plan = prepare_agent_launch(
             source.source,

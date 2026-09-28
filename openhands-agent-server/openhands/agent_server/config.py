@@ -16,6 +16,7 @@ from openhands.agent_server.env_parser import (
 )
 from openhands.agent_server.telemetry_types import DeploymentKind
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
+from openhands.sdk.profiles.resolver import ACPSkillSourcing
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -27,7 +28,6 @@ CONFIG_PATH_ENV = "OPENHANDS_AGENT_SERVER_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = Path("workspace/openhands_agent_server_config.json")
 # 20 minutes, matching the idle timeout used by OpenHands Cloud.
 DEFAULT_CONVERSATION_IDLE_TTL_SECONDS: Final[float] = 20 * 60.0
-ACPSkillSourcing = Literal["native", "openhands_managed"]
 _logger = logging.getLogger(__name__)
 
 

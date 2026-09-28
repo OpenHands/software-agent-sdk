@@ -15,6 +15,7 @@ from pydantic import (
     BaseModel,
     Discriminator,
     Field,
+    SerializationInfo,
     Tag,
     field_serializer,
     model_validator,
@@ -47,6 +48,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.settings.model import validate_agent_settings
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.models import kind_of
@@ -330,7 +332,12 @@ class StartConversationRequest(ConversationConfig):
                 )
             )
         if payload.get("agent_profile") is not None:
-            payload["agent_profile"] = validate_agent_profile(payload["agent_profile"])
+            try:
+                payload["agent_profile"] = validate_agent_profile(
+                    payload["agent_profile"]
+                )
+            except TypeError as exc:
+                raise ValueError(str(exc)) from exc
         if isinstance(payload.get("agent"), dict):
             agent_payload = dict(payload["agent"])
             if "kind" not in agent_payload and "llm" in agent_payload:
@@ -355,6 +362,16 @@ class StartConversationRequest(ConversationConfig):
                 " `agent_profile_id` or `agent_profile`"
             )
         return self
+
+    @field_serializer("agent_settings")
+    def _serialize_agent_settings(
+        self, value: dict[str, Any] | None, info: SerializationInfo
+    ) -> Any:
+        if value is None:
+            return None
+        return validate_agent_settings(value).model_dump(
+            mode=info.mode, context=info.context
+        )
 
     @field_serializer("agent", mode="wrap")
     def _serialize_agent(self, value: AgentBase | None, handler: Any) -> Any:

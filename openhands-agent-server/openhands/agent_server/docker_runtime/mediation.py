@@ -23,7 +23,7 @@ from openhands.agent_server.persistence import PersistedSettings, get_settings_s
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.profiles import AgentLaunchRuntime
+from openhands.sdk.profiles import AgentLaunchError, AgentLaunchRuntime
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
 from openhands.sdk.tool import BROWSER_TOOL_NAME
@@ -93,11 +93,6 @@ async def prepare_start(body: dict[str, Any], config: Config) -> PreparedStart:
     Resolution runs without building the agent, so a dangling reference fails
     before a container is started.
     """
-    body = {
-        name: value
-        for name, value in body.items()
-        if value is not None or name not in {"agent", "agent_settings"}
-    }
     context = {"cipher": config.cipher} if body.get("secrets_encrypted") else None
     request = StartConversationRequest.model_validate(body, context=context)
 
@@ -130,10 +125,15 @@ async def finish_start(
     prepared: PreparedStart, runtime: AgentLaunchRuntime
 ) -> StartConversationRequest:
     """Build the agent for the container's ``runtime``."""
-    request, _ = await asyncio.to_thread(
-        apply_launch, prepared.request, prepared.source, runtime
-    )
-    agent = await asyncio.to_thread(_materialize_agent_context, request.agent)
+    try:
+        request, _ = await asyncio.to_thread(
+            apply_launch, prepared.request, prepared.source, runtime
+        )
+        agent = await asyncio.to_thread(_materialize_agent_context, request.agent)
+    except AgentLaunchError:
+        raise
+    except Exception as exc:
+        raise AgentLaunchError(f"Agent failed to build: {exc}") from exc
     return request.model_copy(update={"agent": agent})
 
 

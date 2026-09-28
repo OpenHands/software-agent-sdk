@@ -4,6 +4,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.docker_runtime import mediation
 from openhands.agent_server.docker_runtime.mediation import (
     PreparedStart,
     container_launch_runtime,
@@ -22,7 +23,11 @@ from openhands.sdk.conversation.request import (
     AgentLaunchAdditions,
     StartConversationRequest,
 )
-from openhands.sdk.profiles import OpenHandsAgentProfile, UnresolvedProfileReferences
+from openhands.sdk.profiles import (
+    AgentLaunchError,
+    OpenHandsAgentProfile,
+    UnresolvedProfileReferences,
+)
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -103,6 +108,23 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
     source = context.secrets["CONTEXT_SECRET"]
     assert isinstance(source, StaticSecret)
     assert source.get_value() == "context-value"
+
+
+@pytest.mark.asyncio
+async def test_a_build_failure_after_prepare_is_a_launch_error(tmp_path, monkeypatch):
+    runtime_config = config(tmp_path, monkeypatch)
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test")),
+    )
+    prepared = await prepare_start(request.model_dump(mode="json"), runtime_config)
+
+    def fail(agent):
+        raise RuntimeError("credential refresh failed")
+
+    monkeypatch.setattr(mediation, "_materialize_agent_context", fail)
+    with pytest.raises(AgentLaunchError, match="credential refresh failed"):
+        await _finish(prepared)
 
 
 @pytest.mark.asyncio

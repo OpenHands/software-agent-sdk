@@ -218,6 +218,25 @@ class TestStartConversationRequestValidation:
                 workspace=LocalWorkspace(working_dir="/tmp"),
             )
 
+    @pytest.mark.parametrize("draft", ["x", 42, {"name": "d", "schema_version": "2"}])
+    def test_a_malformed_inline_profile_is_a_validation_error(self, draft):
+        with pytest.raises(ValidationError):
+            StartConversationRequest.model_validate(
+                {"agent_profile": draft, "workspace": {"working_dir": "/tmp"}}
+            )
+
+    def test_agent_settings_secrets_are_masked_unless_exposed(self):
+        req = StartConversationRequest(
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "gpt-4o", "api_key": "sk-PLAINTEXT"},
+            },
+            workspace=LocalWorkspace(working_dir="/tmp"),
+        )
+        assert "sk-PLAINTEXT" not in req.model_dump_json()
+        exposed = req.model_dump_json(context={"expose_secrets": True})
+        assert "sk-PLAINTEXT" in exposed
+
     def test_no_agent_source_is_invalid(self):
         with pytest.raises(ValidationError, match="agent_profile_id"):
             StartConversationRequest(workspace=LocalWorkspace(working_dir="/tmp"))

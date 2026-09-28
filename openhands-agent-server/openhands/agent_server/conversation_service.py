@@ -75,6 +75,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.profiles import AgentLaunchPlan
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -1504,15 +1505,18 @@ class ConversationService:
             )
             settings = PersistedSettings()
 
-        request, plan = await asyncio.to_thread(
-            prepare_launch_request,
-            request,
-            cipher=self.cipher,
-            settings=settings,
-            runtime=launch_runtime(
-                settings, acp_skill_sourcing=self.acp_skill_sourcing
-            ),
-        )
+        def _prepare_launch() -> tuple[StartConversationRequest, AgentLaunchPlan]:
+            # A raw agent never reads browser availability, so skip the probe.
+            runtime = launch_runtime(
+                settings,
+                acp_skill_sourcing=self.acp_skill_sourcing,
+                browser_available=False if request.agent is not None else None,
+            )
+            return prepare_launch_request(
+                request, cipher=self.cipher, settings=settings, runtime=runtime
+            )
+
+        request, plan = await asyncio.to_thread(_prepare_launch)
         if plan.launched_profile is not None:
             launched_agent_profile = plan.launched_profile
 

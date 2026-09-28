@@ -30,11 +30,12 @@ Resource-specific secret channels:
 
 from __future__ import annotations
 
+import contextlib
 import shlex
 from collections.abc import Container, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -54,7 +55,8 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool.defaults import default_tool_specs
+from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, default_tool_specs
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -62,14 +64,7 @@ if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_profile_store import LLMProfileLoader
-    from openhands.sdk.llm.meta_profile_store import MetaProfile
     from openhands.sdk.utils.cipher import Cipher
-
-
-class MetaProfileLoader(Protocol):
-    """Load-only contract for the meta-profile store (`route_task_to_model`)."""
-
-    def load(self, name: str) -> MetaProfile: ...
 
 
 ACPSkillSourcing = Literal["native", "openhands_managed"]
@@ -117,11 +112,9 @@ class UnresolvedProfileReferences(AgentLaunchError):
         *,
         llm_profile_ref: str | None = None,
         mcp_server_refs: Sequence[str] = (),
-        meta_profile_ref: str | None = None,
     ) -> None:
         self.llm_profile_ref = llm_profile_ref
         self.mcp_server_refs = list(mcp_server_refs)
-        self.meta_profile_ref = meta_profile_ref
         problems = []
         if llm_profile_ref is not None:
             problems.append(f"LLM profile {llm_profile_ref!r} not found")
@@ -129,8 +122,6 @@ class UnresolvedProfileReferences(AgentLaunchError):
             problems.append(
                 "MCP server(s) not configured: " + ", ".join(self.mcp_server_refs)
             )
-        if meta_profile_ref is not None:
-            problems.append(f"Meta-profile {meta_profile_ref!r} not found")
         super().__init__("; ".join(problems))
 
     def to_detail(self) -> dict[str, Any]:
@@ -138,7 +129,6 @@ class UnresolvedProfileReferences(AgentLaunchError):
             **super().to_detail(),
             "dangling_llm_profile_ref": self.llm_profile_ref,
             "dangling_mcp_server_refs": self.mcp_server_refs,
-            "dangling_meta_profile_ref": self.meta_profile_ref,
         }
 
 
@@ -220,7 +210,6 @@ class AgentLaunchCatalog:
     mcp_config: Mapping[str, MCPServer]
     skills: Sequence[Skill] | None
     cipher: Cipher | None = None
-    meta_profile_store: MetaProfileLoader | None = None
     base_settings: AgentSettingsConfig | None = None
 
 
@@ -365,7 +354,6 @@ def _build_openhands_settings(
     mcp_config: dict[str, MCPServer],
     skills: list[Skill],
     base: AgentSettingsConfig | None,
-    meta: _ResolvedMetaProfile,
 ) -> AgentSettingsConfig:
     """Compose ``OpenHandsAgentSettings`` from a profile and its resolved references.
 
@@ -376,9 +364,7 @@ def _build_openhands_settings(
     context_fields: dict[str, Any] = {
         "skills": skills,
         "system_message_suffix": profile.system_message_suffix,
-        "load_project_skills": True,
         "disabled_skills": profile.disabled_skills,
-        "current_datetime": datetime.now().astimezone(),
     }
     fields: dict[str, Any] = {
         "agent": profile.agent,
@@ -392,20 +378,19 @@ def _build_openhands_settings(
         "enable_classify_and_switch_llm_tool": (
             profile.enable_classify_and_switch_llm_tool
         ),
-        "active_meta_profile": meta.active,
+        "active_meta_profile": profile.meta_profile_ref,
     }
-    # Only overwrite the hydrated copies when this launch produced one, so a
-    # caller that hydrated them itself (a cloud control plane, via
-    # ``base_settings``) keeps its own.
-    if meta.profile is not None:
-        fields["meta_profile"] = meta.profile
-    if meta.llms:
-        fields["meta_profile_llms"] = meta.llms
     if isinstance(base, OpenHandsAgentSettings):
+        # Explicit opt-outs are kept; a saved timestamp is refreshed.
+        base_context = base.agent_context
+        if "load_project_skills" not in base_context.model_fields_set:
+            context_fields["load_project_skills"] = True
+        if base_context.current_datetime is not None:
+            context_fields["current_datetime"] = datetime.now().astimezone()
         return base.model_copy(
             update={
                 **fields,
-                "agent_context": base.agent_context.model_copy(update=context_fields),
+                "agent_context": base_context.model_copy(update=context_fields),
                 "verification": base.verification.model_copy(
                     update=profile.verification.model_dump()
                 ),
@@ -416,7 +401,7 @@ def _build_openhands_settings(
             "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
             "agent_kind": "openhands",
             **fields,
-            "agent_context": AgentContext(**context_fields),
+            "agent_context": AgentContext(**context_fields, load_project_skills=True),
             "verification": profile.verification.model_dump(),
         }
     )
@@ -474,51 +459,13 @@ def _build_acp_settings(
     )
 
 
-@dataclass(frozen=True)
-class _ResolvedMetaProfile:
-    """``meta_profile_ref`` resolved for the launch. ``dangling`` = unresolvable."""
-
-    active: str | None = None
-    profile: MetaProfile | None = None
-    llms: dict[str, LLM] = field(default_factory=dict)
-    dangling: str | None = None
-
-
-def _resolve_meta_profile(
-    profile: OpenHandsAgentProfile, catalog: AgentLaunchCatalog
-) -> _ResolvedMetaProfile:
-    """Resolve ``meta_profile_ref`` into the meta-profile and the LLMs it routes to.
-
-    The routing tool reads the store by name, so the hydrated copy is what lets a
-    runtime that has no store on disk — a conversation container, a cloud sandbox
-    — route at all. An inert ref (tool disabled) is not resolved, so it cannot
-    fail a launch.
-    """
-    ref = profile.meta_profile_ref
-    if ref is None or not profile.enable_classify_and_switch_llm_tool:
-        return _ResolvedMetaProfile()
-    if catalog.meta_profile_store is None:
-        return _ResolvedMetaProfile(active=ref)
-    try:
-        meta = catalog.meta_profile_store.load(ref)
-    except FileNotFoundError:
-        return _ResolvedMetaProfile(dangling=ref)
-    # A target the LLM store cannot resolve is left out: the tool reports it when
-    # routing picks that class, rather than failing every launch.
-    names = [meta.classifier_model, *(cls.model for cls in meta.classes)]
-    llms = {}
-    for name in names:
-        llm = _load_llm(catalog, name)
-        if llm is not None:
-            llms[name] = llm
-    return _ResolvedMetaProfile(active=ref, profile=meta, llms=llms)
-
-
 def _load_llm(catalog: AgentLaunchCatalog, name: str) -> LLM | None:
     try:
         return catalog.llm_store.load(name, cipher=catalog.cipher)
     except FileNotFoundError:
         return None
+    except Exception as exc:
+        raise AgentLaunchError(f"Could not load LLM profile {name!r}: {exc}") from exc
 
 
 def _resolve_settings(
@@ -539,15 +486,13 @@ def _resolve_settings(
 
     llm_ref = llm_profile_ref or profile.llm_profile_ref
     llm = _load_llm(catalog, llm_ref)
-    meta = _resolve_meta_profile(profile, catalog)
-    if llm is None or dangling_mcp or meta.dangling is not None:
+    if llm is None or dangling_mcp:
         raise UnresolvedProfileReferences(
             llm_profile_ref=llm_ref if llm is None else None,
             mcp_server_refs=dangling_mcp,
-            meta_profile_ref=meta.dangling,
         )
     return _build_openhands_settings(
-        profile, llm, mcp_config, skills, catalog.base_settings, meta
+        profile, llm, mcp_config, skills, catalog.base_settings
     )
 
 
@@ -612,10 +557,9 @@ def _finish_settings(
         )
     tools = settings.tools
     if tools is None:
-        tools = default_tool_specs(
-            enable_sub_agents=settings.enable_sub_agents,
-            enable_browser=runtime.browser_available,
-        )
+        tools = default_tool_specs(enable_sub_agents=settings.enable_sub_agents)
+        if runtime.browser_available:
+            tools.append(Tool(name=BROWSER_TOOL_NAME))
     llm = settings.llm
     if runtime.stream:
         llm = llm.model_copy(update={"stream": True})
@@ -736,8 +680,6 @@ _AGENT_SETTINGS_PROFILE_NAME = "agent_settings"
 
 def agent_settings_launch_source(
     settings: AgentSettingsConfig,
-    *,
-    meta_profile_store: MetaProfileLoader | None = None,
 ) -> tuple[OpenHandsAgentProfile | ACPAgentProfile, AgentLaunchCatalog]:
     """Convert a deprecated ``agent_settings`` launch into an inline profile.
 
@@ -756,7 +698,6 @@ def agent_settings_launch_source(
         llm_store=_FixedLLMLoader(_AGENT_SETTINGS_PROFILE_NAME, settings.llm),
         mcp_config=settings.mcp_config,
         skills=list(context.skills) if context is not None else [],
-        meta_profile_store=meta_profile_store,
         base_settings=settings,
     )
     return profile, catalog
@@ -769,7 +710,6 @@ def resolve_agent_profile(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
-    meta_profile_store: MetaProfileLoader | None = None,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
 
@@ -786,7 +726,6 @@ def resolve_agent_profile(
         mcp_config=mcp_config,
         skills=available_skills,
         cipher=cipher,
-        meta_profile_store=meta_profile_store,
     )
     runtime = AgentLaunchRuntime(acp_skill_sourcing="openhands_managed")
     try:
@@ -806,7 +745,6 @@ def resolve_agent_profile_dry_run(
     cipher: Cipher | None = None,
     runtime: AgentLaunchRuntime | None = None,
     additions: AgentLaunchAdditions | None = None,
-    meta_profile_store: MetaProfileLoader | None = None,
 ) -> AgentProfileDiagnostics:
     """Report what :func:`prepare_agent_launch` would build, without raising.
 
@@ -819,7 +757,6 @@ def resolve_agent_profile_dry_run(
         mcp_config=mcp_config,
         skills=available_skills,
         cipher=cipher,
-        meta_profile_store=meta_profile_store,
     )
     _, resolved_mcp, dangling_mcp = _compute_mcp_filter(
         mcp_config, profile.mcp_server_refs
@@ -832,20 +769,11 @@ def resolve_agent_profile_dry_run(
         secret_refs=profile.secret_refs,
         resolved_skills=[s.name for s in _launch_skills(profile, catalog, runtime)],
     )
-
+    llm_ref = None
     if isinstance(profile, OpenHandsAgentProfile):
         diagnostics.disabled_skills = profile.disabled_skills
         llm_ref = (additions and additions.llm_profile_ref) or profile.llm_profile_ref
         diagnostics.llm_profile_ref = llm_ref
-        try:
-            llm = _load_llm(catalog, llm_ref)
-        except Exception as e:
-            # The store can raise lock timeouts or validation errors; keep the
-            # preview total.
-            diagnostics.errors.append(f"Could not load LLM profile {llm_ref!r}: {e}")
-        else:
-            diagnostics.llm_profile_resolved = llm is not None
-            diagnostics.llm_api_key_set = llm is not None and _api_key_set(llm)
     else:
         (
             diagnostics.acp_api_key_secret_name,
@@ -853,30 +781,40 @@ def resolve_agent_profile_dry_run(
             diagnostics.acp_file_secret_names,
         ) = _acp_credential_channels(profile.acp_server)
 
-    if not diagnostics.errors:
-        try:
-            plan = prepare_agent_launch(
-                profile,
-                catalog=catalog,
-                runtime=runtime,
-                additions=additions,
-                build_agent=False,
+    try:
+        plan = prepare_agent_launch(
+            profile,
+            catalog=catalog,
+            runtime=runtime,
+            additions=additions,
+            build_agent=False,
+        )
+    except UnresolvedProfileReferences as e:
+        if e.mcp_server_refs:
+            diagnostics.errors.append(
+                "MCP server(s) not configured: " + ", ".join(e.mcp_server_refs)
             )
-        except UnresolvedProfileReferences as e:
-            if e.mcp_server_refs:
-                diagnostics.errors.append(
-                    "MCP server(s) not configured: " + ", ".join(e.mcp_server_refs)
-                )
-            if e.llm_profile_ref is not None:
-                diagnostics.errors.append(
-                    f"LLM profile {e.llm_profile_ref!r} not found"
-                )
-        except Exception as e:
-            diagnostics.errors.append(f"Failed to build agent settings: {e}")
-        else:
-            if plan.settings is not None:
-                # No expose context => secrets redacted (mcp env/headers, api_key).
-                diagnostics.resolved_settings = plan.settings.model_dump(mode="json")
+        if e.llm_profile_ref is not None:
+            diagnostics.errors.append(f"LLM profile {e.llm_profile_ref!r} not found")
+        elif llm_ref is not None:
+            diagnostics.llm_profile_resolved = True
+            with contextlib.suppress(AgentLaunchError):
+                llm = _load_llm(catalog, llm_ref)
+                diagnostics.llm_api_key_set = llm is not None and _api_key_set(llm)
+    except AgentLaunchError as e:
+        diagnostics.errors.append(str(e))
+    except Exception as e:
+        # The store can raise lock timeouts or validation errors; keep the
+        # preview total.
+        diagnostics.errors.append(f"Failed to build agent settings: {e}")
+    else:
+        settings = plan.settings
+        if isinstance(settings, OpenHandsAgentSettings):
+            diagnostics.llm_profile_resolved = True
+            diagnostics.llm_api_key_set = _api_key_set(settings.llm)
+        if settings is not None:
+            # No expose context => secrets redacted (mcp env/headers, api_key).
+            diagnostics.resolved_settings = settings.model_dump(mode="json")
 
     diagnostics.valid = not diagnostics.errors
     return diagnostics
