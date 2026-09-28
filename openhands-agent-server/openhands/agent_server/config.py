@@ -348,6 +348,10 @@ class Config(BaseModel):
     )
     conversation_runtime: Literal["local", "docker"] = "local"
     conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    conversation_image_has_browser: bool = Field(
+        default=True,
+        description="Whether conversation_image ships the browser (chromium) stack.",
+    )
     conversation_container_memory: str | None = "4g"
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)

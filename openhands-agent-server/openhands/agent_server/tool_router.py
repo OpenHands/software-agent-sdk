@@ -3,6 +3,8 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from openhands.agent_server.profile_launch import container_browser_available
+from openhands.sdk.tool import BROWSER_TOOL_NAME
 from openhands.sdk.tool.registry import (
     ToolCatalogEntry,
     list_registered_tools,
@@ -44,7 +46,19 @@ async def get_tool_catalog(request: Request) -> ToolCatalogResponse:
     """
     entries = list_tool_catalog()
     config = getattr(request.app.state, "config", None)
-    if config is not None and config.conversation_runtime == "docker":
-        # This process cannot probe the conversation containers.
-        entries = [entry.model_copy(update={"usable": True}) for entry in entries]
+    container_browser = (
+        container_browser_available(config) if config is not None else None
+    )
+    if container_browser is not None:
+        # Usability probed in this process says nothing about the containers.
+        entries = [
+            entry.model_copy(
+                update={
+                    "usable": container_browser
+                    if entry.name == BROWSER_TOOL_NAME
+                    else True
+                }
+            )
+            for entry in entries
+        ]
     return ToolCatalogResponse(tools=entries)

@@ -90,9 +90,32 @@ def test_docker_runtime_catalog_does_not_report_host_usability(monkeypatch):
         "openhands.sdk.tool.registry._check_tool_usable", lambda name, checker: False
     )
     app = FastAPI()
-    app.state.config = SimpleNamespace(conversation_runtime="docker")
+    app.state.config = SimpleNamespace(
+        conversation_runtime="docker", conversation_image_has_browser=True
+    )
     app.include_router(tool_router, prefix="/api")
 
     entries = TestClient(app).get("/api/tools/catalog").json()["tools"]
 
     assert entries and all(entry["usable"] for entry in entries)
+
+
+def test_docker_catalog_follows_the_image_browser_setting(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from openhands.agent_server.tool_router import tool_router
+
+    app = FastAPI()
+    app.state.config = SimpleNamespace(
+        conversation_runtime="docker", conversation_image_has_browser=False
+    )
+    app.include_router(tool_router, prefix="/api")
+
+    entries = TestClient(app).get("/api/tools/catalog").json()["tools"]
+    usable = {entry["name"]: entry["usable"] for entry in entries}
+
+    assert usable["browser_tool_set"] is False
+    assert usable["terminal"] is True

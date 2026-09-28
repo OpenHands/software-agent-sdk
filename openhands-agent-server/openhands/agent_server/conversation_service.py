@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -355,7 +355,7 @@ def _resolve_agent_from_profile(
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
-    conversation_runtime: Literal["local", "docker"] = "local",
+    container_browser: bool | None = None,
 ) -> "tuple[AgentBase, LaunchedAgentProfile, set[str] | None]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -403,7 +403,7 @@ def _resolve_agent_from_profile(
         ) from exc
 
     inputs = gather_profile_launch_inputs(
-        profile, acp_skill_sourcing, conversation_runtime
+        profile, acp_skill_sourcing, container_browser
     )
     # Fail loudly rather than silently launching a zero-skill agent.
     if inputs.skill_discovery_error is not None:

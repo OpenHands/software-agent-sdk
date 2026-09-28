@@ -1,8 +1,8 @@
 """Deployment inputs an agent profile is resolved against."""
 
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
-from openhands.agent_server.config import ACPSkillSourcing
+from openhands.agent_server.config import ACPSkillSourcing, Config
 from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.skills import Skill
@@ -15,10 +15,17 @@ class ProfileLaunchInputs(NamedTuple):
     browser_available: bool
 
 
+def container_browser_available(config: Config) -> bool | None:
+    """Whether conversation containers can run the browser; ``None`` without them."""
+    if config.conversation_runtime == "docker":
+        return config.conversation_image_has_browser
+    return None
+
+
 def gather_profile_launch_inputs(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     acp_skill_sourcing: ACPSkillSourcing,
-    conversation_runtime: Literal["local", "docker"] = "local",
+    container_browser: bool | None = None,
 ) -> ProfileLaunchInputs:
     """Discover the skill catalog and the browser availability for ``profile``."""
     available_skills = None
@@ -31,8 +38,10 @@ def gather_profile_launch_inputs(
     return ProfileLaunchInputs(
         available_skills=available_skills,
         skill_discovery_error=discovery_error,
-        # This process cannot see a container's chromium; there the browser
-        # tool set degrades to no tools if it is missing.
         browser_available=profile.agent_kind == "openhands"
-        and (conversation_runtime == "docker" or is_tool_usable(BROWSER_TOOL_NAME)),
+        and (
+            container_browser
+            if container_browser is not None
+            else is_tool_usable(BROWSER_TOOL_NAME)
+        ),
     )

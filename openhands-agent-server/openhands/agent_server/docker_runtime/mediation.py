@@ -15,6 +15,7 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.docker_runtime.provisioning import RuntimeIdentity
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.profile_launch import container_browser_available
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -80,7 +81,7 @@ async def prepare_start(
             config.cipher,
             settings.agent_settings.mcp_config,
             acp_skill_sourcing=config.acp_skill_sourcing,
-            conversation_runtime=config.conversation_runtime,
+            container_browser=container_browser_available(config),
         )
         secrets = request.secrets
         if allowed is not None:

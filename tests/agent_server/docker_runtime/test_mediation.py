@@ -167,3 +167,39 @@ async def test_default_tools_profile_gets_browser_without_a_host_probe(
     prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
 
     assert "browser_tool_set" in [tool.name for tool in prepared.agent.tools]
+
+
+async def test_default_tools_profile_skips_browser_when_the_image_lacks_it(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": False,
+        }
+    )
+    get_llm_profile_store().save(
+        "docker-test-model",
+        LLM(model="test", api_key=SecretStr("model-key")),
+        include_secrets=True,
+        cipher=runtime_config.cipher,
+    )
+    profile = OpenHandsAgentProfile(
+        name="docker-default-tools", llm_profile_ref="docker-test-model"
+    )
+    get_agent_profile_store().save(profile)
+    monkeypatch.setattr(
+        "openhands.agent_server.profile_launch.discover_profile_skills",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.profile_launch.is_tool_usable", lambda name: True
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=profile.id,
+    )
+
+    prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
+
+    assert "browser_tool_set" not in [tool.name for tool in prepared.agent.tools]

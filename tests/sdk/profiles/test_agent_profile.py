@@ -456,6 +456,62 @@ def test_v2_sub_agents_switch_leaves_acp_profiles_alone() -> None:
     assert not hasattr(profile, "tools")
 
 
+@pytest.mark.parametrize("schema_version", [AGENT_PROFILE_SCHEMA_VERSION, None])
+def test_current_payload_with_retired_switches_folds_them(schema_version) -> None:
+    payload = {
+        "name": "oh",
+        "llm_profile_ref": "d",
+        "tools": None,
+        "enable_sub_agents": True,
+        "enable_switch_llm_tool": True,
+    }
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+
+    profile = validate_agent_profile(payload)
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "task_tool_set",
+        "switch_llm",
+    ]
+
+
+def test_current_payload_turning_switch_llm_off_removes_it() -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+            "name": "oh",
+            "llm_profile_ref": "d",
+            "tools": [{"name": "glob"}, {"name": "switch_llm"}],
+            "enable_sub_agents": False,
+            "enable_switch_llm_tool": False,
+        }
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == ["glob"]
+
+
+def test_current_payload_with_default_switches_keeps_tools_unset() -> None:
+    profile = validate_agent_profile(
+        {
+            "schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+            "name": "oh",
+            "llm_profile_ref": "d",
+            "enable_sub_agents": False,
+            "enable_switch_llm_tool": True,
+        }
+    )
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is None
+
+
 def test_rejects_newer_schema_version() -> None:
     with pytest.raises(ValueError, match="newer than supported"):
         validate_agent_profile(

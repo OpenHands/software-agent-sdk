@@ -16,7 +16,7 @@ import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, PlainValidator, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
@@ -29,7 +29,10 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.agent_server.profile_launch import gather_profile_launch_inputs
+from openhands.agent_server.profile_launch import (
+    container_browser_available,
+    gather_profile_launch_inputs,
+)
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
@@ -39,6 +42,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
     ACPAgentProfile,
+    AgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
     OpenHandsAgentProfile,
@@ -102,8 +106,20 @@ class ActivateAgentProfileResponse(BaseModel):
     agent_settings_applied: bool = False
 
 
+def _raw_profile_payload(value: Any) -> dict[str, Any] | None:
+    if value is not None and not isinstance(value, dict):
+        raise ValueError("profile must be an object")
+    return value
+
+
 class MaterializeAgentProfileRequest(BaseModel):
-    profile: dict[str, Any] | None = Field(
+    # Kept raw so the draft goes through the same migrations as a save.
+    profile: Annotated[
+        dict[str, Any] | None,
+        PlainValidator(
+            _raw_profile_payload, json_schema_input_type=AgentProfile | None
+        ),
+    ] = Field(
         default=None,
         description=(
             "Draft profile to evaluate instead of the stored one. The path name "
@@ -563,7 +579,7 @@ async def materialize_agent_profile(
         gather_profile_launch_inputs,
         profile,
         config.acp_skill_sourcing,
-        config.conversation_runtime,
+        container_browser_available(config),
     )
     if inputs.skill_discovery_error is not None:
         logger.warning(

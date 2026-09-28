@@ -35,7 +35,7 @@ _REG: dict[str, Resolver] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 _TOOL_CLASSES: dict[str, type[ToolDefinition]] = {}
-_CATALOG_NAMES: set[str] | None = None
+_SEALED_CATALOG: dict[str, tuple[type[ToolDefinition], UsabilityChecker]] | None = None
 
 
 class ToolCatalogEntry(BaseModel):
@@ -219,9 +219,11 @@ def list_usable_tools() -> list[str]:
 
 def seal_tool_catalog() -> None:
     """Freeze the catalog to the tools registered so far."""
-    global _CATALOG_NAMES
+    global _SEALED_CATALOG
     with _LOCK:
-        _CATALOG_NAMES = set(_REG)
+        _SEALED_CATALOG = {
+            name: (_TOOL_CLASSES[name], _USABILITY_REG[name]) for name in _REG
+        }
 
 
 def list_tool_catalog() -> list[ToolCatalogEntry]:
@@ -234,22 +236,22 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         for spec in resolve_tool_specs(None, enable_browser=True)
     }
     with _LOCK:
-        names = [
-            name for name in _REG if _CATALOG_NAMES is None or name in _CATALOG_NAMES
-        ]
-        tool_classes = dict(_TOOL_CLASSES)
-        usability_checkers = dict(_USABILITY_REG)
+        registered = (
+            dict(_SEALED_CATALOG)
+            if _SEALED_CATALOG is not None
+            else {name: (_TOOL_CLASSES[name], _USABILITY_REG[name]) for name in _REG}
+        )
 
     # A built-in registered under its class name is offered under its tool name.
     entries = [
         ToolCatalogEntry(
             name=canonical_tool_name(name),
-            user_selectable=tool_classes[name].user_selectable,
-            usable=_check_tool_usable(name, usability_checkers.get(name, lambda: True)),
-            description=tool_classes[name].catalog_description,
+            user_selectable=tool_class.user_selectable,
+            usable=_check_tool_usable(name, usability_checker),
+            description=tool_class.catalog_description,
             in_default_set=canonical_tool_name(name) in default_set,
         )
-        for name in names
+        for name, (tool_class, usability_checker) in registered.items()
     ]
     listed = {entry.name for entry in entries}
     entries.extend(

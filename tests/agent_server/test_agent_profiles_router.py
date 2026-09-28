@@ -1307,3 +1307,21 @@ def test_materialize_rejects_a_draft_newer_than_save_accepts(client_with_llm_sto
 
     assert previewed.status_code == 422
     assert saved.status_code == 422
+
+
+def test_save_accepts_a_current_profile_carrying_retired_switches(client):
+    response = client.post(
+        "/api/agent-profiles/legacy-client",
+        json={
+            "schema_version": 3,
+            "agent_kind": "openhands",
+            "llm_profile_ref": "default",
+            "enable_sub_agents": False,
+            "enable_switch_llm_tool": True,
+        },
+    )
+
+    assert response.status_code == 201
+    prof = client.get("/api/agent-profiles/legacy-client").json()["profile"]
+    assert prof["tools"] is None
+    assert "enable_sub_agents" not in prof

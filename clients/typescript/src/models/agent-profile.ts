@@ -28,6 +28,12 @@ export interface ProfileVerificationSettings {
   critic_model_name: string | null;
 }
 
+/** A tool selected by name, with optional `create()` params. */
+export interface ProfileToolSpec {
+  name: string;
+  params?: Record<string, unknown>;
+}
+
 // ── Profile variants ─────────────────────────────────────────────────────────
 
 interface AgentProfileBase {
@@ -62,7 +68,12 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   system_message_suffix: string | null;
   condenser: unknown;
   verification: ProfileVerificationSettings;
-  enable_sub_agents: boolean;
+  /** Tools to launch with; `null` = the server's standard set. */
+  tools: ProfileToolSpec[] | null;
+  /** @deprecated Select `task_tool_set` in `tools` instead. */
+  enable_sub_agents?: boolean;
+  /** @deprecated Select `switch_llm` in `tools` instead. */
+  enable_switch_llm_tool?: boolean;
   tool_concurrency_limit: number;
 }
 

@@ -38,6 +38,7 @@ from openhands.sdk.tool.defaults import (
     SWITCH_LLM_TOOL_NAME,
     canonical_tool_name,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 3
@@ -368,12 +369,17 @@ def fold_tool_switches_into_tools(
     if tools is None and not enable_sub_agents and enable_switch_llm_tool:
         return None
     # "The standard set plus/minus one tool" is not expressible, so pin it.
-    # Browser resolves to nothing where the runtime cannot run it.
     entries = (
         [_as_tool(tool) for tool in tools]
         if tools is not None
         else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
     )
+    if not enable_switch_llm_tool:
+        entries = [
+            entry
+            for entry in entries
+            if canonical_tool_name(entry.name) != SWITCH_LLM_TOOL_NAME
+        ]
     for enabled, name in (
         # `enable_sub_agents` only ever applied to the default set.
         (enable_sub_agents and tools is None, SUB_AGENT_TOOL_NAME),
@@ -389,8 +395,10 @@ def _as_tool(tool: dict[str, Any] | Tool) -> Tool:
     return tool if isinstance(tool, Tool) else Tool.model_validate(tool)
 
 
-def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    """Fold the retired tool switches into ``tools``."""
+_RETIRED_TOOL_SWITCHES = ("enable_sub_agents", "enable_switch_llm_tool")
+
+
+def _fold_retired_tool_switches(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     sub_agents = migrated.pop("enable_sub_agents", False) is True
     switch_llm = migrated.pop("enable_switch_llm_tool", True) is not False
@@ -401,6 +409,12 @@ def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
             enable_sub_agents=sub_agents,
             enable_switch_llm_tool=switch_llm,
         )
+    return migrated
+
+
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    migrated = _fold_retired_tool_switches(payload)
     migrated["schema_version"] = 3
     return migrated
 
@@ -454,6 +468,14 @@ def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
             )
         version = next_version
 
+    if any(key in migrated for key in _RETIRED_TOOL_SWITCHES):
+        warn_deprecated(
+            "AgentProfile.enable_sub_agents and AgentProfile.enable_switch_llm_tool",
+            deprecated_in="1.50.0",
+            removed_in="1.55.0",
+            details="Select tools with `tools` instead.",
+        )
+        migrated = _fold_retired_tool_switches(migrated)
     return migrated
 
 
