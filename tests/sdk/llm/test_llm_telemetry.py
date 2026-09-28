@@ -12,7 +12,7 @@ from litellm.types.llms.openai import (
     ResponseAPIUsage,
     ResponsesAPIResponse,
 )
-from litellm.types.utils import ModelResponse, Usage
+from litellm.types.utils import ModelResponse, PromptTokensDetailsWrapper, Usage
 from pydantic import BaseModel, Field, ValidationError
 
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -250,6 +250,34 @@ class TestUsageNormalization:
         )
 
         assert snapshot == UsageSnapshot(prompt_tokens=100, completion_tokens=50)
+
+    def test_chat_completions_shape_without_cache_creation_field(self):
+        """Providers without prompt caching omit the cache-write field entirely.
+
+        LiteLLM's ``PromptTokensDetailsWrapper`` registers optional fields in
+        ``model_fields_set`` and then deletes the unset attributes, so a
+        membership check alone is not enough -- the read has to tolerate the
+        attribute being absent.
+        """
+        details = PromptTokensDetailsWrapper(cached_tokens=25)
+        details.model_fields_set.add("cache_creation_tokens")
+        details.__dict__.pop("cache_creation_tokens", None)
+
+        snapshot = normalize_usage(
+            Usage.model_construct(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+                prompt_tokens_details=details,
+            )
+        )
+
+        assert snapshot == UsageSnapshot(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=25,
+            cache_write_tokens=0,
+        )
 
     def test_responses_api_shape_is_normalized(self):
         snapshot = normalize_usage(

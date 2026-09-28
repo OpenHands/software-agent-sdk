@@ -57,15 +57,16 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
     if isinstance(usage, Usage):
         prompt_details = usage.prompt_tokens_details
         completion_details = usage.completion_tokens_details
-        # ``cache_creation_tokens`` defaults to ``None``, so presence in
-        # ``model_fields_set`` is what distinguishes "provider reported a cache
-        # write" from "provider said nothing about cache writes".
         cache_write = 0
-        if (
-            prompt_details is not None
-            and "cache_creation_tokens" in prompt_details.model_fields_set
-        ):
-            cache_write = int(prompt_details.cache_creation_tokens or 0)
+        if prompt_details is not None:
+            # LiteLLM deletes optional wrapper attributes the provider did not
+            # report, and providers without prompt caching have no
+            # ``cache_creation_tokens`` at all, so the field cannot be assumed
+            # present.
+            try:
+                cache_write = int(prompt_details.cache_creation_tokens or 0)
+            except AttributeError:
+                cache_write = 0
         return UsageSnapshot(
             prompt_tokens=int(usage.prompt_tokens or 0),
             completion_tokens=int(usage.completion_tokens or 0),
