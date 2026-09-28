@@ -60,6 +60,12 @@ Code should satisfy the repository review checkpoints before the PR is opened:
   cleanup in every affected production artifact, including the packaged Agent
   Server, Docker images, and relevant host platforms. A mocked unit test alone
   does not validate a packaging or installation change.
+- Every LLM request built in this repo must place a `system` message before the
+  first `user` message (see "LLM message construction invariant" in
+  `DEVELOPMENT.md`). This covers the agent loop and all standalone calls
+  (condensers, goal judge, profile pre-flight ping, security analyzers, etc.).
+  The first message role must be `system`, or there must be a documented
+  exception (ACP agents, subscription/Codex transport).
 
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.

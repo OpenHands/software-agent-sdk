@@ -516,6 +516,47 @@ def test_force_string_serializer_full_model_names():
 
 
 @pytest.mark.parametrize(
+    "model,expected_key",
+    [
+        # OpenAI models accept the prompt_cache_key param
+        ("gpt-4o", True),
+        ("openai/gpt-5.2", True),
+        # Anthropic/Gemini reject it with UnsupportedParamsError
+        ("claude-opus-4-5-20251101", False),
+        ("claude-sonnet-4-5-20250929", False),
+        ("gemini/gemini-2.5-pro", False),
+        # Unresolved alias -> safe default False (call still succeeds)
+        ("prod/my-unknown-alias", False),
+    ],
+)
+def test_prompt_cache_key_support(model, expected_key):
+    """supports_prompt_cache_key tracks litellm's supported_openai_params.
+
+    Distinct from supports_prompt_cache (Anthropic cache_control breakpoints):
+    Claude models support cache_control but must NOT receive prompt_cache_key.
+    """
+    features = get_features(model)
+    assert features.supports_prompt_cache_key is expected_key
+
+
+def test_prompt_cache_key_override():
+    """Capability override can force prompt_cache_key on/off."""
+    assert (
+        get_features(
+            "prod/my-openai-alias",
+            overrides={"supports_prompt_cache_key": True},
+        ).supports_prompt_cache_key
+        is True
+    )
+    assert (
+        get_features(
+            "gpt-4o", overrides={"supports_prompt_cache_key": False}
+        ).supports_prompt_cache_key
+        is False
+    )
+
+
+@pytest.mark.parametrize(
     "model,expected_retention",
     [
         ("gpt-5.1", True),
