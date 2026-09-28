@@ -325,13 +325,31 @@ jobs:
                   NPM_MAX_ATTEMPTS=60
                   NPM_SLEEP_SECONDS=20
                   ATTEMPT=1
+
+                  # Extract the client package's npm integrity defensively.
+                  # A 404 returns a JSON string ("version not found: X.Y.Z") and a
+                  # transient 5xx/proxy error may return an HTML page; both would
+                  # otherwise raise under `set -e` and abort the step. On any
+                  # non-dict or undecodable body, emit nothing so the loop retries
+                  # instead of crashing. Defined via a flush-left heredoc (the
+                  # same form the version-edit block below uses) so YAML's block
+                  # indent is stripped to valid, unindented Python.
+                  cat > /tmp/npm_integrity.py <<'PY'
+                  import json
+                  import sys
+
+                  try:
+                      d = json.load(sys.stdin)
+                  except Exception:
+                      sys.exit(0)
+                  if isinstance(d, dict) and "dist" in d and "integrity" in d["dist"]:
+                      print(d["dist"]["integrity"])
+                  PY
+
                   while [ "$ATTEMPT" -le "$NPM_MAX_ATTEMPTS" ]; do
-                    INTEGRITY=$(curl -sS "https://registry.npmjs.org/@openhands/typescript-client/$VERSION" \
-                      | python3 -c 'import json,sys
-                    d = json.load(sys.stdin)
-                    if isinstance(d, dict) and "dist" in d and "integrity" in d["dist"]:
-                        print(d["dist"]["integrity"])
-                    ')
+                    # --max-time bounds a hung connection so it can't pin the loop.
+                    INTEGRITY=$(curl -sS --max-time 20 "https://registry.npmjs.org/@openhands/typescript-client/$VERSION" \
+                      | python3 /tmp/npm_integrity.py)
                     if [ -n "$INTEGRITY" ]; then
                       echo "✅ @openhands/typescript-client@$VERSION integrity: $INTEGRITY"
                       break
