@@ -580,6 +580,20 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         agent=agent, workspace=workspace
     )  # RemoteConversation
 
+    # Lifecycle inspection/reprovision is available without a Docker backend.
+    runtime_url = f"{server_env['host']}/api/conversations/{conv.id}/runtime"
+    with httpx.Client() as client:
+        before = client.get(runtime_url)
+        before.raise_for_status()
+        assert before.json() == {
+            "runtime_status": "available",
+            "can_resume": True,
+            "runtime_error": None,
+        }
+        after = client.post(runtime_url + "/reprovision")
+        after.raise_for_status()
+        assert after.json() == before.json()
+
     # Send a message and run
     conv.send_message("Say hello")
     conv.run()

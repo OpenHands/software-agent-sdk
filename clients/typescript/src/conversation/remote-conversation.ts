@@ -83,7 +83,7 @@ export interface RemoteConversationOptions extends BaseConversationOptions {
  */
 export class RemoteConversation implements IConversation {
   public readonly agent: AgentBase;
-  public readonly workspace: RemoteWorkspace;
+  private _workspace: RemoteWorkspace;
   private _conversationId?: string;
   private _state?: RemoteState;
   private client: HttpClient;
@@ -99,7 +99,7 @@ export class RemoteConversation implements IConversation {
     options: RemoteConversationOptions = {}
   ) {
     this.agent = agent;
-    this.workspace = workspace;
+    this._workspace = workspace;
     this.callback = options.callback;
     this.onError = options.onError;
     this._conversationId = options.conversationId;
@@ -111,6 +111,10 @@ export class RemoteConversation implements IConversation {
       apiKey: workspace.apiKey,
       timeout: 60000,
     });
+  }
+
+  get workspace(): RemoteWorkspace {
+    return this._workspace;
   }
 
   get id(): ConversationID {
@@ -142,8 +146,11 @@ export class RemoteConversation implements IConversation {
     } = {}
   ): Promise<void> {
     if (this._conversationId) {
-      // Existing conversation - verify it exists
-      await this.client.get<ConversationInfo>(`/api/conversations/${this._conversationId}`);
+      // Existing conversation - verify it exists and use its actual workspace.
+      const { data } = await this.client.get<ConversationInfo>(
+        `/api/conversations/${this._conversationId}`
+      );
+      this.bindConversationWorkspace(data);
       return;
     }
 
@@ -173,6 +180,26 @@ export class RemoteConversation implements IConversation {
     const response = await this.client.post<ConversationInfo>('/api/conversations', request);
     const conversationInfo = response.data;
     this._conversationId = conversationInfo.id;
+    this.bindConversationWorkspace(conversationInfo);
+  }
+
+  private getConversationWorkingDir(conversationInfo: ConversationInfo): string {
+    const workspace = conversationInfo.workspace;
+    return workspace &&
+      typeof workspace === 'object' &&
+      'working_dir' in workspace &&
+      typeof workspace.working_dir === 'string'
+      ? workspace.working_dir
+      : this.workspace.workingDir;
+  }
+
+  private bindConversationWorkspace(conversationInfo: ConversationInfo): void {
+    this._workspace = new RemoteWorkspace({
+      host: this.workspace.host,
+      workingDir: this.getConversationWorkingDir(conversationInfo),
+      apiKey: this.workspace.apiKey,
+      conversationId: conversationInfo.id,
+    });
   }
 
   /**
@@ -360,8 +387,9 @@ export class RemoteConversation implements IConversation {
 
     const forkWorkspace = new RemoteWorkspace({
       host: this.workspace.host,
-      workingDir: this.workspace.workingDir,
+      workingDir: this.getConversationWorkingDir(response.data),
       apiKey: this.workspace.apiKey,
+      conversationId: response.data.id,
     });
 
     return new RemoteConversation(response.data.agent, forkWorkspace, {
