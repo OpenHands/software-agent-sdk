@@ -155,8 +155,6 @@ class SwitchLLMTool(ToolDefinition[SwitchLLMAction, SwitchLLMObservation]):
         "Let the agent switch the conversation to another saved LLM profile."
     )
 
-    user_selectable: ClassVar[bool] = True
-
     @classmethod
     def create(
         cls,

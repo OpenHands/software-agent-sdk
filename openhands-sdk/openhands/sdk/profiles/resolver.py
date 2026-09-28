@@ -233,13 +233,11 @@ def _acp_credential_channels(
 def _profile_tool_specs(
     tools: list[Tool] | None, *, browser_available: bool
 ) -> list[Tool]:
-    specs: list[Tool] = []
-    for spec in resolve_tool_specs(tools, enable_browser=browser_available):
-        name = canonical_tool_name(spec.name)
-        if name == BROWSER_TOOL_NAME and not browser_available:
-            continue
-        specs.append(spec)
-    return specs
+    return [
+        spec
+        for spec in resolve_tool_specs(tools, enable_browser=browser_available)
+        if browser_available or canonical_tool_name(spec.name) != BROWSER_TOOL_NAME
+    ]
 
 
 def _build_openhands_settings(

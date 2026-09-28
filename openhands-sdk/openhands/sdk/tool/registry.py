@@ -212,13 +212,15 @@ def list_usable_tools() -> list[str]:
     ]
 
 
+def _registered_catalog() -> dict[str, tuple[type[ToolDefinition], UsabilityChecker]]:
+    return {name: (_TOOL_CLASSES[name], _USABILITY_REG[name]) for name in _REG}
+
+
 def seal_tool_catalog() -> None:
     """Freeze the catalog to the tools registered so far."""
     global _SEALED_CATALOG
     with _LOCK:
-        _SEALED_CATALOG = {
-            name: (_TOOL_CLASSES[name], _USABILITY_REG[name]) for name in _REG
-        }
+        _SEALED_CATALOG = _registered_catalog()
 
 
 def unseal_tool_catalog() -> None:
@@ -241,35 +243,30 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         registered = (
             dict(_SEALED_CATALOG)
             if _SEALED_CATALOG is not None
-            else {name: (_TOOL_CLASSES[name], _USABILITY_REG[name]) for name in _REG}
+            else _registered_catalog()
         )
-
     # A built-in registered under its class name is offered under its tool name.
-    entries = [
-        ToolCatalogEntry(
-            name=canonical_tool_name(name),
-            user_selectable=tool_class.user_selectable,
-            usable=_check_tool_usable(name, usability_checker),
-            description=tool_class.catalog_description,
-            in_default_set=canonical_tool_name(name) in default_set,
-        )
+    offered = {
+        canonical_tool_name(name): (name, tool_class, usability_checker)
         for name, (tool_class, usability_checker) in registered.items()
-    ]
-    listed = {entry.name for entry in entries}
-    entries.extend(
+    }
+    for tool_class in BUILT_IN_TOOL_CLASSES.values():
+        if tool_class.user_selectable and tool_class.name not in offered:
+            offered[tool_class.name] = (
+                tool_class.name,
+                tool_class,
+                _usability_from_subclass(tool_class),
+            )
+    return [
         ToolCatalogEntry(
-            name=tool_class.name,
+            name=name,
             user_selectable=tool_class.user_selectable,
-            usable=_check_tool_usable(
-                tool_class.name, _usability_from_subclass(tool_class)
-            ),
+            usable=_check_tool_usable(registered_name, usability_checker),
             description=tool_class.catalog_description,
-            in_default_set=tool_class.name in default_set,
+            in_default_set=name in default_set,
         )
-        for tool_class in BUILT_IN_TOOL_CLASSES.values()
-        if tool_class.user_selectable and tool_class.name not in listed
-    )
-    return entries
+        for name, (registered_name, tool_class, usability_checker) in offered.items()
+    ]
 
 
 def get_tool_module_qualnames() -> dict[str, str]:
