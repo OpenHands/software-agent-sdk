@@ -14,6 +14,15 @@ export type ConversationLifecycleFields = Pick<
   'archived_at' | 'runtime_info' | 'execution_status'
 >;
 
+/**
+ * Runtime semantics for a local (in-process) conversation, mirroring
+ * `ConversationRegistry.runtime_info` on the Agent Server. Used when a response
+ * carries `archived_at` but omits the optional `runtime_info` — e.g. the
+ * `create`/`fork`/`navigate` responses, which return a bare `ConversationInfo`.
+ */
+const LOCAL_RUNTIME_STATUS: ConversationRuntimeStatus = 'available';
+const LOCAL_CAN_RESUME = true;
+
 export interface LegacyCloudConversationLifecycleFields {
   archived_at?: string | null;
   runtime_status?: ConversationRuntimeStatus | null;
@@ -26,16 +35,23 @@ export function normalizeConversationLifecycle(
   conversation: ConversationLifecycleFields
 ): ConversationLifecycle {
   const { archived_at: archivedAt, runtime_info: runtimeInfo } = conversation;
-  if (archivedAt === undefined || runtimeInfo == null) {
+  if (archivedAt === undefined) {
     throw new Error('Conversation response does not include canonical lifecycle fields');
   }
 
+  // `runtime_info` is optional on the public `ConversationInfo`: the catalog
+  // routes add it, but the create/fork/navigate handlers return a bare
+  // `ConversationInfo`. A response that carries `archived_at` but no
+  // `runtime_info` is therefore a perfectly canonical local conversation, not a
+  // pre-contract server, and callers must not need a version check to read it.
+  // Fall back to the local runtime semantics the Agent Server itself reports
+  // (`ConversationRegistry.runtime_info`: always available and resumable).
   return {
     isArchived: archivedAt !== null,
     archivedAt,
-    runtimeStatus: runtimeInfo.runtime_status,
+    runtimeStatus: runtimeInfo?.runtime_status ?? LOCAL_RUNTIME_STATUS,
     executionStatus: conversation.execution_status,
-    canResume: runtimeInfo.can_resume,
+    canResume: runtimeInfo?.can_resume ?? LOCAL_CAN_RESUME,
   };
 }
 

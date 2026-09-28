@@ -65,6 +65,53 @@ describe('normalizeConversationLifecycle', () => {
     });
   });
 
+  it('defaults to local runtime semantics when runtime_info is omitted', () => {
+    // `create`, `fork`, and `navigate` return a bare `ConversationInfo`, so
+    // `runtime_info` is absent even on a fully current Agent Server. Callers
+    // must not need an availability check to read these responses.
+    expect(
+      normalizeConversationLifecycle({
+        archived_at: null,
+        execution_status: ConversationExecutionStatus.FINISHED,
+      })
+    ).toEqual({
+      isArchived: false,
+      archivedAt: null,
+      runtimeStatus: 'available',
+      executionStatus: ConversationExecutionStatus.FINISHED,
+      canResume: true,
+    });
+  });
+
+  it('defaults to local runtime semantics when runtime_info is null', () => {
+    expect(
+      normalizeConversationLifecycle({
+        archived_at: null,
+        runtime_info: null,
+        execution_status: ConversationExecutionStatus.IDLE,
+      })
+    ).toEqual({
+      isArchived: false,
+      archivedAt: null,
+      runtimeStatus: 'available',
+      executionStatus: ConversationExecutionStatus.IDLE,
+      canResume: true,
+    });
+  });
+
+  it('preserves an archived marker on a response without runtime_info', () => {
+    expect(
+      normalizeConversationLifecycle({
+        archived_at: '2026-09-12T15:00:00Z',
+        execution_status: ConversationExecutionStatus.PAUSED,
+      })
+    ).toMatchObject({
+      isArchived: true,
+      archivedAt: '2026-09-12T15:00:00Z',
+      canResume: true,
+    });
+  });
+
   it('rejects responses from servers without the canonical lifecycle contract', () => {
     expect(() =>
       normalizeConversationLifecycle({
