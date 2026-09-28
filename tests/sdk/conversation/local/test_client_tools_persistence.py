@@ -42,7 +42,7 @@ def _wipe_client_tool_globals(names: list[str]) -> None:
     for name in names:
         reg._REG.pop(name, None)
         reg._USABILITY_REG.pop(name, None)
-        reg._MODULE_QUALNAMES.pop(name, None)
+        reg._TOOL_CLASSES.pop(name, None)
 
 
 def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> None:
@@ -106,6 +106,54 @@ def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> N
             assert n in reg.list_registered_tools()
     finally:
         resumed.close()
+
+
+def test_client_tool_named_like_an_unattached_builtin_resumes(
+    tmp_path: Path,
+) -> None:
+    specs = [ClientToolSpec(name="route_task_to_model", description="client")]
+    cid = uuid.uuid4()
+    ws, persist = str(tmp_path / "ws"), str(tmp_path / "persist")
+    Conversation(
+        agent=_make_agent(),
+        workspace=ws,
+        persistence_dir=persist,
+        conversation_id=cid,
+        client_tools=specs,
+        delete_on_close=False,
+    ).close()
+    _wipe_client_tool_globals(["route_task_to_model"])
+
+    resumed = Conversation(
+        agent=_make_agent(),
+        workspace=ws,
+        persistence_dir=persist,
+        conversation_id=cid,
+        delete_on_close=False,
+    )
+    try:
+        assert "route_task_to_model" in {t.name for t in resumed.agent.tools}
+    finally:
+        resumed.close()
+
+
+def test_client_tool_named_like_an_attached_builtin_is_rejected(
+    tmp_path: Path,
+) -> None:
+    convo = Conversation(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=str(tmp_path / "ws"),
+        persistence_dir=str(tmp_path / "persist"),
+        conversation_id=uuid.uuid4(),
+        client_tools=[ClientToolSpec(name="finish", description="client")],
+        delete_on_close=False,
+    )
+    try:
+        with pytest.raises(ValueError, match="Duplicate tool names"):
+            convo._ensure_agent_ready()
+    finally:
+        convo.close()
+        _wipe_client_tool_globals(["finish"])
 
 
 def test_recover_persisted_client_tools_no_state(tmp_path: Path) -> None:

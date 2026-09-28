@@ -1464,20 +1464,29 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
 
-        # Param-less built-ins go by class name through include_default_tools:
-        # older servers resolve only that spelling, and it keeps them out of
-        # filter_tools_regex.
+        builtin_params: dict[str, dict[str, Any]] = {}
+        for spec in specs:
+            builtin = builtin_tool_class(spec.name)
+            if builtin is not None and spec.params:
+                builtin_params.setdefault(builtin.__name__, spec.params)
+
         tools: list[Tool] = []
+        attached_builtins: set[str] = set()
         for spec in specs:
             builtin = builtin_tool_class(spec.name)
             if builtin is None:
                 tools.append(spec)
-            elif spec.params:
-                tools.append(Tool(name=builtin.__name__, params=spec.params))
-                if builtin.__name__ in include_default_tools:
-                    include_default_tools.remove(builtin.__name__)
-            elif builtin.__name__ not in include_default_tools:
-                include_default_tools.append(builtin.__name__)
+                continue
+            class_name = builtin.__name__
+            if class_name in attached_builtins:
+                continue
+            attached_builtins.add(class_name)
+            if class_name in builtin_params:
+                tools.append(Tool(name=class_name, params=builtin_params[class_name]))
+                if class_name in include_default_tools:
+                    include_default_tools.remove(class_name)
+            elif class_name not in include_default_tools:
+                include_default_tools.append(class_name)
 
         # The routing tool needs the active meta-profile name, which the
         # name-only ``include_default_tools`` path cannot pass, so add it as a

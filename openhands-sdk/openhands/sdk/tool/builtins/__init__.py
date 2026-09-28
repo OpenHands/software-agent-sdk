@@ -61,15 +61,13 @@ BUILT_IN_TOOL_CLASSES = {
     ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
 
-_BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME = {
-    tool.name: tool for tool in BUILT_IN_TOOL_CLASSES.values()
-}
-
 
 def builtin_tool_class(name: str) -> type[ToolDefinition] | None:
     """Return the built-in tool class named by its class name or its tool name."""
-    return BUILT_IN_TOOL_CLASSES.get(name) or _BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME.get(
-        name
+    if name in BUILT_IN_TOOL_CLASSES:
+        return BUILT_IN_TOOL_CLASSES[name]
+    return next(
+        (tool for tool in BUILT_IN_TOOL_CLASSES.values() if tool.name == name), None
     )
 
 

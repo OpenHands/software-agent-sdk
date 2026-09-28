@@ -33,7 +33,6 @@ Returns: A sequence of ToolDefinition instances. Most of the time this will be a
 _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
 _USABILITY_REG: dict[str, UsabilityChecker] = {}
-_MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 _TOOL_CLASSES: dict[str, type[ToolDefinition]] = {}
 _SEALED_CATALOG: dict[str, tuple[type[ToolDefinition], UsabilityChecker]] | None = None
 
@@ -153,7 +152,6 @@ def register_tool(
         _REG[name] = resolver
         _USABILITY_REG[name] = usability_checker
         _TOOL_CLASSES[name] = tool_class
-        _MODULE_QUALNAMES[name] = tool_class.__module__
 
 
 def resolve_tool(
@@ -230,8 +228,12 @@ def unseal_tool_catalog() -> None:
         _SEALED_CATALOG = None
 
 
-def list_tool_catalog() -> list[ToolCatalogEntry]:
-    """List the tools offered for configuring an agent, built-ins included."""
+def list_tool_catalog(*, check_usable: bool = True) -> list[ToolCatalogEntry]:
+    """List the tools offered for configuring an agent, built-ins included.
+
+    ``check_usable=False`` skips the usability probes and reports every tool
+    usable, for callers whose agents run somewhere this process cannot probe.
+    """
     from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
     from openhands.sdk.tool.defaults import canonical_tool_name, resolve_tool_specs
 
@@ -261,7 +263,8 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         ToolCatalogEntry(
             name=name,
             user_selectable=tool_class.user_selectable,
-            usable=_check_tool_usable(registered_name, usability_checker),
+            usable=not check_usable
+            or _check_tool_usable(registered_name, usability_checker),
             description=tool_class.catalog_description,
             in_default_set=name in default_set,
         )
@@ -277,4 +280,6 @@ def get_tool_module_qualnames() -> dict[str, str]:
         {"glob": "openhands.tools.glob.definition"}).
     """
     with _LOCK:
-        return dict(_MODULE_QUALNAMES)
+        return {
+            name: tool_class.__module__ for name, tool_class in _TOOL_CLASSES.items()
+        }

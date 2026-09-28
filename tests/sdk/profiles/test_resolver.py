@@ -166,7 +166,7 @@ def test_openhands_profile_tools_selection_is_used_as_given(
     assert settings.create_agent().tools == []
 
 
-def test_openhands_explicit_browser_is_dropped_where_it_cannot_run(
+def test_openhands_explicit_browser_is_kept_where_it_cannot_run(
     llm_store: LLMProfileStore,
 ) -> None:
     profile = OpenHandsAgentProfile(
@@ -175,7 +175,7 @@ def test_openhands_explicit_browser_is_dropped_where_it_cannot_run(
         tools=[Tool(name="terminal"), Tool(name="browser_tool_set")],
     )
 
-    def resolved(browser_available: bool) -> list[str]:
+    for browser_available in (True, False):
         settings = resolve_agent_profile(
             profile,
             llm_store=llm_store,
@@ -184,10 +184,40 @@ def test_openhands_explicit_browser_is_dropped_where_it_cannot_run(
             browser_available=browser_available,
         )
         assert isinstance(settings, OpenHandsAgentSettings)
-        return [tool.name for tool in settings.tools or []]
+        assert [tool.name for tool in settings.tools or []] == [
+            "terminal",
+            "browser_tool_set",
+        ]
 
-    assert resolved(True) == ["terminal", "browser_tool_set"]
-    assert resolved(False) == ["terminal"]
+
+@pytest.mark.parametrize(
+    ("tools", "browser_available", "unusable"),
+    [
+        ([Tool(name="browser_tool_set")], False, ["browser_tool_set"]),
+        ([Tool(name="browser_tool_set")], True, []),
+        (None, False, []),
+    ],
+)
+def test_dry_run_reports_a_selected_browser_it_cannot_run(
+    llm_store: LLMProfileStore,
+    tools: list[Tool] | None,
+    browser_available: bool,
+    unusable: list[str],
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="pinned", llm_profile_ref="default", tools=tools
+    )
+
+    diagnostics = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=browser_available,
+    )
+
+    assert diagnostics.valid
+    assert diagnostics.unusable_tools == unusable
 
 
 def test_openhands_copies_verification(

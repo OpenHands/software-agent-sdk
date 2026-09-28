@@ -6,7 +6,7 @@ import pytest
 from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool import ToolDefinition, registry as registry_module
 from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
 from openhands.sdk.tool.registry import (
     list_registered_tools,
@@ -279,6 +279,37 @@ def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
     }
 
 
+def test_catalog_can_skip_usability_probes(monkeypatch):
+    from openhands.sdk.tool import builtins
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "UnusableBuiltin", _UnavailableHelloTool
+    )
+    probed: list[str] = []
+    monkeypatch.setattr(
+        registry_module,
+        "_check_tool_usable",
+        lambda name, checker: probed.append(name) or False,
+    )
+
+    entries = {e.name: e for e in list_tool_catalog(check_usable=False)}
+
+    assert probed == []
+    assert entries[_UnavailableHelloTool.name].usable is True
+
+
+def test_builtin_lookup_sees_builtins_added_later(monkeypatch):
+    from openhands.sdk.tool import builtins
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES, "LateBuiltin", _UnavailableHelloTool
+    )
+
+    assert builtins.builtin_tool_class(_UnavailableHelloTool.name) is (
+        _UnavailableHelloTool
+    )
+
+
 def test_sealed_catalog_ignores_later_registrations(monkeypatch):
     """Registrations after sealing are per-conversation and stay out."""
     register_tool("catalog_at_startup", _SimpleHelloTool)
@@ -303,17 +334,6 @@ def test_sealed_catalog_keeps_the_class_registered_at_seal():
 
     assert _catalog()["catalog_resealed"]["user_selectable"] is True
     assert _catalog()["catalog_resealed"]["description"] == "Say hello, briefly."
-
-
-@pytest.mark.parametrize("name", ["switch_llm", "finish", "SwitchLLMTool"])
-def test_client_tool_cannot_take_a_builtin_name(name):
-    from openhands.sdk.tool.client_tool import ClientToolRegistrationError
-
-    with pytest.raises(ClientToolRegistrationError, match="collides"):
-        register_client_tools([ClientToolSpec(name=name, description="shadow")])
-
-    resolved = resolve_tool(Tool(name="switch_llm"), _create_mock_conv_state())
-    assert type(resolved[0]).__name__ == "SwitchLLMTool"
 
 
 def test_unsealed_catalog_tracks_registrations_again():

@@ -150,6 +150,9 @@ export interface AgentProfileDiagnostics {
   resolved_mcp_servers: string[];
   dangling_mcp_server_refs: string[];
 
+  /** Selected tools the runtime cannot run. */
+  unusable_tools?: string[];
+
   // ACP provider credential channels (ACP variant only).
   acp_api_key_secret_name: string | null;
   acp_base_url_secret_name: string | null;

@@ -47,12 +47,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool import Tool
-from openhands.sdk.tool.defaults import (
-    BROWSER_TOOL_NAME,
-    canonical_tool_name,
-    resolve_tool_specs,
-)
+from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, resolve_tool_specs
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -96,6 +91,13 @@ class AgentProfileDiagnostics(BaseModel):
     agent_kind: str
     valid: bool = False
     errors: list[str] = Field(default_factory=list)
+    unusable_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Selected tools the runtime cannot run. Launched as selected; they "
+            "fail when the agent uses them."
+        ),
+    )
 
     # OpenHands LLM reference.
     llm_profile_ref: str | None = None
@@ -230,16 +232,6 @@ def _acp_credential_channels(
     return info.api_key_env_var, info.base_url_env_var, file_names
 
 
-def _profile_tool_specs(
-    tools: list[Tool] | None, *, browser_available: bool
-) -> list[Tool]:
-    return [
-        spec
-        for spec in resolve_tool_specs(tools, enable_browser=browser_available)
-        if browser_available or canonical_tool_name(spec.name) != BROWSER_TOOL_NAME
-    ]
-
-
 def _build_openhands_settings(
     profile: OpenHandsAgentProfile,
     llm: LLM,
@@ -265,9 +257,7 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": _profile_tool_specs(
-            profile.tools, browser_available=browser_available
-        ),
+        "tools": resolve_tool_specs(profile.tools, enable_browser=browser_available),
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -427,6 +417,12 @@ def resolve_agent_profile_dry_run(
             available_skills, profile.disabled_skills
         )
         diagnostics.disabled_skills = profile.disabled_skills
+        if (
+            not browser_available
+            and profile.tools is not None
+            and any(tool.name == BROWSER_TOOL_NAME for tool in profile.tools)
+        ):
+            diagnostics.unusable_tools.append(BROWSER_TOOL_NAME)
     else:
         filtered_skills = _apply_disabled_skills(available_skills, [])
     diagnostics.resolved_skills = [s.name for s in filtered_skills]

@@ -47,6 +47,7 @@ from openhands.sdk.profiles import (
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
+    apply_tool_switch_request,
     build_seed_profile,
     resolve_agent_profile_dry_run,
     safe_validation_error_detail,
@@ -333,11 +334,20 @@ async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     return AgentProfileDetailResponse(name=name, profile=payload)
 
 
+def _load_stored_profile(name: str) -> OpenHandsAgentProfile | ACPAgentProfile | None:
+    with store_errors():
+        try:
+            return get_agent_profile_store().load(name)
+        except (FileNotFoundError, ValueError):
+            return None
+
+
 def _validate_profile_payload(
     payload: dict[str, Any],
+    stored: OpenHandsAgentProfile | ACPAgentProfile | None,
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
     try:
-        return validate_agent_profile(payload)
+        return validate_agent_profile(apply_tool_switch_request(payload, stored))
     except ValidationError as e:
         # Match FastAPI's request-validation shape (``detail`` is a list of
         # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
@@ -371,7 +381,9 @@ async def save_agent_profile(
     involved. Returns 409 if creating a new profile would exceed
     ``MAX_AGENT_PROFILES``.
     """
-    profile = _validate_profile_payload({**body, "name": name})
+    profile = _validate_profile_payload(
+        {**body, "name": name}, _load_stored_profile(name)
+    )
 
     store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
@@ -556,7 +568,9 @@ async def materialize_agent_profile(
     redacted (api_key_set booleans; no raw secrets).
     """
     if body is not None and body.profile is not None:
-        profile = _validate_profile_payload({**body.profile, "name": name})
+        profile = _validate_profile_payload(
+            {**body.profile, "name": name}, _load_stored_profile(name)
+        )
     else:
         store = get_agent_profile_store()
         try:

@@ -372,7 +372,6 @@ def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
         spec) to inject into an agent's ``tools`` so ``_initialize()`` can
         resolve them.
     """
-    from openhands.sdk.tool.builtins import builtin_tool_class
     from openhands.sdk.tool.registry import list_registered_tools, register_tool
     from openhands.sdk.tool.spec import Tool
 
@@ -389,9 +388,7 @@ def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
         tool_specs: list[Tool] = []
         already_registered = set(list_registered_tools())
         for spec in specs:
-            collides_with_non_client_tool = builtin_tool_class(
-                spec.name
-            ) is not None or (
+            collides_with_non_client_tool = (
                 spec.name in already_registered and spec.name not in _client_tool_names
             )
             if collides_with_non_client_tool:

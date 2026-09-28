@@ -44,21 +44,17 @@ async def get_tool_catalog(request: Request) -> ToolCatalogResponse:
     Clients offer the ``user_selectable`` entries; ``usable`` says whether the
     runtime conversations run in can run the tool.
     """
-    entries = list_tool_catalog()
     config = getattr(request.app.state, "config", None)
     container_browser = (
         container_browser_available(config) if config is not None else None
     )
-    if container_browser is not None:
-        # Usability probed in this process says nothing about the containers.
-        entries = [
-            entry.model_copy(
-                update={
-                    "usable": container_browser
-                    if entry.name == BROWSER_TOOL_NAME
-                    else True
-                }
-            )
-            for entry in entries
-        ]
+    if container_browser is None:
+        return ToolCatalogResponse(tools=list_tool_catalog())
+    # This process cannot probe the conversation containers.
+    entries = [
+        entry.model_copy(update={"usable": container_browser})
+        if entry.name == BROWSER_TOOL_NAME
+        else entry
+        for entry in list_tool_catalog(check_usable=False)
+    ]
     return ToolCatalogResponse(tools=entries)
