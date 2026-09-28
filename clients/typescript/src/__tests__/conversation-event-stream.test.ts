@@ -11,7 +11,7 @@ class Socket {
   onclose: ((event: CloseEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
-  send = jest.fn();
+  send = vi.fn();
   constructor(readonly url: string) {
     Socket.instances.push(this);
   }
@@ -19,7 +19,7 @@ class Socket {
     this.readyState = 1;
     this.onopen?.(new Event('open'));
   }
-  close = jest.fn(() => this.finish(1000));
+  close = vi.fn(() => this.finish(1000));
   finish(code: number) {
     this.readyState = 3;
     this.onclose?.({ code, reason: '' } as CloseEvent);
@@ -36,8 +36,8 @@ describe('ConversationEventStream', () => {
     reconnect: { enabled: true, maxAttempts: 2 },
   });
   beforeEach(() => {
-    jest.useFakeTimers();
-    jest.spyOn(Math, 'random').mockReturnValue(0);
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     globalThis.WebSocket = Socket as unknown as typeof WebSocket;
     Socket.instances = [];
     states = [];
@@ -45,8 +45,8 @@ describe('ConversationEventStream', () => {
   afterEach(() => {
     stream?.stop();
     globalThis.WebSocket = original;
-    jest.useRealTimers();
-    jest.restoreAllMocks();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('preserves proxy paths and authenticates before consumer messages, without URL secrets', () => {
@@ -69,7 +69,7 @@ describe('ConversationEventStream', () => {
       ['message'],
     ]);
     expect(states.at(-1)?.isConnected).toBe(true);
-    jest.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(10_000);
     expect(socket.close).not.toHaveBeenCalled();
   });
 
@@ -77,15 +77,15 @@ describe('ConversationEventStream', () => {
     stream = new ConversationEventStream(options());
     stream.start();
     Socket.instances[0].finish(1006);
-    jest.advanceTimersByTime(999);
+    vi.advanceTimersByTime(999);
     expect(Socket.instances).toHaveLength(1);
-    jest.advanceTimersByTime(1);
+    vi.advanceTimersByTime(1);
     Socket.instances[1].finish(1006);
-    jest.advanceTimersByTime(1999);
+    vi.advanceTimersByTime(1999);
     expect(Socket.instances).toHaveLength(2);
-    jest.advanceTimersByTime(1);
+    vi.advanceTimersByTime(1);
     Socket.instances[2].finish(1006);
-    jest.advanceTimersByTime(40_000);
+    vi.advanceTimersByTime(40_000);
     expect(Socket.instances).toHaveLength(3);
     expect(states.at(-1)?.isReconnecting).toBe(false);
     stream.reconnect();
@@ -97,29 +97,29 @@ describe('ConversationEventStream', () => {
     stream = new ConversationEventStream(options());
     stream.start();
     stream.stop();
-    jest.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(60_000);
     expect(Socket.instances).toHaveLength(1);
-    expect(jest.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
     stream.start();
     Socket.instances[1].finish(1006);
     stream.stop();
-    jest.advanceTimersByTime(60_000);
+    vi.advanceTimersByTime(60_000);
     expect(Socket.instances).toHaveLength(2);
   });
 
   it('aborts a stalled handshake and reconnects', () => {
     stream = new ConversationEventStream(options());
     stream.start();
-    jest.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(10_000);
     expect(Socket.instances[0].close).toHaveBeenCalledTimes(1);
-    jest.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(1000);
     expect(Socket.instances).toHaveLength(2);
   });
 
   it('ignores late open, message, error, and close events from replaced sockets', () => {
-    const onMessage = jest.fn();
-    const onError = jest.fn();
-    const onClose = jest.fn();
+    const onMessage = vi.fn();
+    const onError = vi.fn();
+    const onClose = vi.fn();
     stream = new ConversationEventStream({ ...options(), onMessage, onError, onClose });
     stream.start();
     const old = Socket.instances[0];
@@ -132,12 +132,12 @@ describe('ConversationEventStream', () => {
     expect(onMessage).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(20_000);
+    vi.advanceTimersByTime(20_000);
     expect(Socket.instances).toHaveLength(2);
   });
 
   it('updates callbacks without reconnecting and uses fresh credentials on retry', () => {
-    const onMessage = jest.fn();
+    const onMessage = vi.fn();
     stream = new ConversationEventStream(options());
     stream.start();
     stream.updateOptions({ ...options(), onMessage, sessionApiKey: 'updated' });
@@ -157,7 +157,7 @@ describe('ConversationEventStream', () => {
     expect(() => stream.start()).not.toThrow();
     expect(states.at(-1)?.error).toBeInstanceOf(Error);
     expect(() => stream.send('message')).toThrow('not open');
-    expect(jest.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([

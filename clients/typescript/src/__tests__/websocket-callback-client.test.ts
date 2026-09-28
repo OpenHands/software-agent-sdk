@@ -6,40 +6,43 @@ class Socket {
   onopen?: (event: Event) => void;
   onclose?: (event: CloseEvent) => void;
   onmessage?: (event: MessageEvent) => void;
-  send = jest.fn();
-  close = jest.fn();
+  send = vi.fn();
+  close = vi.fn();
   constructor(readonly url: string) {
     Socket.instances.push(this);
   }
 }
 
 describe('typed conversation event transport', () => {
+  const originalWindow = (globalThis as { window?: unknown }).window;
   let client: WebSocketCallbackClient;
   beforeEach(() => {
-    jest.useFakeTimers();
-    jest.spyOn(Math, 'random').mockReturnValue(0);
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     Socket.instances = [];
-    jest.doMock('ws', () => Socket);
+    // The transport resolves its WebSocket constructor at import time: browser
+    // consumers use window.WebSocket, Node consumers `require('ws')`.
+    (globalThis as { window?: unknown }).window = { WebSocket: Socket };
+    vi.resetModules();
   });
   afterEach(() => {
     client?.stop();
-    jest.useRealTimers();
-    jest.restoreAllMocks();
-    jest.dontMock('ws');
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+    else (globalThis as { window?: unknown }).window = originalWindow;
   });
 
-  it('shares authentication, typed delivery, reconnects and cleanup with the browser stream', () => {
-    const callback = jest.fn();
-    const onError = jest.fn();
-    jest.isolateModules(() => {
-      const { WebSocketCallbackClient } = jest.requireActual('../events/websocket-client');
-      client = new WebSocketCallbackClient({
-        host: 'https://agent.test/proxy',
-        conversationId: 'conversation',
-        apiKey: 'secret +/?',
-        callback,
-        onError,
-      });
+  it('shares authentication, typed delivery, reconnects and cleanup with the browser stream', async () => {
+    const callback = vi.fn();
+    const onError = vi.fn();
+    const { WebSocketCallbackClient } = await import('../events/websocket-client');
+    client = new WebSocketCallbackClient({
+      host: 'https://agent.test/proxy',
+      conversationId: 'conversation',
+      apiKey: 'secret +/?',
+      callback,
+      onError,
     });
     client.start();
     client.start();
@@ -57,10 +60,10 @@ describe('typed conversation event transport', () => {
     expect(onError).toHaveBeenCalledTimes(1);
     first.onclose?.({ code: 1006, reason: 'connection lost' } as CloseEvent);
     expect(onError).toHaveBeenCalledTimes(2);
-    jest.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(1000);
     expect(Socket.instances).toHaveLength(2);
     client.stop();
     expect(Socket.instances[1].close).toHaveBeenCalledTimes(1);
-    expect(jest.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
