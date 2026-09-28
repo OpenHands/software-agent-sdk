@@ -275,6 +275,32 @@ def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path)
     assert conv.llm_registry.get("ask-agent-llm").stream is False
 
 
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_during_in_flight_llm_call(mock_transport, tmp_path, agent):
+    """Regression test for #5082: while the agent LLM has a call in flight its
+    telemetry holds the open span, which cannot be deep-copied.
+    """
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    answers = []
+
+    def transport(llm, *args, **kwargs):
+        if llm.usage_id != "ask-agent-llm":
+            answers.append(conv.ask_agent("How's the progress?"))
+        return create_mock_model_response("answer")
+
+    mock_transport.side_effect = transport
+    agent.llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert answers == ["answer"]
+    assert conv.llm_registry.get("ask-agent-llm").telemetry is not agent.llm.telemetry
+
+
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
 def test_remote_conversation_ask_agent(mock_ws_client, agent):
     mock_ws_client.return_value.wait_until_ready.return_value = True

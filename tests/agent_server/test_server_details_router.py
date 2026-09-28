@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 import openhands.agent_server.server_details_router as sdr
 from openhands.agent_server.api import create_app
@@ -85,6 +86,23 @@ def test_server_info_reports_credential_binding_probe(client):
         "conversation_runtime_routes_v1",
     } <= set(payload["capabilities"])
     assert payload["conversation_runtime"] == "local"
+
+
+def test_server_info_reports_configured_conversation_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    app = create_app(
+        Config(
+            static_files_path=None,
+            conversation_runtime="docker",
+            conversations_path=tmp_path / "conversations",
+            workspace_path=tmp_path / "workspaces",
+            secret_key=SecretStr("test-key"),
+        )
+    )
+    with TestClient(app) as docker_client:
+        assert (
+            docker_client.get("/server_info").json()["conversation_runtime"] == "docker"
+        )
 
 
 def test_server_info_reports_runtime_timeout_cap(

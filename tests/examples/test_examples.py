@@ -59,6 +59,8 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/35_subscription_login.py",
     # Requires interactive input() which fails in CI with EOFError
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
+    # Requires a Kubernetes cluster with agent-sandbox and the agent-sandbox extra
+    "examples/02_remote_agent_server/17_convo_with_agent_sandbox_server.py",
 }
 
 

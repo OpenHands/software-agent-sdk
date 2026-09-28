@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { HttpClient } from '../client/http-client';
 import { RemoteState } from '../conversation/remote-state';
 
@@ -19,8 +20,8 @@ const CONVERSATION_INFO = {
   persistence_dir: '/data/conversations/abc',
 };
 
-function makeState(payload: unknown): { state: RemoteState; fetchMock: jest.Mock } {
-  const fetchMock = jest.fn().mockResolvedValue(jsonResponse(payload)) as jest.Mock;
+function makeState(payload: unknown): { state: RemoteState; fetchMock: Mock } {
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload)) as Mock;
   global.fetch = fetchMock as typeof fetch;
   const client = new HttpClient({ baseUrl: 'http://example.com' });
   return { state: new RemoteState(client, 'abc'), fetchMock };
@@ -29,7 +30,7 @@ function makeState(payload: unknown): { state: RemoteState; fetchMock: jest.Mock
 describe('RemoteState full_state normalization', () => {
   afterEach(() => {
     global.fetch = originalFetch;
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('reads accessor fields from a flat conversation-info payload', async () => {
@@ -71,9 +72,7 @@ describe('RemoteState full_state normalization', () => {
     // Regression: state-update events can leave the cached state wrapped in a
     // `full_state` key. The cache-hit path of getConversationInfo() must unwrap
     // it too, otherwise accessors throw "execution_status missing".
-    const fetchMock = jest
-      .fn()
-      .mockRejectedValue(new Error('network should not be called')) as jest.Mock;
+    const fetchMock = vi.fn().mockRejectedValue(new Error('network should not be called')) as Mock;
     global.fetch = fetchMock as typeof fetch;
     const state = new RemoteState(new HttpClient({ baseUrl: 'http://example.com' }), 'abc');
 
