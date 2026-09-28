@@ -1,0 +1,1682 @@
+{
+  "configuration": {
+    "version": 2,
+    "repeats": 1,
+    "model": "gemini/gemini-3.5-flash-lite",
+    "config_sha256": "96130ebbef73e7de5c21f4f8015c7aebbe4d0f9f9519289266c8bf5ed95e5e1b",
+    "offline": true
+  },
+  "protocol": "Paired synthetic exact recall after one explicit reset. Compare configured strategies, not equal retained-token budgets. Three scenarios; descriptive results only.",
+  "quality_evidence": false,
+  "limitations": [
+    "Native summary uses str(event): message text previews are limited to 500 characters. Long sources are not necessarily supplied in full to its summarization LLM.",
+    "Strategies retain different amounts of context; no equal-token budget or statistical significance claim.",
+    "A correct answer need not involve history read; inspect history_evidence separately. Scripted offline answers are harness checks, not model-quality evidence."
+  ],
+  "planned_runs": 9,
+  "budget_usd": 1.0,
+  "max_requests": 250,
+  "request_interval": 6.0,
+  "provider_attempts": 0,
+  "artifacts_root": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t",
+  "runs": [
+    {
+      "condition": "summary",
+      "scenario": "exact_identifier",
+      "case_sha256": "41e953c54b75002e3cb8442115eb6675ef3c8caeb096c86f5cb970dd66aa261b",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "12c4ec50-7ed9-4a9f-9e76-bf8dbd9968ab",
+        "3b9a2306-3a44-49a9-960a-9c10ae7f12b3"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23875,
+        "all_prior_raw_messages_hidden": false
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "f902931d-7cec-4bfd-bb47-3f894a0ce5b1",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "12c4ec50-7ed9-4a9f-9e76-bf8dbd9968ab",
+            "3b9a2306-3a44-49a9-960a-9c10ae7f12b3"
+          ],
+          "post_reset_view": {
+            "event_count": 7,
+            "messages_utf8_bytes": 23875,
+            "all_prior_raw_messages_hidden": false
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 46100
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "artifact_id": "Atlas-Q7P2-4916-xB9"
+      },
+      "question_event_id": "7da2cd99-6813-4895-9047-22659086680a",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.04424824984744191,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/summary-exact_identifier-0-a06c0376",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "12c4ec50-7ed9-4a9f-9e76-bf8dbd9968ab",
+          "3b9a2306-3a44-49a9-960a-9c10ae7f12b3"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 47296,
+      "storage_growth_after_reset_bytes": 2013,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "exact_identifier",
+      "case_sha256": "41e953c54b75002e3cb8442115eb6675ef3c8caeb096c86f5cb970dd66aa261b",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "6684ab6d-31ee-42c3-93a3-952b35052ced",
+        "055f010b-71d7-445f-adad-89dfe928a726"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "9812b868-2c52-4c12-8745-4c9e3ba79562",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "6684ab6d-31ee-42c3-93a3-952b35052ced",
+            "055f010b-71d7-445f-adad-89dfe928a726"
+          ],
+          "post_reset_view": {
+            "event_count": 3,
+            "messages_utf8_bytes": 16289,
+            "all_prior_raw_messages_hidden": true
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 47858
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "artifact_id": "Atlas-Q7P2-4916-xB9"
+      },
+      "question_event_id": "701d38f5-5744-402a-ac90-eec4c63b52e7",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.037131542107090354,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/notes_only-exact_identifier-0-095f56ed",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "6684ab6d-31ee-42c3-93a3-952b35052ced",
+          "055f010b-71d7-445f-adad-89dfe928a726"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 161,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 50417,
+      "storage_growth_after_reset_bytes": 3706,
+      "notes_chars": 38
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "exact_identifier",
+      "case_sha256": "41e953c54b75002e3cb8442115eb6675ef3c8caeb096c86f5cb970dd66aa261b",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"artifact_id\": \"Atlas-Q7P2-4916-xB9\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "d785c10e-578d-4676-9f3d-608d775e6d05",
+        "2dbb4674-c302-4bbc-8d2e-87c1c3672c7f"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "5d48bc6b-38cc-4155-b68d-0752514f2f7b",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "d785c10e-578d-4676-9f3d-608d775e6d05",
+            "2dbb4674-c302-4bbc-8d2e-87c1c3672c7f"
+          ],
+          "post_reset_view": {
+            "event_count": 3,
+            "messages_utf8_bytes": 16566,
+            "all_prior_raw_messages_hidden": true
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 48733
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "artifact_id": "Atlas-Q7P2-4916-xB9"
+      },
+      "question_event_id": "8a87bab7-7a39-4b07-ba72-d02556a236c4",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.03944849991239607,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/notes_history-exact_identifier-0-81ba9a48",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 1,
+        "read_calls": 0,
+        "hidden_source_searches": 1,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "d785c10e-578d-4676-9f3d-608d775e6d05",
+          "2dbb4674-c302-4bbc-8d2e-87c1c3672c7f"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 826,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 53229,
+      "storage_growth_after_reset_bytes": 5646,
+      "notes_chars": 38
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "superseded_fact",
+      "case_sha256": "8162bfcd0d968d4eccb51d0412f0b54b01e7cd7383f667a1f94239d09ee3384a",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "0e7b14b9-1f99-4790-94b9-163b72f85b78",
+        "f144f9a4-4725-441f-bc4a-1bfa0c6c4693"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "4adaabbd-7b5b-4047-876d-667cd74248bf",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "0e7b14b9-1f99-4790-94b9-163b72f85b78",
+            "f144f9a4-4725-441f-bc4a-1bfa0c6c4693"
+          ],
+          "post_reset_view": {
+            "event_count": 3,
+            "messages_utf8_bytes": 16289,
+            "all_prior_raw_messages_hidden": true
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 47809
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "approval_ticket": "QX-71"
+      },
+      "question_event_id": "8dba565e-509e-41b6-b577-8a3b37c72cf9",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.03668975015170872,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/notes_only-superseded_fact-0-85c8371e",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "0e7b14b9-1f99-4790-94b9-163b72f85b78",
+          "f144f9a4-4725-441f-bc4a-1bfa0c6c4693"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 151,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 50347,
+      "storage_growth_after_reset_bytes": 3685,
+      "notes_chars": 28
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "superseded_fact",
+      "case_sha256": "8162bfcd0d968d4eccb51d0412f0b54b01e7cd7383f667a1f94239d09ee3384a",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "19a88794-ac71-4771-8a4c-3212d8544485",
+        "5e4aafaa-91ff-4b27-b62b-9a8d53a296f1"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "7575b0c6-e2b9-46fe-8525-cf8e71ea1229",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "19a88794-ac71-4771-8a4c-3212d8544485",
+            "5e4aafaa-91ff-4b27-b62b-9a8d53a296f1"
+          ],
+          "post_reset_view": {
+            "event_count": 3,
+            "messages_utf8_bytes": 16566,
+            "all_prior_raw_messages_hidden": true
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 48684
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "approval_ticket": "QX-71"
+      },
+      "question_event_id": "c0e61008-0021-4b92-862f-b85103485980",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.039807832799851894,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/notes_history-superseded_fact-0-4cd1a048",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 1,
+        "read_calls": 0,
+        "hidden_source_searches": 1,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "19a88794-ac71-4771-8a4c-3212d8544485",
+          "5e4aafaa-91ff-4b27-b62b-9a8d53a296f1"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 1087,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 53445,
+      "storage_growth_after_reset_bytes": 5911,
+      "notes_chars": 28
+    },
+    {
+      "condition": "summary",
+      "scenario": "superseded_fact",
+      "case_sha256": "8162bfcd0d968d4eccb51d0412f0b54b01e7cd7383f667a1f94239d09ee3384a",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"approval_ticket\": \"QX-71\"}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "55d865d5-9cdc-4a5f-96e9-fd6083b493db",
+        "80f952e8-122f-4184-a50c-f4261645a1b2"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23865,
+        "all_prior_raw_messages_hidden": false
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "d8743daa-ad10-460d-a525-d1972b8ef63c",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "55d865d5-9cdc-4a5f-96e9-fd6083b493db",
+            "80f952e8-122f-4184-a50c-f4261645a1b2"
+          ],
+          "post_reset_view": {
+            "event_count": 7,
+            "messages_utf8_bytes": 23865,
+            "all_prior_raw_messages_hidden": false
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 46081
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "approval_ticket": "QX-71"
+      },
+      "question_event_id": "ae948558-ee9e-48d1-93a6-0640a1b757f2",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.03257833304814994,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/summary-superseded_fact-0-bdbcc8a9",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "55d865d5-9cdc-4a5f-96e9-fd6083b493db",
+          "80f952e8-122f-4184-a50c-f4261645a1b2"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 47266,
+      "storage_growth_after_reset_bytes": 1992,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_history",
+      "scenario": "compound_constraints",
+      "case_sha256": "9a5b8f8f1f3f197d46399772a8a1d9d75b37bd37c4d3da9e288f307af132edb0",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "f9c0f0f4-f4eb-4c10-a8f7-847b8a917a15",
+        "189d138f-115e-4629-9a1c-fd3e3cdb36be"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16566,
+        "all_prior_raw_messages_hidden": true
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "5a177c0a-358a-4e4d-b72c-a25e57a291d5",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "f9c0f0f4-f4eb-4c10-a8f7-847b8a917a15",
+            "189d138f-115e-4629-9a1c-fd3e3cdb36be"
+          ],
+          "post_reset_view": {
+            "event_count": 3,
+            "messages_utf8_bytes": 16566,
+            "all_prior_raw_messages_hidden": true
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 48933
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "region": "eu-north-1",
+        "timeout_seconds": 17,
+        "retries": 5
+      },
+      "question_event_id": "0874a4c4-f4b8-4775-8b4e-7a3f97c59e1c",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.042199915973469615,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/notes_history-compound_constraints-0-ed9bfb7d",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 1,
+        "read_calls": 0,
+        "hidden_source_searches": 1,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "f9c0f0f4-f4eb-4c10-a8f7-847b8a917a15",
+          "189d138f-115e-4629-9a1c-fd3e3cdb36be"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2,
+        "conversation_history": 1
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1,
+        "conversation_history": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 2,
+        "response_utf8_bytes": 1249,
+        "error_count": 0,
+        "hidden_history_response_count": 1
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 53880,
+      "storage_growth_after_reset_bytes": 6097,
+      "notes_chars": 61
+    },
+    {
+      "condition": "summary",
+      "scenario": "compound_constraints",
+      "case_sha256": "9a5b8f8f1f3f197d46399772a8a1d9d75b37bd37c4d3da9e288f307af132edb0",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "b9cfa9e7-08c5-4474-a247-2294dec5a7a5",
+        "7ea87090-49b1-4c06-9b69-6197160d3a49"
+      ],
+      "post_reset_view": {
+        "event_count": 7,
+        "messages_utf8_bytes": 23902,
+        "all_prior_raw_messages_hidden": false
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "6fa841b1-bc15-4c72-ba43-37cccf7f67c4",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "b9cfa9e7-08c5-4474-a247-2294dec5a7a5",
+            "7ea87090-49b1-4c06-9b69-6197160d3a49"
+          ],
+          "post_reset_view": {
+            "event_count": 7,
+            "messages_utf8_bytes": 23902,
+            "all_prior_raw_messages_hidden": false
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 46203
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "region": "eu-north-1",
+        "timeout_seconds": 17,
+        "retries": 5
+      },
+      "question_event_id": "7e96fa42-6f63-4d6f-b73e-036e111e3fb7",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.03713587508536875,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/summary-compound_constraints-0-3bd88f85",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "b9cfa9e7-08c5-4474-a247-2294dec5a7a5",
+          "7ea87090-49b1-4c06-9b69-6197160d3a49"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {},
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 47427,
+      "storage_growth_after_reset_bytes": 2068,
+      "notes_chars": 0
+    },
+    {
+      "condition": "notes_only",
+      "scenario": "compound_constraints",
+      "case_sha256": "9a5b8f8f1f3f197d46399772a8a1d9d75b37bd37c4d3da9e288f307af132edb0",
+      "repeat": 0,
+      "error_chain": [],
+      "stage": "complete",
+      "quality_evidence": false,
+      "answer": "{\"region\": \"eu-north-1\", \"timeout_seconds\": 17, \"retries\": 5}",
+      "sources_hidden": true,
+      "source_event_ids": [
+        "10e05607-db5a-4fea-b9ca-2a83ceacf873",
+        "43669c50-0064-4038-aba7-48fc02109d5a"
+      ],
+      "post_reset_view": {
+        "event_count": 3,
+        "messages_utf8_bytes": 16289,
+        "all_prior_raw_messages_hidden": true
+      },
+      "reset_checks": [
+        {
+          "window": 1,
+          "reset_event_id": "dcdc1848-89f7-4f1a-8308-2e1ea414326e",
+          "reset_count": 1,
+          "sources_hidden": true,
+          "source_event_ids": [
+            "10e05607-db5a-4fea-b9ca-2a83ceacf873",
+            "43669c50-0064-4038-aba7-48fc02109d5a"
+          ],
+          "post_reset_view": {
+            "event_count": 3,
+            "messages_utf8_bytes": 16289,
+            "all_prior_raw_messages_hidden": true
+          },
+          "metrics": {
+            "model_name": "default",
+            "accumulated_cost": 0.0,
+            "max_budget_per_task": null,
+            "accumulated_token_usage": {
+              "model": "default",
+              "prompt_tokens": 0,
+              "completion_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "reasoning_tokens": 0,
+              "context_window": 0,
+              "per_turn_token": 0,
+              "response_id": ""
+            }
+          },
+          "storage_bytes": 48058
+        }
+      ],
+      "expected_reset_count": 1,
+      "expected": {
+        "region": "eu-north-1",
+        "timeout_seconds": 17,
+        "retries": 5
+      },
+      "question_event_id": "97385212-88f0-4e51-b355-5d036e910117",
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 0.03721308312378824,
+      "provider_attempts": 0,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-baseline-regression/runs/run-_3yovv0t/notes_only-compound_constraints-0-bb7a17dd",
+      "outcome": "COMPLETE",
+      "eligible": true,
+      "exact_match": true,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "10e05607-db5a-4fea-b9ca-2a83ceacf873",
+          "43669c50-0064-4038-aba7-48fc02109d5a"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "finished",
+      "runtime_error_codes": [],
+      "reset_count": 1,
+      "tool_calls": {
+        "context_notes": 2
+      },
+      "post_reset_tool_calls": {
+        "context_notes": 1
+      },
+      "retrieval_overhead": {
+        "response_count": 1,
+        "response_utf8_bytes": 188,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {
+        "model_name": "default",
+        "accumulated_cost": 0.0,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 0,
+          "completion_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 0,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        },
+        "recall": {
+          "model_name": "test-model",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "test-model",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": false,
+      "cost_estimate_available": false,
+      "storage_bytes": 50680,
+      "storage_growth_after_reset_bytes": 3769,
+      "notes_chars": 61
+    }
+  ],
+  "interrupted_trials": [],
+  "active_trial": null,
+  "completed_runs": 9,
+  "complete_paired_groups": 3,
+  "summary": {
+    "summary": {
+      "paired_samples": 3,
+      "exact_matches": 3,
+      "exact_match_rate": 1.0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 141989,
+      "retrieval_response_utf8_bytes": 0,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0.11396245798096061,
+      "full_read_verified_trials": 0,
+      "search_to_read_verified_trials": 0
+    },
+    "notes_only": {
+      "paired_samples": 3,
+      "exact_matches": 3,
+      "exact_match_rate": 1.0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 151444,
+      "retrieval_response_utf8_bytes": 500,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0.11103437538258731,
+      "full_read_verified_trials": 0,
+      "search_to_read_verified_trials": 0
+    },
+    "notes_history": {
+      "paired_samples": 3,
+      "exact_matches": 3,
+      "exact_match_rate": 1.0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 160554,
+      "retrieval_response_utf8_bytes": 3162,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0.12145624868571758,
+      "full_read_verified_trials": 0,
+      "search_to_read_verified_trials": 0
+    }
+  },
+  "sdk_reported_cost_usd": 0.0,
+  "estimated_cost_usd": null,
+  "cost_estimate_complete": false,
+  "excluded_or_pending_runs": 0,
+  "status": "COMPLETE"
+}

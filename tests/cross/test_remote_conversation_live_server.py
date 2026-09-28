@@ -13,9 +13,10 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -60,6 +61,7 @@ def live_server_env(
     monkeypatch: pytest.MonkeyPatch,
     import_modules: str | None = None,
     session_api_keys: list[str] | None = None,
+    storage_safety: dict[str, float] | None = None,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -104,6 +106,8 @@ def live_server_env(
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
     }
+    if storage_safety is not None:
+        cfg["storage_safety"] = storage_safety
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps(cfg))
 
@@ -2663,3 +2667,72 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+def test_storage_admission_and_recovery_over_real_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from openhands.agent_server import (
+        config as config_module,
+        conversation_service as service_module,
+    )
+
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    free_space = {"bytes": 900_000_000}
+    monkeypatch.setattr(
+        "openhands.sdk.io.storage_safety.shutil.disk_usage",
+        lambda _path: SimpleNamespace(
+            total=1_000_000_000,
+            free=free_space["bytes"],
+            used=1_000_000_000 - free_space["bytes"],
+        ),
+    )
+    with live_server_env(
+        tmp_path, monkeypatch, storage_safety={"min_free_ratio": 0.05}
+    ) as env:
+        agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+        conversation_id = uuid4()
+        payload = {
+            "conversation_id": str(conversation_id),
+            "agent": agent.model_dump(mode="json", context={"expose_secrets": True}),
+            "workspace": {"working_dir": str(env["workspace_path"])},
+        }
+        with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+            free_space["bytes"] = 10
+            refused = client.post("/api/conversations", json=payload)
+            assert refused.status_code == 507
+            assert refused.json()["code"] == "StorageLowSpace"
+            assert refused.json()["shortage_bytes"] > 0
+            assert not (tmp_path / "conversations" / conversation_id.hex).exists()
+
+            free_space["bytes"] = 900_000_000
+            created = client.post("/api/conversations", json=payload)
+            created.raise_for_status()
+            path = f"/api/conversations/{conversation_id}"
+            remote = Conversation(
+                agent=agent,
+                workspace=RemoteWorkspace(
+                    host=env["host"], working_dir=str(env["workspace_path"])
+                ),
+                conversation_id=conversation_id,
+            )
+            try:
+                free_space["bytes"] = 10
+                assert client.post(f"{path}/run").status_code == 507
+                with pytest.raises(httpx.HTTPStatusError) as caught:
+                    remote.recover_storage()
+                assert caught.value.response.status_code == 507
+                free_space["bytes"] = 900_000_000
+                remote.recover_storage()
+                state = client.get(path)
+                state.raise_for_status()
+                assert state.json()["execution_status"] == "idle"
+            finally:
+                remote.close()
+            assert (
+                client.post(
+                    f"/api/conversations/{uuid4()}/storage/recover", json={}
+                ).status_code
+                == 404
+            )

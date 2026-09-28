@@ -32,6 +32,8 @@ import {
   AgentResponseResult,
   ForkConversationRequest,
   NavigateConversationRequest,
+  RecoverStorageRequest,
+  RecoverStorageResponse,
   StartGoalRequest,
 } from '../models/conversation';
 import { IConversation, BaseConversationOptions } from './base';
@@ -432,6 +434,18 @@ export class RemoteConversation implements IConversation {
    */
   async condense(): Promise<void> {
     await this.client.post<Success>(`/api/conversations/${this.id}/condense`);
+  }
+
+  /**
+   * Reconcile storage failure after inspection and refresh state.
+   * Requires a server with storage recovery support. Call run() separately.
+   */
+  async recoverStorage(request: RecoverStorageRequest = {}): Promise<void> {
+    await this.client.post<RecoverStorageResponse>(
+      `/api/conversations/${this.id}/storage/recover`,
+      request
+    );
+    await this.state.refresh();
   }
 
   /**

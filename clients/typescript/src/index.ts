@@ -88,6 +88,8 @@ export type {
   CondensationRequestEvent,
   CondensationSummaryEvent,
   CondensationEvent,
+  HistoryIndexEvent,
+  ContextWindowReminderEvent,
   ConversationStateUpdateEvent,
   ConversationErrorEvent,
   LLMCompletionLogEvent,
@@ -180,6 +182,10 @@ export type {
 } from './types/base';
 
 export type { AgentOptions } from './agent/agent';
+export type {
+  NotesRetrievalCondenserConfig,
+  NotesRetrievalCondenserSettings,
+} from './models/context';
 
 export { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
 export { ConversationSortOrder } from './models/conversation';
@@ -282,6 +288,8 @@ export type {
   ConversationEventCountOptions,
   ForkConversationRequest,
   NavigateConversationRequest,
+  RecoverStorageRequest,
+  RecoverStorageResponse,
   AgentResponseResult,
   ConversationEvent as ConversationApiEvent,
   ConversationEventPage,

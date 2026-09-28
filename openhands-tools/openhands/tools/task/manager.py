@@ -184,6 +184,8 @@ class TaskManager:
         if conversation:
             self._ensure_parent(conversation)
 
+        self.parent_conversation.check_storage_safety()
+
         if resume:
             task = self._resume_task(
                 resume=resume,
@@ -217,6 +219,7 @@ class TaskManager:
                     agent=worker_agent,
                     workspace=self.parent_conversation.state.workspace.working_dir,
                     persistence_dir=self._persistence_dir,
+                    storage_safety=self.parent_conversation.storage_safety_config,
                     conversation_id=conversation_id,
                     hook_config=factory.definition.hooks,
                     delete_on_close=True,
@@ -317,6 +320,7 @@ class TaskManager:
                 workspace=parent.state.workspace.working_dir,
                 visualizer=visualizer,
                 persistence_dir=self._persistence_dir,
+                storage_safety=parent.storage_safety_config,
                 conversation_id=conversation_id,
                 max_iteration_per_run=max_iteration_per_run,
                 max_budget_per_run=max_budget_per_run,

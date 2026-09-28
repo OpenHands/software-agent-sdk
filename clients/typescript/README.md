@@ -299,6 +299,30 @@ await conversation.updateSecrets({
 });
 ```
 
+### Storage Recovery And Notes
+
+Storage recovery and notes-based context windows require an Agent Server that
+implements these features; they are not available on the pinned release image.
+The client exports `RecoverStorageRequest`, `HistoryIndexEvent`,
+`ContextWindowReminderEvent`, `NotesRetrievalCondenserConfig`, and
+`NotesRetrievalCondenserSettings` for these additive APIs.
+
+After inspecting the effects of tools whose results were not committed:
+
+```typescript
+await conversation.recoverStorage({
+  acknowledge_unknown_outcomes: true,
+  // For ambiguous crash history only, select an inspected event:
+  // head_event_id: 'inspected-event-id',
+});
+// Recovery does not restart execution. Resume separately when ready:
+await conversation.run();
+```
+
+The lower-level `ConversationClient.recoverStorage(conversationId, request)`
+returns the server's success response. HTTP errors, including `409` and `507`,
+preserve their structured response in `HttpError.response`.
+
 ## API Reference
 
 ### Conversation

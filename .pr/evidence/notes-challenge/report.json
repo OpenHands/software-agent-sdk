@@ -1,0 +1,207 @@
+{
+  "configuration": {
+    "version": 3,
+    "repeats": 1,
+    "model": "gemini/gemini-3.5-flash-lite",
+    "config_sha256": "96130ebbef73e7de5c21f4f8015c7aebbe4d0f9f9519289266c8bf5ed95e5e1b",
+    "offline": false,
+    "suite": "challenge",
+    "seed": 4916
+  },
+  "protocol": "Paired synthetic recall: three-window resets, delayed question, and long source pagination. Read evidence is separate from accuracy. Configured strategies, not equal retained-token budgets.",
+  "quality_evidence": true,
+  "limitations": [
+    "Native summary uses str(event): message text previews are limited to 500 characters. Long sources are not necessarily supplied in full to its summarization LLM.",
+    "Strategies retain different amounts of context; no equal-token budget or statistical significance claim.",
+    "A correct answer need not involve history read; inspect history_evidence separately. Scripted offline answers are harness checks, not model-quality evidence."
+  ],
+  "planned_runs": 9,
+  "budget_usd": 1.0,
+  "max_requests": 180,
+  "request_interval": 6.0,
+  "provider_attempts": 8,
+  "artifacts_root": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-challenge/runs/run-eb03xfkb",
+  "runs": [
+    {
+      "condition": "summary",
+      "scenario": "multi_reset",
+      "case_sha256": "ff8169ce1cb28afea1e1ece27f51c7ce41c885ffc0bb90613ef757cf718d170f",
+      "repeat": 0,
+      "error_chain": [
+        "ConversationRunError",
+        "LLMServiceUnavailableError",
+        "ServiceUnavailableError"
+      ],
+      "stage": "window_1_distractors",
+      "quality_evidence": true,
+      "answer": "",
+      "sources_hidden": false,
+      "source_event_ids": [
+        "9942b094-28a7-4fc2-9b0e-b7a6a60ae746",
+        "be089d65-1d6f-40a4-98a5-12b42b06f7b5"
+      ],
+      "post_reset_view": {},
+      "reset_checks": [],
+      "expected_reset_count": 3,
+      "expected": {
+        "release_token": "REL-17cf51b6e0ce8e8b",
+        "deployment_tag": "TAG-d563036aa8a825ba",
+        "authorization_code": "AUTH-f56412595e98299c",
+        "retry_limit": 6
+      },
+      "question_event_id": null,
+      "question_delayed_until_after_reset": false,
+      "full_read_requested_by_protocol": false,
+      "target_in_notes_before_question": false,
+      "elapsed_seconds": 365.83912879182026,
+      "provider_attempts": 8,
+      "artifacts": "/Users/yuexiao/software-agent-sdk/.pr/evidence/notes-challenge/runs/run-eb03xfkb/summary-multi_reset-0-e9aef2e4",
+      "outcome": "INCONCLUSIVE",
+      "eligible": false,
+      "exact_match": false,
+      "history_evidence": {
+        "search_calls": 0,
+        "read_calls": 0,
+        "hidden_source_searches": 0,
+        "hidden_source_reads": 0,
+        "search_snippet_contains_target": false,
+        "read_contains_target": false,
+        "full_read_evidence": false,
+        "search_to_read_evidence": false,
+        "read_offsets": [],
+        "target_event_ids": [
+          "9942b094-28a7-4fc2-9b0e-b7a6a60ae746",
+          "be089d65-1d6f-40a4-98a5-12b42b06f7b5"
+        ]
+      },
+      "native_summary_source_preview": {
+        "message_text_preview_limit": 500,
+        "target_marker_visible": false
+      },
+      "execution_status": "error",
+      "runtime_error_codes": [
+        "LLMServiceUnavailableError"
+      ],
+      "reset_count": 0,
+      "tool_calls": {
+        "finish": 4
+      },
+      "post_reset_tool_calls": {},
+      "retrieval_overhead": {
+        "response_count": 0,
+        "response_utf8_bytes": 0,
+        "error_count": 0,
+        "hidden_history_response_count": 0
+      },
+      "metrics": {
+        "model_name": "default",
+        "accumulated_cost": 0.007934499999999999,
+        "max_budget_per_task": null,
+        "accumulated_token_usage": {
+          "model": "default",
+          "prompt_tokens": 24440,
+          "completion_tokens": 241,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "context_window": 1048576,
+          "per_turn_token": 0,
+          "response_id": ""
+        }
+      },
+      "metrics_before_reset": {},
+      "metrics_by_usage": {
+        "agent": {
+          "model_name": "gemini/gemini-3.5-flash-lite",
+          "accumulated_cost": 0.007934499999999999,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "gemini/gemini-3.5-flash-lite",
+            "prompt_tokens": 24440,
+            "completion_tokens": 241,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 1048576,
+            "per_turn_token": 9876,
+            "response_id": ""
+          }
+        },
+        "condenser": {
+          "model_name": "gemini/gemini-3.5-flash-lite",
+          "accumulated_cost": 0.0,
+          "max_budget_per_task": null,
+          "accumulated_token_usage": {
+            "model": "gemini/gemini-3.5-flash-lite",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "context_window": 0,
+            "per_turn_token": 0,
+            "response_id": ""
+          }
+        }
+      },
+      "usage_recorded": true,
+      "cost_estimate_available": true,
+      "storage_bytes": 53210,
+      "storage_growth_after_reset_bytes": null,
+      "notes_chars": 0
+    }
+  ],
+  "interrupted_trials": [],
+  "active_trial": null,
+  "completed_runs": 0,
+  "complete_paired_groups": 0,
+  "summary": {
+    "summary": {
+      "paired_samples": 0,
+      "exact_matches": 0,
+      "exact_match_rate": null,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 0,
+      "retrieval_response_utf8_bytes": 0,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0,
+      "full_read_verified_trials": 0,
+      "search_to_read_verified_trials": 0
+    },
+    "notes_only": {
+      "paired_samples": 0,
+      "exact_matches": 0,
+      "exact_match_rate": null,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 0,
+      "retrieval_response_utf8_bytes": 0,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0,
+      "full_read_verified_trials": 0,
+      "search_to_read_verified_trials": 0
+    },
+    "notes_history": {
+      "paired_samples": 0,
+      "exact_matches": 0,
+      "exact_match_rate": null,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "usage_recorded_for_all": false,
+      "storage_bytes": 0,
+      "retrieval_response_utf8_bytes": 0,
+      "provider_attempts": 0,
+      "elapsed_seconds": 0,
+      "full_read_verified_trials": 0,
+      "search_to_read_verified_trials": 0
+    }
+  },
+  "sdk_reported_cost_usd": 0.007934499999999999,
+  "estimated_cost_usd": 0.007934499999999999,
+  "cost_estimate_complete": true,
+  "excluded_or_pending_runs": 9,
+  "status": "PAUSED_INCONCLUSIVE"
+}

@@ -70,6 +70,10 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.io.storage_safety import (
+    StorageSafetyConfig,
+    check_storage_safety_paths,
+)
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
@@ -704,6 +708,7 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
+    storage_safety: StorageSafetyConfig | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1480,6 +1485,13 @@ class ConversationService:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ValueError("inactive_service")
+        if self.storage_safety is not None:
+            paths = [self.conversations_dir, Path(request.workspace.working_dir)]
+            if request.worktree:
+                paths.append(self.conversation_worktree_root)
+            await asyncio.to_thread(
+                check_storage_safety_paths, paths, self.storage_safety
+            )
         conversation_id = request.conversation_id or uuid4()
         existing_record = self._conversation_records.get(conversation_id)
         existing_event_service = self._event_services.get(conversation_id)
@@ -2431,6 +2443,7 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            storage_safety=config.storage_safety,
         )
 
     async def _start_event_service(
@@ -2459,6 +2472,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            storage_safety=self.storage_safety,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.
@@ -2645,14 +2659,14 @@ class _EventSubscriber(Subscriber):
     metadata={OPERATION_METADATA_KEY: "title_generation"},
 )
 def _generate_title_traced(
-    # Unused, but must stay first and positional: ``observe`` re-attaches the
-    # root span it carries, and this runs on a context-less executor thread.
-    conversation: LocalConversation | None,  # noqa: ARG001
+    conversation: LocalConversation | None,
     message: str,
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
 ) -> str:
+    if conversation is not None:
+        conversation.check_storage_safety()
     return generate_title_from_message(message, llm, max_length, on_error=on_error)
 
 

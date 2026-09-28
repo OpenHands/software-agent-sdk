@@ -51,6 +51,20 @@ export type AgentErrorEvent = AgentServerAgentErrorEvent;
 export type CondensationEvent = AgentServerCondensationEvent;
 export type CondensationRequestEvent = AgentServerCondensationRequestEvent;
 export type CondensationSummaryEvent = AgentServerCondensationSummaryEvent;
+/** Retrieval-based context reset from a server supporting notes and history. */
+export type HistoryIndexEvent = Omit<AgentServerCondensationRequestEvent, 'kind'> & {
+  kind: 'HistoryIndexEvent';
+  forgotten_event_ids?: string[];
+  index_offset?: number;
+  previous_window_id?: EventID | null;
+  notes_event_id?: EventID | null;
+  first_forgotten_event_id: EventID;
+  last_forgotten_event_id: EventID;
+};
+export type ContextWindowReminderEvent = Omit<AgentServerCondensationRequestEvent, 'kind'> & {
+  kind: 'ContextWindowReminderEvent';
+  window_id?: EventID | null;
+};
 export type ConversationErrorEvent = Omit<AgentServerConversationErrorEvent, 'source'> & {
   source?: EventSource;
 };
@@ -170,6 +184,8 @@ export interface ThinkEvent extends BaseEvent {
  */
 export type ConversationEvent =
   | AgentServerEvent
+  | HistoryIndexEvent
+  | ContextWindowReminderEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
   | StuckDetectionEvent

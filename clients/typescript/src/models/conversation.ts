@@ -15,6 +15,7 @@ import {
 } from '../types/base';
 import type { HookConfig } from '../hooks';
 import type { LaunchedAgentProfile, LaunchedProfile } from './agent-profile';
+import type { Success as AgentServerSuccess } from '../generated/agent-server-schema';
 
 export enum ConversationSortOrder {
   CREATED_AT = 'CREATED_AT',
@@ -254,6 +255,16 @@ export interface NavigateConversationRequest {
    */
   event_id?: string | null;
 }
+
+/** Requires an Agent Server with the storage recovery endpoint. */
+export interface RecoverStorageRequest {
+  /** Confirm that uncommitted tool effects have been inspected. */
+  acknowledge_unknown_outcomes?: boolean;
+  /** Select an inspected branch head when crash history is ambiguous. */
+  head_event_id?: string | null;
+}
+
+export type RecoverStorageResponse = AgentServerSuccess;
 
 export interface AgentResponseResult {
   response: string;

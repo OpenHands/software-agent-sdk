@@ -1,0 +1,120 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/yuexiao/software-agent-sdk
+configfile: pyproject.toml
+plugins: anyio-4.11.0, libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 145 items / 141 deselected / 4 selected
+
+tests/sdk/test_settings.py FFF.                                          [100%]
+
+=================================== FAILURES ===================================
+____________ test_notes_settings_run_with_required_tools[defaults] _____________
+tests/sdk/test_settings.py:2725: in test_notes_settings_run_with_required_tools
+    conversation.send_message("Remember region east")
+openhands-sdk/openhands/sdk/observability/laminar.py:210: in sync_wrapper
+    return func(*args, **fkwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^
+openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:2137: in send_message
+    self._ensure_agent_ready()
+openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1869: in _ensure_agent_ready
+    self.agent.init_state(
+openhands-sdk/openhands/sdk/agent/agent.py:471: in init_state
+    raise ValueError(
+E   ValueError: The selected condenser requires these tools: context_notes, conversation_history
+----------------------------- Captured stderr call -----------------------------
+[09/24/26 23:31:02] WARNING  No persistence_dir provided; falling   state.py:537
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[09/24/26 23:31:02] INFO     Created new conversation               state.py:614
+                             38d07e3d-f617-4d56-949b-4b615b186760               
+[09/24/26 23:31:02] INFO     TaskTrackerExecutor initialized   definition.py:161
+                             with save_dir: None                                
+[09/24/26 23:31:02] INFO     FileEditor initialized with cwd:      editor.py:105
+                             /private/var/folders/gy/2d5538td0pd4b              
+                             jt7mlsttn_h0000gn/T/pytest-of-yuexiao              
+                             /pytest-216/test_notes_settings_run_w              
+                             ith_r0                                             
+[09/24/26 23:31:02] WARNING  tmux is not installed. Falling back  factory.py:181
+                             to subprocess-based terminal, which                
+                             may be less stable. For best agent                 
+                             performance, install tmux (e.g.                    
+                             `apt-get install tmux` or `brew                    
+                             install tmux`).                                    
+[09/24/26 23:31:02] INFO     Using shell: /bin/bash   subprocess_terminal.py:142
+[09/24/26 23:31:03] INFO     TerminalExecutor initialized with       impl.py:124
+                             working_dir:                                       
+                             /private/var/folders/gy/2d5538td0pd4bjt            
+                             7mlsttn_h0000gn/T/pytest-of-yuexiao/pyt            
+                             est-216/test_notes_settings_run_with_r0            
+                             , username: None, terminal_type:                   
+                             TerminalSession                                    
+[09/24/26 23:31:03] INFO     Loaded 3 tools from spec                base.py:564
+------------------------------ Captured log call -------------------------------
+WARNING  openhands.sdk.conversation.state:state.py:537 No persistence_dir provided; falling back to InMemoryFileStore. EventLog data will not persist across requests.
+INFO     openhands.sdk.conversation.state:state.py:614 Created new conversation 38d07e3d-f617-4d56-949b-4b615b186760
+INFO     openhands.tools.task_tracker.definition:definition.py:161 TaskTrackerExecutor initialized with save_dir: None
+INFO     openhands.tools.file_editor.editor:editor.py:105 FileEditor initialized with cwd: /private/var/folders/gy/2d5538td0pd4bjt7mlsttn_h0000gn/T/pytest-of-yuexiao/pytest-216/test_notes_settings_run_with_r0
+WARNING  openhands.tools.terminal.terminal.factory:factory.py:181 tmux is not installed. Falling back to subprocess-based terminal, which may be less stable. For best agent performance, install tmux (e.g. `apt-get install tmux` or `brew install tmux`).
+INFO     openhands.tools.terminal.terminal.subprocess_terminal:subprocess_terminal.py:142 Using shell: /bin/bash
+INFO     openhands.tools.terminal.impl:impl.py:124 TerminalExecutor initialized with working_dir: /private/var/folders/gy/2d5538td0pd4bjt7mlsttn_h0000gn/T/pytest-of-yuexiao/pytest-216/test_notes_settings_run_with_r0, username: None, terminal_type: TerminalSession
+INFO     openhands.sdk.agent.base:base.py:564 Loaded 3 tools from spec
+______________ test_notes_settings_run_with_required_tools[empty] ______________
+tests/sdk/test_settings.py:2725: in test_notes_settings_run_with_required_tools
+    conversation.send_message("Remember region east")
+openhands-sdk/openhands/sdk/observability/laminar.py:210: in sync_wrapper
+    return func(*args, **fkwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^
+openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:2137: in send_message
+    self._ensure_agent_ready()
+openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1869: in _ensure_agent_ready
+    self.agent.init_state(
+openhands-sdk/openhands/sdk/agent/agent.py:471: in init_state
+    raise ValueError(
+E   ValueError: The selected condenser requires these tools: context_notes, conversation_history
+----------------------------- Captured stderr call -----------------------------
+[09/24/26 23:31:03] WARNING  No persistence_dir provided; falling   state.py:537
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[09/24/26 23:31:03] INFO     Created new conversation               state.py:614
+                             716fc50f-54a5-493b-8ea6-fb8a037410ce               
+[09/24/26 23:31:03] INFO     Loaded 0 tools from spec                base.py:564
+------------------------------ Captured log call -------------------------------
+WARNING  openhands.sdk.conversation.state:state.py:537 No persistence_dir provided; falling back to InMemoryFileStore. EventLog data will not persist across requests.
+INFO     openhands.sdk.conversation.state:state.py:614 Created new conversation 716fc50f-54a5-493b-8ea6-fb8a037410ce
+INFO     openhands.sdk.agent.base:base.py:564 Loaded 0 tools from spec
+_____________ test_notes_settings_run_with_required_tools[partial] _____________
+tests/sdk/test_settings.py:2725: in test_notes_settings_run_with_required_tools
+    conversation.send_message("Remember region east")
+openhands-sdk/openhands/sdk/observability/laminar.py:210: in sync_wrapper
+    return func(*args, **fkwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^
+openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:2137: in send_message
+    self._ensure_agent_ready()
+openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py:1869: in _ensure_agent_ready
+    self.agent.init_state(
+openhands-sdk/openhands/sdk/agent/agent.py:471: in init_state
+    raise ValueError(
+E   ValueError: The selected condenser requires these tools: conversation_history
+----------------------------- Captured stderr call -----------------------------
+[09/24/26 23:31:03] WARNING  No persistence_dir provided; falling   state.py:537
+                             back to InMemoryFileStore. EventLog                
+                             data will not persist across requests.             
+[09/24/26 23:31:03] INFO     Created new conversation               state.py:614
+                             0dc2534c-6c8d-4d87-93b2-22cdcc85b5bd               
+[09/24/26 23:31:03] INFO     Loaded 1 tools from spec                base.py:564
+------------------------------ Captured log call -------------------------------
+WARNING  openhands.sdk.conversation.state:state.py:537 No persistence_dir provided; falling back to InMemoryFileStore. EventLog data will not persist across requests.
+INFO     openhands.sdk.conversation.state:state.py:614 Created new conversation 0dc2534c-6c8d-4d87-93b2-22cdcc85b5bd
+INFO     openhands.sdk.agent.base:base.py:564 Loaded 1 tools from spec
+=============================== warnings summary ===============================
+tests/sdk/test_settings.py::test_notes_settings_run_with_required_tools[defaults]
+  /Users/yuexiao/software-agent-sdk/openhands-tools/openhands/tools/terminal/impl.py:115: UserWarning: tmux is not installed. Falling back to subprocess-based terminal, which may be less stable. For best agent performance, install tmux (e.g. `apt-get install tmux` or `brew install tmux`).
+    self._session = create_terminal_session(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/sdk/test_settings.py::test_notes_settings_run_with_required_tools[defaults]
+FAILED tests/sdk/test_settings.py::test_notes_settings_run_with_required_tools[empty]
+FAILED tests/sdk/test_settings.py::test_notes_settings_run_with_required_tools[partial]
+============ 3 failed, 1 passed, 141 deselected, 1 warning in 1.48s ============

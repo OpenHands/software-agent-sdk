@@ -1547,6 +1547,23 @@ class RemoteConversation(BaseConversation):
             f"{CONVERSATIONS_PATH}/{self._id}/interrupt",
         )
 
+    def recover_storage(
+        self,
+        *,
+        acknowledge_unknown_outcomes: bool = False,
+        head_event_id: EventID | None = None,
+    ) -> None:
+        """Check server storage and reconcile reviewed writes without starting a run."""
+        _send_request(
+            self._client,
+            "POST",
+            f"{CONVERSATIONS_PATH}/{self._id}/storage/recover",
+            json={
+                "acknowledge_unknown_outcomes": acknowledge_unknown_outcomes,
+                "head_event_id": head_event_id,
+            },
+        )
+
     def load_plugin(self, plugin_ref: str) -> None:
         _send_request(
             self._client,

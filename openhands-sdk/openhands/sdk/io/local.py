@@ -7,6 +7,7 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
+from openhands.sdk.io.storage_safety import StorageSafetyController
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.utils.path import to_posix_path
@@ -44,6 +45,7 @@ class LocalFileStore(FileStore):
         self.root = root
         os.makedirs(self.root, exist_ok=True)
         self.cache = MemoryLRUCache(cache_memory_size, cache_limit_size)
+        self.storage_safety: StorageSafetyController | None = None
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -62,15 +64,26 @@ class LocalFileStore(FileStore):
 
     def write(self, path: str, contents: str | bytes) -> None:
         full_path = self.get_full_path(path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        if isinstance(contents, str):
-            atomic_write_text(Path(full_path), contents)
-            self.cache[full_path] = contents
-        else:
-            with open(full_path, "wb") as f:
-                f.write(contents)
-            # Don't cache binary content - LocalFileStore is meant for JSON data
-            # If binary data is written and then read, it will error on read
+        if self.storage_safety is not None:
+            size = (
+                len(contents.encode("utf-8"))
+                if isinstance(contents, str)
+                else len(contents)
+            )
+            self.storage_safety.before_write(full_path, size)
+        try:
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            if isinstance(contents, str):
+                atomic_write_text(Path(full_path), contents)
+                self.cache[full_path] = contents
+            else:
+                with open(full_path, "wb") as f:
+                    f.write(contents)
+                # Binary content is not cached.
+        except OSError as exc:
+            if self.storage_safety is not None:
+                raise self.storage_safety.write_failed(full_path, exc) from exc
+            raise
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
@@ -134,11 +147,15 @@ class LocalFileStore(FileStore):
     def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:
         """Acquire file-based lock using flock."""
         lock_path = self.get_full_path(path)
-        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-        file_lock = FileLock(lock_path)
         try:
+            os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+            file_lock = FileLock(lock_path)
             with file_lock.acquire(timeout=timeout):
                 yield
         except Timeout:
             logger.error(f"Failed to acquire lock within {timeout}s: {lock_path}")
             raise TimeoutError(f"Lock acquisition timed out: {path}")
+        except OSError as exc:
+            if self.storage_safety is not None:
+                raise self.storage_safety.write_failed(lock_path, exc) from exc
+            raise

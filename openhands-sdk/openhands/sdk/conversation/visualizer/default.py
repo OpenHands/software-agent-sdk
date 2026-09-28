@@ -25,7 +25,12 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.event.condenser import (
+    Condensation,
+    CondensationRequest,
+    ContextWindowReminderEvent,
+    HistoryIndexEvent,
+)
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
@@ -246,6 +251,14 @@ EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
         title="Condensation",
         color="white",
         show_metrics=True,
+    ),
+    ContextWindowReminderEvent: EventVisualizationConfig(
+        title="Save Context Notes",
+        color=_SYSTEM_COLOR,
+    ),
+    HistoryIndexEvent: EventVisualizationConfig(
+        title="Context Window Reset",
+        color=_SYSTEM_COLOR,
     ),
     CondensationRequest: EventVisualizationConfig(
         title="Condensation Request",

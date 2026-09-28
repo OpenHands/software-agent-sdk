@@ -1,0 +1,33 @@
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.49.2                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+Evidence directory: /Users/yuexiao/software-agent-sdk/.pr/evidence/strict-notes/run-528nrz0g
+[09/24/26 00:37:53] INFO     Created new conversation               state.py:614
+                             c66ef0e8-917f-4523-9923-7d5f4b32947c               
+[09/24/26 00:37:53] INFO     Loaded 0 tools from spec                base.py:564
+Provider attempt 1/12
+Provider attempt 2/12
+Provider attempt 3/12
+PASS notes_committed_without_history_answer
+[09/24/26 00:38:06] INFO     Condensation request     local_conversation.py:3305
+                             processed                                          
+PASS source_events_hidden
+PASS answers_absent_from_active_context
+PASS reset_completed_before_retrieval
+Provider attempt 4/12
+Provider attempt 5/12
+Provider attempt 6/12
+Provider attempt 7/12
+PASS notes_read_after_reset
+PASS hidden_history_search_after_reset
+PASS hidden_history_read_after_reset
+PASS answer_exact_match
+STRICT_RESULT: PASS
+Report: /Users/yuexiao/software-agent-sdk/.pr/evidence/strict-notes/run-528nrz0g/report.json
