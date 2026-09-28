@@ -284,6 +284,8 @@ class DiscriminatedUnionMixin(OpenHandsModel):
 
     def _include_default_tools_provenance(self, result: Any) -> Any:
         """Retain AgentBase's explicit/default selection across serialization."""
+        if not getattr(self, "_supports_conditional_default_tool_attachment", False):
+            return result
         explicit = getattr(self, "_include_default_tools_explicit", None)
         if explicit is not None and isinstance(result, dict):
             result["_include_default_tools_explicit"] = explicit

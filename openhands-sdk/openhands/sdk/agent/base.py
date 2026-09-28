@@ -9,7 +9,7 @@ from collections import Counter
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
@@ -105,6 +105,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     This base class provides the common interface and functionality that all
     agent implementations must follow.
     """
+
+    _supports_conditional_default_tool_attachment: ClassVar[bool] = True
 
     model_config = ConfigDict(
         frozen=True,
@@ -324,6 +326,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             explicit = data.pop("_include_default_tools_explicit", None)
 
         agent = handler(data)
+        if not cls._supports_conditional_default_tool_attachment:
+            return agent
         if explicit is None:
             explicit = agent._include_default_tools_explicit
         if explicit is None:

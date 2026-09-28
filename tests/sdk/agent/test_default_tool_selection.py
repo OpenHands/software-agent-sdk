@@ -3,6 +3,7 @@ import uuid
 import pytest
 
 from openhands.sdk import LLM, Agent, AgentContext, OpenHandsAgentSettings
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
@@ -132,3 +133,13 @@ def test_settings_generated_default_tool_list_keeps_auto_attachment(
         "invoke_skill",
         VISION_INSPECT_TOOL_NAME,
     }
+
+
+def test_acp_agent_serialization_does_not_include_default_tool_provenance() -> None:
+    agent = ACPAgent(acp_command=["echo", "test"])
+
+    serialized = agent.model_dump()
+
+    assert "_include_default_tools_explicit" not in serialized
+    restored = ACPAgent.model_validate(serialized)
+    assert "_include_default_tools_explicit" not in restored.model_dump()

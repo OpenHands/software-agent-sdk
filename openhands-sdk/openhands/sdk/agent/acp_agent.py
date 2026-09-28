@@ -37,7 +37,7 @@ from collections.abc import (
 )
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -1713,6 +1713,8 @@ class _OpenHandsACPBridge:
 
 class ACPAgent(AgentBase):
     """Agent that delegates to an ACP-compatible subprocess server."""
+
+    _supports_conditional_default_tool_attachment: ClassVar[bool] = False
 
     # Override required fields with ACP-appropriate defaults
     llm: LLM = Field(default_factory=_make_dummy_llm)
