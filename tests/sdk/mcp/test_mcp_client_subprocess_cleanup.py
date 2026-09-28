@@ -138,3 +138,47 @@ time.sleep(60)
         except ProcessLookupError:
             pass
         leader.wait(timeout=5)
+
+
+def test_process_group_kills_descendant_after_leader_is_reaped() -> None:
+    """A reaped leader must not hide a live descendant (the npm exec -> node case)."""
+    script = """
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen([
+    sys.executable,
+    "-c",
+    "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+])
+print(child.pid, flush=True)
+sys.exit(0)
+"""
+    leader = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert leader.stdout is not None
+    child_pid = int(leader.stdout.readline())
+    try:
+        # The leader exits on its own and is reaped before cleanup runs, so
+        # os.getpgid(leader.pid) can no longer resolve the group.
+        leader.wait(timeout=5)
+        assert not _is_alive(leader.pid)
+        assert _is_alive(child_pid)
+
+        MCPClient._kill_process_group(leader.pid)
+
+        _wait_until_dead(child_pid)
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            os.kill(child_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass

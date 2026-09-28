@@ -166,27 +166,70 @@ class MCPClient(AsyncMCPClient):
         return list(dict.fromkeys(pids))
 
     @staticmethod
-    def _kill_process_group(pid: int) -> None:
-        """Kill a process and its group (SIGTERM then SIGKILL)."""
+    def _process_group_alive(pgid: int) -> bool:
+        """Whether process group ``pgid`` still has at least one member."""
         try:
-            os.kill(pid, 0)
-            pgid = os.getpgid(pid)
-        except (ProcessLookupError, PermissionError, OSError):
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            # E.g. PermissionError: the group exists, we just cannot signal it.
+            return True
+        return True
+
+    @staticmethod
+    def _signal_process_group(pgid: int, pid: int, sig: int) -> bool:
+        """Signal ``pgid``, falling back to ``pid``; False once both are gone."""
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            # The group exists but could not be signalled (e.g. permission
+            # denied); still try the leader directly before giving up.
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                return False
+            except OSError:
+                pass
+            return True
+
+    @staticmethod
+    def _resolve_process_group(pid: int) -> int | None:
+        """Process group for ``pid``, tolerating a leader that already exited."""
+        try:
+            return os.getpgid(pid)
+        except OSError:
+            # The leader is gone (typically reaped), so its PGID can no longer
+            # be looked up by PID. Stdio transports are spawned with
+            # ``start_new_session=True``, which makes the PGID equal to the
+            # leader PID; that ID stays allocated while any descendant keeps the
+            # group alive, which is the only case where there is work left.
+            return pid if MCPClient._process_group_alive(pid) else None
+
+    @staticmethod
+    def _kill_process_group(pid: int) -> None:
+        """Kill a process and its group (SIGTERM then SIGKILL).
+
+        Liveness and group lookup deliberately do not key on the leader being
+        alive. FastMCP starts each stdio server through
+        ``anyio.open_process(..., start_new_session=True)``, so a wrapper such as
+        ``npm exec`` leads a group that also holds the real ``node`` server. Once
+        the wrapper is reaped, ``os.kill(pid, 0)`` raising must not hide the live
+        descendant still sitting in that group.
+        """
+        pgid = MCPClient._resolve_process_group(pid)
+        if pgid is None:
             return
 
         for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(pgid, sig)
-            except (ProcessLookupError, PermissionError, OSError):
-                try:
-                    os.kill(pid, sig)
-                except (ProcessLookupError, PermissionError, OSError):
-                    return
-            if sig == signal.SIGTERM:
+            if not MCPClient._signal_process_group(pgid, pid, sig):
+                return
+            if sig is signal.SIGTERM:
                 time.sleep(0.5)
-            try:
-                os.killpg(pgid, 0)
-            except (ProcessLookupError, PermissionError, OSError):
+            if not MCPClient._process_group_alive(pgid):
                 return
 
     def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
