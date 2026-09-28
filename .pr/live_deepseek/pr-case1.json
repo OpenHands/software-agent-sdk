@@ -1,0 +1,115 @@
+{
+  "variant": "pr",
+  "case": "1",
+  "versions": {
+    "python": "3.13.14",
+    "openhands_sdk": "1.49.6",
+    "openhands_tools": "1.49.6",
+    "litellm": "1.93.0",
+    "pydantic": "2.12.5"
+  },
+  "scripted_first_response": {
+    "reasoning_content": "(120 chars, see live_deepseek.py)",
+    "tool_calls": [
+      {
+        "id": "call_00_k3Xq9TtPz1",
+        "name": "task_tracker",
+        "arguments": "{\"command\": \"plan\", \"task_list\": [{\"title\": \"Summarize notes\", \"notes\": \"\", \"status\": \"pending\"}]}"
+      },
+      {
+        "id": "call_01_Vb7mR2cLw8",
+        "name": "file_editor",
+        "arguments": "{\"command\": \"view\", \"path\": \"<workspace>/notes.txt\"}"
+      }
+    ]
+  },
+  "second_request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "params": {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "max_completion_tokens": 512,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "provider": {
+        "order": [
+          "DeepSeek"
+        ],
+        "allow_fallbacks": false
+      }
+    },
+    "tools_sha256": "9e96b6380a3be918d02c4aee548ef1f5152184623b0a213c8e03552bf7dae89f",
+    "messages": [
+      {
+        "role": "system",
+        "content": "<SDK system prompt: 15228 chars, sha256 ec7656c1a1975904653d8cba87e41ae5d493d110ce1607b6d8b5476e254b6d3a>"
+      },
+      {
+        "content": "Look at <workspace>/notes.txt and set up a task list for summarizing it. Then reply with a one-line summary.",
+        "role": "user"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_00_k3Xq9TtPz1",
+            "type": "function",
+            "function": {
+              "name": "task_tracker",
+              "arguments": "{\"command\": \"plan\", \"task_list\": [{\"title\": \"Summarize notes\", \"notes\": \"\", \"status\": \"pending\"}]}"
+            }
+          },
+          {
+            "id": "call_01_Vb7mR2cLw8",
+            "type": "function",
+            "function": {
+              "name": "file_editor",
+              "arguments": "{\"command\": \"view\", \"path\": \"<workspace>/notes.txt\"}"
+            }
+          }
+        ],
+        "reasoning_content": "The user wants the notes file inspected and a task list set up. I will call both tools in parallel in a single response."
+      },
+      {
+        "content": "Error validating tool 'task_tracker': 1 validation error for TaskTrackerAction\ntask_list.0.status\n  Input should be 'todo', 'in_progress' or 'done' [type=literal_error, input_value='pending', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/literal_error. Parameters provided: ['command', 'task_list']",
+        "role": "tool",
+        "tool_call_id": "call_00_k3Xq9TtPz1",
+        "name": "task_tracker"
+      },
+      {
+        "content": "Here's the result of running `cat -n` on <workspace>/notes.txt:\n     1\talpha: first item\n     2\tbeta: second item\n     3\t\n",
+        "role": "tool",
+        "tool_call_id": "call_01_Vb7mR2cLw8",
+        "name": "file_editor"
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "provider": "DeepSeek",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "finish_reason": "tool_calls",
+    "tool_calls": [
+      {
+        "name": "task_tracker",
+        "arguments": "{\"command\": \"plan\", \"task_list\": [{\"notes\": \"Read notes.txt and produce a one-line summary\", \"status\": \"done\", \"title\": \"Summarize notes\"}, {\"notes\": \"Write the one-line summary back to the user\", \"status\": \"in_progress\", \"title\": \"Reply with one-line summary\"}]}"
+      }
+    ],
+    "reasoning_chars": 80
+  },
+  "sdk_events": [
+    "SystemPromptEvent:",
+    "MessageEvent:",
+    "ActionEvent:call_00_k3Xq9TtPz1",
+    "ActionEvent:call_01_Vb7mR2cLw8",
+    "AgentErrorEvent:call_00_k3Xq9TtPz1",
+    "ObservationEvent:call_01_Vb7mR2cLw8",
+    "ActionEvent:call_00_j23kgYjXhlNvUVMM7oo37866",
+    "ObservationEvent:call_00_j23kgYjXhlNvUVMM7oo37866",
+    "ConversationErrorEvent:"
+  ],
+  "real_api_calls": 1
+}

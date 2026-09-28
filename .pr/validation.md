@@ -33,11 +33,17 @@ Local checkout paths in logs are replaced with `<repo>`; payloads are unchanged.
 To reproduce the baseline, copy this script outside the checkout before checking
 out the base revision, then run the same command with the copied script path.
 
-Only the LLM transport is scripted. No live DeepSeek, Anthropic, or OpenAI API
-request was made. Responses inspection serializes the same Chat-origin SDK
-history; it does not test a native Responses-origin response. The original
-DeepSeek reasoning rejection has not been replayed and is not the acceptance
-criterion for this provider-independent ordering fix.
+Only the LLM transport is scripted in the reproduction above. Separately,
+[contributor-supplied live DeepSeek records](live_deepseek.md) exercise the next
+request against DeepSeek V4.1 Flash through OpenRouter (thinking mode): base HTTP
+400 in all three cases, fixed branch HTTP 200 in all three. The first completion
+is scripted; the second is live. The supplied records were checked for matching
+parameters, tool calls/results, and removed sensitive data; these API calls were
+not repeated during this update. This demonstrates request acceptance, not a
+complete conversation run or replay of the original production conversation.
+
+Other providers were not called. Responses inspection above serializes the same
+Chat-origin SDK history; it does not test a native Responses-origin response.
 
 ## Regression checks
 
