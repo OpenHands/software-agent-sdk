@@ -629,6 +629,7 @@ async def test_aresponses_hung_stream_idle_timeout_retries(mock_aresponses):
 
     assert mock_aresponses.call_count == 2
 
+
 def test_stream_delta_chunks_carry_the_output_item_id():
     """All deltas of one output item must share a chunk id.
 
