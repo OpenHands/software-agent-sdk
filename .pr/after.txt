@@ -1,9 +1,9 @@
-[09/28/26 16:29:54] WARNING  No persistence_dir provided; falling   state.py:515
-                             back to InMemoryFileStore. EventLog                
-                             data will not persist across requests.             
-[09/28/26 16:29:54] INFO     Created new conversation               state.py:592
-                             7809aba4-136b-4ac7-beb8-1dd06a966727               
-[09/28/26 16:29:54] INFO     Loaded 0 tools from spec                base.py:564
+[09/28/26 18:48:10] WARNING  No persistence_dir provided; falling   state.py:515
+                             back to InMemoryFileStore. EventLog
+                             data will not persist across requests.
+[09/28/26 18:48:10] INFO     Created new conversation               state.py:592
+                             e17e2090-07fc-493d-b01a-5e3238f67125
+[09/28/26 18:48:10] INFO     Loaded 0 tools from spec                base.py:564
 <repo>/openhands-sdk/openhands/sdk/llm/utils/telemetry.py:391: UserWarning: Cost calculation failed: litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=test-model
  Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
   warnings.warn(f"Cost calculation failed: {e}")

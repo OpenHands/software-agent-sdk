@@ -1,8 +1,14 @@
 {
-  "variant": "pr",
+  "variant": "candidate",
   "case": "3",
+  "provenance": {
+    "source_file": "pr-case3.raw.json",
+    "source_sha256": "345fb188cf723bcf4687d6b3d670d39d5731d7abcad7431e14d99d4d36d94b6e",
+    "record_label": "pr-rerun",
+    "source_revision": "Not recorded by the raw recorder; supplied for the local candidate."
+  },
   "versions": {
-    "python": "3.13.14",
+    "python": "3.13.12",
     "openhands_sdk": "1.49.6",
     "openhands_tools": "1.49.6",
     "litellm": "1.93.0",
@@ -49,8 +55,8 @@
     "tools_sha256": "9e96b6380a3be918d02c4aee548ef1f5152184623b0a213c8e03552bf7dae89f",
     "messages": [
       {
-        "role": "system",
-        "content": "<SDK system prompt: 15228 chars, sha256 ec7656c1a1975904653d8cba87e41ae5d493d110ce1607b6d8b5476e254b6d3a>"
+        "content": "<SDK system prompt: 15228 chars, sha256 ec7656c1a1975904653d8cba87e41ae5d493d110ce1607b6d8b5476e254b6d3a>",
+        "role": "system"
       },
       {
         "content": "Look at <workspace>/notes.txt and set up a task list for summarizing it. Then reply with a one-line summary.",
@@ -108,29 +114,53 @@
   },
   "response": {
     "status": 200,
-    "provider": "DeepSeek",
+    "provider_name": "DeepSeek",
     "model": "deepseek/deepseek-v4.1-flash",
-    "finish_reason": "tool_calls",
-    "tool_calls": [
+    "choices": [
       {
-        "name": "task_tracker",
-        "arguments": "{\"command\": \"plan\", \"task_list\": [{\"notes\": \"Read <workspace>/notes.txt\", \"status\": \"done\", \"title\": \"Read notes.txt\"}, {\"notes\": \"Produce a one-line summary of the notes\", \"status\": \"in_progress\", \"title\": \"Summarize the notes\"}]}"
+        "finish_reason": "tool_calls",
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "call_00_LtDIcqIzdDMv96sIbN8E4958",
+            "function": {
+              "name": "task_tracker",
+              "arguments": "{\"command\": \"plan\", \"task_list\": [{\"notes\": \"Read notes.txt (done: alpha: first item, beta: second item)\", \"status\": \"done\", \"title\": \"Read notes.txt\"}, {\"notes\": \"Condense the two entries into a one-line summary\", \"status\": \"in_progress\", \"title\": \"Summarize contents\"}]}"
+            }
+          }
+        ]
       }
-    ],
-    "reasoning_chars": 395
+    ]
   },
   "sdk_events": [
     "SystemPromptEvent:",
     "MessageEvent:",
     "ActionEvent:call_00_Aa1bC2dE3f",
     "ActionEvent:call_01_Bb2cD3eF4g",
-    "ActionEvent:call_02_Cc3dE4fG5h",
     "AgentErrorEvent:call_01_Bb2cD3eF4g",
+    "ActionEvent:call_02_Cc3dE4fG5h",
     "ObservationEvent:call_00_Aa1bC2dE3f",
     "ObservationEvent:call_02_Cc3dE4fG5h",
-    "ActionEvent:call_00_LuwGXNFK5tq59CY9EKzW2598",
-    "ObservationEvent:call_00_LuwGXNFK5tq59CY9EKzW2598",
+    "ActionEvent:call_00_LtDIcqIzdDMv96sIbN8E4958",
+    "ObservationEvent:call_00_LtDIcqIzdDMv96sIbN8E4958",
     "ConversationErrorEvent:"
   ],
-  "real_api_calls": 1
+  "real_api_calls": 1,
+  "run_outcome": {
+    "llm_calls_total": 2,
+    "run_result": "returned",
+    "execution_status": "ConversationExecutionStatus.ERROR",
+    "error_event_payload_recorded": false
+  },
+  "baseline_comparison": {
+    "request_parameters_match": true,
+    "system_prompt_hash_matches": true,
+    "normalized_tools_hash_matches": true,
+    "normalized_user_message_matches": true,
+    "tool_call_objects_match": true,
+    "tool_result_contents_and_order_match": true,
+    "messages_match_after_combining_baseline_calls": true,
+    "validation_error_event_precedes_last_action": true
+  }
 }

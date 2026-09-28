@@ -1,83 +1,117 @@
-# Live check with DeepSeek V4.1 Flash (thinking mode)
+# Live DeepSeek verification of tool-call batch preservation
 
-Contributor-supplied live records show that DeepSeek rejects the split tool-call history in all three cases below.
-Two fail because the split-off assistant message lacks `reasoning_content`; the third fails because a tool result does not immediately follow its assistant tool-call batch. The fixed history is accepted in all three cases.
-These supplied records were inspected for consistency and sensitive data; the live calls were not repeated during this PR update.
-
-## Setup
-
-- Script: [live_deepseek.py](live_deepseek.py). It runs `Conversation.run()` with the real agent and the real
-  `file_editor` and `task_tracker` tools in a temporary workspace.
-- Only the first completion is scripted: an assistant message with non-empty `reasoning_content` and parallel tool
-  calls with DeepSeek-style ids (`call_00_…`). One call fails validation. The second completion is sent to
-  OpenRouter unmodified, and the conversation stops after it (`max_iteration_per_run=2`). This means HTTP acceptance of the next request is tested, not completion of
-  the whole user task. The successful records end with another tool call and a `ConversationErrorEvent`;
-  the SDK emits a run-limit error when this configured iteration cap is reached.
-- Model `openai/deepseek/deepseek-v4.1-flash` through `https://openrouter.ai/api/v1`, provider pinned to DeepSeek
-  (`allow_fallbacks: false`), `reasoning: {enabled: true, effort: low}`, `max_completion_tokens: 512`,
-  temperature 1.0, top_p 0.95. `get_features()` reports `send_reasoning_content=True` for this name.
-- Environment: Linux x86_64, Python 3.13.14, LiteLLM 1.93.0, Pydantic 2.12.5.
-- Base: `3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14`. Fix: `368e96e5f` (implementation `648fad5cc`). The contributor also reports the same result on PyPI
-  `openhands-sdk==1.49.6`; separate PyPI records are not included here.
-- One real API call per run.
-
-## Cases
-
-| Case | Scripted calls |
-|---|---|
-| 1 | `task_tracker` with `status: "pending"` (invalid), `file_editor` view (valid) |
-| 2 | `file_editor` with arguments that are not JSON (invalid), `task_tracker` plan (valid) |
-| 3 | A `file_editor` view (valid), B `task_tracker` with `status: "pending"` (invalid), C `task_tracker` view (valid) |
+Three contributor-supplied candidate reruns returned **HTTP 200 from DeepSeek**.
+Each next request keeps all scripted calls in one assistant message, retains its
+120-character `reasoning_content`, and follows it with one actual result or
+validation error per call. Baseline records return HTTP 400 for the same cases.
+These checks validate acceptance of the next request, not full task completion.
 
 ## Results
 
-Messages after the system and user messages of the second request (`+rc`: non-empty `reasoning_content`):
+| Case | Scripted response | Baseline | Candidate | Records |
+| --- | --- | --- | --- | --- |
+| 1 | Invalid task status, then a valid file view | HTTP 400: missing reasoning content on the split-off message | HTTP 200 | [base](live_deepseek/mergebase-case1.json) / [candidate](live_deepseek/candidate-case1.json) |
+| 2 | Malformed file-editor JSON, then a valid task plan | HTTP 400: missing reasoning content on the split-off message | HTTP 200 | [base](live_deepseek/mergebase-case2.json) / [candidate](live_deepseek/candidate-case2.json) |
+| 3 | Valid file view A, invalid task update B, valid task view C | HTTP 400: insufficient tool messages following the split batch | HTTP 200 | [base](live_deepseek/mergebase-case3.json) / [candidate](live_deepseek/candidate-case3.json) |
 
-| Case | Base: messages | Base: result | Fix: messages | Fix: result |
-|---|---|---|---|---|
-| 1 | assistant[00] +rc, tool(00), assistant[01], tool(01) | 400 (a) | assistant[00, 01] +rc, tool(00), tool(01) | 200 |
-| 2 | assistant[00] +rc, tool(00), assistant[01], tool(01) | 400 (a) | assistant[00, 01] +rc, tool(00), tool(01) | 200 |
-| 3 | assistant[A, B] +rc, tool(B), assistant[C], tool(A), tool(C) | 400 (b) | assistant[A, B, C] +rc, tool(B), tool(A), tool(C) | 200 |
+The supplied reruns use `openai/deepseek/deepseek-v4.1-flash` via OpenRouter,
+with the provider pinned to DeepSeek, fallbacks disabled, thinking enabled at
+low effort, and a 512-token response limit. The HTTP responses identify
+`DeepSeek` as the provider. Each run records two LLM calls, of which one is a
+real API request. The records were inspected; no new API calls were made while
+preparing these review artifacts.
 
-- (a) ``The `reasoning_content` in the thinking mode must be passed back to the API.``
-- (b) `An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'. (insufficient tool messages following tool_calls message)`
+## Comparison with the baseline
 
-The provider is DeepSeek in every response (`provider_error_code: invalid_request_error` for the 400s).
+The raw SDK message lists and actual HTTP bodies both contain one complete
+assistant tool-call batch. In each case, the following match the baseline after
+replacing the temporary workspace root with `<workspace>`:
 
-Within the sanitized request records, only the `messages` array differs between base and fix. The system prompt (same sha256), the user
-message, `tools` (same sha256), parameters, every tool call object and every tool message's content are identical.
-Tool results keep their order: validation errors first, then executed results (case 3: B, A, C), which DeepSeek
-accepts.
+- HTTP request parameters, including model, provider selection, and reasoning.
+- System-prompt length and SHA-256, normalized tool-schema SHA-256, and user message.
+- Every tool-call object, including ID, name, and arguments.
+- Every tool-result message, its contents, and its relative order.
 
-The per-run records are in [live_deepseek/](live_deepseek/): the scripted calls, the request parameters and
-messages as sent (system prompt replaced by its length and sha256, temporary workspace path replaced by
-`<workspace>`), the `tools` sha256, the response (status and error, or the provider and the returned tool calls),
-and the SDK event sequence.
+Combining the baseline's split assistant tool calls produces the candidate's
+entire normalized message list exactly. Result order is unchanged: invalid
+call then valid call in cases 1/2; B, A, C in case 3. The first assistant message
+already carries the reasoning; grouping removes the second message that lacked it.
 
-## Scope
+The recorded event sequence still has the validation error **before** the last
+ActionEvent, while the outgoing message includes all calls together. This is
+consistent with the projection fix preserving original dispatch/callback order.
+See each record's `baseline_comparison` for the verified invariants.
 
-This checks DeepSeek V4.1 Flash through OpenRouter's Chat Completions endpoint only. Other providers and the
-Responses API were not called.
+The tools hash uses `sha256(json.dumps(normalized_tools, sort_keys=True).encode())`
+with Python's default separators. The system hash covers the original system
+content; that content has no temporary workspace path.
 
-## Reproduction and publication notes
+## Run outcome and provenance
 
-Set `OPENROUTER_API_KEY` in your local environment, then run from the SDK checkout after `make build`:
+All three HTTP responses request one additional tool call. The SDK executes it,
+then records `ConversationErrorEvent` and `ConversationExecutionStatus.ERROR`;
+`run_result` is `returned`. This matches the script's configured
+`max_iteration_per_run=2`: the SDK sets ERROR at the iteration cap when the agent
+has not finished. See
+[the run-limit handler](https://github.com/OpenHands/software-agent-sdk/blob/3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2021).
+
+The raw recorder stores event types, not the final error event's code/detail.
+The iteration-limit explanation is inferred from the script configuration,
+returned tool calls, event sequence, and SDK handler. The direct observation is
+HTTP acceptance; this evidence does not claim a FINISHED conversation.
+
+Baseline revision: `3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14`.
+The contributor supplied the candidate files as reruns of the local candidate.
+Their label is `pr-rerun`; the raw recorder does not capture a Git SHA or source
+hash, so these logs alone cannot independently prove the exact tested revision.
+Each curated file records the source filename and SHA-256 for traceability.
+[source-manifest.json](source-manifest.json) separately identifies the source
+snapshot used for local regression and offline reproduction checks.
+
+Candidate environment recorded in the files: Python 3.13.12, SDK/tools 1.49.6,
+LiteLLM 1.93.0, Pydantic 2.12.5. Baseline records report Python 3.13.14 with the
+same package versions; the matching normalized inputs above were checked despite
+that Python-version difference. These are synthetic reproductions, not the
+original production conversation.
+
+## Reproduce
+
+After `make build`, set `OPENROUTER_API_KEY` in your local environment and run
+from the checkout containing the candidate source:
 
 ```bash
 OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True \
-  uv run --no-sync python .pr/live_deepseek.py --case 1 --label pr --out /tmp/pr-case1.raw.json
+  uv run --no-sync python .pr/live_deepseek.py \
+  --case 1 --label candidate --out /tmp/deepseek-case1.raw.json
 ```
 
-Repeat with cases 2 and 3 on the base and fixed revisions. This makes billable API requests.
-The script records raw diagnostic output and returns zero even for a captured HTTP failure; inspect the
-HTTP status in the output. Its raw schema differs from the curated records included in this PR.
+Repeat for `--case 2` and `--case 3`, using distinct filenames. The label is
+metadata; it does not select an implementation. To compare with the baseline,
+copy the script outside the checkout and run it from a separate checkout of the
+pinned baseline with dependencies installed.
 
-The six published JSON files were separately sanitized: account/user IDs and provider request IDs were
-removed, local workspace paths were replaced, and the system prompt was replaced by length and SHA-256.
-They contain synthetic notes and prompts, not an original user conversation. No API key or authorization
-header is included. Tool call IDs are retained to show call/result relationships; the first-response IDs
-are synthetic constants in the script. The later response IDs in `sdk_events` are tool-call identifiers.
+[live_deepseek.py](live_deepseek.py) uses `Conversation.run()` with real
+`file_editor` and `task_tracker` execution in a temporary workspace. The first
+completion is scripted; the next uses the real API. Each case makes one billable
+API request with the configured two-iteration limit.
 
-Fresh script output is **not automatically publication-safe**. It includes response bodies, prompts and
-traceback paths; API error bodies may contain account identifiers. Review and sanitize both the output
-file and console output before sharing. The API-key assertion is not a general privacy filter.
+Inspect the recorded **HTTP status**: the recorder can exit zero after capturing
+an HTTP error. Check the grouping, reasoning, and actual results as well.
+
+## Publication and scope
+
+Candidate raw files were left unchanged. The public copies omit provider request
+IDs, session/cache identifiers, response fingerprints, full response reasoning,
+and headers; replace local workspace paths with `<workspace>`; summarize the
+system prompt by length/hash; and summarize tools by their normalized hash.
+The response copies retain provider, model, finish reason, and returned tool calls.
+No API-key or Authorization value was found in the supplied raw files. Their
+session identifiers and local paths were still removed before publication.
+
+Tool-call IDs are retained to show call/result relationships. First-response IDs
+are synthetic constants; returned tool-call IDs are identifiers, not credentials.
+Fresh raw output and console logs still require separate review before sharing.
+
+Live evidence covers DeepSeek through OpenRouter Chat Completions. Other live
+providers, live Responses, and native Responses-origin runs remain untested.
+See [validation.md](validation.md) for the completed local checks and their scope.

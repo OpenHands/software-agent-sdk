@@ -9,7 +9,8 @@ import pytest
 from litellm.types.utils import ModelResponse
 
 from openhands.sdk import LLM, Agent, Conversation
-from openhands.sdk.conversation import LocalConversation
+from openhands.sdk.conversation import ConversationCallbackType, LocalConversation
+from openhands.sdk.event import Event
 from openhands.sdk.llm import (
     LLMResponse,
     Message,
@@ -26,11 +27,17 @@ def tool_concurrency_limit() -> int:
 
 
 @pytest.fixture
+def batch_callbacks() -> list[ConversationCallbackType]:
+    return []
+
+
+@pytest.fixture
 def scripted_tool_batch(
     mock_llm: LLM,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tool_concurrency_limit: int,
+    batch_callbacks: list[ConversationCallbackType],
 ) -> Iterator[tuple[LocalConversation, Message, list[list[Message]]]]:
     message = Message(
         role="assistant",
@@ -68,11 +75,17 @@ def scripted_tool_batch(
 
     monkeypatch.setattr(LLM, "generate", generate)
     monkeypatch.setattr(LLM, "agenerate", agenerate)
+
+    def on_event(event: Event) -> None:
+        for callback in batch_callbacks:
+            callback(event)
+
     conversation = Conversation(
         agent=Agent(
             llm=mock_llm, tools=[], tool_concurrency_limit=tool_concurrency_limit
         ),
         workspace=tmp_path,
+        callbacks=[on_event],
         visualizer=None,
         max_iteration_per_run=3,
     )

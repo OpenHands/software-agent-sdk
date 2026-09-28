@@ -1,93 +1,137 @@
-# Issue #5354: validation error batch preservation
+# Preserve tool-call batches in common LLM history
 
-Base: `3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14`.
-Initial implementation: `648fad5cc8802526b45be2d1e54b68f98c88fb14`.
-Callback-failure follow-up: `0a6b4a491d85889f0412e3699b0083b1936b8979`.
-Environment: macOS 26.7 arm64, Python 3.13.12, SDK 1.49.6,
-LiteLLM 1.93.0, Pydantic 2.12.5 (workspace lockfile).
+A validation error between tool calls must not divide one LLM response into
+multiple assistant messages. This patch changes event-to-message projection and
+valid context-view split positions. Agent dispatch and callback order are
+unchanged from the baseline.
 
-## Runtime reproduction
+Baseline: `3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14`.
+The exact tested source contents are recorded in
+[source-manifest.json](source-manifest.json). The local evidence below was
+captured on 2026-09-28 with Python 3.13.12, SDK 1.49.6, LiteLLM 1.93.0,
+Pydantic 2.12.5, and macOS 26.7 arm64, using the workspace lockfile.
 
-Run from the SDK checkout after `make build`:
+## Supported-entry-point reproduction
 
-```bash
-OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True uv run --no-sync python .pr/repro_mixed_validation.py --check --responses --anthropic
-```
-
-The script uses `Conversation.run()`, built-in `think`, and sequential execution.
-The LLM transport returns valid A, invalid B (missing required `thought`), valid C.
-The next request is captured at the transport boundary; an observer also captures
-the common SDK history and delegates formatting to the real SDK implementation.
-All synthetic prompts and tool outputs are safe to publish; no real credentials
-or user conversation content are used.
-
-- Base: exit 1, common history and next request contain `[A,B]` then `[C]`.
-- Fix: exit 0, both contain `[A,B,C]`.
-- Responses serialization changes from calls A/B, output B, call C, outputs A/C
-  to calls A/B/C followed by all three outputs.
-- LiteLLM Anthropic serialization on the base substitutes a skipped/interrupted
-  result for A and drops the actual result. The fix retains actual A/C results
-  and B's validation error after all tool-use blocks.
-
-See [before.txt](before.txt) and [after.txt](after.txt) for full captured output.
-Local checkout paths in logs are replaced with `<repo>`; payloads are unchanged.
-To reproduce the baseline, copy this script outside the checkout before checking
-out the base revision, then run the same command with the copied script path.
-
-Only the LLM transport is scripted in the reproduction above. Separately,
-[contributor-supplied live DeepSeek records](live_deepseek.md) exercise the next
-request against DeepSeek V4.1 Flash through OpenRouter (thinking mode): base HTTP
-400 in all three cases, fixed branch HTTP 200 in all three. The first completion
-is scripted; the second is live. The supplied records were checked for matching
-parameters, tool calls/results, and removed sensitive data; these API calls were
-not repeated during this update. This demonstrates request acceptance, not a
-complete conversation run or replay of the original production conversation.
-
-Other providers were not called. Responses inspection above serializes the same
-Chat-origin SDK history; it does not test a native Responses-origin response.
-
-## Regression checks
-
-Before implementation, the initial 32 batch cases yielded 28 failures and 4
-passes (only invalid-last cases passed). After implementation all 32 passed.
-Six additional cases exercise dispatch failure, cleanup callback failure, and
-cancellation in sync/async dispatch while preserving the original exception.
+After `make build`, run from the SDK checkout:
 
 ```bash
-OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True uv run --no-sync pytest -q tests/sdk/agent tests/sdk/event tests/sdk/conversation
+OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True \
+  uv run --no-sync python .pr/repro_mixed_validation.py --check --responses --anthropic
 ```
 
-Initial run: **1,956 passed, 6 deselected, 42 warnings**, including the original 38 cases.
-[tests.txt](tests.txt) contains complete output, including an unawaited
-`_apply_acp_model` coroutine warning at shutdown. This run is not warning-free.
-Per-file pre-commit checks (Ruff, pycodestyle, Pyright, repository gates) passed.
+[repro_mixed_validation.py](repro_mixed_validation.py) calls `Conversation.run()`
+with sequential tool execution. It scripts LLM transport to return one response
+containing valid A, invalid B (missing `thought`), and valid C. Validation, agent
+dispatch, built-in `think` execution, event handling, and request construction
+use the SDK. A formatter observer records the common `Message` list and delegates
+to the real Chat Completions formatter.
 
-## Compatibility and review
+| Layer | Baseline | Candidate |
+| --- | --- | --- |
+| Common SDK history | assistant[A,B], error B, assistant[C], results A/C | assistant[A,B,C], error B, results A/C |
+| Chat Completions transport payload | Calls split into [A,B] and [C] | One [A,B,C] group followed by all three actual results |
+| SDK Responses serialization | calls A/B, output B, call C, outputs A/C | calls A/B/C, outputs B/A/C |
+| LiteLLM Anthropic serialization | A's actual result replaced by a skipped/interrupted placeholder | All three tool-use blocks followed by their actual results |
+| `--check` exit status | 1 | 0 |
 
-No event schema, stored-settings version, public signature, or provider-specific
-formatting code changes. Errors move after all ActionEvents in the same response,
-before confirmation/execution. Actions still reach the real callback immediately,
-so stream identity is committed only after action emission succeeds. Previously
-persisted malformed histories are not migrated or repaired.
+Full output: [before.txt](before.txt), [after.txt](after.txt). `before.txt` is the
+captured run of the original issue reproducer on the pinned baseline;
+`after.txt` was freshly generated from the source snapshot in the manifest.
+The check flag asserts common-history and Chat Completions grouping. Responses
+and Anthropic output were also inspected for call IDs and actual result contents.
+Local checkout paths in the logs are replaced with `<repo>`.
 
-This is a fork PR: remove temporary `.pr/` artifacts before merge. Preserve access
-to reviewer evidence using commit-pinned links in the PR description. Keep the PR
-Draft until the human-only description and maintainer readiness requirements are
-complete. Maintainer integration-test coverage remains pending.
+To repeat the baseline, copy the script outside the checkout, use a separate
+checkout of the pinned baseline, run `make build` there, and execute the copied
+script with the same flags. This avoids altering a checkout with local changes.
 
-## Expanded corner-case audit
+This reproduction sends no provider API requests. Responses and Anthropic checks
+serialize the same Chat-origin history; they do not exercise a native
+Responses-origin or Anthropic-origin model response. Events are held in memory;
+this is not a disk-reload test. The synthetic model emits a cost-estimation
+warning, included in the logs.
 
-The batch regression file now has 68 cases. The expanded agent/event/conversation,
-context-view and hook run passed **2,282 tests** (6 deselected, 42 warnings).
-See [corner-cases.md](corner-cases.md) for commands, the notification-failure fix,
-and four separately reproduced existing lifecycle defects. Full latest output:
-[corner-tests.txt](corner-tests.txt). The original reproducer was rerun and passes.
+## Regression coverage
 
-Deferred validation errors are now attempted once each even if an earlier
-notification raises. The first notification exception is re-raised, or the
-original dispatch exception when preparation was already failing. This does not
-guarantee persistence if the callback fails before saving or the process dies.
+The patch adds 62 parametrized cases relative to the baseline:
 
-Approval/rejection and interrupt/resume were verified in the same process.
-Closing and reloading a pending batch has a separate existing context-loss bug,
-reproduced with both base and current dispatch and documented in the audit.
+| Cases | Behavior checked | Source |
+| --- | --- | --- |
+| 32 | Invalid-call positions, multiple/all invalid calls, unknown tools, malformed JSON, confirmation, sync/async, concurrency 1/3, response metadata | `tests/sdk/agent/test_validation_error_batch.py:40` |
+| 2 | Callback RuntimeError propagates as ERROR; cancellation results in PAUSED before later action callbacks | `tests/sdk/agent/test_validation_error_batch.py:112` |
+| 12 | Validation errors mixed with executor ValueError, RuntimeError, or an error observation | `tests/sdk/agent/test_validation_error_batch.py:152` |
+| 4 | Approving and rejecting pending valid calls | `tests/sdk/agent/test_validation_error_batch.py:215` |
+| 2 | Cooperative interruption during execution and continuation in the same conversation | `tests/sdk/agent/test_validation_error_batch.py:254` |
+| 6 | Grouping stops at another response, user/assistant message, unrelated error, executable-action error, or observation | `tests/sdk/event/test_events_to_messages.py:753` |
+| 4 | Interleaved validation errors cannot expose a cut inside one response; distinct responses keep their boundary | `tests/sdk/context/view/test_view_manipulation_indices.py:30` |
+
+```bash
+OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True \
+  uv run --no-sync pytest -q \
+  tests/sdk/agent tests/sdk/event tests/sdk/conversation \
+  tests/sdk/context/view tests/sdk/context/condenser tests/sdk/hooks tests/sdk/critic
+```
+
+Result: **2,398 passed, 6 deselected, 42 warnings** in 41.75 seconds.
+[tests.txt](tests.txt) includes the complete output and the shutdown warning that
+`_apply_acp_model` was never awaited. This is the related suite, not the entire
+repository suite. Local test execution needs permission to use the SDK profile
+lock and localhost test servers.
+
+Pre-commit checks passed for the changed Python files: Ruff formatting/lint,
+pycodestyle, Pyright, import rules, tool registration, and applicable repository
+gates. Markdown, HTML, JSON, and log files also went through per-file pre-commit;
+Python-only hooks skip those files. `git diff --check` passed.
+
+## Compatibility and scope
+
+- The converter collects only matching `AgentErrorEvent` results for an invalid
+  action (`action is None` and the same `tool_call_id`) while grouping one
+  `llm_response_id`. It constructs new messages; stored events stay unchanged.
+- The view property removes cut positions between actions sharing one response
+  ID, including when error results lie between them. Existing action/result
+  atomicity also contributes to the final `View.manipulation_indices`.
+- Public signatures, serialized schemas, settings, callback ordering, exception
+  propagation, confirmation decisions, and executor concurrency are unchanged.
+  There is no new exception handler or provider-specific branch.
+- Complete event histories already containing this interleaving benefit when
+  projected again. This is not a storage migration or recovery mechanism for
+  missing results, incomplete batches, duplicated call IDs, or process crashes.
+- Confirmation and interruption cases continue the same conversation instance.
+  Cold reload of pending actions and exactly-once execution after callback/storage
+  failures are outside the verified scope.
+- Other live providers, live Responses, native Responses-origin runs, and
+  maintainer integration/evaluation workflows remain untested. Contributor-supplied
+  DeepSeek candidate reruns are described below.
+
+## DeepSeek reproduction
+
+[live_deepseek.md](live_deepseek.md) contains three contributor-supplied candidate
+reruns: **HTTP 200 in all three cases**, compared with baseline HTTP 400. The
+requests preserve one complete assistant batch, its reasoning, and every actual
+tool result. After temporary-path normalization, API parameters, system/tools
+hashes, user message, tool calls, and result contents/order match the baseline;
+combining the baseline assistant messages yields the candidate messages exactly.
+Validation errors still precede later ActionEvents in the event log.
+
+These runs exercise the real second request against DeepSeek through OpenRouter;
+the first completion is scripted. The responses request another tool call and
+the conversation ends in ERROR, consistent with the configured two-iteration
+cap. This demonstrates request acceptance, not full task completion. The recorder
+does not include the final error-event payload or source revision; see the guide
+for the interpretation and provenance limits. Curated files preserve raw-file
+hashes and remove session/request identifiers and local paths. The supplied API
+calls were not repeated while updating this packet.
+
+## Review packet
+
+[design.html](design.html) explains the two production changes with before/after
+figures and source excerpts. [pr-description.md](pr-description.md) contains the
+PR body with relative artifact links. Resolve these to commit-pinned GitHub URLs
+(and the public HTML preview for the design) when posting it. Preserve its HUMAN
+section exactly.
+
+This is a fork PR. Remove temporary `.pr/` files before merge, retaining
+commit-pinned review links. Keep Draft until the human note and maintainer
+readiness requirements are satisfied.

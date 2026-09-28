@@ -6,7 +6,8 @@ from collections import Counter
 
 import pytest
 
-from openhands.sdk.conversation import LocalConversation
+from openhands.sdk.conversation import ConversationCallbackType, LocalConversation
+from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, Event, ObservationEvent
 from openhands.sdk.event.error_classification import FailureKind
@@ -105,96 +106,44 @@ async def test_validation_errors_preserve_response_batch(
     assert Counter(event.tool_call_id for event in errors) == Counter(
         call_ids[i] for i in invalid_indices
     )
-    assert max(events.index(event) for event in actions) < min(
-        events.index(event) for event in errors
-    )
 
 
-@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("failure", ["callback", "cleanup", "cancel"])
-async def test_dispatch_failure_flushes_prior_errors(
+@pytest.mark.parametrize("cancel", [False, True], ids=["error", "cancel"])
+async def test_validation_callback_failure_preserves_conversation_outcome(
     scripted_tool_batch: tuple[LocalConversation, Message, list[list[Message]]],
-    asynchronous: bool,
-    failure: str,
+    batch_callbacks: list[ConversationCallbackType],
+    cancel: bool,
 ) -> None:
     conversation, response, _ = scripted_tool_batch
     assert response.tool_calls is not None
     response.tool_calls[0].arguments = "{}"
-    conversation._ensure_agent_ready()
-    events: list[Event] = []
-    original_error = (
-        asyncio.CancelledError() if failure == "cancel" else RuntimeError("dispatch")
+    failure = (
+        asyncio.CancelledError("validation callback cancelled")
+        if cancel
+        else RuntimeError("validation callback failed")
     )
+    received: list[ActionEvent | AgentErrorEvent] = []
 
-    def emit(event: Event) -> None:
-        events.append(event)
-        if isinstance(event, ActionEvent) and event.tool_call_id == "call_1":
-            raise original_error
-        if isinstance(event, AgentErrorEvent) and failure == "cleanup":
-            raise ValueError("cleanup callback failed")
-
-    with pytest.raises(type(original_error)) as exc_info:
-        if asynchronous:
-            await conversation.agent.astep(conversation, on_event=emit)
-        else:
-            conversation.agent.step(conversation, on_event=emit)
-    assert exc_info.value is original_error
-    assert [
-        event.tool_call_id for event in events if isinstance(event, ActionEvent)
-    ] == [
-        "call_0",
-        "call_1",
-    ]
-    assert isinstance(events[-1], AgentErrorEvent)
-    assert events[-1].tool_call_id == "call_0"
-    assert not any(isinstance(event, ObservationEvent) for event in events)
-
-
-@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("dispatch_fails", [False, True])
-@pytest.mark.parametrize("callback_failure", ["first", "all", "cancel"])
-async def test_all_deferred_errors_are_attempted_after_callback_failure(
-    scripted_tool_batch: tuple[LocalConversation, Message, list[list[Message]]],
-    asynchronous: bool,
-    dispatch_fails: bool,
-    callback_failure: str,
-) -> None:
-    conversation, response, _ = scripted_tool_batch
-    assert response.tool_calls is not None
-    for call in response.tool_calls[:2]:
-        call.arguments = "{}"
-    conversation._ensure_agent_ready()
-    attempts: list[Event] = []
-    dispatch_error = RuntimeError("action callback failed")
-    callback_error = (
-        asyncio.CancelledError()
-        if callback_failure == "cancel"
-        else ValueError("first error callback failed")
-    )
-
-    def emit(event: Event) -> None:
-        attempts.append(event)
-        if isinstance(event, ActionEvent):
-            if event.tool_call_id == "call_2" and dispatch_fails:
-                raise dispatch_error
+    def callback(event: Event) -> None:
+        if isinstance(event, (ActionEvent, AgentErrorEvent)):
+            received.append(event)
         if isinstance(event, AgentErrorEvent):
-            if event.tool_call_id == "call_0":
-                raise callback_error
-            if callback_failure == "all":
-                raise RuntimeError("second error callback failed")
+            raise failure
+        if isinstance(event, ActionEvent) and event.tool_call_id == "call_1":
+            raise RuntimeError("later action callback failed")
 
-    expected = dispatch_error if dispatch_fails else callback_error
-    with pytest.raises(type(expected)) as exc_info:
-        if asynchronous:
-            await conversation.agent.astep(conversation, on_event=emit)
-        else:
-            conversation.agent.step(conversation, on_event=emit)
-    assert exc_info.value is expected
-    assert [e.tool_call_id for e in attempts if isinstance(e, AgentErrorEvent)] == [
-        "call_0",
-        "call_1",
-    ]
-    assert not any(isinstance(e, ObservationEvent) for e in attempts)
+    batch_callbacks.append(callback)
+    if cancel:
+        await conversation.arun()
+        assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
+    else:
+        with pytest.raises(ConversationRunError) as exc_info:
+            await conversation.arun()
+        assert exc_info.value.__cause__ is failure
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    assert [type(event) for event in received] == [ActionEvent, AgentErrorEvent]
+    assert all(event.tool_call_id == "call_0" for event in received)
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
