@@ -693,6 +693,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    runtime_cipher_resolver: Callable[[UUID], Cipher] | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     secrets_store: FileSecretsStore | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
@@ -726,16 +727,23 @@ class ConversationService:
         default_factory=dict, init=False
     )
 
-    def _load_catalog_sync(self) -> dict[UUID, _ConversationRecord]:
+    def _load_catalog_sync(
+        self, conversation_id: UUID | None = None
+    ) -> dict[UUID, _ConversationRecord]:
         records: dict[UUID, _ConversationRecord] = {}
-        for conversation_dir in self.conversations_dir.iterdir():
+        directories = (
+            [self.conversations_dir / conversation_id.hex]
+            if conversation_id is not None
+            else self.conversations_dir.iterdir()
+        )
+        for conversation_dir in directories:
             meta_file = conversation_dir / "meta.json"
             if not meta_file.exists():
                 continue
             try:
                 stored = StoredConversation.model_validate_json(
                     meta_file.read_text(),
-                    context={"cipher": self.cipher},
+                    context={"cipher": self._cipher_for(UUID(conversation_dir.name))},
                 )
                 execution_status = ConversationExecutionStatus.IDLE
                 base_state_file = conversation_dir / BASE_STATE
@@ -778,13 +786,19 @@ class ConversationService:
             record.base_state_path = path
         return path
 
+    def _cipher_for(self, conversation_id: UUID) -> Cipher | None:
+        if self.runtime_cipher_resolver is not None:
+            return self.runtime_cipher_resolver(conversation_id)
+        return self.cipher
+
     def _load_persisted_state_sync(
         self, conversation_id: UUID
     ) -> ConversationState | None:
         base_state_file = self.conversations_dir / conversation_id.hex / BASE_STATE
         if not base_state_file.exists():
             return None
-        context = {"cipher": self.cipher} if self.cipher else None
+        cipher = self._cipher_for(conversation_id)
+        context = {"cipher": cipher} if cipher else None
         return ConversationState.model_validate_json(
             base_state_file.read_text(), context=context
         )
@@ -1093,13 +1107,28 @@ class ConversationService:
             record.cached_info = None
             record.state_signature = signature
 
-    async def _reconcile_active_records(self) -> None:
-        """Fill catalog entries for services injected outside normal startup.
+    async def refresh_persisted_conversation(self, conversation_id: UUID) -> None:
+        """Refresh one catalog record changed by an external runtime."""
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+        disk_records = await asyncio.to_thread(self._load_catalog_sync, conversation_id)
+        if conversation_id not in disk_records:
+            event_service = event_services.get(conversation_id)
+            if event_service is None or not event_service.is_open():
+                self._conversation_records.pop(conversation_id, None)
+            return
+        record = disk_records[conversation_id]
+        event_service = event_services.get(conversation_id)
+        if event_service is not None and event_service.is_open():
+            return
+        existing = self._conversation_records.setdefault(conversation_id, record)
+        if existing.stored != record.stored:
+            existing.stored = record.stored
+            existing.cached_info = None
 
-        Normal service lifecycle paths maintain the catalog themselves. This
-        small reconciliation keeps direct embedders and existing test fixtures
-        that populate ``_event_services`` compatible.
-        """
+    async def _reconcile_active_records(self) -> None:
+        """Add injected live services to the in-memory catalog."""
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
@@ -1615,7 +1644,12 @@ class ConversationService:
         # Profile resolution and the load_memory stamp must happen before
         # _prepare_request_workspace (which asserts request.agent is not None)
         # and before model_dump so the resolved agent is captured in request_data.
-        launched_agent_profile: LaunchedAgentProfile | None = None
+        runtime_profile = os.getenv("OH_RUNTIME_LAUNCHED_PROFILE")
+        launched_agent_profile = (
+            LaunchedAgentProfile.model_validate_json(runtime_profile)
+            if runtime_profile
+            else None
+        )
 
         from openhands.agent_server.persistence import (
             PersistedSettings,
@@ -2000,6 +2034,17 @@ class ConversationService:
 
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
+
+    async def get_persisted_event_service(
+        self, conversation_id: UUID
+    ) -> EventService | None:
+        """Open append-only event history without acquiring a runtime lease."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        record = self._conversation_records.get(conversation_id)
+        if record is None:
+            return None
+        return EventService.for_persisted_events(record.stored, self.conversations_dir)
 
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
@@ -2409,7 +2454,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=agent,
-            cipher=self.cipher,
+            cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,

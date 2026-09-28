@@ -16,6 +16,7 @@ from openhands.agent_server._secrets_exposure import (
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
     PersistedSettings,
+    get_agent_profile_store,
     get_llm_profile_store,
     get_secrets_store,
     get_settings_store,
@@ -170,6 +171,7 @@ async def get_settings(request: Request) -> SettingsResponse:
             llm_api_key_is_set=settings.llm_api_key_is_set,
             active_profile=settings.active_profile,
             active_agent_profile_id=settings.active_agent_profile_id,
+            active_meta_profile=settings.active_meta_profile,
             misc_settings=settings.misc_settings,
         )
 
@@ -216,6 +218,8 @@ async def update_settings(
         update_data["active_profile"] = payload.active_profile
     if "active_agent_profile_id" in payload.model_fields_set:
         update_data["active_agent_profile_id"] = payload.active_agent_profile_id
+    if "active_meta_profile" in payload.model_fields_set:
+        update_data["active_meta_profile"] = payload.active_meta_profile
     if not update_data:
         # No updates provided - this is a client error
         raise HTTPException(
@@ -223,7 +227,8 @@ async def update_settings(
             detail=(
                 "At least one of agent_settings_diff, "
                 "conversation_settings_diff, misc_settings_diff, "
-                "active_profile, or active_agent_profile_id must be provided"
+                "active_profile, active_agent_profile_id, or active_meta_profile "
+                "must be provided"
             ),
         )
 
@@ -341,6 +346,7 @@ def _apply_settings_update(
         llm_api_key_is_set=settings.llm_api_key_is_set,
         active_profile=settings.active_profile,
         active_agent_profile_id=settings.active_agent_profile_id,
+        active_meta_profile=settings.active_meta_profile,
         misc_settings=settings.misc_settings,
     )
 
@@ -430,11 +436,23 @@ async def delete_mcp_server(request: Request, settings_key: str) -> SettingsResp
 
 
 @settings_router.get(SECRETS_PATH, response_model=SecretsListResponse)
-async def list_secrets(request: Request) -> SecretsListResponse:
-    """List all available secrets (names and descriptions only, no values)."""
+async def list_secrets(
+    request: Request, agent_profile_id: str | None = None
+) -> SecretsListResponse:
+    """List available secret names, optionally scoped by an agent profile."""
     config = get_config(request)
     store = get_secrets_store(config)
     secrets = store.load()
+
+    allowed_names: set[str] | None = None
+    if agent_profile_id is not None:
+        profile_store = get_agent_profile_store()
+        profile_name = profile_store.name_for_id(agent_profile_id)
+        if profile_name is None:
+            raise HTTPException(status_code=404, detail="Agent profile not found")
+        profile = profile_store.load(profile_name)
+        if profile.secret_refs is not None:
+            allowed_names = set(profile.secret_refs)
 
     client_host = request.client.host if request.client else "unknown"
     secret_count = len(secrets.custom_secrets) if secrets else 0
@@ -450,6 +468,7 @@ async def list_secrets(request: Request) -> SecretsListResponse:
         secrets=[
             SecretItemResponse(name=name, description=secret.description)
             for name, secret in secrets.custom_secrets.items()
+            if allowed_names is None or name in allowed_names
         ]
     )
 
