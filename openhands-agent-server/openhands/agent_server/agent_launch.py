@@ -166,8 +166,10 @@ def apply_launch(
 ) -> tuple[StartConversationRequest, AgentLaunchPlan]:
     """Resolve ``source`` and fold the result into a request carrying only ``agent``.
 
-    The profile's secret scope is enforced on ``request.secrets`` here, so a
-    caller cannot widen it by sending more secrets than the profile allows.
+    A profile source's ``secret_refs`` filter ``request.secrets`` here, so a
+    caller cannot widen them. A raw ``agent`` carries no scope of its own: a
+    conversation bound to a profile only through ``OH_RUNTIME_LAUNCHED_PROFILE``
+    is filtered on resume rather than here (#5193).
     """
     try:
         plan = prepare_agent_launch(
