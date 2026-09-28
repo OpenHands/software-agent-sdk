@@ -548,9 +548,13 @@ RUN set -eux; \
 
 # Refresh packages inherited from the base image after adding all apt sources
 # and capabilities so the published runtime includes available security fixes.
-RUN if command -v apt-get >/dev/null 2>&1; then \
-      apt-get update; \
-      apt-get upgrade -y --no-install-recommends; \
+# `set -eux` matters here: without it a failed `apt-get update`/`upgrade` still
+# exits 0 (the `fi` is the last command), so the image would build successfully
+# while silently shipping none of the fixes this step exists to add.
+RUN set -eux; \
+    if command -v apt-get >/dev/null 2>&1; then \
+      apt-get -o Acquire::Retries=5 update; \
+      apt-get -o Acquire::Retries=5 upgrade -y; \
       rm -rf /var/lib/apt/lists/*; \
     fi
 

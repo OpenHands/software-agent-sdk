@@ -279,13 +279,27 @@ def test_agent_server_refreshes_apt_packages_after_capability_installs() -> None
     base_image_stage = base_image_and_targets.partition("# Build Targets")[0]
 
     refresh = (
-        "apt-get update; \\\n"
-        "      apt-get upgrade -y --no-install-recommends; \\\n"
+        "apt-get -o Acquire::Retries=5 update; \\\n"
+        "      apt-get -o Acquire::Retries=5 upgrade -y; \\\n"
         "      rm -rf /var/lib/apt/lists/*;"
     )
     assert base_image_stage.count(refresh) == 1
     assert base_image_stage.index(refresh) > base_image_stage.index("# --- Browser ---")
     assert base_image_stage.index(refresh) < base_image_stage.index("USER ${USERNAME}")
+
+    # The refresh must fail closed. Without `set -e` the `fi` that ends the
+    # block is the last command in the `RUN`, so a failed `apt-get
+    # update`/`upgrade` still exits 0 and the image builds without the security
+    # fixes this step exists to add.
+    assert (
+        "RUN if command -v apt-get >/dev/null 2>&1; then \\\n"
+        "      apt-get" not in base_image_stage
+    )
+    assert (
+        "RUN set -eux; \\\n"
+        "    if command -v apt-get >/dev/null 2>&1; then \\\n"
+        "      apt-get -o Acquire::Retries=5 update; \\\n"
+    ) in base_image_stage
 
 
 def test_server_workflow_publishes_binary_minimal_without_baked_extras() -> None:
