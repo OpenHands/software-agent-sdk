@@ -20,10 +20,10 @@ jobs:
         steps:
             - uses: actions/checkout@v7
 
-            - uses: docker/setup-buildx-action@v4
+            - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
             - name: Build FIPS-enabled image
-              uses: docker/build-push-action@v7
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
               with:
                   context: .
                   file: openhands-agent-server/openhands/agent_server/docker/Dockerfile.fips
@@ -43,7 +43,14 @@ jobs:
                     node -e '\''const c = require("crypto"); if (c.getFips() !== 1) process.exit(1); c.createHash("sha256").update("ok").digest(); try { c.createHash("md5"); process.exit(1); } catch {}'\''
                   '
 
-            - name: Scan image with Trivy
+            # Non-gating by design: this image inherits its OS, Node, and
+            # Python package inventory from the base image, so every finding
+            # here is shared with the existing non-FIPS image and tracked by
+            # the base-image snapshot workflow. Failing this workflow would
+            # make the FIPS image permanently red for issues it does not
+            # introduce and cannot fix locally. The table is published in the
+            # job log so a reviewer can compare it against the base image.
+            - name: Scan image with Trivy (report-only)
               uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
               with:
                   image-ref: agent-server:fips-test

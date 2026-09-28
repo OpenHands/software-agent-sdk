@@ -190,7 +190,16 @@ def test_fips_image_is_separate_and_uses_validated_provider() -> None:
     assert 'require("crypto")' in entrypoint
     assert "c.getFips() !== 1" in entrypoint
     assert 'c.createHash("sha256")' in entrypoint
-    assert 'NODE_OPTIONS="--enable-fips --openssl-shared-config"' in dockerfile_text
+    # FIPS mode must be scoped to this image's own Node build. An image-wide
+    # `ENV NODE_OPTIONS` is inherited by the base image's non-FIPS ACP Node 22
+    # runtime (/acp-node), which links its own OpenSSL and dies at startup
+    # under `--enable-fips`; the shim in /usr/local/bin/node confines the flag.
+    assert "ENV NODE_OPTIONS" not in dockerfile_text
+    assert "COPY --from=node-fips-builder /src/out/Release/node " "/usr/local/bin/node-fips" in dockerfile_text
+    assert 'exec /usr/local/bin/node-fips "$@"' in dockerfile_text
+    # The ACP runtime is the regression this scoping exists to prevent, so the
+    # entrypoint has to exercise it rather than only the primary Node.
+    assert "ACP_NODE_DIR" in entrypoint
 
 
 def test_agent_server_uses_one_pinned_npm_version_for_both_node_runtimes() -> None:
