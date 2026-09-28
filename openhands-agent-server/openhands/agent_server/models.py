@@ -368,6 +368,13 @@ class ConversationInfo(_ConversationInfoBase):
             "the conversation's tool events when attaching."
         ),
     )
+    runtime_info: ConversationRuntimeInfo | None = Field(
+        default=None,
+        description=(
+            "Availability of the execution runtime. Catalog responses populate "
+            "this when the hosting server manages runtime lifecycle."
+        ),
+    )
 
 
 class ConversationPage(BaseModel):

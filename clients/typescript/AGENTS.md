@@ -22,7 +22,7 @@ All pull requests must follow the repository's contribution and applicable code-
 - **Workspace Management**: File operations, uploads, downloads, and workspace state management
 - **Conversation Lifecycle**: Create, start, stop, and manage AI agent conversations
 - **Error Handling**: Robust error handling with custom exception classes and retry logic
-- **Modern Tooling**: ESLint, Prettier, Jest testing framework, and GitHub Actions CI/CD
+- **Modern Tooling**: ESLint, Prettier, Vitest, and GitHub Actions CI/CD
 
 ## Browser Compatibility Requirement
 
@@ -43,7 +43,7 @@ All pull requests must follow the repository's contribution and applicable code-
 - Web-standard APIs (`URL`, `Blob`, `File`, `FormData`, `TextEncoder`/`TextDecoder`, etc.)
 - Browser-compatible npm packages only
 
-This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Jest.
+This applies to all source code under `src/`. Test files (`src/__tests__/`) are an exception since they run in Node.js via Vitest.
 
 ## Source Material
 
@@ -229,7 +229,7 @@ await conversation.close();
 
 **Factory Functions**:
 
-**Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode/desktop operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.desktop`; ACP-specific operations should be reachable via `manager.acp`.
+**Ergonomic API note**: Keep `ConversationManager` as the main server-scoped entry point. Server/LLM/settings/skills/tools/VSCode operations should be reachable through manager namespaces such as `manager.server`, `manager.llm`, and `manager.vscode`; ACP-specific operations should be reachable via `manager.acp`.
 
 - `createConversation({ type, agent, workspace, options })` - Explicit type selection
 - `createConversationAuto(agent, workspace, options)` - Auto-detect based on workspace type

@@ -1,7 +1,6 @@
 import { AgentProfilesClient } from './agent-profiles-client';
 import { BashClient } from './bash-client';
 import { ConversationClient } from './conversation-client';
-import { DesktopClient } from './desktop-client';
 import { FileClient } from './file-client';
 import { HooksClient } from './hooks-client';
 import { HttpClient, type ResponseType } from './http-client';
@@ -136,7 +135,6 @@ export class AgentServerClient extends OpenHandsClient {
   readonly plugins: PluginsClient;
   readonly tools: ToolClient;
   readonly vscode: VSCodeClient;
-  readonly desktop: DesktopClient;
   readonly shared: SharedClient;
   readonly llm: LLMMetadataClient;
   readonly workspaces: WorkspacesClient;
@@ -171,7 +169,6 @@ export class AgentServerClient extends OpenHandsClient {
     this.plugins = new PluginsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
     this.vscode = new VSCodeClient(clientOptions);
-    this.desktop = new DesktopClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
