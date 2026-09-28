@@ -61,7 +61,7 @@ def test_agent_settings_includes_switch_llm_tool_when_profiles_exist(profile_sto
         llm=_make_llm("default-model", "default"), tools=[]
     ).create_agent()
 
-    assert any(tool.name == "switch_llm" for tool in agent.tools)
+    assert "SwitchLLMTool" in agent.include_default_tools
 
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()
@@ -87,7 +87,7 @@ def test_agent_settings_includes_switch_llm_tool_without_profiles(empty_profile_
         llm=_make_llm("default-model", "default"), tools=[]
     ).create_agent()
 
-    assert any(tool.name == "switch_llm" for tool in agent.tools)
+    assert "SwitchLLMTool" in agent.include_default_tools
 
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()
@@ -171,29 +171,25 @@ def test_switch_llm_tool_reports_unexpected_profile_load_error(
     assert conversation.state.agent.llm.model == "default-model"
 
 
-def test_include_default_tools_is_idempotent_against_the_tools_list(profile_store):
-    """Naming a built-in in both channels must not fail the conversation.
-
-    Cloud attaches `SwitchLLMTool` through `include_default_tools` after
-    building the agent, while the settings flag now puts `switch_llm` in
-    `tools`. Both say "give the agent this tool", so the second one is a
-    no-op rather than a duplicate-name error.
-    """
+def test_switch_llm_is_exempt_from_filter_tools_regex(profile_store):
     agent = OpenHandsAgentSettings(
-        llm=_make_llm("default-model", "default"), tools=[]
+        llm=_make_llm("default-model", "default"), tools=[Tool(name="switch_llm")]
     ).create_agent()
-    assert any(tool.name == "switch_llm" for tool in agent.tools)
-
-    agent = agent.model_copy(
-        update={
-            "include_default_tools": [
-                *agent.include_default_tools,
-                SwitchLLMTool.__name__,
-            ]
-        }
-    )
+    agent = agent.model_copy(update={"filter_tools_regex": "^mcp_"})
 
     conversation = LocalConversation(agent=agent, workspace=Path.cwd())
     conversation._ensure_agent_ready()
 
-    assert "switch_llm" in agent.tools_map
+    assert "switch_llm" in conversation.agent.tools_map
+
+
+def test_builtin_named_in_both_channels_is_a_duplicate(profile_store):
+    agent = Agent(
+        llm=_make_llm("default-model", "default"),
+        tools=[Tool(name="switch_llm")],
+        include_default_tools=["FinishTool", "ThinkTool", SwitchLLMTool.__name__],
+    )
+
+    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
+    with pytest.raises(ValueError, match="Duplicate tool names"):
+        conversation._ensure_agent_ready()

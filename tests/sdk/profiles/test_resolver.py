@@ -27,6 +27,7 @@ from openhands.sdk.profiles import (
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, BUILT_IN_TOOLS
 
 
 _LLM_SECRET = "sk-LLM-SECRET-SHOULD-NOT-LEAK"
@@ -97,28 +98,15 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
     # Delegation is a tool the profile selects, not a switch on the side.
-    assert [t.name for t in agent.tools] == [
-        "terminal",
-        "file_editor",
-        "task_tracker",
-        "switch_llm",
-    ]
+    assert [t.name for t in agent.tools] == ["terminal", "file_editor", "task_tracker"]
+    assert "SwitchLLMTool" in agent.include_default_tools
 
 
 @pytest.mark.parametrize(
     ("browser_available", "expected"),
     [
-        (False, ["terminal", "file_editor", "task_tracker", "switch_llm"]),
-        (
-            True,
-            [
-                "terminal",
-                "file_editor",
-                "task_tracker",
-                "browser_tool_set",
-                "switch_llm",
-            ],
-        ),
+        (False, ["terminal", "file_editor", "task_tracker"]),
+        (True, ["terminal", "file_editor", "task_tracker", "browser_tool_set"]),
     ],
 )
 def test_openhands_resolves_default_exec_tools(
@@ -138,7 +126,9 @@ def test_openhands_resolves_default_exec_tools(
         browser_available=browser_available,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert [t.name for t in settings.create_agent().tools] == expected
+    agent = settings.create_agent()
+    assert [t.name for t in agent.tools] == expected
+    assert "SwitchLLMTool" in agent.include_default_tools
 
 
 def test_openhands_profile_tools_selection_is_used_as_given(
@@ -749,8 +739,7 @@ def test_dry_run_tools_match_the_launched_agent(
     browser_available: bool,
     tools: list[Tool] | None,
 ) -> None:
-    """``resolved_settings.tools`` is what the launch actually builds — the
-    whole point of the preview (#4958)."""
+    """``resolved_settings.tools`` is what the launch actually builds."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", tools=tools)
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -770,9 +759,14 @@ def test_dry_run_tools_match_the_launched_agent(
     ).create_agent()
 
     assert diag.resolved_settings is not None
-    assert [t["name"] for t in diag.resolved_settings["tools"]] == [
-        t.name for t in agent.tools
+    launched = [t.name for t in agent.tools] + [
+        BUILT_IN_TOOL_CLASSES[name].name
+        for name in agent.include_default_tools
+        if BUILT_IN_TOOL_CLASSES[name] not in BUILT_IN_TOOLS
     ]
+    assert sorted(t["name"] for t in diag.resolved_settings["tools"]) == sorted(
+        launched
+    )
 
 
 def test_dry_run_acp_reports_credential_channels_by_role(

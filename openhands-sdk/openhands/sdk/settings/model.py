@@ -1444,40 +1444,48 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool import Tool
         from openhands.sdk.tool.builtins import (
+            BUILT_IN_TOOL_CLASSES,
+            BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME,
             BUILT_IN_TOOLS,
             ClassifyAndSwitchLLMTool,
+            SwitchLLMTool,
         )
         from openhands.sdk.tool.defaults import (
             SUB_AGENT_TOOL_NAME,
-            SWITCH_LLM_TOOL_NAME,
-            canonical_tool_name,
             resolve_tool_specs,
         )
 
-        # Legacy switches of this settings model, each kept to the reach it
-        # always had: ``enable_sub_agents`` only ever fed the default set, so an
-        # explicit ``tools`` (``[]`` included) stays exactly as given, while
-        # ``enable_switch_llm_tool`` attached its tool to every agent. Both
-        # tools can also be selected in ``tools``, and the agent rejects a
-        # duplicate name, so neither is added twice.
-        tools = resolve_tool_specs(
+        specs = resolve_tool_specs(
             self.tools, enable_switch_llm=self.enable_switch_llm_tool
         )
-        for flag, name in (
-            (self.enable_sub_agents and self.tools is None, SUB_AGENT_TOOL_NAME),
-            (self.enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
-        ):
-            selected = {canonical_tool_name(tool.name) for tool in tools}
-            if flag and name not in selected:
-                tools = [*tools, Tool(name=name)]
+        if self.enable_sub_agents and self.tools is None:
+            specs.append(Tool(name=SUB_AGENT_TOOL_NAME))
 
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
+        if self.enable_switch_llm_tool:
+            include_default_tools.append(SwitchLLMTool.__name__)
+
+        # Param-less built-ins go by class name through include_default_tools:
+        # older servers resolve only that spelling, and it keeps them out of
+        # filter_tools_regex.
+        tools: list[Tool] = []
+        for spec in specs:
+            builtin = BUILT_IN_TOOL_CLASSES.get(
+                spec.name
+            ) or BUILT_IN_TOOL_CLASSES_BY_TOOL_NAME.get(spec.name)
+            if builtin is None:
+                tools.append(spec)
+            elif spec.params:
+                tools.append(spec)
+                if builtin.__name__ in include_default_tools:
+                    include_default_tools.remove(builtin.__name__)
+            elif builtin.__name__ not in include_default_tools:
+                include_default_tools.append(builtin.__name__)
 
         # The routing tool needs the active meta-profile name, which the
         # name-only ``include_default_tools`` path cannot pass, so add it as a
         # ``Tool`` spec carrying the param. When no meta-profile is active, the
         # tool falls back to the first available one, so we still wire it.
-        tools = list(tools)
         if self.enable_classify_and_switch_llm_tool:
             params: dict[str, Any] = {}
             if self.active_meta_profile:
@@ -1486,6 +1494,17 @@ class OpenHandsAgentSettings(AgentSettingsBase):
                 params["meta_profile"] = self.meta_profile.model_dump(mode="json")
             if self.meta_profile_llms:
                 params["meta_profile_llms"] = self.meta_profile_llms
+            if ClassifyAndSwitchLLMTool.__name__ in include_default_tools:
+                include_default_tools.remove(ClassifyAndSwitchLLMTool.__name__)
+            tools = [
+                spec
+                for spec in tools
+                if spec.name
+                not in (
+                    ClassifyAndSwitchLLMTool.__name__,
+                    ClassifyAndSwitchLLMTool.name,
+                )
+            ]
             tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
 
         llm = create_subscription_llm_from_config(self.llm)
