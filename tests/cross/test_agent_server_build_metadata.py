@@ -195,7 +195,10 @@ def test_fips_image_is_separate_and_uses_validated_provider() -> None:
     # runtime (/acp-node), which links its own OpenSSL and dies at startup
     # under `--enable-fips`; the shim in /usr/local/bin/node confines the flag.
     assert "ENV NODE_OPTIONS" not in dockerfile_text
-    assert "COPY --from=node-fips-builder /src/out/Release/node " "/usr/local/bin/node-fips" in dockerfile_text
+    assert (
+        "COPY --from=node-fips-builder /src/out/Release/node "
+        "/usr/local/bin/node-fips" in dockerfile_text
+    )
     assert 'exec /usr/local/bin/node-fips "$@"' in dockerfile_text
     # The ACP runtime is the regression this scoping exists to prevent, so the
     # entrypoint has to exercise it rather than only the primary Node.
