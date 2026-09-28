@@ -415,16 +415,10 @@ def get_agent_factory(name: str | None) -> AgentFactory:
     return factory
 
 
-def get_factory_info(
-    include: Callable[[AgentDefinition], bool] | None = None,
-) -> str:
+def get_factory_info() -> str:
     """Get formatted information about available agent factories."""
     with _registry_lock:
-        user_factories = {
-            name: factory
-            for name, factory in _agent_factories.items()
-            if include is None or include(factory.definition)
-        }
+        user_factories = dict(_agent_factories)
 
     if not user_factories:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501

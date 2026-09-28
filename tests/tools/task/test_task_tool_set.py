@@ -1,13 +1,9 @@
 import json
-from types import SimpleNamespace
-
-import pytest
 
 from openhands.sdk import Agent, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
-from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.sdk.testing import TestLLM
 from openhands.tools.task import TaskToolSet
@@ -412,44 +408,3 @@ class TestTaskToolExamples:
         description = tools[0].description
         assert TASK_TOOL_EXAMPLES[included_name].strip() in description
         assert TASK_TOOL_EXAMPLES[excluded_name].strip() not in description
-
-
-class TestTaskToolSetParentToolRestriction:
-    def setup_method(self):
-        _reset_registry_for_tests()
-        for name, tools in (("shell", ["terminal"]), ("surfer", ["browser_tool_set"])):
-            register_agent(
-                name=name,
-                factory_func=lambda llm: Agent(llm=llm, tools=[]),
-                description=AgentDefinition(
-                    name=name, description=f"{name} agent", tools=tools
-                ),
-            )
-
-    def teardown_method(self):
-        _reset_registry_for_tests()
-
-    def _create(self, **params):
-        parent = Agent(llm=TestLLM.from_messages([]), tools=[Tool(name="terminal")])
-        (tool,) = TaskToolSet.create(
-            conv_state=SimpleNamespace(agent=parent),  # type: ignore[arg-type]
-            **params,
-        )
-        return tool
-
-    def test_restricted_set_offers_only_agents_within_the_parent_tools(self):
-        tool = self._create(restrict_to_parent_tools=True)
-
-        assert "**shell**" in tool.description
-        assert "**surfer**" not in tool.description
-        manager = tool.executor._manager  # type: ignore[union-attr]
-        assert manager._get_factory("shell").definition.name == "shell"
-        with pytest.raises(ValueError, match="surfer"):
-            manager._get_factory("surfer")
-
-    def test_unrestricted_set_offers_every_agent(self):
-        tool = self._create()
-
-        assert "**surfer**" in tool.description
-        manager = tool.executor._manager  # type: ignore[union-attr]
-        assert manager._get_factory("surfer").definition.name == "surfer"

@@ -50,7 +50,6 @@ from openhands.sdk.skills import Skill
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.defaults import (
     BROWSER_TOOL_NAME,
-    SUB_AGENT_TOOL_NAME,
     canonical_tool_name,
     resolve_tool_specs,
 )
@@ -239,10 +238,6 @@ def _profile_tool_specs(
         name = canonical_tool_name(spec.name)
         if name == BROWSER_TOOL_NAME and not browser_available:
             continue
-        if name == SUB_AGENT_TOOL_NAME:
-            spec = spec.model_copy(
-                update={"params": {**spec.params, "restrict_to_parent_tools": True}}
-            )
         specs.append(spec)
     return specs
 

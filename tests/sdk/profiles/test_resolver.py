@@ -190,27 +190,6 @@ def test_openhands_explicit_browser_is_dropped_where_it_cannot_run(
     assert resolved(False) == ["terminal"]
 
 
-def test_openhands_selected_sub_agents_are_restricted_to_the_profile_tools(
-    llm_store: LLMProfileStore,
-) -> None:
-    profile = OpenHandsAgentProfile(
-        name="delegating",
-        llm_profile_ref="default",
-        tools=[Tool(name="terminal"), Tool(name="task_tool_set")],
-    )
-
-    settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config={}, available_skills=None
-    )
-
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools == [
-        Tool(name="terminal"),
-        Tool(name="task_tool_set", params={"restrict_to_parent_tools": True}),
-    ]
-    assert profile.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
-
-
 def test_openhands_copies_verification(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
