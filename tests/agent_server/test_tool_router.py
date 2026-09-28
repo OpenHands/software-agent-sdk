@@ -57,6 +57,13 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
         "built-ins are offered under their snake_case tool name"
     )
     assert entries["terminal"]["description"], "catalog carries a per-tool blurb"
+    assert {name for name, entry in entries.items() if entry["in_default_set"]} == {
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "switch_llm",
+    }
     assert (
         not {
             "task",

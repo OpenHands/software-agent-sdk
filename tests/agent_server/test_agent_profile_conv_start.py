@@ -453,8 +453,8 @@ class TestResolveAgentFromProfile:
             "file_editor",
             "task_tracker",
             "browser_tool_set",
-            "switch_llm",
         ]
+        assert "SwitchLLMTool" in result_agent.include_default_tools
 
     def test_openhands_default_profile_triggers_discovery(self):
         """An OpenHands profile always discovers the skill catalog (the deny-list

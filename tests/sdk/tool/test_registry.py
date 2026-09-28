@@ -185,6 +185,7 @@ def test_catalog_reports_selectability_and_usability():
         "user_selectable": True,
         "usable": True,
         "description": "",
+        "in_default_set": False,
     }
     assert catalog["catalog_internal"]["user_selectable"] is False
     assert catalog["catalog_unusable"]["usable"] is False
@@ -200,6 +201,17 @@ def test_catalog_offers_a_builtin_under_its_snake_case_name(monkeypatch):
     assert "switch_llm" in catalog
     assert "SwitchLLMTool" not in catalog
     assert builtins.SwitchLLMTool.name == "switch_llm"
+
+
+def test_catalog_marks_the_default_set(monkeypatch):
+    from openhands.sdk.tool import registry
+
+    register_tool("catalog_extra", _SimpleHelloTool)
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+    catalog = _catalog()
+
+    assert catalog["switch_llm"]["in_default_set"] is True
+    assert catalog["catalog_extra"]["in_default_set"] is False
 
 
 def test_catalog_does_not_offer_the_meta_profile_router(monkeypatch):
@@ -268,6 +280,7 @@ def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
         "user_selectable": True,
         "usable": False,
         "description": "",
+        "in_default_set": False,
     }
 
 

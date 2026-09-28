@@ -45,6 +45,8 @@ class ToolCatalogEntry(BaseModel):
     user_selectable: bool = True
     usable: bool = True
     description: str = ""
+    in_default_set: bool = False
+    """Whether a profile with unset ``tools`` gets this tool where it is usable."""
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -235,8 +237,12 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
     like any other pick.
     """
     from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
-    from openhands.sdk.tool.defaults import canonical_tool_name
+    from openhands.sdk.tool.defaults import canonical_tool_name, resolve_tool_specs
 
+    default_set = {
+        canonical_tool_name(spec.name)
+        for spec in resolve_tool_specs(None, enable_browser=True)
+    }
     with _LOCK:
         names = [
             name for name in _REG if _CATALOG_NAMES is None or name in _CATALOG_NAMES
@@ -253,6 +259,7 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
             user_selectable=tool_classes[name].user_selectable,
             usable=_check_tool_usable(name, usability_checkers.get(name, lambda: True)),
             description=tool_classes[name].catalog_description,
+            in_default_set=canonical_tool_name(name) in default_set,
         )
         for name in names
     ]
@@ -265,6 +272,7 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
                 tool_class.name, _usability_from_subclass(tool_class)
             ),
             description=tool_class.catalog_description,
+            in_default_set=tool_class.name in default_set,
         )
         for tool_class in BUILT_IN_TOOL_CLASSES.values()
         if tool_class.user_selectable and tool_class.name not in listed
