@@ -225,13 +225,20 @@ def test_docker_workspace_publishes_ports_on_loopback(mock_docker_workspace):
                 "SESSION_API_KEY": "legacy-key",
                 "OH_SESSION_API_KEYS_0": "current-key",
             },
-            "legacy-key",
+            "current-key",
         ),
     ],
 )
 def test_docker_workspace_uses_forwarded_session_key(
     mock_docker_workspace, monkeypatch, env, expected
 ):
+    """The client key must match what the server in this container accepts.
+
+    `forward_env` forwards both variables, and the server resolves the V1
+    `OH_SESSION_API_KEYS_0` first (V0 `SESSION_API_KEY` is only a fallback), so
+    with both set the workspace has to send the V1 key or the container
+    rejects it.
+    """
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
     monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
     for key, value in env.items():
