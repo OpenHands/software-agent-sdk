@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
+    _Runtime,
 )
 from openhands.agent_server.canvas_extensions.installed import (
     disable_canvas_extension,
@@ -370,13 +371,10 @@ def test_status_degrades_when_manifest_is_corrupted(tmp_path: Path):
     install_canvas_extension(str(source), installed_dir=installed_dir)
     manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
 
-    class _ReadyRuntime:
-        state = "ready"
-        port = 1
-        process = None
-        detail = None
-
-    manager._runtimes["my-extension"] = _ReadyRuntime()
+    runtime = _Runtime()
+    runtime.state = "ready"
+    runtime.port = 1
+    manager._runtimes["my-extension"] = runtime
     (installed_dir / "my-extension" / MANIFEST_FILENAME).write_text("{ not json")
 
     status = asyncio.run(manager.status("my-extension"))
