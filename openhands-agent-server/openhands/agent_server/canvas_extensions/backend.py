@@ -86,6 +86,10 @@ class _Runtime:
         self.log_bytes = 0
         self.logs_truncated = False
         self.drain_tasks: list[asyncio.Task[None]] = []
+        # The health wait runs in its own task so the name lock stays free for
+        # status()/stop()/logs() while a backend is coming up.
+        self.start_task: asyncio.Task[None] | None = None
+        self.stop_requested = asyncio.Event()
 
 
 class CanvasExtensionBackendManager:
@@ -314,7 +318,11 @@ class CanvasExtensionBackendManager:
                 runtime.detail = f"Backend exited with code {returncode}"
             elif runtime and runtime.state == "ready" and runtime.port is not None:
                 manifest = self._manifest(name)
-                assert manifest is not None and manifest.backend is not None
+                if manifest is None or manifest.backend is None:
+                    # The on-disk manifest no longer validates (or stopped
+                    # declaring a backend); report that instead of tracing back
+                    # an AssertionError once `_probe` dereferences it.
+                    return self._status_unlocked(name)
                 probe_url = (
                     f"http://127.0.0.1:{runtime.port}{manifest.backend.health.path}"
                 )
@@ -395,59 +403,114 @@ class CanvasExtensionBackendManager:
         except (OSError, urllib.error.URLError):
             return False
 
+    async def _await_healthy(
+        self,
+        runtime: _Runtime,
+        backend: CanvasExtensionBackend,
+        port: int,
+    ) -> None:
+        """Poll the backend's health endpoint until it is ready.
+
+        Runs as ``runtime.start_task`` rather than inline so the name lock is
+        free: ``status()`` can report ``starting`` and ``stop()`` can abandon a
+        backend that never comes up.
+        """
+        try:
+            deadline = time.monotonic() + backend.health.timeout_seconds
+            probe_url = f"http://127.0.0.1:{port}{backend.health.path}"
+            while time.monotonic() < deadline:
+                if runtime.stop_requested.is_set():
+                    return
+                process = runtime.process
+                if process is None or process.returncode is not None:
+                    code = process.returncode if process is not None else None
+                    raise RuntimeError(f"backend exited with code {code}")
+                if await asyncio.to_thread(self._probe, probe_url):
+                    runtime.state = "ready"
+                    runtime.detail = None
+                    return
+                await asyncio.sleep(backend.health.interval_seconds)
+            raise TimeoutError("backend health check timed out")
+        except asyncio.CancelledError:
+            runtime.state = "stopped"
+            runtime.detail = None
+            raise
+        except Exception as exc:
+            if runtime.stop_requested.is_set():
+                # `stop()` owns the final state; don't clobber it with an
+                # error raised purely because we tore the process down.
+                runtime.state = "stopped"
+                runtime.detail = None
+            else:
+                runtime.state = "unhealthy"
+                runtime.detail = str(exc)
+
     async def start(self, name: str, revision: str) -> BackendStatus:
         async with self._lock(name):
             current = self._status_unlocked(name)
             if current.state in {"missing", "unsupported"}:
                 return current
             runtime = self._runtime(name)
+            task = runtime.start_task
             if runtime.process and runtime.process.returncode is None:
                 if runtime.revision != revision:
                     raise RuntimeError(
                         "a different backend revision is already running"
                     )
-                return current
-            if revision != self.revision(name):
-                raise ValueError("approval revision does not match installed revision")
-            prepared = self._read_prepared(name)
-            if prepared is None or prepared.revision != revision:
-                raise RuntimeError("backend revision must be prepared before start")
-            artifact_dir = Path(prepared.artifact_dir)
-            if not artifact_dir.is_dir():
-                raise RuntimeError("prepared backend artifact is missing")
+                if task is None:
+                    return current
+            else:
+                if revision != self.revision(name):
+                    raise ValueError(
+                        "approval revision does not match installed revision"
+                    )
+                prepared = self._read_prepared(name)
+                if prepared is None or prepared.revision != revision:
+                    raise RuntimeError("backend revision must be prepared before start")
+                artifact_dir = Path(prepared.artifact_dir)
+                if not artifact_dir.is_dir():
+                    raise RuntimeError("prepared backend artifact is missing")
 
-            parts = self._backend_parts(name)
-            assert parts is not None
-            backend, artifact, current_platform = parts
-            expected_artifact_dir = (
-                self.artifacts_dir / name / prepared.artifact_sha256
-            ).resolve()
-            if (
-                prepared.platform != current_platform
-                or prepared.artifact_sha256 != artifact.sha256
-                or artifact_dir.resolve() != expected_artifact_dir
-            ):
-                raise RuntimeError("prepared backend metadata does not match manifest")
-            package_root = (self.installed_dir / name).resolve()
-            data_dir = self.data_dir / name
-            data_dir.mkdir(parents=True, exist_ok=True)
-            port = self._allocate_port()
-            runtime.state = "starting"
-            runtime.detail = None
-            runtime.port = port
-            runtime.revision = revision
-            runtime.logs.clear()
-            runtime.log_bytes = 0
-            runtime.logs_truncated = False
-            try:
-                runtime.process = await asyncio.create_subprocess_exec(
-                    *self._expand_argv(backend, port, data_dir, artifact_dir),
-                    cwd=package_root,
-                    env=self._environment(backend),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
+                parts = self._backend_parts(name)
+                assert parts is not None
+                backend, artifact, current_platform = parts
+                expected_artifact_dir = (
+                    self.artifacts_dir / name / prepared.artifact_sha256
+                ).resolve()
+                if (
+                    prepared.platform != current_platform
+                    or prepared.artifact_sha256 != artifact.sha256
+                    or artifact_dir.resolve() != expected_artifact_dir
+                ):
+                    raise RuntimeError(
+                        "prepared backend metadata does not match manifest"
+                    )
+                package_root = (self.installed_dir / name).resolve()
+                data_dir = self.data_dir / name
+                data_dir.mkdir(parents=True, exist_ok=True)
+                port = self._allocate_port()
+                runtime.state = "starting"
+                runtime.detail = None
+                runtime.port = port
+                runtime.revision = revision
+                runtime.logs.clear()
+                runtime.log_bytes = 0
+                runtime.logs_truncated = False
+                runtime.stop_requested = asyncio.Event()
+                try:
+                    runtime.process = await asyncio.create_subprocess_exec(
+                        *self._expand_argv(backend, port, data_dir, artifact_dir),
+                        cwd=package_root,
+                        env=self._environment(backend),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        start_new_session=True,
+                    )
+                except Exception as exc:
+                    runtime.state = "unhealthy"
+                    runtime.detail = str(exc)
+                    await self._terminate_runtime(runtime)
+                    return self._status_unlocked(name)
                 runtime.drain_tasks = [
                     asyncio.create_task(
                         self._drain(runtime, runtime.process.stdout, b"[stdout] ")
@@ -456,28 +519,18 @@ class CanvasExtensionBackendManager:
                         self._drain(runtime, runtime.process.stderr, b"[stderr] ")
                     ),
                 ]
-                deadline = time.monotonic() + backend.health.timeout_seconds
-                probe_url = f"http://127.0.0.1:{port}{backend.health.path}"
-                while time.monotonic() < deadline:
-                    if runtime.process.returncode is not None:
-                        raise RuntimeError(
-                            f"backend exited with code {runtime.process.returncode}"
-                        )
-                    if await asyncio.to_thread(self._probe, probe_url):
-                        runtime.state = "ready"
-                        return self._status_unlocked(name)
-                    await asyncio.sleep(backend.health.interval_seconds)
-                raise TimeoutError("backend health check timed out")
-            except asyncio.CancelledError:
-                runtime.state = "stopped"
-                runtime.detail = None
-                await asyncio.shield(self._terminate_runtime(runtime))
-                raise
-            except Exception as exc:
-                runtime.state = "unhealthy"
-                runtime.detail = str(exc)
+                task = asyncio.create_task(self._await_healthy(runtime, backend, port))
+                runtime.start_task = task
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        async with self._lock(name):
+            # Clear the handle and reclaim a failed start's process group here,
+            # where the runtime is known to still be ours.
+            if runtime.start_task is task:
+                runtime.start_task = None
+            if runtime.state == "unhealthy":
                 await self._terminate_runtime(runtime)
-                return self._status_unlocked(name)
+            return self._status_unlocked(name)
 
     async def _finish_runtime(self, runtime: _Runtime) -> None:
         if runtime.process is not None:
@@ -486,41 +539,77 @@ class CanvasExtensionBackendManager:
             await asyncio.gather(*runtime.drain_tasks, return_exceptions=True)
         runtime.drain_tasks = []
 
+    @staticmethod
+    def _signal_group(pgid: int, sig: int) -> None:
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+
+    @staticmethod
+    def _group_alive(pgid: int) -> bool:
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    async def _wait_for_group_exit(self, pgid: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            if not self._group_alive(pgid):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
+
     async def _terminate_runtime(self, runtime: _Runtime) -> None:
         process = runtime.process
         if process is None:
             return
+        pgid = process.pid
+        # Signal the whole group and wait for the *group* to drain, not just the
+        # leader: a backend may fork descendants, and one that outlives (or is
+        # forked just after) the leader keeps the group alive. Escalating only
+        # on the leader's exit code would leak those descendants.
+        if process.returncode is None or self._group_alive(pgid):
+            self._signal_group(pgid, signal.SIGTERM)
+            if not await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS):
+                self._signal_group(pgid, signal.SIGKILL)
+                await self._wait_for_group_exit(pgid, _STOP_TIMEOUT_SECONDS)
         if process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(process.wait(), _STOP_TIMEOUT_SECONDS)
-            except TimeoutError:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await process.wait()
+            await process.wait()
         await self._finish_runtime(runtime)
         runtime.process = None
         runtime.port = None
 
     def has_running_backends(self) -> bool:
         return any(
-            runtime.process is not None and runtime.process.returncode is None
+            runtime.start_task is not None
+            or (runtime.process is not None and runtime.process.returncode is None)
             for runtime in self._runtimes.values()
         )
 
     async def stop(self, name: str) -> BackendStatus:
+        task: asyncio.Task[None] | None = None
         async with self._lock(name):
             runtime = self._runtimes.get(name)
             if runtime is not None:
+                # Ask an in-flight health wait to give up before cancelling it,
+                # so a backend stuck in `starting` is stoppable instead of
+                # holding the lock (and the REST handler) for the full timeout.
+                runtime.stop_requested.set()
+                task = runtime.start_task
+                runtime.start_task = None
+                if task is not None:
+                    task.cancel()
                 await self._terminate_runtime(runtime)
                 runtime.state = "stopped"
                 runtime.detail = None
-            return self._status_unlocked(name)
+            status = self._status_unlocked(name)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        return status
 
     async def logs(self, name: str, limit_bytes: int) -> BackendLogs:
         async with self._lock(name):
@@ -538,7 +627,10 @@ class CanvasExtensionBackendManager:
     async def delete_data(self, name: str) -> BackendStatus:
         async with self._lock(name):
             runtime = self._runtimes.get(name)
-            if runtime and runtime.process and runtime.process.returncode is None:
+            if runtime and (
+                runtime.start_task is not None
+                or (runtime.process and runtime.process.returncode is None)
+            ):
                 raise RuntimeError("stop the backend before deleting its data")
             shutil.rmtree(self.data_dir / name, ignore_errors=True)
             return self._status_unlocked(name)

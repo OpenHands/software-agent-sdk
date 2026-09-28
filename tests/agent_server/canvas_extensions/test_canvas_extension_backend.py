@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -255,6 +256,132 @@ async def test_failed_start_cleanup_and_unsupported_states(tmp_path: Path):
     assert (await manager.status("my-extension")).state == "unhealthy"
     assert (await manager.status("browser-only")).state == "unsupported"
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_status_reports_starting_and_stop_abandons_hung_backend(
+    tmp_path: Path,
+):
+    """`starting` must be observable, and a hung start must be stoppable."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension", timeout=30)
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    # Replace the artifact with a backend that listens on nothing, so the
+    # health probe never succeeds and `start()` would otherwise block for the
+    # whole 30s timeout while holding the name lock.
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    payload = b"#!/usr/bin/python3\nimport time\ntime.sleep(300)\n"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+
+    starting = asyncio.create_task(manager.start("my-extension", revision))
+    saw_starting = False
+    for _ in range(200):
+        await asyncio.sleep(0.05)
+        if (await manager.status("my-extension")).state == "starting":
+            saw_starting = True
+            break
+    assert saw_starting, "`starting` was never observable"
+
+    started = time.monotonic()
+    stopped = await asyncio.wait_for(manager.stop("my-extension"), timeout=15)
+    elapsed = time.monotonic() - started
+    assert stopped.state == "stopped"
+    # The health timeout is 30s; stopping must not wait for it.
+    assert elapsed < 10, f"stop() waited {elapsed:.1f}s on a hung backend"
+
+    # `start()` returns the post-stop status rather than raising, because the
+    # health wait is cancelled by `stop()`.
+    started_status = (await asyncio.gather(starting, return_exceptions=True))[0]
+    assert not isinstance(started_status, BaseException)
+    assert started_status.state == "stopped"
+    assert (await manager.status("my-extension")).state == "stopped"
+    assert (await manager.delete_data("my-extension")).state == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_stop_kills_sigterm_ignoring_descendant(tmp_path: Path):
+    """Stopping must reclaim the whole process group, not just the leader."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    # A backend whose descendant survives SIGTERM: the leader exits promptly,
+    # so escalating only on the leader's exit code would leak the descendant.
+    archive = installed_dir / "my-extension" / "backend-linux-amd64.tar.gz"
+    payload = (
+        b"#!/usr/bin/python3\n"
+        b"import http.server, os, subprocess, sys\n"
+        b"port = int(sys.argv[1])\n"
+        b"data_dir = sys.argv[2]\n"
+        b"os.makedirs(data_dir, exist_ok=True)\n"
+        b"child = subprocess.Popen(['/bin/sh', '-c',"
+        b" \"trap '' TERM; sleep 300\"])\n"
+        b"with open(os.path.join(data_dir, 'child'), 'w') as stream:\n"
+        b"    stream.write(str(child.pid))\n"
+        b"class Handler(http.server.BaseHTTPRequestHandler):\n"
+        b"    def do_GET(self):\n"
+        b"        self.send_response(200)\n"
+        b"        self.end_headers()\n"
+        b"    def log_message(self, *args):\n"
+        b"        pass\n"
+        b"http.server.HTTPServer(('127.0.0.1', port), Handler).serve_forever()\n"
+    )
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo("server.py")
+        info.mode = 0o755
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    manifest_path = installed_dir / "my-extension" / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+    for artifact in manifest["backend"]["artifacts"].values():
+        artifact["sha256"] = checksum
+    manifest_path.write_text(json.dumps(manifest))
+
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+    revision = manager.revision("my-extension")
+    assert revision is not None
+    await manager.prepare("my-extension", revision)
+    assert (await manager.start("my-extension", revision)).state == "ready"
+    child_pid = int((manager.data_dir / "my-extension" / "child").read_text())
+    assert (await manager.stop("my-extension")).state == "stopped"
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+
+def test_status_degrades_when_manifest_is_corrupted(tmp_path: Path):
+    """A tampered live manifest must not surface as an AssertionError."""
+    source = _write_backend_extension(tmp_path / "source" / "my-extension")
+    installed_dir = tmp_path / "installed"
+    install_canvas_extension(str(source), installed_dir=installed_dir)
+    manager = CanvasExtensionBackendManager(installed_dir, tmp_path / "state")
+
+    class _ReadyRuntime:
+        state = "ready"
+        port = 1
+        process = None
+        detail = None
+
+    manager._runtimes["my-extension"] = _ReadyRuntime()
+    (installed_dir / "my-extension" / MANIFEST_FILENAME).write_text("{ not json")
+
+    status = asyncio.run(manager.status("my-extension"))
+    assert status.state == "missing"
+    assert status.detail
 
 
 def test_backend_http_lifecycle_and_data_deletion(
