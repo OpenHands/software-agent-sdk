@@ -519,7 +519,7 @@ def _run_tool_call(
         for block in result.content
         if isinstance(block, mcp.types.TextContent)
     )
-    return MCPToolCallResult(is_error=bool(result.isError), text=text)
+    return MCPToolCallResult(is_error=bool(result.is_error), text=text)
 
 
 def _probe_mcp_server(

@@ -13,7 +13,7 @@ def _make_tool_with_schema(schema: dict, name: str = "fetch"):
     mcp_tool = mcp.types.Tool(
         name=name,
         description="Fetch a URL",
-        inputSchema=schema,
+        input_schema=schema,
     )
     client = Mock(spec=MCPClient)
     return MCPToolDefinition.create(mcp_tool, client)[0]

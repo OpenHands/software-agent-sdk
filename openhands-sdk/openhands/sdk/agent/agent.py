@@ -108,7 +108,7 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
     if "summary" in tool.action_type.model_fields:
         return True
     if isinstance(tool, MCPToolDefinition):
-        props = tool.mcp_tool.inputSchema.get("properties", {})
+        props = tool.mcp_tool.input_schema.get("properties", {})
         if "summary" in props:
             return True
     return False

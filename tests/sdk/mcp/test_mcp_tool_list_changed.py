@@ -71,7 +71,7 @@ def _make_mcp_tool(name: str) -> mcp_types.Tool:
     return mcp_types.Tool(
         name=name,
         description=f"tool {name}",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     )
 
 
@@ -156,7 +156,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     old_tool = mcp_types.Tool(
         name="changing",
         description="old schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"old": {"type": "string"}},
             "required": ["old"],
@@ -165,7 +165,7 @@ def test_refresh_tools_reconciles_updates_and_removals():
     new_tool = mcp_types.Tool(
         name="changing",
         description="new schema",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {"new": {"type": "integer"}},
             "required": ["new"],
@@ -270,8 +270,7 @@ def progressive_server():
 
     async def notify_list_changed() -> None:
         notification = mcp_types.ToolListChangedNotification()
-        loop = asyncio.get_running_loop()
-        loop.create_task(get_context().send_notification(notification))
+        await get_context().send_notification(notification)
 
     @mcp.tool()
     async def gateway() -> str:
@@ -287,9 +286,7 @@ def progressive_server():
             """Tool added after the client connected."""
             return value * 2
 
-        # Send the notification as a fire-and-forget task so the tool-call
-        # response is flushed first; the notification rides the long-lived SSE
-        # stream the client keeps open for server notifications.
+        # MCP 2 delivers notifications on the active request stream.
         await notify_list_changed()
         return "registered"
 

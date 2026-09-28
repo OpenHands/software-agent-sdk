@@ -84,7 +84,7 @@ def slack_like_mcp_server():
 
     @server.add_tool
     def boom() -> str:
-        """Always raise so the call result carries isError=True."""
+        """Always raise so the call result carries is_error=True."""
         raise RuntimeError("upstream exploded")
 
     server.start(transport="http")

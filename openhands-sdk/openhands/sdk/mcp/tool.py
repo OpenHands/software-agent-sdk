@@ -267,7 +267,7 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
 
     cache_key = (
         action_type.name,
-        json.dumps(action_type.inputSchema, sort_keys=True, separators=(",", ":")),
+        json.dumps(action_type.input_schema, sort_keys=True, separators=(",", ":")),
     )
     with _mcp_dynamic_action_type_lock:
         mcp_action_type = _mcp_dynamic_action_type.get(cache_key)
@@ -276,7 +276,7 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
             return mcp_action_type
 
         model_name = f"MCP{to_camel_case(action_type.name)}Action"
-        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
+        mcp_action_type = Schema.from_mcp_schema(model_name, action_type.input_schema)
         _mcp_dynamic_action_type[cache_key] = mcp_action_type
         if len(_mcp_dynamic_action_type) > _MCP_ACTION_TYPE_CACHE_MAX:
             _mcp_dynamic_action_type.popitem(last=False)
@@ -425,7 +425,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             raise ValueError("MCPTool.to_mcp_tool does not support overriding schemas")
 
         return super().to_mcp_tool(
-            input_schema=self.mcp_tool.inputSchema,
+            input_schema=self.mcp_tool.input_schema,
             output_schema=self.observation_type.to_mcp_schema()
             if self.observation_type
             else None,
@@ -447,7 +447,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
         See: https://github.com/OpenHands/software-agent-sdk/issues/3955
         """
-        schema = copy.deepcopy(self.mcp_tool.inputSchema)
+        schema = copy.deepcopy(self.mcp_tool.input_schema)
         # Resolve any $ref / anyOf nodes (unlikely in raw MCP schemas but
         # keeps the contract consistent with the parent implementation).
         schema = _process_schema_node(schema, schema.get("$defs", {}))

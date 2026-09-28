@@ -95,9 +95,9 @@ def stateful_server():
             mcp.run_http_async(
                 host="127.0.0.1",
                 port=port,
-                transport="http",
+                transport="sse",
                 show_banner=False,
-                path="/mcp",
+                path="/sse",
             )
         )
 
@@ -127,8 +127,8 @@ class TestStatefulMCPSessionPersistence:
         config = {
             "mcpServers": {
                 "stateful": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -168,8 +168,8 @@ class TestStatefulMCPSessionPersistence:
         config = {
             "mcpServers": {
                 "stateful": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }
@@ -208,8 +208,8 @@ class TestStatefulMCPSessionPersistence:
         config = {
             "mcpServers": {
                 "stateful": {
-                    "transport": "http",
-                    "url": f"http://127.0.0.1:{port}/mcp",
+                    "transport": "sse",
+                    "url": f"http://127.0.0.1:{port}/sse",
                 }
             }
         }

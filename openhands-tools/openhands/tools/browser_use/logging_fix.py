@@ -8,9 +8,93 @@ In the meantime, using this script rather than a direct import means that
 logging will still work in the agent server."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
+
+import mcp.types
+from mcp.server.lowlevel import Server
 
 from openhands.sdk.utils.deprecation import warn_cleanup
+
+
+def _install_mcp_legacy_handlers() -> None:
+    if hasattr(Server, "list_tools"):
+        return
+
+    def list_handler(method: str, params_type: type, result_type: type, field: str):
+        def register(server: Server):
+            def decorator(func: Callable[[], Awaitable[list[Any]]]):
+                async def handler(_context: Any, _params: Any):
+                    return result_type(**{field: await func()})
+
+                server.add_request_handler(method, params_type, handler)
+                return func
+
+            return decorator
+
+        return register
+
+    async def error_result(message: str) -> mcp.types.CallToolResult:
+        return mcp.types.CallToolResult(
+            content=[mcp.types.TextContent(type="text", text=message)],
+            is_error=True,
+        )
+
+    def call_tool(server: Server):
+        def decorator(
+            func: Callable[[str, dict[str, Any] | None], Awaitable[list[Any]]],
+        ):
+            async def handler(_context: Any, params: mcp.types.CallToolRequestParams):
+                try:
+                    result = await func(params.name, params.arguments)
+                    if isinstance(result, mcp.types.CallToolResult):
+                        return result
+                    return mcp.types.CallToolResult(content=list(result))
+                except Exception as exc:
+                    return await error_result(str(exc))
+
+            server.add_request_handler(
+                "tools/call", mcp.types.CallToolRequestParams, handler
+            )
+            return func
+
+        return decorator
+
+    setattr(
+        Server,
+        "list_tools",
+        list_handler(
+            "tools/list",
+            mcp.types.PaginatedRequestParams,
+            mcp.types.ListToolsResult,
+            "tools",
+        ),
+    )
+    setattr(
+        Server,
+        "list_resources",
+        list_handler(
+            "resources/list",
+            mcp.types.PaginatedRequestParams,
+            mcp.types.ListResourcesResult,
+            "resources",
+        ),
+    )
+    setattr(
+        Server,
+        "list_prompts",
+        list_handler(
+            "prompts/list",
+            mcp.types.PaginatedRequestParams,
+            mcp.types.ListPromptsResult,
+            "prompts",
+        ),
+    )
+    setattr(Server, "call_tool", call_tool)
+
+
+_install_mcp_legacy_handlers()
 
 
 warn_cleanup(
