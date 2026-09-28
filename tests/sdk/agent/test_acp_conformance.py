@@ -277,7 +277,14 @@ def test_acp_conformance_probe(
 
         # The session advertised *some* model-selection mechanism, matching
         # supports_set_session_model's premise that one exists.
-        if provider.supports_set_session_model:
+        # agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` extension
+        # from NewSessionResponse, so a provider that selects its model via the
+        # legacy ``set_session_model`` RPC (gemini-cli 0.46, which advertises no
+        # ``model`` configOptions select) no longer surfaces ``_available_models``
+        # even though the live session still sends the block. Only require a
+        # visible mechanism when the session advertised the (still-supported)
+        # configOptions select.
+        if provider.supports_set_session_model and agent._model_via_config_option:
             assert agent._available_models is not None, (
                 f"provider={provider.key} claims supports_set_session_model "
                 "but the session response carried neither configOptions nor "

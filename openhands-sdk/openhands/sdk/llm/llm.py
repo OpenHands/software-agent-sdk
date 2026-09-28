@@ -37,7 +37,6 @@ from openhands.sdk.llm.utils.runtime_metadata import (
     store_result,
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -90,11 +89,14 @@ from litellm.utils import (
     create_pretrained_tokenizer,
     token_counter,
 )
+from tenacity import retry_if_exception, retry_if_exception_type
 
 from openhands.sdk.llm.exceptions import (
     LLMContextWindowTooSmallError,
     LLMNoResponseError,
     is_prompt_cache_too_small,
+    is_quota_exhaustion_error,
+    looks_like_auth_error,
     map_provider_exception,
 )
 
@@ -201,7 +203,7 @@ class LLMCallContext:
     """Per-conversation state threaded through the completion call chain.
 
     The primary path threads this explicitly:
-    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
+    ``Agent.step()`` → ``llm.generate(call_context=...)``
     → ``select_chat_options(call_context=...)``.
 
     A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
@@ -225,7 +227,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     API authentication, retry logic, and tool calling capabilities.
 
     Attributes:
-        model: Model name (e.g., "gpt-5.5").
+        model: Model name (e.g., "gpt-5.6").
         api_key: API key for authentication.
         base_url: Custom API base URL.
         num_retries: Number of retry attempts for failed requests.
@@ -237,7 +239,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         from pydantic import SecretStr
 
         llm = LLM(
-            model="gpt-5.5",
+            model="gpt-5.6",
             api_key=SecretStr("your-api-key"),
             usage_id="my-agent"
         )
@@ -250,7 +252,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
 
     model: str = Field(
-        default="gpt-5.5",
+        default="gpt-5.6",
         description="Model name.",
         json_schema_extra=field_meta(SettingProminence.CRITICAL),
     )
@@ -469,19 +471,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         json_schema_extra=field_meta(),
     )
     drop_params: bool = Field(default=True, json_schema_extra=field_meta())
-    modify_params: bool = Field(
-        default=True,
-        description=(
-            "Compatibility field. LiteLLM parameter modification is enabled "
-            "process-wide so concurrent LLM calls do not mutate shared global state."
-        ),
-        deprecated=(
-            "Deprecated since v1.42.0 and scheduled for removal in v1.47.0. "
-            "LiteLLM parameter modification is enabled process-wide; remove this "
-            "argument."
-        ),
-        json_schema_extra=field_meta(),
-    )
     disable_vision: bool | None = Field(
         default=None,
         description="If model is vision capable, this option allows to disable image "
@@ -673,6 +662,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # a result, so the read/check and store are kept atomic. ClassVar (shared);
     # critical sections are tiny and never cover network I/O.
     _runtime_metadata_lock: ClassVar[threading.Lock] = threading.Lock()
+    # Optional callback that returns a freshly-resolved API key. When set, an
+    # authentication failure (HTTP 401, e.g. a rotated/healed managed proxy key
+    # that LiteLLM reports as ``token_not_found_in_db``) triggers a single
+    # re-resolve of the key followed by one retry of the call. This is a
+    # near-term mitigation for stale credentials reaching a sandbox runtime
+    # agent; the durable fix is reference-only credential delivery (#4288).
+    # Held as a PrivateAttr so it is never serialized into conversation state.
+    _api_key_refresh_hook: Callable[[], str | SecretStr | None] | None = PrivateAttr(
+        default=None
+    )
+    # Recursion guard: set on the refreshed copy so a still-failing key does not
+    # loop. One refresh + one retry per call chain.
+    _auth_refresh_attempted: bool = PrivateAttr(default=False)
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
     )
@@ -700,18 +702,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not isinstance(data, dict):
             return data
         d = dict(data)
-
-        if "modify_params" in d:
-            warn_deprecated(
-                "LLM.modify_params",
-                deprecated_in="1.42.0",
-                removed_in="1.47.0",
-                details=(
-                    "LiteLLM parameter modification is enabled process-wide; "
-                    "remove this argument."
-                ),
-                stacklevel=3,
-            )
 
         model_val = d.get("model")
         if not model_val:
@@ -1036,16 +1026,91 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         raise
 
     # =========================================================================
+    # Authentication refresh (refresh-on-401)
+    # =========================================================================
+    def set_api_key_refresh_hook(
+        self, hook: Callable[[], str | SecretStr | None] | None
+    ) -> None:
+        """Register a callback that re-resolves this LLM's API key on a 401.
+
+        When a completion/responses call fails with an authentication error,
+        the hook is invoked once to obtain a fresh key; if it returns a new
+        value the call is retried a single time with that key. This mitigates
+        stale managed/proxy credentials reaching a sandbox runtime agent (e.g.
+        after a server-side managed-key rotation or heal), where the first call
+        would otherwise fail with ``401 token_not_found_in_db``.
+
+        The hook must be non-blocking / cheap; on the async paths it is invoked
+        in a worker thread. It is stored as a private attribute and is never
+        serialized into conversation state.
+        """
+        self._api_key_refresh_hook = hook
+
+    def _resolve_refreshed_api_key(self, error: Exception) -> SecretStr | None:
+        """Return a fresh API key to retry with, or ``None`` to skip refresh.
+
+        Returns ``None`` unless every condition holds: the error looks like an
+        authentication failure, a refresh hook is configured, no refresh has
+        already been attempted in this call chain, this LLM uses ``api_key``
+        auth, and the hook yields a key that differs from the current one.
+        """
+        if self._auth_refresh_attempted:
+            return None
+        if self._api_key_refresh_hook is None:
+            return None
+        if self.auth_type != "api_key":
+            return None
+        if not looks_like_auth_error(error):
+            return None
+        try:
+            new_key = self._api_key_refresh_hook()
+        except Exception:
+            # A flaky hook must not mask the original authentication error;
+            # log and skip the refresh so the caller sees the real 401.
+            logger.warning(
+                "API key refresh hook raised; skipping refresh and "
+                "surfacing the original authentication error.",
+                exc_info=True,
+            )
+            return None
+        if new_key is None:
+            return None
+        new_secret = new_key if isinstance(new_key, SecretStr) else SecretStr(new_key)
+        if not new_secret.get_secret_value():
+            return None
+        current = self._get_api_key_value()
+        if current is not None and current == new_secret.get_secret_value():
+            # A refresh that returns the same (still-rejected) key is useless;
+            # skip the retry and surface the original error.
+            return None
+        return new_secret
+
+    def _auth_refreshed_llm(self, new_api_key: SecretStr) -> LLM:
+        """Copy this LLM with a refreshed key and the recursion guard set."""
+        refreshed = self.model_copy(update={"api_key": new_api_key})
+        refreshed._auth_refresh_attempted = True
+        return refreshed
+
+    # =========================================================================
     # Shared helpers for completion / acompletion / responses / aresponses
     # =========================================================================
 
     def _make_retry_decorator(
         self,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Return a configured retry decorator using this LLM's retry settings."""
+        """Return a configured retry decorator using this LLM's retry settings.
+
+        Hard quota/usage-limit errors are excluded from retries so that, when a
+        :class:`~openhands.sdk.llm.FallbackStrategy` is configured, fallback to an
+        alternate model happens immediately instead of after the full retry
+        backoff — such errors will not recover until the limit resets or is raised.
+        """
+        retry_condition = retry_if_exception_type(LLM_RETRY_EXCEPTIONS) & (
+            retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
+        )
         return self.retry_decorator(
             num_retries=self.num_retries,
-            retry_exceptions=LLM_RETRY_EXCEPTIONS,
+            retry_exceptions=retry_condition,
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
@@ -1144,8 +1209,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             delta = event.delta
             if delta:
+                # ModelResponseStream mints a fresh id per instance, and a
+                # changed chunk id reads as a retry (StreamContext._emit_delta).
                 delta_chunk = ModelResponseStream(
-                    choices=[StreamingChoices(delta=Delta(content=delta))]
+                    id=event.item_id,
+                    choices=[StreamingChoices(delta=Delta(content=delta))],
                 )
 
         return output_item, delta_chunk
@@ -1509,6 +1577,70 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return resp
 
+    def generate(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Generate a response using the configured API mode."""
+        if self.uses_responses_api():
+            return self.responses(
+                messages=messages,
+                tools=tools,
+                include=include,
+                store=store,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+        return self.completion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    async def agenerate(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of :meth:`generate`."""
+        if self.uses_responses_api():
+            return await self.aresponses(
+                messages=messages,
+                tools=tools,
+                include=include,
+                store=store,
+                add_security_risk_prediction=add_security_risk_prediction,
+                on_token=on_token,
+                call_context=call_context,
+                **kwargs,
+            )
+        return await self.acompletion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
     # =========================================================================
     # Chat Completion API
     # =========================================================================
@@ -1616,6 +1748,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     on_token=on_token,
                     **_caller_kwargs,
                 )
+            # If the credential was rejected (401) and a refresh hook can supply
+            # a fresh key, re-resolve it and retry the call exactly once.
+            refreshed_key = self._resolve_refreshed_api_key(e)
+            if refreshed_key is not None:
+                logger.warning(
+                    "Authentication error; refreshing API key and retrying once."
+                )
+                return self._auth_refreshed_llm(refreshed_key).completion(
+                    messages,
+                    tools,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
+                    call_context=call_context,
+                    **_caller_kwargs,
+                )
             return self._handle_error(
                 e,
                 lambda fb: fb.completion(
@@ -1718,6 +1865,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    **_caller_kwargs,
+                )
+            # If the credential was rejected (401) and a refresh hook can supply
+            # a fresh key, re-resolve it (off the event loop) and retry once.
+            loop = asyncio.get_running_loop()
+            refreshed_key = await loop.run_in_executor(
+                None, self._resolve_refreshed_api_key, e
+            )
+            if refreshed_key is not None:
+                logger.warning(
+                    "Authentication error; refreshing API key and retrying once."
+                )
+                return await self._auth_refreshed_llm(refreshed_key).acompletion(
+                    messages,
+                    tools,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             # Fallback is synchronous; cast the token callback since the
@@ -1884,6 +2049,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    **_caller_kwargs,
+                )
+            # If the credential was rejected (401) and a refresh hook can supply
+            # a fresh key, re-resolve it and retry the call exactly once.
+            refreshed_key = self._resolve_refreshed_api_key(e)
+            if refreshed_key is not None:
+                logger.warning(
+                    "Authentication error; refreshing API key and retrying once."
+                )
+                return self._auth_refreshed_llm(refreshed_key).responses(
+                    messages,
+                    tools,
+                    include,
+                    store,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             return self._handle_error(
@@ -2061,6 +2243,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    **_caller_kwargs,
+                )
+            # If the credential was rejected (401) and a refresh hook can supply
+            # a fresh key, re-resolve it (off the event loop) and retry once.
+            loop = asyncio.get_running_loop()
+            refreshed_key = await loop.run_in_executor(
+                None, self._resolve_refreshed_api_key, e
+            )
+            if refreshed_key is not None:
+                logger.warning(
+                    "Authentication error; refreshing API key and retrying once."
+                )
+                return await self._auth_refreshed_llm(refreshed_key).aresponses(
+                    messages,
+                    tools,
+                    include,
+                    store,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 )
             _fb_token = cast("TokenCallbackType | None", on_token)

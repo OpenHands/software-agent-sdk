@@ -84,6 +84,7 @@ class TestACPProviderInfo:
         assert any(m.id == "gpt-5.6-sol" for m in info.available_models)
         assert any(m.id == "gpt-5.6-terra" for m in info.available_models)
         assert any(m.id == "gpt-5.6-luna" for m in info.available_models)
+        assert any(m.id == "gpt-6-astra" for m in info.available_models)
         assert any(m.id == "gpt-5.5" for m in info.available_models)
         assert info.binary_name == "codex-acp"
         assert info.data_dir_env_var == "CODEX_HOME"

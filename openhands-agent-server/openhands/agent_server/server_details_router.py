@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from importlib.metadata import version
+from typing import Literal
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
@@ -59,8 +60,11 @@ class ServerInfo(BaseModel):
     runtime_idle_timeout_seconds: float | None = Field(
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
+    conversation_runtime: Literal["local", "docker"] = "local"
     capabilities: list[str] = Field(
         default_factory=lambda: [
+            "conversation_runtime_routes_v1",
+            "profile_secret_scope_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
@@ -82,7 +86,7 @@ def update_last_execution_time():
 def mark_initialization_complete() -> None:
     """Mark the server as fully initialized and ready to serve requests.
 
-    This should be called after all services (VSCode, desktop, tool preload, etc.)
+    This should be called after all services (VSCode, tool preload, etc.)
     have finished initializing. Until this is called, the /ready endpoint will
     return 503 Service Unavailable.
     """
@@ -115,11 +119,23 @@ async def ready(response: Response) -> dict[str, str]:
         return {"status": "initializing", "message": "Server is still initializing"}
 
 
-@server_details_router.get("/server_info")
-async def get_server_info(request: Request) -> ServerInfo:
+def build_server_info(
+    conversation_runtime: Literal["local", "docker"] = "local",
+    execution_runtime: str = "local",
+) -> ServerInfo:
     now = time.time()
     return ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
-        execution_runtime=request.app.state.config.execution_runtime,
+        conversation_runtime=conversation_runtime,
+        execution_runtime=execution_runtime,
+    )
+
+
+@server_details_router.get("/server_info")
+async def get_server_info(request: Request) -> ServerInfo:
+    config = request.app.state.config
+    return build_server_info(
+        conversation_runtime=config.conversation_runtime,
+        execution_runtime=config.execution_runtime,
     )

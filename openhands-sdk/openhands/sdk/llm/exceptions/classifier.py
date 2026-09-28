@@ -67,6 +67,15 @@ PROMPT_CACHE_TOO_SMALL_PATTERNS: Final[list[str]] = [
     "minimum token count to start caching",
 ]
 
+# Deterministic "you have exhausted your allowance" outcomes. Unlike a transient
+# 429, these will NOT recover by retrying until the limit resets or is raised,
+# so retrying only burns backoff time. Callers (e.g. the LLM retry loop) use
+# this to skip retries and fail over to a fallback model immediately.
+QUOTA_EXHAUSTION_PATTERNS: Final[list[str]] = [
+    "usage_limit_reached",
+    "insufficient_quota",
+]
+
 AUTH_PATTERNS: Final[list[str]] = [
     "invalid api key",
     "unauthorized",
@@ -125,6 +134,19 @@ def is_prompt_cache_too_small(exception: Exception) -> bool:
         return False
     s = str(exception).lower()
     return any(p in s for p in PROMPT_CACHE_TOO_SMALL_PATTERNS)
+
+
+def is_quota_exhaustion_error(exception: BaseException) -> bool:
+    """Return True if the error indicates a hard quota/usage-limit exhaustion.
+
+    Covers deterministic allowance outcomes (OpenAI ``usage_limit_reached``,
+    ``insufficient_quota``, etc.) that will not recover on retry until the
+    limit resets or is raised. Retrying these only wastes backoff time, so
+    callers use this to skip retries and fail over to a fallback model
+    immediately.
+    """
+    s = str(exception).lower()
+    return any(p in s for p in QUOTA_EXHAUSTION_PATTERNS)
 
 
 def looks_like_auth_error(exception: Exception) -> bool:

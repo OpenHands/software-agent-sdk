@@ -14,7 +14,6 @@ export { SubAgentsClient } from './client/sub-agents-client';
 export { PluginsClient } from './client/plugins-client';
 export { ToolClient } from './client/tool-client';
 export { VSCodeClient } from './client/vscode-client';
-export { DesktopClient } from './client/desktop-client';
 export { SharedClient } from './client/shared-client';
 export { WorkspacesClient } from './client/workspaces-client';
 export { AgentServerClient, OpenHandsClient } from './client/openhands-client';
@@ -71,7 +70,6 @@ export type { SubAgentsClientOptions } from './client/sub-agents-client';
 export type { PluginsClientOptions } from './client/plugins-client';
 export type { ToolClientOptions } from './client/tool-client';
 export type { VSCodeClientOptions, GetVSCodeUrlOptions } from './client/vscode-client';
-export type { DesktopClientOptions } from './client/desktop-client';
 export type { SharedClientOptions, SharedEventSearchOptions } from './client/shared-client';
 export type {
   DeleteWorkspaceResponse,

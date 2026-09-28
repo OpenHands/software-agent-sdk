@@ -391,3 +391,99 @@ def test_list_installed_empty_and_multiple(client: TestClient, tmp_path: Path):
         for e in client.get("/canvas-extensions/installed").json()["canvas_extensions"]
     }
     assert names == {"ext-one", "ext-two"}
+
+
+@pytest.mark.parametrize(
+    "source_suffix,repo_path",
+    [
+        ("", "demo-extension"),
+        ("", "/demo-extension"),
+        ("/", "demo-extension"),
+        ("/", "/demo-extension"),
+    ],
+)
+def test_install_composes_local_source_and_repo_path(
+    client: TestClient, tmp_path: Path, source_suffix: str, repo_path: str
+):
+    """A parent directory as Source plus the extension dir as Path installs."""
+    repo = tmp_path / "canvas-extensions"
+    write_extension(repo / "demo-extension", name="demo-extension")
+    # A sibling that must not be picked up.
+    write_extension(repo / "other-extension", name="other-extension")
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo) + source_suffix, "repo_path": repo_path},
+    )
+
+    assert install.status_code == 200, install.json()
+    body = install.json()
+    assert body["name"] == "demo-extension"
+    assert body["repo_path"] == repo_path
+    assert body["enabled"] is False
+
+
+def test_install_with_full_extension_dir_as_source_still_works(
+    client: TestClient, tmp_path: Path
+):
+    """The pre-existing single-field flow is unchanged."""
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+
+    install = client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    assert install.status_code == 200
+    assert install.json()["name"] == "demo-extension"
+
+
+def test_install_reports_which_field_is_wrong_for_bad_repo_path(
+    client: TestClient, tmp_path: Path
+):
+    """A bad Path blames Path, not the source (the old message misattributed)."""
+    repo = tmp_path / "canvas-extensions"
+    write_extension(repo / "demo-extension", name="demo-extension")
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo), "repo_path": "demo-extensio"},
+    )
+
+    assert install.status_code == 400
+    assert "demo-extensio" in install.json()["detail"]
+    assert "not found" in install.json()["detail"]
+    # The canvas client classifies any message containing "failed to fetch" as
+    # a network outage and replaces it with a "Disconnected" toast, which would
+    # hide the reason we just went to the trouble of reporting.
+    assert "failed to fetch" not in install.json()["detail"].lower()
+
+
+def test_install_reports_missing_manifest_at_resolved_location(
+    client: TestClient, tmp_path: Path
+):
+    """Pointing Source/Path at a directory with no manifest says so."""
+    repo = tmp_path / "canvas-extensions"
+    (repo / "not-an-extension").mkdir(parents=True)
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo), "repo_path": "not-an-extension"},
+    )
+
+    assert install.status_code == 422
+    assert "canvas-extension.json" in install.json()["detail"]
+
+
+def test_install_rejects_repo_path_escaping_the_source(
+    client: TestClient, tmp_path: Path
+):
+    """A traversing Path is rejected rather than resolving outside Source."""
+    repo = tmp_path / "canvas-extensions"
+    write_extension(repo / "demo-extension", name="demo-extension")
+    write_extension(tmp_path / "outside-extension", name="outside-extension")
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo), "repo_path": "../outside-extension"},
+    )
+
+    assert install.status_code == 400
+    assert "escapes" in install.json()["detail"]
