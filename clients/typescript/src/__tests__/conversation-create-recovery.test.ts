@@ -1,6 +1,26 @@
 import { createServer, Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { ConversationClient } from '../client/conversation-client';
+import { HttpError } from '../client/http-client';
+
+/**
+ * Assert `promise` rejects with the transport error the client rethrows when a
+ * create fails without an HTTP response. The exact message comes from the
+ * runtime's `fetch` (`fetch failed` on modern Node), so only assert the
+ * stable contract: a generic Error, never an HttpError, carrying the cause.
+ */
+async function expectPreservedTransportError(promise: Promise<unknown>) {
+  const error = await promise.then(
+    () => {
+      throw new Error('expected createConversation to reject');
+    },
+    (rejection: unknown) => rejection
+  );
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toBeInstanceOf(HttpError);
+  expect((error as Error).cause).toBeDefined();
+  expect((error as Error).message).toMatch(/^Request failed: /);
+}
 
 describe('conversation create response loss', () => {
   let server: Server;
@@ -65,11 +85,11 @@ describe('conversation create response loss', () => {
   it('preserves the transport error if no conversation was saved', async () => {
     saveBeforeDrop = false;
     const options = { host, creationRecoveryTimeout: 100 };
-    await expect(
+    await expectPreservedTransportError(
       new ConversationClient(options).createConversation({
         conversation_id: 'test-cid',
       })
-    ).rejects.toThrow('Unknown request error');
+    );
     expect(creates).toBe(1);
     expect(reads).toBeGreaterThanOrEqual(1);
   });
@@ -78,19 +98,17 @@ describe('conversation create response loss', () => {
     readStatus = 401;
     const started = Date.now();
     const options = { host, creationRecoveryTimeout: 1000 };
-    await expect(
+    await expectPreservedTransportError(
       new ConversationClient(options).createConversation({
         conversation_id: 'test-cid',
       })
-    ).rejects.toThrow('Unknown request error');
+    );
     expect(reads).toBe(1);
     expect(creates).toBe(1);
     expect(Date.now() - started).toBeLessThan(1000);
   });
   it('does not guess a conversation id when the caller supplied none', async () => {
-    await expect(new ConversationClient({ host }).createConversation({})).rejects.toThrow(
-      'Unknown request error'
-    );
+    await expectPreservedTransportError(new ConversationClient({ host }).createConversation({}));
     expect(creates).toBe(1);
     expect(reads).toBe(0);
   });
