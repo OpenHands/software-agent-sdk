@@ -8,7 +8,6 @@ See the ``openhands.sdk.plugin.format`` package docstring for the design.
 """
 
 import json
-from functools import cache
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
@@ -18,14 +17,20 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
+from openhands.sdk.plugin.format.agent_plugins_mcp import (
+    get_plugin_data_dir,
+    load_mcp_servers,
+)
 from openhands.sdk.plugin.format.base import (
     PluginFormat,
+    _load_schema,
     _read_command_definitions,
     _read_hooks_config,
 )
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
 from openhands.sdk.subagent.load import load_agents_from_dir
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import resolves_within
 
 
 logger = get_logger(__name__)
@@ -39,7 +44,6 @@ MANIFEST_FILE: Final[str] = "plugin.json"
 #: components (§8.2).
 EXTENSION_NAMESPACE: Final[str] = "dev.openhands"
 
-_SCHEMAS_DIR: Final[Path] = Path(__file__).parent / "schemas"
 
 #: The only manifest ``$schema`` we support, and its vendored file. Agent
 #: Plugins also publishes an ``mcp.schema.json``, but that one belongs to the
@@ -49,12 +53,6 @@ MANIFEST_SCHEMA_URL: Final[str] = (
     "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 )
 _MANIFEST_SCHEMA_FILE: Final[str] = "plugin-1.0.0.schema.json"
-
-
-@cache
-def _load_schema(filename: str) -> dict[str, Any]:
-    """Read a vendored schema. Cached; never fetched over the network."""
-    return json.loads((_SCHEMAS_DIR / filename).read_text(encoding="utf-8"))
 
 
 class AgentPluginsFormat(PluginFormat):
@@ -79,12 +77,16 @@ class AgentPluginsFormat(PluginFormat):
     moving those directories rather than rewriting them. Namespaces other than
     ours are ignored without validating their contents.
 
-    ``mcp.json`` is a follow-up under #4405, so its loader still returns empty.
-
-    Not registered in ``_FORMATS`` yet; see the package docstring.
+    Args:
+        plugin_data_root: Parent of the per-plugin ``PLUGIN_DATA`` directories.
+            Defaults to the user's plugin data directory; injectable for tests
+            and for callers that keep plugin state somewhere else.
     """
 
     name: ClassVar[str] = "agent-plugins"
+
+    def __init__(self, *, plugin_data_root: Path | None = None) -> None:
+        self._plugin_data_root = plugin_data_root
 
     @classmethod
     def detect(cls, plugin_dir: Path) -> bool:
@@ -111,6 +113,10 @@ class AgentPluginsFormat(PluginFormat):
             ValueError: On any fatal manifest violation.
         """
         manifest_path = plugin_dir / MANIFEST_FILE
+        if not resolves_within(manifest_path, plugin_dir):
+            raise ValueError(
+                f"Manifest {manifest_path} resolves outside the plugin root"
+            )
         try:
             # utf-8-sig: tolerate a leading BOM, which RFC 8259 lets us ignore.
             data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -161,21 +167,35 @@ class AgentPluginsFormat(PluginFormat):
             data | _extension_manifest_fields(data, manifest_path)
         )
 
-    def load_mcp_config(self, plugin_dir: Path) -> dict[str, MCPServer]:  # noqa: ARG002
-        """Not read yet: root ``mcp.json`` is a follow-up."""
-        return {}
+    def load_mcp_config(self, plugin_dir: Path) -> dict[str, MCPServer]:
+        """Load MCP servers from the root ``mcp.json`` (no leading dot).
+
+        Unlike the Claude Code format, expansion is complete here: Agent Plugins
+        defines exactly two placeholders and forbids every other kind, so there
+        is nothing left to expand once per-conversation secrets arrive.
+        """
+        plugin_root = plugin_dir.resolve()
+        return load_mcp_servers(
+            plugin_dir,
+            plugin_root=plugin_root,
+            plugin_data=get_plugin_data_dir(
+                plugin_root, data_root=self._plugin_data_root
+            ),
+        )
 
     def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
         """Load hooks from ``dev.openhands/hooks/hooks.json``."""
-        return _read_hooks_config(plugin_dir / EXTENSION_NAMESPACE)
+        return _read_hooks_config(plugin_dir / EXTENSION_NAMESPACE, plugin_dir)
 
     def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:
         """Load agent definitions from ``dev.openhands/agents/``."""
-        return load_agents_from_dir(plugin_dir / EXTENSION_NAMESPACE / "agents")
+        return load_agents_from_dir(
+            plugin_dir / EXTENSION_NAMESPACE / "agents", root=plugin_dir
+        )
 
     def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
         """Load command definitions from ``dev.openhands/commands/``."""
-        return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE)
+        return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE, plugin_dir)
 
 
 def _extension_manifest_fields(

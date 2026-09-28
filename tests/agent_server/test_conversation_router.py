@@ -1,7 +1,7 @@
 """Tests for conversation_router.py endpoints."""
 
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
@@ -16,6 +17,8 @@ from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
     ConversationSortOrder,
     SendMessageRequest,
     StartConversationRequest,
@@ -147,6 +150,40 @@ def test_search_conversations_default_params(
         )
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_search_conversations_includes_runtime_info(
+    client, mock_conversation_service, sample_conversation_info
+):
+    mock_conversation_service.search_conversations.return_value = ConversationPage(
+        items=[sample_conversation_info]
+    )
+
+    class MissingRuntimeRegistry(ConversationRegistry):
+        def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
+            return ConversationRuntimeInfo(
+                runtime_status=ConversationRuntimeStatus.MISSING,
+                can_resume=False,
+            )
+
+    registry = MissingRuntimeRegistry(client.app.state.config)
+    client.app.state.conversation_registry = registry
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get("/api/conversations/search")
+    finally:
+        client.app.dependency_overrides.clear()
+        del client.app.state.conversation_registry
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["runtime_info"] == {
+        "runtime_status": "missing",
+        "can_resume": False,
+        "runtime_error": None,
+    }
 
 
 def test_search_conversations_with_all_params(

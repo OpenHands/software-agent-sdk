@@ -1491,7 +1491,6 @@ describe('Auxiliary API clients', () => {
             {
               name: 'balanced',
               classifier_model: 'classifier',
-              default_model: 'default',
               num_classes: 2,
             },
           ],
@@ -1520,7 +1519,6 @@ describe('Auxiliary API clients', () => {
           name: 'my profile',
           config: {
             classifier_model: 'classifier',
-            default_model: 'default',
             classes: [{ description: 'UI', model: 'fast' }],
           },
         }),
@@ -1550,7 +1548,6 @@ describe('Auxiliary API clients', () => {
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const config = {
       classifier_model: 'classifier',
-      default_model: 'default',
       classes: [{ description: 'tests', model: 'slow' }],
     };
     const result = await client.saveMetaProfile('balanced', config);
@@ -2103,7 +2100,7 @@ describe('Auxiliary API clients', () => {
     const client = new SettingsClient({ host: 'http://example.com' });
     await client.getSettings({ exposeSecrets: 'encrypted' });
     await client.updateSettings({ conversation_settings_diff: { max_iterations: 50 } });
-    await client.listSecrets();
+    await client.listSecrets({ agentProfileId: 'profile-id' });
     await client.upsertSecret({ name: 'TOKEN', value: 'secret', description: 'token' });
     await expect(client.getSecret('TOKEN')).resolves.toBe('plain-secret');
     await client.deleteSecret('TOKEN/with slash');
@@ -2126,7 +2123,7 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
-      'http://example.com/api/settings/secrets',
+      'http://example.com/api/settings/secrets?agent_profile_id=profile-id',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(

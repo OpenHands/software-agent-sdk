@@ -373,7 +373,6 @@ export type {
   TogglePluginResponse,
   PluginActionResponse,
   RefreshPluginResponse,
-  DesktopUrlResponse,
   VSCodeUrlResponse,
   VSCodeStatusResponse,
   ProfileInfo,
