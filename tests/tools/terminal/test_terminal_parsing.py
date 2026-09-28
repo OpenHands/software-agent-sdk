@@ -129,6 +129,25 @@ def test_heredoc_script_is_not_split(input_commands):
             "cat <<EOF\nunterminated\necho second",
             ["cat <<EOF\nunterminated\necho second"],
         ),
+        # A heredoc *nested* in a compound statement or substitution does not
+        # end the statement: tree-sitter leaves the closing token (`fi`, `)`)
+        # unnamed, so the following newline must still split.
+        (
+            "if true; then\n  cat <<EOF\nx\nEOF\nfi\necho after",
+            ["if true; then\n  cat <<EOF\nx\nEOF\nfi", "echo after"],
+        ),
+        (
+            "x=$(cat <<EOF\nhi\nEOF\n)\nrm -rf /tmp/x",
+            ["x=$(cat <<EOF\nhi\nEOF\n)", "rm -rf /tmp/x"],
+        ),
+        (
+            "( cat <<EOF\nx\nEOF\n)\necho after",
+            ["( cat <<EOF\nx\nEOF\n)", "echo after"],
+        ),
+        (
+            "for i in 1 2; do cat <<EOF\nx\nEOF\ndone\necho after",
+            ["for i in 1 2; do cat <<EOF\nx\nEOF\ndone", "echo after"],
+        ),
     ],
 )
 def test_non_heredoc_newlines_still_split(input_commands, expected_output):

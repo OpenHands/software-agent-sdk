@@ -31,9 +31,18 @@ _ESCAPE_PATTERN: re.Pattern[bytes] = re.compile(rb"\\([;&|<>])")
 
 
 def _ends_with_heredoc(node: Node) -> bool:
-    if node.type == "heredoc_end":
-        return True
-    return bool(node.named_children) and _ends_with_heredoc(node.named_children[-1])
+    """Whether ``node``'s final token is a heredoc terminator.
+
+    Checking only that the last *named* descendant is a ``heredoc_end`` is not
+    enough: tree-sitter leaves closing tokens such as ``fi``, ``done``, and
+    ``)`` unnamed, so a compound statement or substitution that merely
+    *contains* a heredoc would match and swallow the newline that actually ends
+    the statement. Require the terminator to reach ``node``'s end too.
+    """
+    last = node
+    while last.named_children:
+        last = last.named_children[-1]
+    return last.type == "heredoc_end" and last.end_byte == node.end_byte
 
 
 def split_bash_commands(commands: str) -> list[str]:
