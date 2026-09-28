@@ -56,6 +56,17 @@ You may find that occasionally we are opinionated about several things:
 - **Compatibility is part of the API**: if something could break downstream clients, call it
   out explicitly and consider a migration path. We have a deprecation mechanism you may want to use.
 
+### New AI providers
+
+Adding a new AI provider is generally out of scope for the SDK unless it is broadly popular and
+commonly used by OpenHands users. The SDK should provide reusable interfaces and extension points,
+not maintain a long tail of provider-specific integrations.
+
+Feature requests and pull requests for providers that do not meet that bar should be marked as
+out of scope and closed politely. Contributors can still use the existing generic provider
+interfaces or maintain integrations externally. If demand becomes broad and sustained, a future
+request can be reassessed with evidence of user adoption and a maintainable integration shape.
+
 If you’re not sure whether a change crosses these lines, please ask early. We’re happy to help think
 through the shape of a clean interface.
 
