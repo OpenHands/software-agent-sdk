@@ -44,7 +44,6 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
-from openhands.agent_server.event_router import event_router
 from openhands.agent_server.execution_runtime import execution_runtime_router
 from openhands.agent_server.execution_runtime.workspace import (
     cleanup_execution_containers,
