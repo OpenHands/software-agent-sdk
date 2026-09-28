@@ -291,7 +291,7 @@ async def set_canvas_extension_enabled_endpoint(
 ) -> UpdateCanvasExtensionStateResponse:
     """Enable or disable an installed canvas extension."""
     if not request.enabled:
-        await _backend_manager(http_request).stop(extension_name)
+        await _revoke_and_stop_backend(http_request, extension_name)
     fn = enable_canvas_extension if request.enabled else disable_canvas_extension
     if not fn(name=extension_name):
         raise HTTPException(
@@ -313,7 +313,7 @@ async def uninstall_canvas_extension_endpoint(
     request: Request,
 ) -> UninstallCanvasExtensionResponse:
     """Uninstall a canvas extension by name while retaining backend data."""
-    await _backend_manager(request).stop(extension_name)
+    await _revoke_and_stop_backend(request, extension_name)
     if not uninstall_canvas_extension(name=extension_name):
         raise HTTPException(
             status_code=404,
@@ -379,7 +379,9 @@ async def stop_canvas_extension_backend_endpoint(
     request: Request,
 ) -> BackendStatus:
     """Stop the backend's owned process group idempotently."""
-    return await _backend_manager(request).stop(extension_name)
+    # Revoke app-scoped sessions too: a stopped backend must not stay reachable
+    # through a cookie that outlives it.
+    return await _revoke_and_stop_backend(request, extension_name)
 
 
 @canvas_extensions_router.get(
