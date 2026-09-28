@@ -38,9 +38,10 @@ from openhands.sdk.llm.llm_profile_store import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
-    AgentProfile,
+    ACPAgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
+    OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
     resolve_agent_profile_dry_run,
@@ -102,7 +103,7 @@ class ActivateAgentProfileResponse(BaseModel):
 
 
 class MaterializeAgentProfileRequest(BaseModel):
-    profile: AgentProfile | None = Field(
+    profile: dict[str, Any] | None = Field(
         default=None,
         description=(
             "Draft profile to evaluate instead of the stored one. The path name "
@@ -316,23 +317,11 @@ async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     return AgentProfileDetailResponse(name=name, profile=payload)
 
 
-@agent_profiles_router.post(
-    "/{name}",
-    response_model=AgentProfileMutationResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def save_agent_profile(
-    name: ProfileName, body: dict[str, Any]
-) -> AgentProfileMutationResponse:
-    """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
-
-    The path ``name`` is authoritative — it overrides any ``name`` in the body.
-    The profile is secret-free at rest (#4017), so no cipher/encryption is
-    involved. Returns 409 if creating a new profile would exceed
-    ``MAX_AGENT_PROFILES``.
-    """
+def _validate_profile_payload(
+    payload: dict[str, Any],
+) -> OpenHandsAgentProfile | ACPAgentProfile:
     try:
-        profile = validate_agent_profile({**body, "name": name})
+        return validate_agent_profile(payload)
     except ValidationError as e:
         # Match FastAPI's request-validation shape (``detail`` is a list of
         # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
@@ -349,6 +338,24 @@ async def save_agent_profile(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid agent profile",
         )
+
+
+@agent_profiles_router.post(
+    "/{name}",
+    response_model=AgentProfileMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def save_agent_profile(
+    name: ProfileName, body: dict[str, Any]
+) -> AgentProfileMutationResponse:
+    """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
+
+    The path ``name`` is authoritative — it overrides any ``name`` in the body.
+    The profile is secret-free at rest (#4017), so no cipher/encryption is
+    involved. Returns 409 if creating a new profile would exceed
+    ``MAX_AGENT_PROFILES``.
+    """
+    profile = _validate_profile_payload({**body, "name": name})
 
     store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
@@ -533,7 +540,7 @@ async def materialize_agent_profile(
     redacted (api_key_set booleans; no raw secrets).
     """
     if body is not None and body.profile is not None:
-        profile = body.profile.model_copy(update={"name": name})
+        profile = _validate_profile_payload({**body.profile, "name": name})
     else:
         store = get_agent_profile_store()
         try:

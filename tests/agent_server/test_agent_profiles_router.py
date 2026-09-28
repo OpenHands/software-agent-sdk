@@ -1265,3 +1265,46 @@ def test_materialize_no_raw_secrets_in_resolved_settings(
     body = response.json()
     assert body["valid"] is True
     assert raw_key not in response.text
+
+
+def test_materialize_migrates_an_old_draft_like_save(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {
+        "schema_version": 2,
+        "agent_kind": "openhands",
+        "llm_profile_ref": "base-llm",
+        "enable_sub_agents": True,
+    }
+
+    with (
+        patch(_BROWSER_PROBE, return_value=False),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        previewed = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={"profile": draft}
+        )
+        saved = client_with_llm_store.post("/api/agent-profiles/p", json=draft)
+
+    assert previewed.status_code == 200
+    assert saved.status_code == 201
+    tools = [t["name"] for t in previewed.json()["resolved_settings"]["tools"]]
+    assert "task_tool_set" in tools
+
+
+def test_materialize_rejects_a_draft_newer_than_save_accepts(client_with_llm_store):
+    draft = {
+        "name": "p",
+        "schema_version": 99,
+        "agent_kind": "openhands",
+        "llm_profile_ref": "x",
+    }
+
+    previewed = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize", json={"profile": draft}
+    )
+    saved = client_with_llm_store.post("/api/agent-profiles/p", json=draft)
+
+    assert previewed.status_code == 422
+    assert saved.status_code == 422
