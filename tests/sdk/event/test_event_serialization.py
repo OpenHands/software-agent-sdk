@@ -90,6 +90,38 @@ def test_action_event_serialization() -> None:
     assert deserialized.thought == event.thought
     assert deserialized.tool_name == event.tool_name
     assert deserialized.tool_call_id == event.tool_call_id
+
+
+def test_v1_persisted_action_event_without_reasoning_details_loads() -> None:
+    """Pre-``reasoning_details`` persisted ActionEvent JSON must still load.
+
+    ``reasoning_details`` is additive with a ``None`` default, so an event
+    persisted before this field existed (no key at all in the payload) must
+    load unchanged rather than raising under ``extra="forbid"``.
+    """
+    tool_call = MessageToolCall(
+        id="call_123",
+        name="mock_tool",
+        arguments="{}",
+        origin="completion",
+    )
+    action = EventsSerializationMockAction()
+    event = ActionEvent(
+        thought=[TextContent(text="I need to do something")],
+        action=action,
+        tool_name="mock_tool",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_456",
+    )
+    raw = json.loads(event.model_dump_json())
+    assert "reasoning_details" in raw  # sanity: field exists on current model
+    del raw["reasoning_details"]  # simulate a pre-field persisted payload
+
+    deserialized = ActionEvent.model_validate(raw)
+
+    assert deserialized.reasoning_details is None
+    assert deserialized.tool_call_id == event.tool_call_id
     assert deserialized.tool_call == event.tool_call
     assert deserialized.llm_response_id == event.llm_response_id
     # Action is deserialized as Action, so we can't check exact equality

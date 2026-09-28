@@ -72,6 +72,7 @@ def classify_response(message: Message) -> LLMResponseType:
         message.responses_reasoning_item is not None
         or message.reasoning_content is not None
         or message.thinking_blocks
+        or message.reasoning_details
     ):
         return LLMResponseType.REASONING_ONLY
 
@@ -107,6 +108,7 @@ class ResponseDispatchMixin:
                 list[ThinkingBlock | RedactedThinkingBlock] | None
             ) = None,
             responses_reasoning_item: ReasoningItemModel | None = None,
+            reasoning_details: list[dict[str, Any]] | None = None,
             stream: StreamContext | None = None,
         ) -> ActionEvent | None: ...
 
@@ -175,6 +177,7 @@ class ResponseDispatchMixin:
                 responses_reasoning_item=(
                     message.responses_reasoning_item if i == 0 else None
                 ),
+                reasoning_details=(message.reasoning_details if i == 0 else None),
                 # The streamed text is this action's thought, so the first
                 # action event is what retires the slot.
                 stream=stream if i == 0 else None,
@@ -229,6 +232,7 @@ class ResponseDispatchMixin:
                 responses_reasoning_item=(
                     message.responses_reasoning_item if i == 0 else None
                 ),
+                reasoning_details=(message.reasoning_details if i == 0 else None),
                 # The streamed text is this action's thought, so the first
                 # action event is what retires the slot.
                 stream=stream if i == 0 else None,
@@ -322,9 +326,10 @@ class ResponseDispatchMixin:
     def _mask_secrets(message: Message, conversation: LocalConversation) -> Message:
         """Return ``message`` with registered secret values masked in its text.
 
-        ``thinking_blocks`` and ``responses_reasoning_item`` are left alone:
-        they are signed provider payloads, and rewriting them invalidates the
-        signature replayed on the next request.
+        ``thinking_blocks``, ``responses_reasoning_item``, and
+        ``reasoning_details`` are left alone: they are signed/opaque provider
+        payloads (may include encrypted data), and rewriting them invalidates
+        the signature replayed on the next request.
         """
         mask = conversation.state.secret_registry.mask_secrets_in_output
         reasoning = message.reasoning_content

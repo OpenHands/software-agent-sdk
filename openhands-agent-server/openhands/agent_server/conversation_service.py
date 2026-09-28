@@ -79,6 +79,8 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.context.condenser import CondenserBase
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
     from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
@@ -347,6 +349,74 @@ def _apply_acp_skill_sourcing(
                     "registered_marketplaces": [],
                 }
             )
+        }
+    )
+
+
+def _resolve_condenser_llms(
+    condenser: "CondenserBase | None",
+    llm_store: "LLMProfileStore",
+    cipher: "Cipher | None",
+) -> "CondenserBase | None":
+    """Resolve provider connections on the condenser's own LLM(s).
+
+    Covers the two condenser shapes that carry an LLM: a bare
+    ``LLMSummarizingCondenser``, and a ``PipelineCondenser`` chaining one or
+    more of them (see ``PipelineCondenser``'s own docstring for that pattern).
+    Not a generic walk over ``CondenserBase`` — no other variant has an LLM.
+    """
+    from openhands.sdk.context.condenser import (
+        LLMSummarizingCondenser,
+        PipelineCondenser,
+    )
+
+    if isinstance(condenser, LLMSummarizingCondenser):
+        return condenser.model_copy(
+            update={
+                "llm": llm_store.resolve_provider_connection(
+                    condenser.llm,
+                    cipher=cipher,
+                    context=f"condenser llm ({condenser.llm.usage_id})",
+                )
+            }
+        )
+    if isinstance(condenser, PipelineCondenser):
+        return condenser.model_copy(
+            update={
+                "condensers": [
+                    _resolve_condenser_llms(c, llm_store, cipher)
+                    for c in condenser.condensers
+                ]
+            }
+        )
+    return condenser
+
+
+def _resolve_agent_provider_connections(
+    agent: AgentBase, *, cipher: "Cipher | None"
+) -> AgentBase:
+    """Resolve any ``provider_connection_id`` on the agent's LLM/condenser LLM.
+
+    A profile-based launch already resolves its LLM via
+    :meth:`LLMProfileStore.load`, and the default condenser LLM derives from
+    that already-resolved LLM — this is a no-op for it. A raw agent (no
+    ``agent_profile_id``) carries independent, already-serialized LLM objects
+    that are otherwise never resolved, so a linked one would silently launch
+    with no credential. No-op when nothing in the agent references a
+    connection.
+    """
+    if not any(llm.provider_connection_id for llm in agent.get_all_llms()):
+        return agent
+
+    from openhands.agent_server.persistence.store import get_llm_profile_store
+
+    llm_store = get_llm_profile_store()
+    return agent.model_copy(
+        update={
+            "llm": llm_store.resolve_provider_connection(
+                agent.llm, cipher=cipher, context=f"agent llm ({agent.llm.usage_id})"
+            ),
+            "condenser": _resolve_condenser_llms(agent.condenser, llm_store, cipher),
         }
     )
 
@@ -1861,6 +1931,14 @@ class ConversationService:
                 launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
+        # Resolve any provider-connection-linked LLM/condenser before the agent
+        # ever runs. A profile-based launch already resolved its LLM through
+        # LLMProfileStore.load(); this is a no-op for it (idempotent) and the
+        # only resolution a raw agent (no agent_profile_id) gets.
+        new_agent = await asyncio.to_thread(
+            _resolve_agent_provider_connections, new_agent, cipher=self.cipher
+        )
+
         async with self._conversation_lifecycle(conversation_id):
             # New conversation: the agent is written to base_state.json (its
             # single source of truth), not to meta.json. Pass it explicitly.

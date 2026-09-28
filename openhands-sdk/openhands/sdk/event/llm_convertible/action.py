@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any
 
 from pydantic import Field
 from rich.text import Text
@@ -36,6 +37,14 @@ class ActionEvent(LLMConvertibleEvent):
     )
     responses_reasoning_item: ReasoningItemModel | None = Field(
         default=None, description="OpenAI Responses reasoning item from model output"
+    )
+    reasoning_details: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "OpenRouter reasoning_details blocks from the model response. "
+            "Preserved opaquely; may contain encrypted data that must never "
+            "be rendered as visible thought text."
+        ),
     )
     action: Action | None = Field(
         default=None,
@@ -141,6 +150,7 @@ class ActionEvent(LLMConvertibleEvent):
             reasoning_content=self.reasoning_content,
             thinking_blocks=self.thinking_blocks,
             responses_reasoning_item=self.responses_reasoning_item,
+            reasoning_details=self.reasoning_details,
         )
 
     def __str__(self) -> str:

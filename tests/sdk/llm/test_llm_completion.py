@@ -814,6 +814,119 @@ def test_llm_streaming_preserves_cache_read_tokens(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_streaming_restores_openrouter_reasoning_details(mock_completion):
+    """OpenRouter's reasoning_details must survive a streamed tool-call turn.
+
+    LiteLLM boundary fixture (no network): ``litellm.stream_chunk_builder``
+    does not know about ``reasoning_details`` (it is not a declared field on
+    its ``Delta``/``Message`` types) and silently drops it when reassembling
+    streamed chunks. This test drives the *real* ``stream_chunk_builder``
+    with realistic OpenRouter-shaped chunks - an opaque encrypted reasoning
+    block on the first delta, followed by a tool call - and verifies the SDK
+    restores ``reasoning_details`` onto the built message so it is not lost
+    before ``Message.from_llm_chat_message``.
+    """
+    opaque_block = {
+        "type": "reasoning.encrypted",
+        "data": "opaque-test",
+        "format": "anthropic-claude-v1",
+        "index": 0,
+    }
+    reasoning_chunk = ModelResponseStream(
+        id="chatcmpl-or-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(
+                    role="assistant",
+                    content=None,
+                    reasoning_details=[opaque_block],
+                ),
+            )
+        ],
+        created=1234567890,
+        model="openrouter/anthropic/claude-3.5-sonnet",
+        object="chat.completion.chunk",
+    )
+    tool_call_chunk = ModelResponseStream(
+        id="chatcmpl-or-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(
+                    role=None,
+                    content=None,
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "call_abc",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "SF"}',
+                            },
+                        }
+                    ],
+                ),
+            )
+        ],
+        created=1234567890,
+        model="openrouter/anthropic/claude-3.5-sonnet",
+        object="chat.completion.chunk",
+    )
+    finish_chunk = ModelResponseStream(
+        id="chatcmpl-or-test",
+        choices=[
+            StreamingChoices(
+                finish_reason="tool_calls",
+                index=0,
+                delta=Delta(content=None),
+            )
+        ],
+        created=1234567890,
+        model="openrouter/anthropic/claude-3.5-sonnet",
+        object="chat.completion.chunk",
+    )
+
+    mock_stream = MagicMock(spec=CustomStreamWrapper)
+    mock_stream.__iter__.return_value = iter(
+        [reasoning_chunk, tool_call_chunk, finish_chunk]
+    )
+    mock_completion.return_value = mock_stream
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="openrouter/anthropic/claude-3.5-sonnet",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="weather in SF?")])]
+    response = llm.completion(messages=messages, stream=True, on_token=lambda _: None)
+
+    # Incoming: survives the streamed round trip through the LiteLLM boundary.
+    assert response.message.reasoning_details == [opaque_block]
+    assert response.message.tool_calls is not None
+    assert response.message.tool_calls[0].id == "call_abc"
+
+    # Outgoing: sent back verbatim for OpenRouter, alongside the tool call.
+    outgoing = response.message.to_chat_dict(
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=True,
+        force_string_serializer=False,
+        send_reasoning_content=False,
+        send_reasoning_details=True,
+    )
+    assert outgoing["reasoning_details"] == [opaque_block]
+    assert outgoing["tool_calls"][0]["id"] == "call_abc"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_completion_retries_without_caching_on_prompt_cache_too_small(
     mock_completion,
 ):

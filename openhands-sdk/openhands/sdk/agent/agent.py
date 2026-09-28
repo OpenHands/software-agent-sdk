@@ -1212,6 +1212,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
+        reasoning_details: list[dict[str, Any]] | None = None,
         stream: StreamContext | None = None,
     ) -> None:
         try:
@@ -1238,6 +1239,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
+            reasoning_details=reasoning_details,
             tool_call=tool_call,
             tool_name=tool_call.name,
             tool_call_id=tool_call.id,
@@ -1273,6 +1275,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
+        reasoning_details: list[dict[str, Any]] | None = None,
         stream: StreamContext | None = None,
     ) -> ActionEvent | None:
         """Converts a tool call into an ActionEvent, validating arguments.
@@ -1316,6 +1319,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     reasoning_content=reasoning_content,
                     thinking_blocks=thinking_blocks,
                     responses_reasoning_item=responses_reasoning_item,
+                    reasoning_details=reasoning_details,
                     stream=stream,
                 )
                 return
@@ -1379,6 +1383,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 reasoning_content=reasoning_content,
                 thinking_blocks=thinking_blocks,
                 responses_reasoning_item=responses_reasoning_item,
+                reasoning_details=reasoning_details,
                 stream=stream,
             )
             return
@@ -1397,6 +1402,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
+            reasoning_details=reasoning_details,
             tool_name=tool.name,
             tool_call_id=normalized_tool_call.id,
             tool_call=normalized_tool_call,

@@ -241,6 +241,19 @@ class Message(BaseModel):
         default=None,
         description="OpenAI Responses reasoning item from model output",
     )
+    # OpenRouter-specific structured reasoning blocks (Chat Completions).
+    # Opaque passthrough: entries may carry encrypted/opaque payloads (e.g.
+    # ``{"type": "reasoning.encrypted", "data": "..."}``) that must be
+    # preserved exactly (each block's structured value, unmodified - not a
+    # raw-byte guarantee) and never rendered as visible text.
+    reasoning_details: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "OpenRouter reasoning_details blocks from the model response. "
+            "Preserved opaquely; may contain encrypted data that must never "
+            "be rendered as visible thought text."
+        ),
+    )
 
     # Deprecated fields that were moved to to_chat_dict() parameters.
     # These are silently removed for backward compatibility when loading old events.
@@ -284,6 +297,7 @@ class Message(BaseModel):
         function_calling_enabled: bool,
         force_string_serializer: bool,
         send_reasoning_content: bool,
+        send_reasoning_details: bool = False,
     ) -> dict[str, Any]:
         """Serialize message for OpenAI Chat Completions.
 
@@ -293,6 +307,10 @@ class Message(BaseModel):
             function_calling_enabled: Whether native function calling is enabled.
             force_string_serializer: Force string serializer instead of list format.
             send_reasoning_content: Whether to include reasoning_content in output.
+            send_reasoning_details: Whether to include OpenRouter's
+                ``reasoning_details`` blocks in output. Only OpenRouter's
+                transport understands this field, so it must stay off for
+                every other provider.
 
         Chooses the appropriate content serializer and then injects threading keys:
         - Assistant tool call turn: role == "assistant" and self.tool_calls
@@ -325,6 +343,10 @@ class Message(BaseModel):
         # Required for model like kimi-k2-thinking
         if send_reasoning_content and self.reasoning_content:
             message_dict["reasoning_content"] = self.reasoning_content
+
+        # OpenRouter-only: send back opaque reasoning_details verbatim.
+        if send_reasoning_details and self.reasoning_details:
+            message_dict["reasoning_details"] = self.reasoning_details
 
         return message_dict
 
@@ -491,6 +513,18 @@ class Message(BaseModel):
 
         rc = getattr(message, "reasoning_content", None)
         thinking_blocks = getattr(message, "thinking_blocks", None)
+        # OpenRouter-specific structured reasoning (opaque; may include
+        # encrypted blocks). LiteLLM does not declare this as a typed field
+        # on its Message model, so it only ever arrives via Pydantic's
+        # `extra="allow"` bucket (`model_extra`) rather than a normal
+        # attribute. Some callers pass duck-typed test doubles that lack
+        # `model_extra` entirely, so guard with try/except rather than a new
+        # `getattr` call.
+        try:
+            extra = message.model_extra
+        except AttributeError:
+            extra = None
+        reasoning_details = (extra or {}).get("reasoning_details")
 
         # Convert to list of ThinkingBlock or RedactedThinkingBlock
         if thinking_blocks is not None:
@@ -536,6 +570,7 @@ class Message(BaseModel):
             tool_calls=tool_calls,
             reasoning_content=rc,
             thinking_blocks=thinking_blocks,
+            reasoning_details=reasoning_details,
         )
 
     @classmethod

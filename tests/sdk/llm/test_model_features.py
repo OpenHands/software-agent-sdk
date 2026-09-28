@@ -627,3 +627,32 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     """Test that models like kimi-k2-thinking require send_reasoning_content."""
     features = get_features(model)
     assert features.send_reasoning_content is expected_send_reasoning
+
+
+@pytest.mark.parametrize(
+    "model,expected_send_reasoning_details",
+    [
+        ("openrouter/anthropic/claude-3.5-sonnet", True),
+        ("openrouter/minimax-m2", True),
+        ("OpenRouter/Some-Model", True),  # Case insensitive
+        ("litellm_proxy/openrouter/anthropic/claude-3.5-sonnet", True),
+        # Non-OpenRouter transports must never receive OpenRouter-only field.
+        ("anthropic/claude-3-5-sonnet", False),
+        ("gpt-4o", False),
+        ("deepseek/deepseek-reasoner", False),
+        ("kimi-k2-thinking", False),
+        # Regression: "openrouter/" appearing mid-string must NOT count as
+        # OpenRouter transport — only a genuine ``openrouter/<...>`` prefix
+        # (after stripping known proxy/deployment prefixes) may. A naive
+        # substring match (e.g. via ``model_matches``) would wrongly match
+        # this.
+        ("openai/vendor/openrouter/model", False),
+        ("some-openrouter/thing", False),
+    ],
+)
+def test_send_reasoning_details_only_for_openrouter(
+    model, expected_send_reasoning_details
+):
+    """OpenRouter's reasoning_details wire field must stay OpenRouter-only."""
+    features = get_features(model)
+    assert features.send_reasoning_details is expected_send_reasoning_details

@@ -48,6 +48,7 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm.provider_connection_store import ProviderConnection
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -1803,6 +1804,200 @@ class TestConversationServiceStartConversation:
                 # Verify the result
                 assert result.id == mock_state.id
                 assert result.execution_status == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_resolves_linked_llm_and_condenser(
+        self, conversation_service
+    ):
+        """A raw (non-profile) agent whose LLM and condenser LLM reference a
+        shared provider connection must have that connection's credentials
+        resolved before the live conversation starts. Canvas never
+        transports the plaintext key, so without this the launch would run
+        with no credential at all -- profile-based launches already get
+        this for free via LLMProfileStore.load(); raw launches must too.
+        """
+        from openhands.agent_server.persistence.store import get_llm_profile_store
+        from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+        connections = get_llm_profile_store()._provider_store
+        assert connections is not None
+        connections.create(
+            ProviderConnection(
+                id="conn1",
+                display_name="Shared",
+                provider="openrouter",
+                api_key=SecretStr("sk-shared-key"),
+                created_at=1000,
+                updated_at=1000,
+            )
+        )
+
+        linked_llm = LLM(
+            model="openrouter/anthropic/claude-3.5-sonnet",
+            usage_id="test-llm",
+            provider_connection_id="conn1",
+        )
+        condenser = LLMSummarizingCondenser(
+            llm=linked_llm.model_copy(update={"usage_id": "condenser"}),
+            max_size=80,
+            keep_first=4,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=linked_llm, condenser=condenser, tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+            )
+
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                mock_event_service = AsyncMock(spec=EventService)
+                mock_event_service_class.return_value = mock_event_service
+
+                mock_state = ConversationState(
+                    id=uuid4(),
+                    agent=request.agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                    confirmation_policy=request.confirmation_policy,
+                )
+                mock_event_service.get_state.return_value = mock_state
+                mock_event_service.stored = StoredConversation(
+                    id=mock_state.id,
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+
+                await conversation_service.start_conversation(request)
+
+                call_args = mock_event_service_class.call_args
+                started_agent = call_args.kwargs["agent"]
+                assert isinstance(started_agent.llm.api_key, SecretStr)
+                assert started_agent.llm.api_key.get_secret_value() == "sk-shared-key"
+                assert isinstance(started_agent.condenser, LLMSummarizingCondenser)
+                assert isinstance(started_agent.condenser.llm.api_key, SecretStr)
+                assert (
+                    started_agent.condenser.llm.api_key.get_secret_value()
+                    == "sk-shared-key"
+                )
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_resolves_pipeline_condenser_chain(
+        self, conversation_service
+    ):
+        """A ``PipelineCondenser`` chaining multiple ``LLMSummarizingCondenser``
+        stages must have every stage's linked LLM resolved, not just a
+        top-level condenser.
+        """
+        from openhands.agent_server.persistence.store import get_llm_profile_store
+        from openhands.sdk.context.condenser import (
+            LLMSummarizingCondenser,
+            PipelineCondenser,
+        )
+
+        connections = get_llm_profile_store()._provider_store
+        assert connections is not None
+        connections.create(
+            ProviderConnection(
+                id="conn1",
+                display_name="Shared",
+                provider="openrouter",
+                api_key=SecretStr("sk-shared-key"),
+                created_at=1000,
+                updated_at=1000,
+            )
+        )
+
+        linked_llm = LLM(
+            model="openrouter/anthropic/claude-3.5-sonnet",
+            usage_id="test-llm",
+            provider_connection_id="conn1",
+        )
+        stage_a = LLMSummarizingCondenser(
+            llm=linked_llm.model_copy(update={"usage_id": "condenser-a"}),
+            max_size=80,
+            keep_first=4,
+        )
+        stage_b = LLMSummarizingCondenser(
+            llm=linked_llm.model_copy(update={"usage_id": "condenser-b"}),
+            max_size=40,
+            keep_first=2,
+        )
+        pipeline = PipelineCondenser(condensers=[stage_a, stage_b])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=linked_llm, condenser=pipeline, tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+            )
+
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                mock_event_service = AsyncMock(spec=EventService)
+                mock_event_service_class.return_value = mock_event_service
+
+                mock_state = ConversationState(
+                    id=uuid4(),
+                    agent=request.agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                    confirmation_policy=request.confirmation_policy,
+                )
+                mock_event_service.get_state.return_value = mock_state
+                mock_event_service.stored = StoredConversation(
+                    id=mock_state.id,
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+
+                await conversation_service.start_conversation(request)
+
+                call_args = mock_event_service_class.call_args
+                started_agent = call_args.kwargs["agent"]
+                assert isinstance(started_agent.condenser, PipelineCondenser)
+                for stage in started_agent.condenser.condensers:
+                    assert isinstance(stage, LLMSummarizingCondenser)
+                    assert isinstance(stage.llm.api_key, SecretStr)
+                    assert stage.llm.api_key.get_secret_value() == "sk-shared-key"
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_missing_connection_fails_before_start(
+        self, conversation_service
+    ):
+        """A raw agent referencing a provider connection that does not exist
+        (and carries no inline key) must fail the launch outright rather than
+        starting a conversation with a keyless LLM.
+        """
+        linked_llm = LLM(
+            model="openrouter/anthropic/claude-3.5-sonnet",
+            usage_id="test-llm",
+            provider_connection_id="ghost",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=linked_llm, tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+            )
+
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                from openhands.sdk.llm.provider_connection_store import (
+                    ProviderConnectionNotFound,
+                )
+
+                with pytest.raises(ProviderConnectionNotFound):
+                    await conversation_service.start_conversation(request)
+
+                mock_event_service_class.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_uses_git_worktree(
