@@ -271,6 +271,55 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_constructor_attach_restores_persisted_tool_modules(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        """The ``RemoteConversation(conversation_id=...)`` path must also restore.
+
+        ``Conversation(..., conversation_id=...)`` routes here rather than
+        through ``attach``/``create``, so skipping the restore would leave the
+        persisted tools unregistered and their events undeserializable.
+        """
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value.update(
+                    agent=self.agent.model_dump(mode="json"),
+                    max_iterations=500,
+                    tool_module_qualnames={
+                        "TerminalTool": "openhands.tools.terminal.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation(
+            agent=self.agent, workspace=self.workspace, conversation_id=cid
+        )
+
+        restore_tool_registrations.assert_called_once_with(
+            {"TerminalTool": "openhands.tools.terminal.definition"}
+        )
+        # An attach must not create a conversation.
+        assert not [
+            call
+            for call in client.request.call_args_list
+            if call.args[0] == "POST" and call.args[1] == "/api/conversations"
+        ]
+        conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_create_from_profile_uses_resolved_agent(self, mock_ws_client):
         cid, profile_id = uuid.uuid4(), uuid.uuid4()
         hooks = HookConfig.model_validate({"stop": [{"hooks": [{"command": "true"}]}]})
