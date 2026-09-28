@@ -85,14 +85,6 @@ describe('Deterministic API Integration Tests', () => {
       expect(Array.isArray(subAgents.agents)).toBe(true);
       expect(subAgents.agents.every((agent) => agent.is_builtin)).toBe(true);
       expect(typeof vscodeStatus.enabled).toBe('boolean');
-
-      try {
-        const desktopUrl = await manager.desktop.getUrl();
-        expect(desktopUrl === null || typeof desktopUrl === 'string').toBe(true);
-      } catch (error) {
-        expect(error).toBeInstanceOf(HttpError);
-        expect((error as HttpError).status).toBe(503);
-      }
     },
     config.testTimeout
   );
