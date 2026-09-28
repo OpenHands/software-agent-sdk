@@ -35,6 +35,10 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
 )
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfileStore,
+    default_meta_profile_dir,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
@@ -563,6 +567,7 @@ async def materialize_agent_profile(
         available_skills=available_skills,
         cipher=cipher,
         runtime=runtime,
+        meta_profile_store=MetaProfileStore(base_dir=default_meta_profile_dir()),
     )
     if discovery_error is not None:
         diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")

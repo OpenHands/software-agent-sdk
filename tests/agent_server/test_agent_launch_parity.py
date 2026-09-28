@@ -28,6 +28,12 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfile,
+    MetaProfileClass,
+    MetaProfileStore,
+    default_meta_profile_dir,
+)
 from openhands.sdk.profiles import (
     AgentLaunchAdditions,
     OpenHandsAgentProfile,
@@ -342,3 +348,34 @@ def test_agent_settings_is_marked_deprecated_in_the_api_schema(
     field = schema["StartConversationRequest"]["properties"]["agent_settings"]
     assert field["deprecated"] is True
     assert "agent_profile_id" in field["description"]
+
+
+def test_meta_profile_routing_reaches_a_profile_launch(
+    settings: PersistedSettings, llm_profile: str
+) -> None:
+    """#4287's routing fields must not be profile-blind (see the table in #5141)."""
+    MetaProfileStore(base_dir=default_meta_profile_dir()).save(
+        "pareto",
+        MetaProfile(
+            classifier_model="alternate",
+            classes=[MetaProfileClass(description="anything", model="primary")],
+        ),
+    )
+    store = get_agent_profile_store()
+    routing = _profile("routing", llm_profile).model_copy(
+        update={
+            "enable_classify_and_switch_llm_tool": True,
+            "meta_profile_ref": "pareto",
+        }
+    )
+    store.save(routing)
+
+    _, plan = _launch(routing.id, settings)
+
+    assert isinstance(plan.agent, Agent)
+    assert "ClassifyAndSwitchLLMTool" in [tool.name for tool in plan.agent.tools]
+    assert isinstance(plan.settings, OpenHandsAgentSettings)
+    assert plan.settings.active_meta_profile == "pareto"
+    # Hydrated so a runtime without the store on disk can still route.
+    assert plan.settings.meta_profile is not None
+    assert sorted(plan.settings.meta_profile_llms) == ["alternate", "primary"]

@@ -16,6 +16,11 @@ from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfile,
+    MetaProfileClass,
+    MetaProfileStore,
+)
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
 from openhands.sdk.profiles import (
     ACPAgentProfile,
@@ -494,3 +499,125 @@ def test_agent_settings_acp_launch_keeps_non_profile_fields() -> None:
     assert context is not None
     assert context.skills == []
     assert context.load_user_skills is False
+
+
+# --------------------------------------------------------------------------- #
+# Meta-profile routing (#4287)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def meta_store(tmp_path: Path) -> MetaProfileStore:
+    store = MetaProfileStore(base_dir=tmp_path / "meta")
+    store.save(
+        "pareto",
+        MetaProfile(
+            classifier_model="picked",
+            classes=[MetaProfileClass(description="anything", model="default")],
+        ),
+    )
+    return store
+
+
+def _routing_profile(ref: str = "pareto") -> OpenHandsAgentProfile:
+    return _openhands_profile(
+        enable_classify_and_switch_llm_tool=True, meta_profile_ref=ref
+    )
+
+
+def test_routing_profile_resolves_and_hydrates_its_meta_profile(
+    llm_store: LLMProfileStore, meta_store: MetaProfileStore
+) -> None:
+    """A runtime with no meta-profile store on disk routes from the hydrated copy."""
+    plan = prepare_agent_launch(
+        _routing_profile(),
+        catalog=AgentLaunchCatalog(
+            llm_store=llm_store,
+            mcp_config={},
+            skills=None,
+            meta_profile_store=meta_store,
+        ),
+    )
+
+    assert isinstance(plan.settings, OpenHandsAgentSettings)
+    assert plan.settings.enable_classify_and_switch_llm_tool is True
+    assert plan.settings.active_meta_profile == "pareto"
+    assert plan.settings.meta_profile is not None
+    assert sorted(plan.settings.meta_profile_llms) == ["default", "picked"]
+    assert isinstance(plan.agent, Agent)
+    assert "ClassifyAndSwitchLLMTool" in [t.name for t in plan.agent.tools]
+
+
+def test_routing_stays_off_without_the_profile_switch(
+    llm_store: LLMProfileStore, meta_store: MetaProfileStore
+) -> None:
+    plan = prepare_agent_launch(
+        _openhands_profile(meta_profile_ref="pareto"),
+        catalog=AgentLaunchCatalog(
+            llm_store=llm_store,
+            mcp_config={},
+            skills=None,
+            meta_profile_store=meta_store,
+        ),
+    )
+    assert isinstance(plan.settings, OpenHandsAgentSettings)
+    assert plan.settings.enable_classify_and_switch_llm_tool is False
+    # An inert ref is not resolved, so it cannot fail the launch either.
+    assert plan.settings.active_meta_profile is None
+
+
+def test_a_dangling_meta_profile_ref_fails_the_launch(
+    llm_store: LLMProfileStore, meta_store: MetaProfileStore
+) -> None:
+    with pytest.raises(UnresolvedProfileReferences) as exc_info:
+        prepare_agent_launch(
+            _routing_profile("gone"),
+            catalog=AgentLaunchCatalog(
+                llm_store=llm_store,
+                mcp_config={},
+                skills=None,
+                meta_profile_store=meta_store,
+            ),
+        )
+    assert exc_info.value.meta_profile_ref == "gone"
+    assert exc_info.value.to_detail()["dangling_meta_profile_ref"] == "gone"
+
+
+def test_an_inert_dangling_meta_profile_ref_is_harmless(
+    llm_store: LLMProfileStore, meta_store: MetaProfileStore
+) -> None:
+    plan = prepare_agent_launch(
+        _openhands_profile(meta_profile_ref="gone"),
+        catalog=AgentLaunchCatalog(
+            llm_store=llm_store,
+            mcp_config={},
+            skills=None,
+            meta_profile_store=meta_store,
+        ),
+        build_agent=False,
+    )
+    assert isinstance(plan.settings, OpenHandsAgentSettings)
+    assert plan.settings.active_meta_profile is None
+
+
+def test_agent_settings_routing_survives_the_deprecated_path(
+    meta_store: MetaProfileStore,
+) -> None:
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "agent", "api_key": _LLM_SECRET},
+            "enable_classify_and_switch_llm_tool": True,
+            "active_meta_profile": "pareto",
+        }
+    )
+    profile, catalog = agent_settings_launch_source(
+        settings, meta_profile_store=meta_store
+    )
+    plan = prepare_agent_launch(
+        profile, catalog=catalog, profile_origin=None, build_agent=False
+    )
+
+    assert isinstance(plan.settings, OpenHandsAgentSettings)
+    assert plan.settings.enable_classify_and_switch_llm_tool is True
+    assert plan.settings.active_meta_profile == "pareto"

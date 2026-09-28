@@ -210,6 +210,21 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "default (AgentSettingsConfig.enable_switch_llm_tool)."
         ),
     )
+    enable_classify_and_switch_llm_tool: bool = Field(
+        default=False,
+        description=(
+            "Enable the built-in route_task_to_model tool, which routes each "
+            "task to an LLM profile using the referenced meta-profile."
+        ),
+    )
+    meta_profile_ref: str | None = Field(
+        default=None,
+        description=(
+            "Name of the saved meta-profile this agent routes with, resolved "
+            "against the meta-profile store like `llm_profile_ref`. null lets "
+            "the routing tool fall back to the first available meta-profile."
+        ),
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
