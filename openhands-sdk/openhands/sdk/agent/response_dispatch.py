@@ -78,6 +78,24 @@ def classify_response(message: Message) -> LLMResponseType:
     return LLMResponseType.EMPTY
 
 
+def _emit_deferred_errors(
+    errors: list[AgentErrorEvent], on_event: ConversationCallbackType
+) -> None:
+    first_failure: BaseException | None = None
+    for error in errors:
+        try:
+            on_event(error)
+        except BaseException as exc:
+            # Each error belongs to an already-emitted action. Attempt the
+            # remaining results even on cancellation, then propagate the failure.
+            if first_failure is None:
+                first_failure = exc
+            else:
+                logger.exception("Failed to emit another deferred validation error")
+    if first_failure is not None:
+        raise first_failure
+
+
 # ---------------------------------------------------------------------------
 # Dispatch mixin
 # ---------------------------------------------------------------------------
@@ -163,7 +181,7 @@ class ResponseDispatchMixin:
         action_events: list[ActionEvent] = []
         errors: list[AgentErrorEvent] = []
 
-        def emit(event: Event) -> None:
+        def defer_validation_errors(event: Event) -> None:
             if isinstance(event, AgentErrorEvent):
                 errors.append(event)
             else:
@@ -176,7 +194,7 @@ class ResponseDispatchMixin:
                     tool_call,
                     conversation=conversation,
                     llm_response_id=llm_response.id,
-                    on_event=emit,
+                    on_event=defer_validation_errors,
                     security_analyzer=state.security_analyzer,
                     thought=thought_content if i == 0 else [],
                     reasoning_content=(message.reasoning_content if i == 0 else None),
@@ -196,14 +214,12 @@ class ResponseDispatchMixin:
             # Persist errors for actions already emitted without hiding the
             # original failure if the callback also fails during cleanup.
             try:
-                for error in errors:
-                    on_event(error)
-            except Exception:
+                _emit_deferred_errors(errors, on_event)
+            except BaseException:
                 logger.exception("Failed to emit deferred tool validation errors")
             raise
 
-        for error in errors:
-            on_event(error)
+        _emit_deferred_errors(errors, on_event)
         return action_events
 
     def _handle_tool_calls(
