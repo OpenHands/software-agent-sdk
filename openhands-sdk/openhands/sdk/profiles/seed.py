@@ -64,8 +64,6 @@ def build_seed_profile(
         name=name,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
-        # Verbatim, except that a legacy ``enable_sub_agents`` switch has to be
-        # said as a tool selection now (see fold_tool_switches_into_tools).
         tools=fold_tool_switches_into_tools(
             agent_settings.tools,
             enable_sub_agents=agent_settings.enable_sub_agents,

@@ -352,8 +352,7 @@ class TestResolveAgentFromProfile:
 
     @pytest.mark.parametrize("usable", [True, False])
     def test_openhands_launch_passes_runtime_browser_availability(self, usable):
-        """This server probes its own runtime and hands the answer to the
-        resolver, which decides whether a default toolset gets the browser."""
+        """A local launch probes this process for the browser."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
@@ -420,8 +419,7 @@ class TestResolveAgentFromProfile:
         assert result_agent is agent
 
     def test_launched_agent_uses_resolved_tools_unchanged(self, tmp_path):
-        """No tool is added after resolution: the launched agent's tools are
-        exactly what the resolver produced (the materialize preview's source)."""
+        """The launched agent's tools are exactly what the resolver produced."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )

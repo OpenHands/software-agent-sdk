@@ -180,9 +180,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         if not deferred:
             emit_server_started()
 
-        # Every tool this deployment offers is registered by now (presets at
-        # import, plus any ``--import-modules``). Later registrations belong to
-        # one conversation and vanish on restart, so they stay out of the catalog.
+        # Later registrations are per-conversation and vanish on restart.
         seal_tool_catalog()
 
         vscode_service = get_vscode_service()

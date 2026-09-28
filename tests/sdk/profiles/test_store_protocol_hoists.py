@@ -292,8 +292,7 @@ def test_build_seed_profile_copies_explicit_tools():
     profile = build_seed_profile(settings, active_llm_profile="my-llm")
     assert isinstance(profile, OpenHandsAgentProfile)
     assert profile.tools is not None
-    # `switch_llm` joins because the settings' default-on switch was giving it
-    # to this agent already; the explicit toolset itself is copied verbatim.
+    # The settings' default-on switch gave this agent `switch_llm`.
     assert [t.name for t in profile.tools] == [
         "terminal",
         "browser_use",

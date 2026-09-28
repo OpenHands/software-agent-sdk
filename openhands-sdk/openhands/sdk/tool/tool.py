@@ -387,11 +387,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     """Whether a user may pick this tool when configuring an agent's toolset."""
 
     catalog_description: ClassVar[str] = ""
-    """One line telling a user what this tool lets the agent do.
-
-    For the tool catalog, not the model: ``description`` is the prompt the LLM
-    reads. Empty means the catalog offers no blurb.
-    """
+    """User-facing catalog blurb; ``description`` is what the LLM reads."""
 
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""

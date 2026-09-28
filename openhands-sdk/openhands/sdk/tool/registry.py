@@ -218,24 +218,14 @@ def list_usable_tools() -> list[str]:
 
 
 def seal_tool_catalog() -> None:
-    """Freeze the catalog to the tools registered so far.
-
-    A server calls this once it has finished loading its tools. Registrations
-    after it — a conversation's client tools or dynamically imported modules —
-    vanish on restart, so they are never offered for configuring an agent.
-    """
+    """Freeze the catalog to the tools registered so far."""
     global _CATALOG_NAMES
     with _LOCK:
         _CATALOG_NAMES = set(_REG)
 
 
 def list_tool_catalog() -> list[ToolCatalogEntry]:
-    """List the tools this process offers for configuring an agent.
-
-    Includes the built-ins a user may select: they are resolved by class name
-    rather than through the registry, but a profile stores them in ``tools``
-    like any other pick.
-    """
+    """List the tools offered for configuring an agent, built-ins included."""
     from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
     from openhands.sdk.tool.defaults import canonical_tool_name, resolve_tool_specs
 
@@ -250,9 +240,7 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         tool_classes = dict(_TOOL_CLASSES)
         usability_checkers = dict(_USABILITY_REG)
 
-    # A built-in can also be registered under its class name so a ``Tool`` spec
-    # can carry params. That is the same tool, so it is offered once, under the
-    # snake_case name a profile stores — `resolve_tool` accepts either.
+    # A built-in registered under its class name is offered under its tool name.
     entries = [
         ToolCatalogEntry(
             name=canonical_tool_name(name),

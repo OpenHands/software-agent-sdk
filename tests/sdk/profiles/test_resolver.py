@@ -112,8 +112,7 @@ def test_openhands_resolves_to_settings_with_injected_llm(
 def test_openhands_resolves_default_exec_tools(
     llm_store: LLMProfileStore, browser_available: bool, expected: list[str]
 ) -> None:
-    """A profile with no explicit ``tools`` resolves to the standard exec set
-    (#3967), plus browser only where the caller's runtime can run it."""
+    """Unset ``tools`` resolves to the standard set, browser only where usable."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.tools is None
 

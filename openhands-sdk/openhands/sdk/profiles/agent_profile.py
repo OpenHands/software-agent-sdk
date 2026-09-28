@@ -169,8 +169,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default="CodeActAgent",
         description="Agent class to build.",
     )
-    # Same tri-state as the settings' ``tools``, resolved by
-    # ``resolve_tool_specs``. Secret-free by construction (name + params).
+    # Secret-free by construction (name + params).
     tools: list[Tool] | None = Field(
         default=None,
         description=(
@@ -365,27 +364,18 @@ def fold_tool_switches_into_tools(
     enable_sub_agents: bool,
     enable_switch_llm_tool: bool,
 ) -> list[Tool] | None:
-    """Express the legacy tool switches as a ``tools`` selection.
-
-    Behaviour-preserving: the switches are folded into the list only where the
-    result would otherwise differ from the standard set, so a profile that ran
-    on the defaults keeps an unset ``tools`` and stays free to follow future
-    changes to that set.
-    """
+    """Express the legacy tool switches as a ``tools`` selection, or keep it unset."""
     if tools is None and not enable_sub_agents and enable_switch_llm_tool:
         return None
-    # Anything else has to be pinned: "the standard set plus/minus one tool" is
-    # not expressible. Browser is part of that set because it resolves to
-    # nothing where the runtime cannot run it.
+    # "The standard set plus/minus one tool" is not expressible, so pin it.
+    # Browser resolves to nothing where the runtime cannot run it.
     entries = (
         [_as_tool(tool) for tool in tools]
         if tools is not None
         else [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
     )
     for enabled, name in (
-        # Each switch keeps the reach it had: `enable_sub_agents` only ever fed
-        # the default set, so an explicit list is used as given, while
-        # `enable_switch_llm_tool` attached its tool to every agent.
+        # `enable_sub_agents` only ever applied to the default set.
         (enable_sub_agents and tools is None, SUB_AGENT_TOOL_NAME),
         (enable_switch_llm_tool, SWITCH_LLM_TOOL_NAME),
     ):

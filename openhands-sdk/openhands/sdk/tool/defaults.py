@@ -33,10 +33,10 @@ themselves on the settings launch path.
 """
 
 SUB_AGENT_TOOL_NAME = "task_tool_set"
-"""Name of the sub-agent delegation tool set, selected like any other tool."""
+"""Name of the sub-agent delegation tool set."""
 
 SWITCH_LLM_TOOL_NAME = "switch_llm"
-"""Name of the built-in LLM-switching tool, selected like any other tool."""
+"""Name of the built-in LLM-switching tool."""
 
 
 def resolve_tool_specs(
@@ -45,17 +45,9 @@ def resolve_tool_specs(
     enable_browser: bool = False,
     enable_switch_llm: bool = True,
 ) -> list[Tool]:
-    """Resolve an agent's ``tools`` setting into the specs it is built with.
-
-    ``None`` is the standard exec set, plus browser when ``enable_browser`` and
-    LLM switching when ``enable_switch_llm``; a list (``[]`` included) is used
-    as given.
-    """
+    """Resolve ``tools`` to specs: ``None`` is the standard set, a list is kept."""
     if tools is not None:
         return list(tools)
-    # ``switch_llm`` is an SDK built-in rather than part of the openhands-tools
-    # preset, so it joins here and not in :func:`default_tool_specs`, which
-    # stays in lockstep with ``get_default_tools``.
     resolved = _preset_specs(enable_browser=enable_browser)
     if enable_switch_llm:
         resolved.append(Tool(name=SWITCH_LLM_TOOL_NAME))
@@ -63,12 +55,7 @@ def resolve_tool_specs(
 
 
 def canonical_tool_name(name: str) -> str:
-    """The runtime name a spec resolves to, collapsing built-in class aliases.
-
-    ``resolve_tool`` accepts a built-in under its class name as well as its
-    tool name, so ``SwitchLLMTool`` and ``switch_llm`` select the same tool and
-    must not both be added.
-    """
+    """Return the tool name a spec resolves to, collapsing built-in class names."""
     from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
 
     tool_class = BUILT_IN_TOOL_CLASSES.get(name)

@@ -475,14 +475,7 @@ def test_resolve_tool_survives_browser_executor_failure():
 
 
 def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
-    """A v3 profile carrying `browser_tool_set` is harmless without a browser.
-
-    Schema v3 pins the standard set — browser included — into `tools` when it
-    folds away `enable_sub_agents`, and `resolve_tool_specs` then uses an
-    explicit list verbatim. Nothing downstream re-checks usability, so the
-    pinned entry is only safe because `BrowserToolSet.create` degrades to no
-    tools. Pin that, or the migration turns into a crash on such a host.
-    """
+    """A migrated profile pinning `browser_tool_set` resolves without a browser."""
     from openhands.sdk.profiles.agent_profile import fold_tool_switches_into_tools
     from openhands.sdk.tool.defaults import resolve_tool_specs
     from openhands.sdk.tool.registry import resolve_tool

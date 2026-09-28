@@ -377,12 +377,7 @@ def test_v2_sub_agents_switch_pins_the_standard_set_plus_delegation() -> None:
 
 
 def test_v2_sub_agents_switch_does_not_reach_an_explicit_list() -> None:
-    """The switch only ever fed the default set.
-
-    A v2 profile with an explicit ``tools`` launched with exactly that list, so
-    folding delegation into it here would hand the agent a capability it never
-    had — the behaviour change deferred to #5157.
-    """
+    """The switch only ever fed the default set."""
     profile = validate_agent_profile(
         {
             "schema_version": 2,
@@ -398,7 +393,7 @@ def test_v2_sub_agents_switch_does_not_reach_an_explicit_list() -> None:
 
 
 def test_v2_default_switch_llm_needs_no_pinned_list() -> None:
-    """The default set now carries switch_llm, so nothing has to be frozen."""
+    """The default set carries switch_llm, so nothing has to be pinned."""
     profile = validate_agent_profile(
         {
             "schema_version": 2,

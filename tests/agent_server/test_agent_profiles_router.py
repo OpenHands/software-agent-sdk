@@ -904,8 +904,7 @@ def test_seed_preserves_openhands_fields(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    # The retired switches are said as a tool selection now: delegation was on,
-    # so the seed pins the list it was launching with.
+    # Delegation was on, so the seed pins the list it was launching with.
     assert [tool["name"] for tool in prof["tools"]] == [
         "terminal",
         "file_editor",

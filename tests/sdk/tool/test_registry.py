@@ -224,11 +224,7 @@ def test_catalog_does_not_offer_the_meta_profile_router(monkeypatch):
 
 
 def test_a_builtin_registered_by_class_name_is_offered_once(monkeypatch):
-    """A built-in can also sit in the registry so a spec can carry params.
-
-    `ClassifyAndSwitchLLMTool` does exactly that, and without collapsing the
-    alias the catalog offered the same tool twice — once per spelling.
-    """
+    """A built-in registered under its class name is listed once."""
     from openhands.sdk.tool import builtins, registry
 
     monkeypatch.setitem(
@@ -285,8 +281,7 @@ def test_catalog_reports_a_selectable_builtin_as_unusable(monkeypatch):
 
 
 def test_sealed_catalog_ignores_later_registrations(monkeypatch):
-    """Tools a conversation registers vanish on restart, so a server seals the
-    catalog once its own tools are loaded."""
+    """Registrations after sealing are per-conversation and stay out."""
     from openhands.sdk.tool import registry
 
     register_tool("catalog_at_startup", _SimpleHelloTool)
