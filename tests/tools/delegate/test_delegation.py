@@ -7,13 +7,17 @@ from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
 
+from openhands.sdk import Agent
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.subagent.registry import (
+    ConversationAgentRegistry,
     _reset_registry_for_tests,
+    agent_definition_to_factory,
     register_agent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -23,6 +27,43 @@ from openhands.tools.delegate import (
 )
 from openhands.tools.delegate.definition import DelegateAction
 from openhands.tools.preset import register_builtins_agents
+from openhands.tools.task.definition import TaskToolSet
+
+
+def test_delegate_uses_scoped_factory_and_forwards_catalog(tmp_path: Path):
+    parent = LocalConversation(
+        agent=Agent(llm=LLM(model="test/model", api_key=SecretStr("test")), tools=[]),
+        workspace=tmp_path,
+        visualizer=None,
+    )
+    executor = DelegateExecutor()
+    definition = AgentDefinition(
+        name="delegate-reviewer",
+        description="parent plugin reviewer",
+        system_prompt="Parent plugin prompt",
+        level="plugin",
+    )
+    parent._agent_registry.register_if_absent(
+        definition.name, agent_definition_to_factory(definition), definition
+    )
+    try:
+        result = executor(
+            DelegateAction(
+                command="spawn", ids=["review"], agent_types=[definition.name]
+            ),
+            parent,
+        )
+        assert not result.is_error
+        child = executor._sub_agents["review"]
+        assert child.agent.agent_context is not None
+        assert (
+            child.agent.agent_context.system_message_suffix == definition.system_prompt
+        )
+        child.send_message("Prepare child")
+        assert definition.description in TaskToolSet.create(child._state)[0].description
+    finally:
+        executor.close()
+        parent.close()
 
 
 def create_test_executor_and_parent():
@@ -34,6 +75,7 @@ def create_test_executor_and_parent():
     )
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = llm
     parent_conversation.agent.cli_mode = True
@@ -258,6 +300,7 @@ def test_spawn_disables_streaming_for_sub_agents():
     register_builtins_agents()
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.agent.cli_mode = True
@@ -294,6 +337,7 @@ def test_spawn_gives_sub_agents_independent_metrics():
     )
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
@@ -332,6 +376,7 @@ def test_delegate_merges_metrics_into_parent():
     parent_stats.usage_to_metrics["agent"] = parent_llm.metrics
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
@@ -411,6 +456,7 @@ def test_repeated_delegation_does_not_double_count():
     parent_stats.usage_to_metrics["agent"] = parent_llm.metrics
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
@@ -529,6 +575,7 @@ def test_spawn_passes_hook_config_to_sub_conversation():
     )
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
@@ -564,6 +611,7 @@ def test_spawn_inherits_persistence_dir_from_parent():
     )
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"
@@ -596,6 +644,7 @@ def test_spawn_no_persistence_when_parent_has_none():
     )
 
     parent_conversation = MagicMock()
+    parent_conversation._agent_registry = ConversationAgentRegistry()
     parent_conversation.id = uuid.uuid4()
     parent_conversation.agent.llm = parent_llm
     parent_conversation.state.workspace.working_dir = "/tmp"

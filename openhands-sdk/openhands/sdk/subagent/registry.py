@@ -27,15 +27,12 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, NoReturn
 
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent.load import (
-    load_project_agents,
-    load_user_agents,
-)
-from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.load import discover_agents
+from openhands.sdk.subagent.schema import AgentDefinition, AgentDefinitionLevel
 from openhands.sdk.utils.deprecation import warn_deprecated
 
 
@@ -45,12 +42,97 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_AGENT_PRIORITY: dict[AgentDefinitionLevel | None, int] = {
+    None: 0,
+    "programmatic": 0,
+    "plugin": 1,
+    "project": 2,
+    "user": 3,
+    "builtin": 4,
+}
+
 
 class AgentFactory(NamedTuple):
     """Container for an agent factory function and its definition."""
 
     factory_func: Callable[["LLM"], "Agent"]
     definition: AgentDefinition
+
+
+class ConversationAgentRegistry:
+    """Conversation-owned agent factories layered over global registrations.
+
+    Explicit programmatic registrations remain process-wide. File and plugin
+    definitions live in this overlay, so conversations may safely use the same
+    name with different definitions. Built-ins remain the final fallback.
+    """
+
+    def __init__(self) -> None:
+        self._factories: dict[str, AgentFactory] = {}
+        self._lock = RLock()
+
+    def register_if_absent(
+        self,
+        name: str,
+        factory_func: Callable[["LLM"], "Agent"],
+        description: str | AgentDefinition,
+    ) -> bool:
+        """Keep the highest-priority definition; first wins within a priority."""
+        candidate = _resolve_agent_definition(name, description)
+        with self._lock:
+            existing = self._factories.get(name)
+            if existing is not None and (
+                _AGENT_PRIORITY[existing.definition.level]
+                <= _AGENT_PRIORITY[candidate.level]
+            ):
+                return False
+            self._factories[name] = AgentFactory(factory_func, candidate)
+            return True
+
+    def get_agent_factory(self, name: str | None) -> AgentFactory:
+        factory_name = _canonical_agent_name(name)
+        with _registry_lock:
+            global_factory = _agent_factories.get(factory_name)
+        with self._lock:
+            scoped_factory = self._factories.get(factory_name)
+
+        if global_factory is not None and global_factory.definition.level in (
+            None,
+            "programmatic",
+        ):
+            return global_factory
+        if scoped_factory is not None:
+            return scoped_factory
+        if global_factory is not None and global_factory.definition.level == "builtin":
+            return global_factory
+        _raise_unknown_agent(
+            name, {d.name for d in self.get_registered_agent_definitions()}
+        )
+
+    def get_registered_agent_definitions(self) -> list[AgentDefinition]:
+        with _registry_lock:
+            global_factories = list(_agent_factories.values())
+        with self._lock:
+            scoped_factories = list(self._factories.values())
+
+        definitions: list[AgentDefinition] = []
+        seen: set[str] = set()
+        for factory in [
+            *(
+                f
+                for f in global_factories
+                if f.definition.level in (None, "programmatic")
+            ),
+            *scoped_factories,
+            *(f for f in global_factories if f.definition.level == "builtin"),
+        ]:
+            if factory.definition.name not in seen:
+                seen.add(factory.definition.name)
+                definitions.append(factory.definition)
+        return definitions
+
+    def get_factory_info(self) -> str:
+        return _format_factory_info(self.get_registered_agent_definitions())
 
 
 # Global registry for user-registered agent factories
@@ -111,6 +193,8 @@ def register_agent(
         ValueError: If an agent with the same name already exists.
     """
     definition = _resolve_agent_definition(name, description)
+    if definition.level is None:
+        definition = definition.model_copy(update={"level": "programmatic"})
 
     with _registry_lock:
         if name in _agent_factories:
@@ -141,6 +225,8 @@ def register_agent_if_absent(
         that name already existed.
     """
     definition = _resolve_agent_definition(name, description)
+    if definition.level is None:
+        definition = definition.model_copy(update={"level": "programmatic"})
 
     with _registry_lock:
         if name in _agent_factories:
@@ -285,7 +371,10 @@ def agent_definition_to_factory(
     return _factory
 
 
-def register_file_agents(work_dir: str | Path) -> list[str]:
+def register_file_agents(
+    work_dir: str | Path,
+    registry: ConversationAgentRegistry | None = None,
+) -> list[str]:
     """Load and register file-based agents from project-level `.agents/agents` and
     `.openhands/agents`, and user-level `~/.agents/agents` and `~/.openhands/agents`
     directories.
@@ -298,27 +387,11 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
     Returns:
         List of agent names that were actually registered.
     """
-    project_agents = load_project_agents(work_dir)
-    user_agents = load_user_agents()
-
-    # Deduplicate: project wins over user
-    seen_names: set[str] = set()
-    deduplicated: list[AgentDefinition] = []
-
-    for agent_def in project_agents:
-        if agent_def.name not in seen_names:
-            seen_names.add(agent_def.name)
-            deduplicated.append(agent_def)
-
-    for agent_def in user_agents:
-        if agent_def.name not in seen_names:
-            seen_names.add(agent_def.name)
-            deduplicated.append(agent_def)
-
+    register = registry.register_if_absent if registry else register_agent_if_absent
     registered: list[str] = []
-    for agent_def in deduplicated:
+    for agent_def in discover_agents(work_dir):
         factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
-        was_registered = register_agent_if_absent(
+        was_registered = register(
             name=agent_def.name,
             factory_func=factory,
             description=agent_def,
@@ -336,6 +409,7 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
 def register_plugin_agents(
     agents: list[AgentDefinition],
     work_dir: str | Path | None = None,
+    registry: ConversationAgentRegistry | None = None,
 ) -> list[str]:
     """Register plugin-provided agent definitions into the delegate registry.
 
@@ -348,14 +422,18 @@ def register_plugin_agents(
         agents: Agent definitions collected from loaded plugins.
         work_dir: Project directory for resolving skill names in agent
             definitions. If None, only user-level skills are searched.
+        registry: Conversation registry, or None for process-wide registration.
 
     Returns:
         List of agent names that were actually registered.
     """
+    register = registry.register_if_absent if registry else register_agent_if_absent
     registered: list[str] = []
     for agent_def in agents:
+        if agent_def.level is None:
+            agent_def = agent_def.model_copy(update={"level": "plugin"})
         factory = agent_definition_to_factory(agent_def, work_dir=work_dir)
-        was_registered = register_agent_if_absent(
+        was_registered = register(
             name=agent_def.name,
             factory_func=factory,
             description=agent_def,
@@ -367,20 +445,8 @@ def register_plugin_agents(
     return registered
 
 
-def get_agent_factory(name: str | None) -> AgentFactory:
-    """
-    Get a registered agent factory by name.
-
-    Args:
-        name: Name of the agent factory to retrieve. If None, empty, or "default",
-            the default agent factory is returned.
-
-    Returns:
-        AgentFactory: The factory function and definition
-
-    Raises:
-        ValueError: If no agent factory with the given name is found
-    """
+def _canonical_agent_name(name: str | None) -> str:
+    """Normalize default and deprecated agent names for both registries."""
     # Map old names to new names for backward compatibility
     _DEPRECATED_NAMES = {
         "default": "general-purpose",
@@ -397,40 +463,48 @@ def get_agent_factory(name: str | None) -> AgentFactory:
             removed_in="2.0.0",
             details=f"Use '{new_name}' instead.",
         )
-        factory_name = new_name
-    else:
-        factory_name = "general-purpose" if not name else name
+        return new_name
+    return "general-purpose" if not name else name
+
+
+def _raise_unknown_agent(name: str | None, available: set[str]) -> NoReturn:
+    available_list = ", ".join(sorted(available)) if available else "none registered"
+    raise ValueError(
+        f"Unknown agent '{name}'. Available types: {available_list}. "
+        "Use register_agent() to add custom agent types."
+    )
+
+
+def get_agent_factory(name: str | None) -> AgentFactory:
+    """Get a factory from the process-wide registry."""
+    factory_name = _canonical_agent_name(name)
 
     with _registry_lock:
         factory = _agent_factories.get(factory_name)
-        available = sorted(_agent_factories.keys())
+        available = set(_agent_factories)
 
     if factory is None:
-        available_list = ", ".join(available) if available else "none registered"
-        raise ValueError(
-            f"Unknown agent '{name}'. Available types: {available_list}. "
-            "Use register_agent() to add custom agent types."
-        )
+        _raise_unknown_agent(name, available)
 
     return factory
 
 
-def get_factory_info() -> str:
-    """Get formatted information about available agent factories."""
-    with _registry_lock:
-        user_factories = dict(_agent_factories)
-
-    if not user_factories:
+def _format_factory_info(definitions: list[AgentDefinition]) -> str:
+    if not definitions:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
-    def get_agent_info(name, factory):
-        defn = factory.definition
+    def get_agent_info(defn: AgentDefinition) -> str:
         tools = f" (tools: {', '.join(defn.tools)})" if defn.tools else ""
-        return f"- **{name}**: {defn.description}{tools}"
+        return f"- **{defn.name}**: {defn.description}{tools}"
 
     return "\n".join(
-        get_agent_info(name, f) for name, f in sorted(user_factories.items())
+        get_agent_info(d) for d in sorted(definitions, key=lambda d: d.name)
     )
+
+
+def get_factory_info() -> str:
+    """Get formatted information about available process-wide factories."""
+    return _format_factory_info(get_registered_agent_definitions())
 
 
 def get_registered_agent_definitions() -> list[AgentDefinition]:
