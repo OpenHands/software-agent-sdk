@@ -1228,6 +1228,7 @@ class ConversationService:
         *,
         require_runtime_bindings: bool = True,
         agent: AgentBase | None = None,
+        allow_archived: bool = False,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1240,7 +1241,12 @@ class ConversationService:
             return event_service
 
         record = self._conversation_records.get(conversation_id)
-        if record is None or record.stored.archived_at is not None:
+        if record is None:
+            return None
+        if record.stored.archived_at is not None and not allow_archived:
+            # An archived conversation retains its history but has no runnable
+            # runtime. Deletion is the exception: it must still reach the
+            # archived conversation so it can be permanently removed.
             return None
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
@@ -1951,6 +1957,10 @@ class ConversationService:
             event_service = await self._get_or_load_event_service_locked(
                 conversation_id,
                 require_runtime_bindings=False,
+                # Deletion is independent of archive state: an archived
+                # conversation must still be permanently removable rather
+                # than retained as archived.
+                allow_archived=True,
             )
             if event_service is None:
                 return False
