@@ -2,7 +2,7 @@
 name: custom-codereview-guide
 description: Repository-specific review guidance for OpenHands/software-agent-sdk.
 triggers:
-- /codereview
+  - /codereview
 ---
 
 # OpenHands/software-agent-sdk review guide
@@ -42,6 +42,17 @@ The normal flow is SDK or Agent Server -> OpenAPI -> TypeScript client -> Canvas
 Backend behavior and endpoints must be defined in Python before being exposed by
 generated or handwritten clients. If a change belongs to another repository,
 recommend moving it rather than adding a second implementation here.
+
+### New AI providers
+
+Treat new provider-specific integrations as out of scope unless the provider is broadly popular
+and commonly used by OpenHands users. Prefer the existing generic provider interfaces and reusable
+extension points over maintaining a long tail of provider-specific code in the SDK.
+
+When reviewing an issue or pull request that adds a provider below this bar, recommend marking it
+out of scope and closing it politely. Do not approve or merge it solely because the implementation
+is technically correct. Reconsider only when there is credible evidence of broad user demand and a
+maintainable integration benefit.
 
 For a change that crosses layers, trace the value or operation through every
 affected public entry point. Check factories, constructors, registries,
@@ -102,6 +113,34 @@ platforms. Check that the dependency or executable is present in the production
 artifact and that paths and process cleanup do not rely on the developer
 environment. A unit test with mocks is not sufficient evidence for a changed
 packaging or installation path.
+
+### Live evidence for production-facing bug fixes
+
+For bug fixes whose claimed failure occurs only through a runtime lifecycle or
+integration path, do not APPROVE from constructed test state alone. This includes
+process restart or pause behavior, conversation recovery, persisted-state
+recovery, deployment/container behavior, external services, and other failures
+whose root cause depends on the running environment.
+
+Require authentic before-and-after evidence that exercises the real supported
+entry point:
+
+- reproduce the original symptom on the base revision through the user-facing or
+  service-facing workflow;
+- repeat the same workflow on the current PR head and show that it succeeds;
+- include enough runtime context, such as commands and API responses, logs,
+  process lifecycle, persisted artifacts, or external-service responses, to tie
+  the observed failure to the proposed root cause; and
+- state any difference between the reported production environment and the
+  reproduction environment. A faithful substitute is acceptable when the exact
+  platform is unavailable, but its limitations must be explicit.
+
+Unit and integration tests are still required as regression protection, but a
+test that forges the suspected failure state does not prove that production
+reaches that state. If the linked issue marks the root cause as a hypothesis,
+verify that the runtime evidence confirms it. If this evidence is missing or the
+fix only addresses a narrower scenario than the linked issue, leave a COMMENT
+requesting evidence or corrected scope and defer approval to a human maintainer.
 
 ### Agent behavior and evaluation
 

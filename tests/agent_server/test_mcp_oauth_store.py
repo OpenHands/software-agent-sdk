@@ -12,13 +12,12 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 from fastmcp import FastMCP
-from fastmcp.client.auth import OAuth
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
 from mcp.server.auth.settings import ClientRegistrationOptions
 from pydantic import SecretStr
 
 import openhands.sdk.mcp.utils as mcp_utils
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.mcp_oauth_store import (
     MCPSettingsOAuthTokenStore,
     SettingsBackedMCPToolProvider,
@@ -30,6 +29,7 @@ from openhands.agent_server.persistence import (
     reset_stores,
 )
 from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
+from openhands.sdk.mcp.oauth import MCPOAuth
 
 
 def _find_free_port() -> int:
@@ -52,7 +52,7 @@ def _wait_for_http_server(port: int, timeout: float = 5.0) -> None:
     raise RuntimeError(f"Timed out waiting for test MCP server on port {port}")
 
 
-class _HeadlessOAuth(OAuth):
+class _HeadlessOAuth(MCPOAuth):
     """FastMCP OAuth client that follows the authorization redirect itself.
 
     This preserves the real DCR/PKCE/token exchange while avoiding an external
@@ -243,7 +243,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
     reset_stores()
     _HeadlessOAuth.redirect_count = 0
     _HeadlessOAuth.reject_redirects = False
-    monkeypatch.setattr(mcp_utils, "OAuth", _HeadlessOAuth)
+    monkeypatch.setattr(mcp_utils, "MCPOAuth", _HeadlessOAuth)
     try:
         config = Config(
             session_api_keys=[],
@@ -506,5 +506,161 @@ async def test_settings_backed_provider_seeds_token_store_from_agent_mcp_config(
         assert await storage.get(
             key="https://mcp.example.com/mcp/tokens", collection="mcp-oauth-token"
         ) == {"access_token": "agent-access-token"}
+    finally:
+        reset_stores()
+
+
+def _hosted_config(tmp_path: Path) -> Config:
+    """The agent-server config a hosted sandbox runs with: an app-server
+    webhook to post to and the session key the app server authenticates."""
+    return Config(
+        session_api_keys=["sandbox-session-key"],
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("mcp-oauth-test-key"),
+        webhooks=[
+            WebhookSpec(
+                base_url="https://app.example/api/v1/webhooks",
+                headers={"X-Trace": "on"},
+            )
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_settings_backed_provider_writes_refreshed_inline_state_back_to_the_app_server(  # noqa: E501
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reset_stores()
+    try:
+        # Arrange: the server is inline only, as a hosted conversation passes it.
+        config = _hosted_config(tmp_path)
+        get_settings_store(config).save(PersistedSettings())
+        posted: list[dict] = []
+
+        def fake_post(url, *, json, headers, timeout):
+            posted.append({"url": url, "json": json, "headers": headers})
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "post", fake_post)
+        provider = create_settings_backed_mcp_tool_provider(config)
+        with patch(
+            "openhands.agent_server.mcp_oauth_store.create_mcp_tools"
+        ) as mock_create:
+            provider.create_tools(_inline_oauth_server("agent-access-token"))
+        storage = mock_create.call_args.kwargs["mcp_oauth_token_storage"]
+
+        # Act: FastMCP stores a refreshed token and its expiry.
+        await storage.put(
+            key="https://mcp.example.com/mcp/tokens",
+            value={
+                "access_token": "refreshed-access-token",
+                "refresh_token": "rotated-refresh-token",
+            },
+            collection="mcp-oauth-token",
+        )
+        await storage.put(
+            key="https://mcp.example.com/mcp/token_expiry",
+            value={"expires_at": 1234.0},
+            collection="mcp-oauth-token-expiry",
+        )
+
+        # Assert: each write posts the whole state to the app server.
+        assert [entry["url"] for entry in posted] == [
+            "https://app.example/api/v1/webhooks/mcp-oauth-state"
+        ] * 2
+        assert posted[-1]["headers"] == {
+            "X-Trace": "on",
+            "X-Session-API-Key": "sandbox-session-key",
+        }
+        assert posted[-1]["json"] == {
+            "server_url": "https://mcp.example.com/mcp",
+            "oauth_state": {
+                "tokens": {
+                    "access_token": "refreshed-access-token",
+                    "refresh_token": "rotated-refresh-token",
+                },
+                "token_expires_at": 1234.0,
+            },
+        }
+    finally:
+        reset_stores()
+
+
+@pytest.mark.asyncio
+async def test_mcp_oauth_token_store_does_not_write_back_settings_backed_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reset_stores()
+    try:
+        # Arrange: the same server lives in this agent server's own settings.
+        config = _hosted_config(tmp_path)
+        settings = PersistedSettings()
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"mcp_config": _inline_oauth_server("settings-access-token")}
+        )
+        get_settings_store(config).save(settings)
+        posted: list[str] = []
+        monkeypatch.setattr(
+            httpx, "post", lambda url, **kwargs: posted.append(url) or None
+        )
+        store = MCPSettingsOAuthTokenStore(
+            seed_mcp_config=_inline_oauth_server("agent-access-token"),
+            cipher=config.cipher,
+            write_back_webhooks=config.webhooks,
+            session_api_key="sandbox-session-key",
+        )
+        key = "https://mcp.example.com/mcp/tokens"
+
+        # Act
+        await store.put(
+            key=key,
+            value={"access_token": "refreshed-access-token"},
+            collection="mcp-oauth-token",
+        )
+
+        # Assert: persisted locally, nothing sent to the app server.
+        assert posted == []
+        assert await store.get(key=key, collection="mcp-oauth-token") == {
+            "access_token": "refreshed-access-token"
+        }
+    finally:
+        reset_stores()
+
+
+@pytest.mark.asyncio
+async def test_mcp_oauth_token_store_keeps_refreshed_inline_state_when_write_back_fails(  # noqa: E501
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    reset_stores()
+    try:
+        # Arrange: the app server cannot be reached.
+        config = _hosted_config(tmp_path)
+        get_settings_store(config).save(PersistedSettings())
+
+        def failing_post(url, **kwargs):
+            raise httpx.ConnectError(
+                "app server unreachable", request=httpx.Request("POST", url)
+            )
+
+        monkeypatch.setattr(httpx, "post", failing_post)
+        store = MCPSettingsOAuthTokenStore(
+            seed_mcp_config=_inline_oauth_server("agent-access-token"),
+            cipher=config.cipher,
+            write_back_webhooks=config.webhooks,
+            session_api_key="sandbox-session-key",
+        )
+        key = "https://mcp.example.com/mcp/tokens"
+
+        # Act
+        await store.put(
+            key=key,
+            value={"access_token": "refreshed-access-token"},
+            collection="mcp-oauth-token",
+        )
+
+        # Assert: the conversation keeps using the refreshed token.
+        assert await store.get(key=key, collection="mcp-oauth-token") == {
+            "access_token": "refreshed-access-token"
+        }
     finally:
         reset_stores()

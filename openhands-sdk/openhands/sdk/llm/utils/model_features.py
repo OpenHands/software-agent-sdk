@@ -53,6 +53,7 @@ class ModelFeatures:
     supports_sampling_params: bool | None
     supports_extended_thinking: bool
     supports_prompt_cache: bool
+    supports_prompt_cache_key: bool
     supports_stop_words: bool
     supports_responses_api: bool
     force_string_serializer: bool
@@ -188,9 +189,15 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
 ]
 
 # Models that should use the OpenAI Responses API path by default
+# NOTE: model_matches uses case-insensitive substring matching, so a bare family
+# token like "gpt-5" / "gpt-6" covers all variants (mini, sol, luna, astra, ...).
 RESPONSES_API_MODELS: list[str] = [
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
+    # OpenAI GPT-6 family (gpt-6-sol, gpt-6-luna, gpt-6-astra, ...). These reject
+    # function tools + reasoning_effort on /v1/chat/completions; /v1/responses
+    # supports both. See saas-deploy #1144.
+    "gpt-6",
     # OpenAI Codex (uses Responses API)
     "codex-mini-latest",
 ]
@@ -382,6 +389,12 @@ def get_features(
         supports_extended_thinking=thinking_mode == "manual",
         supports_prompt_cache=_supports_explicit_prompt_cache(
             model, model_info, overrides
+        ),
+        supports_prompt_cache_key=_resolved_bool(
+            "supports_prompt_cache_key",
+            overrides=overrides,
+            metadata=model_info,
+            fallback="prompt_cache_key" in supported_params,
         ),
         supports_stop_words=_resolved_bool(
             "supports_stop_words",
