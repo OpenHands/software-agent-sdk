@@ -1,7 +1,8 @@
 # Issue #5354: validation error batch preservation
 
 Base: `3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14`.
-Implementation: `648fad5cc8802526b45be2d1e54b68f98c88fb14`.
+Initial implementation: `648fad5cc8802526b45be2d1e54b68f98c88fb14`.
+Callback-failure follow-up: `0a6b4a491d85889f0412e3699b0083b1936b8979`.
 Environment: macOS 26.7 arm64, Python 3.13.12, SDK 1.49.6,
 LiteLLM 1.93.0, Pydantic 2.12.5 (workspace lockfile).
 
@@ -56,7 +57,7 @@ cancellation in sync/async dispatch while preserving the original exception.
 OPENHANDS_SUPPRESS_BANNER=1 LITELLM_LOCAL_MODEL_COST_MAP=True uv run --no-sync pytest -q tests/sdk/agent tests/sdk/event tests/sdk/conversation
 ```
 
-**1,956 passed, 6 deselected, 42 warnings**, including all 38 new cases.
+Initial run: **1,956 passed, 6 deselected, 42 warnings**, including the original 38 cases.
 [tests.txt](tests.txt) contains complete output, including an unawaited
 `_apply_acp_model` coroutine warning at shutdown. This run is not warning-free.
 Per-file pre-commit checks (Ruff, pycodestyle, Pyright, repository gates) passed.
@@ -73,3 +74,20 @@ This is a fork PR: remove temporary `.pr/` artifacts before merge. Preserve acce
 to reviewer evidence using commit-pinned links in the PR description. Keep the PR
 Draft until the human-only description and maintainer readiness requirements are
 complete. Maintainer integration-test coverage remains pending.
+
+## Expanded corner-case audit
+
+The batch regression file now has 68 cases. The expanded agent/event/conversation,
+context-view and hook run passed **2,282 tests** (6 deselected, 42 warnings).
+See [corner-cases.md](corner-cases.md) for commands, the notification-failure fix,
+and four separately reproduced existing lifecycle defects. Full latest output:
+[corner-tests.txt](corner-tests.txt). The original reproducer was rerun and passes.
+
+Deferred validation errors are now attempted once each even if an earlier
+notification raises. The first notification exception is re-raised, or the
+original dispatch exception when preparation was already failing. This does not
+guarantee persistence if the callback fails before saving or the process dies.
+
+Approval/rejection and interrupt/resume were verified in the same process.
+Closing and reloading a pending batch has a separate existing context-loss bug,
+reproduced with both base and current dispatch and documented in the audit.

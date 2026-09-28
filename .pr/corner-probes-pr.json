@@ -1,0 +1,80 @@
+{
+  "dispatch": "pr",
+  "results": [
+    {
+      "case": "pending_resume",
+      "callback_exception": null,
+      "pending_after_first_run": [
+        "call_0",
+        "call_2"
+      ],
+      "executions_after_first_run": {},
+      "executions_after_second_run": {
+        "0": 1,
+        "2": 1
+      },
+      "next_request_tool_call_groups": []
+    },
+    {
+      "case": "finish_tail",
+      "callback_exception": null,
+      "pending_after_first_run": [
+        "call_2"
+      ],
+      "executions_after_first_run": {},
+      "executions_after_second_run": {
+        "2": 1
+      },
+      "next_request_tool_call_groups": [
+        [
+          "call_0",
+          "call_1",
+          "call_2"
+        ]
+      ]
+    },
+    {
+      "case": "result_callback",
+      "callback_exception": "ConversationRunError",
+      "pending_after_first_run": [
+        "call_2"
+      ],
+      "executions_after_first_run": {
+        "0": 1,
+        "2": 1
+      },
+      "executions_after_second_run": {
+        "0": 1,
+        "2": 2
+      },
+      "next_request_tool_call_groups": [
+        [
+          "call_0",
+          "call_1",
+          "call_2"
+        ]
+      ]
+    },
+    {
+      "case": "action_callback",
+      "callback_exception": null,
+      "pending_after_first_run": [],
+      "executions_after_first_run": {
+        "1": 1,
+        "2": 1
+      },
+      "executions_after_second_run": {
+        "1": 1,
+        "2": 1
+      },
+      "next_request_tool_call_groups": [
+        [
+          "call_0",
+          "call_0",
+          "call_1",
+          "call_2"
+        ]
+      ]
+    }
+  ]
+}
