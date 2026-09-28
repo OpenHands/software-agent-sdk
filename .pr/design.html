@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preserve tool-call batches across validation errors</title>
+<style>
+:root{--fg:#242a2c;--muted:#586266;--subtle:#8c9699;--bg:#fafaf6;--card:#fff;--rule:#dde0d9;--accent:#166a5c;--soft:#eaf5ef;--warn:#b45c21;--mono:ui-monospace,monospace;--sans:system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans)}main{max-width:1160px;margin:auto;padding:44px 30px}header{border-bottom:1px solid var(--rule);padding-bottom:25px}h1{font-size:40px;line-height:1.15;max-width:850px;letter-spacing:-1px}h2{font-size:25px;line-height:1.25}h3{font-size:17px}p{max-width:85ch}a{color:var(--accent);text-underline-offset:3px}.eyebrow{font:12px var(--mono);letter-spacing:1px;color:var(--accent)}.layout{display:grid;grid-template-columns:210px 1fr;gap:35px;padding-top:26px}nav{font-size:13px}nav a{display:block;margin:15px 0}section{margin-bottom:36px}.callout{padding:14px 18px;background:var(--soft);border-left:3px solid var(--accent)}.note{color:var(--muted);font-size:14px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}figure{margin:0;background:var(--card);border:1px solid var(--rule);padding:14px}figcaption{font-size:13px;color:var(--muted)}svg{width:100%;height:auto}svg text{font:13px var(--sans);fill:var(--fg)}svg .label{font:bold 13px var(--sans)}svg .small{font:11px var(--mono);fill:var(--muted)}svg rect{rx:6}svg .old{fill:var(--bg);stroke:var(--subtle);stroke-dasharray:5 3}svg .new{fill:var(--soft);stroke:var(--accent)}svg .changed{fill:var(--card);stroke:var(--warn);stroke-width:2}svg .arrow{stroke:var(--warn);stroke-width:2;stroke-dasharray:5 3;fill:none}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 var(--mono);padding:16px;background:var(--card);border:1px solid var(--rule)}code{font-family:var(--mono);font-size:.9em}details{margin:15px 0}summary{cursor:pointer;color:var(--accent)}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;vertical-align:top;padding:10px;border-bottom:1px solid var(--rule)}@media(max-width:800px){.layout{grid-template-columns:1fr}nav{display:none}.pair{grid-template-columns:1fr}h1{font-size:30px}main{padding:25px 16px}}
+</style></head><body><main>
+<header><p class="eyebrow">SDK PR #5355 · ISSUE #5354 · DRAFT</p>
+<h1>Keep one response's tool calls together</h1>
+<p>A validation error in the middle of a batch currently splits the assistant message. Defer error-result callbacks until every action from that response has been emitted, so subsequent serialization receives one complete batch.</p>
+<p class="callout">★ The fix is in shared sync/async dispatch. Public APIs and event schemas remain unchanged; validation-error callbacks occur later within the same batch. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L145">response_dispatch.py:145</a></p></header>
+<div class="layout"><nav><strong>Implementation</strong><a href="#dispatch">✎ response_dispatch.py<br>+64 / −54</a><a href="#tests">＋ test_validation_error_batch.py<br>+142</a><a href="#tests">＋ conftest.py<br>+83</a><strong>Review evidence</strong><a href="#evidence">Runtime before / after</a><a href="#boundaries">Compatibility and limits</a></nav><article>
+<section id="dispatch"><h2>Emit actions before validation results</h2>
+<details><summary>Source manifest</summary><p><a href="https://github.com/OpenHands/software-agent-sdk/blob/3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L145">before: response_dispatch.py:145</a> · <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L145">after: response_dispatch.py:145</a> · <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/event/base.py#L108">event/base.py:108</a> · <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/agent.py#L1201">agent.py:1201</a></p></details>
+<p><code>events_to_messages()</code> combines consecutive actions with the same <code>llm_response_id</code>. An intervening <code>AgentErrorEvent</code> ends that group. The fix changes when the error is emitted, preserving the existing converter. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/event/base.py#L108">event/base.py:108</a></p>
+<div class="pair"><figure><h3>Before · error interrupts the batch</h3>
+<svg viewBox="0 0 370 320" role="img" aria-labelledby="old-title old-desc"><title id="old-title">Validation result splits tool calls</title><desc id="old-desc">Action A and invalid Action B are followed by Error B, then Action C. The common history contains two assistant messages.</desc>
+<rect class="old" x="10" y="10" width="350" height="65"/><text class="label" x="25" y="35">_handle_tool_calls / _ahandle_tool_calls</text><text class="small" x="25" y="57">response_dispatch.py:145 / 197</text>
+<path class="arrow" d="M185 75v30"/>
+<rect class="changed" x="10" y="105" width="350" height="85"/><text x="25" y="130">Action A → Action B → Error B → Action C</text><text class="small" x="25" y="154">_emit_tool_error: agent.py:1201</text><text class="small" x="25" y="174">B has action=None; results A/C follow</text>
+<path class="arrow" d="M185 190v30"/>
+<rect class="old" x="10" y="220" width="350" height="80"/><text class="label" x="25" y="245">assistant [A,B] · tool B · assistant [C]</text><text x="25" y="266">tool A · tool C</text><text class="small" x="25" y="287">events_to_messages: event/base.py:108</text></svg>
+<figcaption>Fig 1 · B's error separates C from its original response. <a href="https://github.com/OpenHands/software-agent-sdk/blob/3311ba9eec5044f40ab5d0b3d7eddc9f7e1e2d14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L145">before: response_dispatch.py:145</a></figcaption></figure>
+<figure><h3>After · one complete batch</h3>
+<svg viewBox="0 0 370 320" role="img" aria-labelledby="new-title new-desc"><title id="new-title">All actions precede their results</title><desc id="new-desc">Shared preparation emits Actions A, B and C before Error B. The common history keeps one assistant batch, followed by all results.</desc>
+<rect class="new" x="10" y="10" width="350" height="65"/><text class="label" x="25" y="35">_prepare_action_events</text><text class="small" x="25" y="57">response_dispatch.py:145 · sync + async</text>
+<path class="arrow" d="M185 75v30"/>
+<rect class="changed" x="10" y="105" width="350" height="85"/><text x="25" y="130">Action A → Action B → Action C → Error B</text><text class="small" x="25" y="154">emit actions immediately; queue errors</text><text class="small" x="25" y="174">emit:168 · flush:205 · confirmation:223</text>
+<path class="arrow" d="M185 190v30"/>
+<rect class="new" x="10" y="220" width="350" height="80"/><text class="label" x="25" y="245">assistant [A,B,C]</text><text x="25" y="266">tool B · tool A · tool C</text><text class="small" x="25" y="287">events_to_messages: event/base.py:108</text></svg>
+<figcaption>Fig 2 · The same converter now sees contiguous actions. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L145">after: response_dispatch.py:145</a></figcaption></figure></div>
+<p>Action callbacks still run immediately. The existing stream commit follows successful action emission, including invalid calls. Queued validation errors are flushed before confirmation or execution; if action preparation fails, cleanup attempts to emit earlier errors while retaining the original exception. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/agent.py#L1201">agent.py:1201</a> · <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L195">response_dispatch.py:195</a></p>
+<details><summary>Implementation diff</summary><pre>diff --git a/openhands-sdk/openhands/sdk/agent/response_dispatch.py b/openhands-sdk/openhands/sdk/agent/response_dispatch.py
+index 7ba1ab2eb..df5a681a1 100644
+--- a/openhands-sdk/openhands/sdk/agent/response_dispatch.py
++++ b/openhands-sdk/openhands/sdk/agent/response_dispatch.py
+@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
+ 
+ from openhands.sdk.agent.stream_context import StreamContext
+ from openhands.sdk.conversation.state import ConversationExecutionStatus
+-from openhands.sdk.event import MessageEvent
++from openhands.sdk.event import AgentErrorEvent, Event, MessageEvent
+ from openhands.sdk.llm import LLMResponse, Message, TextContent
+ from openhands.sdk.logger import get_logger
+ 
+@@ -142,7 +142,7 @@ class ResponseDispatchMixin:
+             event: ActionEvent | MessageEvent,
+         ) -&gt; CriticResult | None: ...
+ 
+-    def _handle_tool_calls(
++    def _prepare_action_events(
+         self,
+         message: Message,
+         llm_response: LLMResponse,
+@@ -150,8 +150,8 @@ class ResponseDispatchMixin:
+         state: ConversationState,
+         on_event: ConversationCallbackType,
+         stream: StreamContext | None = None,
+-    ) -&gt; None:
+-        &quot;&quot;&quot;Handle LLM response containing tool calls.&quot;&quot;&quot;
++    ) -&gt; list[ActionEvent]:
++        &quot;&quot;&quot;Emit the response&#x27;s actions before any validation error results.&quot;&quot;&quot;
+         if not all(isinstance(c, TextContent) for c in message.content):
+             logger.warning(
+                 &quot;LLM returned tool calls but message content is not all &quot;
+@@ -161,27 +161,64 @@ class ResponseDispatchMixin:
+         thought_content = [c for c in message.content if isinstance(c, TextContent)]
+ 
+         action_events: list[ActionEvent] = []
++        errors: list[AgentErrorEvent] = []
++
++        def emit(event: Event) -&gt; None:
++            if isinstance(event, AgentErrorEvent):
++                errors.append(event)
++            else:
++                on_event(event)
++
+         assert message.tool_calls, &quot;classify_response guarantees tool_calls&quot;
+-        for i, tool_call in enumerate(message.tool_calls):
+-            action_event = self._get_action_event(
+-                tool_call,
+-                conversation=conversation,
+-                llm_response_id=llm_response.id,
+-                on_event=on_event,
+-                security_analyzer=state.security_analyzer,
+-                thought=thought_content if i == 0 else [],
+-                reasoning_content=(message.reasoning_content if i == 0 else None),
+-                thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
+-                responses_reasoning_item=(
+-                    message.responses_reasoning_item if i == 0 else None
+-                ),
+-                # The streamed text is this action&#x27;s thought, so the first
+-                # action event is what retires the slot.
+-                stream=stream if i == 0 else None,
+-            )
+-            if action_event is None:
+-                continue
+-            action_events.append(action_event)
++        try:
++            for i, tool_call in enumerate(message.tool_calls):
++                action_event = self._get_action_event(
++                    tool_call,
++                    conversation=conversation,
++                    llm_response_id=llm_response.id,
++                    on_event=emit,
++                    security_analyzer=state.security_analyzer,
++                    thought=thought_content if i == 0 else [],
++                    reasoning_content=(message.reasoning_content if i == 0 else None),
++                    thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
++                    responses_reasoning_item=(
++                        message.responses_reasoning_item if i == 0 else None
++                    ),
++                    # The streamed text is this action&#x27;s thought, so the first
++                    # action event is what retires the slot.
++                    stream=stream if i == 0 else None,
++                )
++                if action_event is None:
++                    continue
++                action_events.append(action_event)
++
++        except BaseException:
++            # Persist errors for actions already emitted without hiding the
++            # original failure if the callback also fails during cleanup.
++            try:
++                for error in errors:
++                    on_event(error)
++            except Exception:
++                logger.exception(&quot;Failed to emit deferred tool validation errors&quot;)
++            raise
++
++        for error in errors:
++            on_event(error)
++        return action_events
++
++    def _handle_tool_calls(
++        self,
++        message: Message,
++        llm_response: LLMResponse,
++        conversation: LocalConversation,
++        state: ConversationState,
++        on_event: ConversationCallbackType,
++        stream: StreamContext | None = None,
++    ) -&gt; None:
++        &quot;&quot;&quot;Handle LLM response containing tool calls.&quot;&quot;&quot;
++        action_events = self._prepare_action_events(
++            message, llm_response, conversation, state, on_event, stream
++        )
+ 
+         if self._requires_user_confirmation(state, action_events):
+             return
+@@ -206,36 +243,9 @@ class ResponseDispatchMixin:
+         tool call runs in its own thread and multiple calls are scheduled
+         concurrently via :func:`asyncio.gather`.
+         &quot;&quot;&quot;
+-        if not all(isinstance(c, TextContent) for c in message.content):
+-            logger.warning(
+-                &quot;LLM returned tool calls but message content is not all &quot;
+-                &quot;TextContent - ignoring non-text content&quot;
+-            )
+-
+-        thought_content = [c for c in message.content if isinstance(c, TextContent)]
+-
+-        action_events: list[ActionEvent] = []
+-        assert message.tool_calls, &quot;classify_response guarantees tool_calls&quot;
+-        for i, tool_call in enumerate(message.tool_calls):
+-            action_event = self._get_action_event(
+-                tool_call,
+-                conversation=conversation,
+-                llm_response_id=llm_response.id,
+-                on_event=on_event,
+-                security_analyzer=state.security_analyzer,
+-                thought=thought_content if i == 0 else [],
+-                reasoning_content=(message.reasoning_content if i == 0 else None),
+-                thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
+-                responses_reasoning_item=(
+-                    message.responses_reasoning_item if i == 0 else None
+-                ),
+-                # The streamed text is this action&#x27;s thought, so the first
+-                # action event is what retires the slot.
+-                stream=stream if i == 0 else None,
+-            )
+-            if action_event is None:
+-                continue
+-            action_events.append(action_event)
++        action_events = self._prepare_action_events(
++            message, llm_response, conversation, state, on_event, stream
++        )
+ 
+         if self._requires_user_confirmation(state, action_events):
+             return
+</pre></details></section>
+<section id="tests"><h2>Protect the next request, not internal helper wiring</h2>
+<p>The new fixture supplies a three-call response and captures the next request's common SDK messages. The tests run real <code>Conversation.run()</code> / <code>arun()</code> with built-in think execution. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/tests/sdk/agent/conftest.py#L29">conftest.py:29</a></p>
+<table><thead><tr><th>Coverage</th><th>Observable contract</th></tr></thead><tbody>
+<tr><td>First / middle / last invalid call; multiple / all invalid; unknown tool; malformed JSON</td><td>One assistant batch with all IDs, followed by one result for every call.</td></tr>
+<tr><td>Concurrency 1 and 3; sync and async</td><td>Batch preservation does not depend on executor scheduling.</td></tr>
+<tr><td>Confirmation then resume; metadata</td><td>Valid calls wait; reasoning, thinking blocks and Responses reasoning remain on the original batch.</td></tr>
+<tr><td>Dispatch exception, cleanup callback exception, cancellation</td><td>Earlier queued errors are emitted; the original failure is preserved.</td></tr></tbody></table>
+<p>38 cases total. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/tests/sdk/agent/test_validation_error_batch.py#L16">test_validation_error_batch.py:16</a></p></section>
+<section id="evidence"><h2>The original reproducer now preserves [A,B,C]</h2>
+<p>Real <code>Conversation.run()</code>, tool execution and serializers; scripted transport returns one mixed-validity response. Base <code>3311ba9</code> fails <code>--check</code>; implementation <code>648fad5</code> passes. The copied reproducer and full before/after logs are in this PR's temporary <code>.pr/</code> directory. <a href="https://github.com/OpenHands/software-agent-sdk/issues/5354">Issue #5354 reproducer</a></p>
+<pre>uv run --no-sync python .pr/repro_mixed_validation.py --check --responses --anthropic
+
+Base: original_batch_preserved=false  → [A,B], [C]
+Fix:  original_batch_preserved=true   → [A,B,C]
+
+uv run --no-sync pytest -q tests/sdk/agent tests/sdk/event tests/sdk/conversation
+1,956 passed · 6 deselected · 42 warnings · 38.60s</pre>
+<p>In the fixed capture, Responses serialization places A/B/C before their outputs. LiteLLM Anthropic serialization retains A's actual result, which the base capture replaced with a skipped/interrupted result. See <code>.pr/before.txt</code>, <code>.pr/after.txt</code>, and <code>.pr/tests.txt</code>.</p>
+<p class="note">Python 3.13.12 · macOS 26.7 arm64 · SDK 1.49.6 · LiteLLM 1.93.0 · Pydantic 2.12.5. Logs include warnings; this was not a warning-free run.</p></section>
+<section id="boundaries"><h2>Scope and remaining validation</h2>
+<p>No live DeepSeek, Anthropic or OpenAI API was called. Responses inspection serializes Chat-origin history; native Responses-origin transport was not tested. The historical DeepSeek reasoning rejection is not claimed as replayed.</p>
+<p>The patch leaves event schemas and public configuration unchanged. Previously persisted malformed histories are not repaired. Callback ordering within a response changes; action persistence and stream commits remain immediate. <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/response_dispatch.py#L145">after: response_dispatch.py:145</a> · <a href="https://github.com/Yuki-Imajuku/software-agent-sdk/blob/648fad5cc8802526b45be2d1e54b68f98c88fb14/openhands-sdk/openhands/sdk/agent/agent.py#L1201">agent.py:1201</a></p>
+<p>Companion documentation: <a href="https://github.com/OpenHands/docs/pull/848">OpenHands/docs #848</a>. Before review, the contributor must fill the human-only PR section and maintainers must complete issue readiness and integration-test requirements. Remove <code>.pr/</code> before merging this fork PR; keep commit-pinned evidence links.</p></section>
+</article></div></main></body></html>
