@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Callable, Sequence
+from typing import Final
 
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.base import Event
@@ -28,6 +29,9 @@ categories = [
     {"emoji": "📝", "name": "documentation", "description": "Documentation"},
     {"emoji": "♻️", "name": "refactor", "description": "Code refactoring"},
 ]
+
+CONVERSATION_CONTENT_PLACEHOLDER: Final[str] = "{conversation_content}"
+MAX_LENGTH_PLACEHOLDER: Final[str] = "{max_length}"
 
 
 def extract_message_text(event: MessageEvent) -> str | None:
@@ -80,6 +84,7 @@ def generate_title_with_llm(
     llm: LLM,
     max_length: int = 50,
     on_error: Callable[[Exception], None] | None = None,
+    prompt: str | None = None,
 ) -> str | None:
     """Generate a conversation title using LLM.
 
@@ -90,6 +95,10 @@ def generate_title_with_llm(
         on_error: Optional callback invoked with the exception when the LLM
             call fails. Title generation still falls back (returns None); the
             callback lets callers surface the otherwise-swallowed error.
+        prompt: Optional user-message prompt override. The
+            ``{conversation_content}`` and ``{max_length}`` placeholders are
+            replaced when present. If the conversation placeholder is omitted,
+            the message content is appended automatically.
 
     Returns:
         Generated title, or None if LLM fails or returns empty response.
@@ -103,6 +112,23 @@ def generate_title_with_llm(
     emojis_descriptions = "\n- ".join(
         f"{c['emoji']} {c['name']}: {c['description']}" for c in categories
     )
+
+    template = (prompt or "").strip()
+    if template:
+        user_prompt = template.replace(
+            CONVERSATION_CONTENT_PLACEHOLDER, truncated_message
+        ).replace(MAX_LENGTH_PLACEHOLDER, str(max_length))
+        if CONVERSATION_CONTENT_PLACEHOLDER not in template:
+            user_prompt = f"{user_prompt}\n\nConversation content:\n{truncated_message}"
+    else:
+        user_prompt = (
+            f"Generate a title (maximum {max_length} characters) "
+            f"for a conversation that starts with this message:\n\n"
+            f"{truncated_message}."
+            "Also make sure to include ONE most relevant emoji at "
+            "the start of the title."
+            f" Choose the emoji from this list:{emojis_descriptions} "
+        )
 
     try:
         # Create messages for the LLM to generate a title
@@ -127,18 +153,7 @@ def generate_title_with_llm(
             ),
             Message(
                 role="user",
-                content=[
-                    TextContent(
-                        text=(
-                            f"Generate a title (maximum {max_length} characters) "
-                            f"for a conversation that starts with this message:\n\n"
-                            f"{truncated_message}."
-                            "Also make sure to include ONE most relevant emoji at "
-                            "the start of the title."
-                            f" Choose the emoji from this list:{emojis_descriptions} "
-                        )
-                    )
-                ],
+                content=[TextContent(text=user_prompt)],
             ),
         ]
 
@@ -195,6 +210,7 @@ def generate_title_from_message(
     llm: LLM | None = None,
     max_length: int = 50,
     on_error: Callable[[Exception], None] | None = None,
+    prompt: str | None = None,
 ) -> str:
     """Generate a title from an already-extracted user message."""
     # Skip the ACP sentinel LLM — it has no credentials and cannot be
@@ -204,7 +220,11 @@ def generate_title_from_message(
 
     if llm_to_use:
         llm_title = generate_title_with_llm(
-            message, llm_to_use, max_length, on_error=on_error
+            message,
+            llm_to_use,
+            max_length,
+            on_error=on_error,
+            prompt=prompt,
         )
         if llm_title:
             return llm_title
