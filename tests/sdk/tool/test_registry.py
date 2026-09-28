@@ -202,6 +202,15 @@ def test_catalog_offers_a_builtin_under_its_snake_case_name(monkeypatch):
     assert builtins.SwitchLLMTool.name == "switch_llm"
 
 
+def test_catalog_does_not_offer_the_meta_profile_router(monkeypatch):
+    from openhands.sdk.tool import registry
+
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+    entry = _catalog().get("route_task_to_model")
+
+    assert entry is None or entry["user_selectable"] is False
+
+
 def test_a_builtin_registered_by_class_name_is_offered_once(monkeypatch):
     """A built-in can also sit in the registry so a spec can carry params.
 
