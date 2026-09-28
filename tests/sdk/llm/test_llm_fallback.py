@@ -597,11 +597,12 @@ def test_completion_fallback_receives_call_context(mock_comp):
     def side_effect(**kwargs):
         if kwargs.get("model") == "gpt-4o":
             raise primary_error
-        return _get_mock_response("fb ok", model="fb")
+        return _get_mock_response("fb ok", model="gpt-4o-mini")
 
     mock_comp.side_effect = side_effect
 
-    fb = _get_llm("fb")
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
     strategy = FallbackStrategy(fallback_llms=["fb-profile"])
     primary = _get_llm("gpt-4o", fallback_strategy=strategy)
     _patch_resolve(primary, [fb])
@@ -624,7 +625,7 @@ def test_responses_fallback_receives_call_context(mock_resp):
     fallback_response = ResponsesAPIResponse(
         id="resp-fb",
         created_at=1,
-        model="fb",
+        model="gpt-4o-mini",
         object="response",
         output=[
             {
@@ -649,7 +650,8 @@ def test_responses_fallback_receives_call_context(mock_resp):
 
     mock_resp.side_effect = side_effect
 
-    fb = _get_llm("fb")
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
     strategy = FallbackStrategy(fallback_llms=["fb-profile"])
     primary = _get_llm("gpt-4o", fallback_strategy=strategy)
     _patch_resolve(primary, [fb])
@@ -670,9 +672,10 @@ async def test_acompletion_fallback_receives_call_context(mock_acomp, mock_comp)
     mock_acomp.side_effect = APIConnectionError(
         message="down", llm_provider="openai", model="gpt-4o"
     )
-    mock_comp.return_value = _get_mock_response("fb ok", model="fb")
+    mock_comp.return_value = _get_mock_response("fb ok", model="gpt-4o-mini")
 
-    fb = _get_llm("fb")
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
     strategy = FallbackStrategy(fallback_llms=["fb-profile"])
     primary = _get_llm("gpt-4o", fallback_strategy=strategy)
     _patch_resolve(primary, [fb])
@@ -696,7 +699,7 @@ async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
     fallback_response = ResponsesAPIResponse(
         id="resp-fb",
         created_at=1,
-        model="fb",
+        model="gpt-4o-mini",
         object="response",
         output=[
             {
@@ -715,7 +718,8 @@ async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
     )
     mock_resp.return_value = fallback_response
 
-    fb = _get_llm("fb")
+    # OpenAI fallback so prompt_cache_key is supported and forwarded.
+    fb = _get_llm("gpt-4o-mini")
     strategy = FallbackStrategy(fallback_llms=["fb-profile"])
     primary = _get_llm("gpt-4o", fallback_strategy=strategy)
     _patch_resolve(primary, [fb])

@@ -86,6 +86,10 @@ def select_responses_options(
 
     out = apply_extra_body(out, llm)
     context = resolve_llm_call_context(call_context)
-    apply_llm_call_context(out, context)
+    apply_llm_call_context(
+        out,
+        context,
+        supports_prompt_cache_key=model_features.supports_prompt_cache_key,
+    )
 
     return out

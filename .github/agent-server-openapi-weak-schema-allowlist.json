@@ -180,6 +180,12 @@
     "owner": "OpenHands OSS"
   },
   {
+    "pointer": "/components/schemas/ClassifyAndSwitchLLMTool/properties/meta/anyOf/0/additionalProperties",
+    "kind": "unrestricted-additional-properties",
+    "reason": "Tool metadata is intentionally extensible across tool providers.",
+    "owner": "OpenHands OSS"
+  },
+  {
     "pointer": "/components/schemas/ClientTool/properties/input_schema/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",

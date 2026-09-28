@@ -738,7 +738,7 @@ def test_switch_llm_to_subscription_profile_keeps_condenser(
 
     conv.switch_llm(
         LLM(
-            model="gpt-5.2-codex",
+            model="gpt-5.4",
             usage_id="profile:codex",
             auth_type="subscription",
             subscription_vendor="openai",

@@ -67,9 +67,16 @@ def resolve_llm_call_context(
 def apply_llm_call_context(
     options: MutableMapping[str, Any],
     context: LLMCallContext,
+    *,
+    supports_prompt_cache_key: bool = False,
 ) -> None:
-    """Apply SDK-owned call context to provider request options in one place."""
-    if context.prompt_cache_key:
+    """Apply SDK-owned call context to provider request options in one place.
+
+    ``prompt_cache_key`` is only sent to providers that accept it as an OpenAI
+    param (OpenAI Responses/Chat). Anthropic and Gemini reject it with a 400
+    ``UnsupportedParamsError`` when litellm validates non-default params.
+    """
+    if context.prompt_cache_key and supports_prompt_cache_key:
         options["prompt_cache_key"] = context.prompt_cache_key
     if context.session_id:
         existing = options.get("extra_headers") or {}
