@@ -1076,6 +1076,65 @@ def _applied_messages(condensation: Condensation, view: View) -> list[Message]:
     return LLMConvertibleEvent.events_to_messages(applied)
 
 
+def test_hard_context_reset_preserves_leading_system_prompt(mock_llm: LLM) -> None:
+    """A hard context reset must keep the SystemPromptEvent at the head.
+
+    Regression for #5149: the hard-reset path used to summarize the entire view
+    (including the system prompt) at offset 0, producing a user-role summary as
+    the first message. It must now open with the preserved system message.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(Any, mock_llm).set_mock_response_content("Hard reset summary")
+
+    events: list[Event] = [
+        _system_prompt_event("You are a safe assistant."),
+        *[message_event(f"Event {i}") for i in range(12)],
+    ]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Force the get_condensation path to fail so hard_context_reset runs.
+    success_response = cast(Any, mock_llm).generate.return_value
+    cast(MagicMock, mock_llm).generate.side_effect = [
+        RuntimeError("context window exceeded"),
+        success_response,
+    ]
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary_offset == 1  # summary placed after the system prompt
+    # The system prompt is retained, not forgotten.
+    assert events[0].id not in result.forgotten_event_ids
+    messages = _applied_messages(result, view)
+    assert messages[0].role == "system"
+
+
+@pytest.mark.asyncio
+async def test_ahard_context_reset_preserves_leading_system_prompt(
+    mock_llm: LLM,
+) -> None:
+    """Async hard context reset must also keep the system prompt first."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(Any, mock_llm).set_mock_response_content("Hard reset summary")
+
+    events: list[Event] = [
+        _system_prompt_event(),
+        *[message_event(f"Event {i}") for i in range(12)],
+    ]
+    view = View.from_events(events)
+
+    result = await condenser.ahard_context_reset(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary_offset == 1
+    assert events[0].id not in result.forgotten_event_ids
+    messages = _applied_messages(result, view)
+    assert messages[0].role == "system"
+
+
 def test_condensation_with_keep_first_zero_keeps_system_first(mock_llm: LLM) -> None:
     """keep_first=0 must not let the SystemPromptEvent be forgotten.
 
