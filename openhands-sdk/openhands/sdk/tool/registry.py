@@ -235,6 +235,7 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
     like any other pick.
     """
     from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES
+    from openhands.sdk.tool.defaults import canonical_tool_name
 
     with _LOCK:
         names = [
@@ -243,17 +244,18 @@ def list_tool_catalog() -> list[ToolCatalogEntry]:
         tool_classes = dict(_TOOL_CLASSES)
         usability_checkers = dict(_USABILITY_REG)
 
+    # A built-in can also be registered under its class name so a ``Tool`` spec
+    # can carry params. That is the same tool, so it is offered once, under the
+    # snake_case name a profile stores — `resolve_tool` accepts either.
     entries = [
         ToolCatalogEntry(
-            name=name,
+            name=canonical_tool_name(name),
             user_selectable=tool_classes[name].user_selectable,
             usable=_check_tool_usable(name, usability_checkers.get(name, lambda: True)),
             description=tool_classes[name].catalog_description,
         )
         for name in names
     ]
-    # Built-ins are keyed by class name, but a profile stores the same snake_case
-    # tool name as every other pick.
     listed = {entry.name for entry in entries}
     entries.extend(
         ToolCatalogEntry(

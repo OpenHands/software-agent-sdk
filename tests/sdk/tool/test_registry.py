@@ -202,6 +202,28 @@ def test_catalog_offers_a_builtin_under_its_snake_case_name(monkeypatch):
     assert builtins.SwitchLLMTool.name == "switch_llm"
 
 
+def test_a_builtin_registered_by_class_name_is_offered_once(monkeypatch):
+    """A built-in can also sit in the registry so a spec can carry params.
+
+    `ClassifyAndSwitchLLMTool` does exactly that, and without collapsing the
+    alias the catalog offered the same tool twice — once per spelling.
+    """
+    from openhands.sdk.tool import builtins, registry
+
+    monkeypatch.setitem(
+        builtins.BUILT_IN_TOOL_CLASSES,
+        _DescribedHelloTool.__name__,
+        _DescribedHelloTool,
+    )
+    register_tool(_DescribedHelloTool.__name__, _DescribedHelloTool)
+    monkeypatch.setattr(registry, "_CATALOG_NAMES", None)
+
+    names = [entry.name for entry in list_tool_catalog()]
+
+    assert _DescribedHelloTool.__name__ not in names
+    assert names.count(_DescribedHelloTool.name) == 1
+
+
 def test_builtin_resolves_under_its_snake_case_name():
     from openhands.sdk.tool import builtins
 
