@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import AgentErrorEvent, Event, MessageEvent
 from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
 
@@ -142,6 +142,70 @@ class ResponseDispatchMixin:
             event: ActionEvent | MessageEvent,
         ) -> CriticResult | None: ...
 
+    def _prepare_action_events(
+        self,
+        message: Message,
+        llm_response: LLMResponse,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        stream: StreamContext | None = None,
+    ) -> list[ActionEvent]:
+        """Emit the response's actions before any validation error results."""
+        if not all(isinstance(c, TextContent) for c in message.content):
+            logger.warning(
+                "LLM returned tool calls but message content is not all "
+                "TextContent - ignoring non-text content"
+            )
+
+        thought_content = [c for c in message.content if isinstance(c, TextContent)]
+
+        action_events: list[ActionEvent] = []
+        errors: list[AgentErrorEvent] = []
+
+        def emit(event: Event) -> None:
+            if isinstance(event, AgentErrorEvent):
+                errors.append(event)
+            else:
+                on_event(event)
+
+        assert message.tool_calls, "classify_response guarantees tool_calls"
+        try:
+            for i, tool_call in enumerate(message.tool_calls):
+                action_event = self._get_action_event(
+                    tool_call,
+                    conversation=conversation,
+                    llm_response_id=llm_response.id,
+                    on_event=emit,
+                    security_analyzer=state.security_analyzer,
+                    thought=thought_content if i == 0 else [],
+                    reasoning_content=(message.reasoning_content if i == 0 else None),
+                    thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
+                    responses_reasoning_item=(
+                        message.responses_reasoning_item if i == 0 else None
+                    ),
+                    # The streamed text is this action's thought, so the first
+                    # action event is what retires the slot.
+                    stream=stream if i == 0 else None,
+                )
+                if action_event is None:
+                    continue
+                action_events.append(action_event)
+
+        except BaseException:
+            # Persist errors for actions already emitted without hiding the
+            # original failure if the callback also fails during cleanup.
+            try:
+                for error in errors:
+                    on_event(error)
+            except Exception:
+                logger.exception("Failed to emit deferred tool validation errors")
+            raise
+
+        for error in errors:
+            on_event(error)
+        return action_events
+
     def _handle_tool_calls(
         self,
         message: Message,
@@ -152,36 +216,9 @@ class ResponseDispatchMixin:
         stream: StreamContext | None = None,
     ) -> None:
         """Handle LLM response containing tool calls."""
-        if not all(isinstance(c, TextContent) for c in message.content):
-            logger.warning(
-                "LLM returned tool calls but message content is not all "
-                "TextContent - ignoring non-text content"
-            )
-
-        thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-        action_events: list[ActionEvent] = []
-        assert message.tool_calls, "classify_response guarantees tool_calls"
-        for i, tool_call in enumerate(message.tool_calls):
-            action_event = self._get_action_event(
-                tool_call,
-                conversation=conversation,
-                llm_response_id=llm_response.id,
-                on_event=on_event,
-                security_analyzer=state.security_analyzer,
-                thought=thought_content if i == 0 else [],
-                reasoning_content=(message.reasoning_content if i == 0 else None),
-                thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
-                responses_reasoning_item=(
-                    message.responses_reasoning_item if i == 0 else None
-                ),
-                # The streamed text is this action's thought, so the first
-                # action event is what retires the slot.
-                stream=stream if i == 0 else None,
-            )
-            if action_event is None:
-                continue
-            action_events.append(action_event)
+        action_events = self._prepare_action_events(
+            message, llm_response, conversation, state, on_event, stream
+        )
 
         if self._requires_user_confirmation(state, action_events):
             return
@@ -206,36 +243,9 @@ class ResponseDispatchMixin:
         tool call runs in its own thread and multiple calls are scheduled
         concurrently via :func:`asyncio.gather`.
         """
-        if not all(isinstance(c, TextContent) for c in message.content):
-            logger.warning(
-                "LLM returned tool calls but message content is not all "
-                "TextContent - ignoring non-text content"
-            )
-
-        thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-        action_events: list[ActionEvent] = []
-        assert message.tool_calls, "classify_response guarantees tool_calls"
-        for i, tool_call in enumerate(message.tool_calls):
-            action_event = self._get_action_event(
-                tool_call,
-                conversation=conversation,
-                llm_response_id=llm_response.id,
-                on_event=on_event,
-                security_analyzer=state.security_analyzer,
-                thought=thought_content if i == 0 else [],
-                reasoning_content=(message.reasoning_content if i == 0 else None),
-                thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
-                responses_reasoning_item=(
-                    message.responses_reasoning_item if i == 0 else None
-                ),
-                # The streamed text is this action's thought, so the first
-                # action event is what retires the slot.
-                stream=stream if i == 0 else None,
-            )
-            if action_event is None:
-                continue
-            action_events.append(action_event)
+        action_events = self._prepare_action_events(
+            message, llm_response, conversation, state, on_event, stream
+        )
 
         if self._requires_user_confirmation(state, action_events):
             return
