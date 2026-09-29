@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from openhands.agent_server.conversation_service import (
     ConversationService,
+    _append_skills,
     _append_system_message_suffix,
 )
 from openhands.agent_server.event_service import EventService
@@ -108,6 +109,19 @@ def test_launch_addition_uses_existing_acp_prompt_path():
     assert suffix is not None
     assert suffix.count("<RUNTIME_SERVICES>") == 1
     assert "PROFILE_BASELINE" in suffix
+
+
+def test_append_skills_keeps_acp_no_datetime_on_contextless_agent():
+    agent = ACPAgent(acp_command=["echo", "test"])
+    assert agent.agent_context is None
+
+    updated = _append_skills(agent, [_automation_skill()])
+
+    assert updated.agent_context is not None
+    assert updated.agent_context.current_datetime is None
+    assert [(s.name, s.description) for s in updated.agent_context.skills] == [
+        ("openhands-automation", _automation_skill().description)
+    ]
 
 
 @pytest.mark.parametrize("profile_launch", [False, True])

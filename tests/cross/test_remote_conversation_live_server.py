@@ -101,6 +101,7 @@ def live_server_env(
     )
 
     cfg = {
+        "acp_skill_sourcing": "native",
         "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
@@ -111,6 +112,9 @@ def live_server_env(
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / ".openhands"))
+    # Pin ACP skill sourcing via config and remove the deployment-level
+    # OH_* override so this regression suite does not depend on ambient env.
+    monkeypatch.delenv("OH_ACP_SKILL_SOURCING", raising=False)
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
 
     if import_modules is not None:

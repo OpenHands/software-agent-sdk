@@ -148,7 +148,9 @@ def _with_load_memory(agent: AgentBase) -> AgentBase:
 
 
 def _append_skills(agent: AgentBase, additions: list[Skill]) -> AgentBase:
-    context = agent.agent_context or AgentContext()
+    # ACP convention: a synthesized context must not inject a datetime block,
+    # matching _with_load_memory and _render_suffix.
+    context = agent.agent_context or AgentContext(current_datetime=None)
     disabled_skills = set(context.disabled_skills)
     skills = [
         skill
