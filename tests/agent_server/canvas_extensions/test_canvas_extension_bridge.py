@@ -9,6 +9,7 @@ import ssl
 import threading
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 
 from openhands.agent_server.canvas_extensions.bridge import (
     APP_BACKEND_SESSION_COOKIE_NAME,
+    APP_BACKEND_SESSION_TTL_SECONDS,
     AppBackendSessionStore,
 )
 from openhands.agent_server.canvas_extensions_bridge_router import (
@@ -124,6 +126,17 @@ def _write_tls_certificate(tmp_path: Path) -> tuple[Path, Path]:
 
 @pytest.fixture
 async def live_bridge(tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
+    async with _live_bridge(tmp_path) as bridge:
+        yield bridge
+
+
+@asynccontextmanager
+async def _live_bridge(
+    tmp_path: Path,
+    *,
+    ttl_seconds: int = APP_BACKEND_SESSION_TTL_SECONDS,
+    trust_forwarded_headers: bool = False,
+) -> AsyncIterator[SimpleNamespace]:
     stream_closed = threading.Event()
     backend_observation: dict[str, str | None] = {}
     backend = FastAPI()
@@ -183,8 +196,11 @@ async def live_bridge(tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
             session_api_keys=[CONTROL_KEY],
             allow_cors_origins=[CANVAS_ORIGIN],
             app_backend_public_url=public_url,
+            trust_forwarded_headers=trust_forwarded_headers,
         )
-        app.state.app_backend_session_store = AppBackendSessionStore()
+        app.state.app_backend_session_store = AppBackendSessionStore(
+            ttl_seconds=ttl_seconds
+        )
         manager = _ReadyBackendManager(("127.0.0.1", backend_server.port))
         app.state.canvas_extension_backend_manager = manager
         app.include_router(app_backend_bridge_router)
@@ -201,6 +217,7 @@ async def live_bridge(tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
                     public_url=public_url,
                     app=app,
                     manager=manager,
+                    store=app.state.app_backend_session_store,
                     backend_observation=backend_observation,
                     stream_closed=stream_closed,
                 )
@@ -323,6 +340,132 @@ async def test_live_websocket_is_bidirectional_and_revoked(live_bridge) -> None:
             ssl=ssl_context,
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_live_websocket_is_revoked_at_session_expiry_without_traffic(
+    tmp_path: Path,
+) -> None:
+    """An idle bridged socket must die at its TTL, not at the next request.
+
+    Regression test: pruning used to run only from `create()`/`authorize()`, so
+    a WebSocket-only app (no subsequent session traffic) kept forwarding to the
+    backend indefinitely past `expires_at`.
+    """
+    async with _live_bridge(tmp_path, ttl_seconds=1) as bridge:
+        client: httpx.AsyncClient = bridge.client
+        root = f"{bridge.public_url}/app-backends/{APP_NAME}"
+        assert (
+            await client.post(f"{root}/session", headers=_bootstrap_headers())
+        ).status_code == 200
+        cookie = client.cookies.get(APP_BACKEND_SESSION_COOKIE_NAME)
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        websocket_url = root.replace("https://", "wss://") + "/socket"
+
+        async with websockets.connect(
+            websocket_url,
+            origin=bridge.public_url,
+            additional_headers={
+                "Cookie": f"{APP_BACKEND_SESSION_COOKIE_NAME}={cookie}"
+            },
+            ssl=ssl_context,
+        ) as websocket:
+            await websocket.send("hello")
+            assert await websocket.recv() == "echo:hello"
+            # No session traffic during this window: only the reaper can act.
+            with pytest.raises(websockets.exceptions.ConnectionClosed):
+                await asyncio.wait_for(websocket.recv(), timeout=10)
+
+        assert (
+            await bridge.store.authorize(cookie, APP_NAME, ("127.0.0.1", 0)) is None
+            or not bridge.store._sessions
+        )
+
+
+@pytest.mark.asyncio
+async def test_nested_percent_encoding_traversal_is_rejected_everywhere(
+    live_bridge,
+) -> None:
+    """Any nesting depth of percent-encoded ``..`` must be rejected.
+
+    Regression test: the validator capped decoding at 3 rounds, so a 4th layer
+    of encoding around ``..`` passed validation and was forwarded upstream.
+    """
+    client: httpx.AsyncClient = live_bridge.client
+    root = f"{live_bridge.public_url}/app-backends/{APP_NAME}"
+    assert (
+        await client.post(f"{root}/session", headers=_bootstrap_headers())
+    ).status_code == 200
+
+    # Each round re-encodes the previous value, so `segment` decodes to `..`
+    # only after that many rounds and still holds an encoded `..` when the
+    # router validates it.
+    segment = "%2e%2e"
+    for _ in range(2, 8):
+        segment = segment.replace("%", "%25")
+        traversal = await client.get(f"{root}/{segment}/secret")
+        assert traversal.status_code == 400, (
+            f"{segment!r} was accepted: {traversal.status_code}"
+        )
+
+    for encoded in ("%25255c", "%2525255c"):
+        assert (await client.get(f"{root}/{encoded}{encoded}secret")).status_code == 400
+
+    # A literal percent sign in an ordinary filename must still be allowed.
+    assert (await client.get(f"{root}/prefix/static/app%2Ejs")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_spoofed_forwarded_headers_do_not_pass_ingress_check(
+    live_bridge,
+) -> None:
+    """`X-Forwarded-*` must not stand in for the request's own Host.
+
+    Regression test: `_request_origin` preferred client-supplied
+    `X-Forwarded-Host`/`X-Forwarded-Proto`, so a request addressed to an
+    unrelated host could satisfy the configured-ingress check and mint a
+    session. Trusted forwarding is opt-in via `trust_forwarded_headers`.
+    """
+    client: httpx.AsyncClient = live_bridge.client
+    ingress = live_bridge.public_url.removeprefix("https://")
+    spoofed = await client.post(
+        f"{live_bridge.public_url}/app-backends/{APP_NAME}/session",
+        headers={
+            **_bootstrap_headers(),
+            "Host": "evil.test",
+            "X-Forwarded-Host": ingress,
+            "X-Forwarded-Proto": "https",
+        },
+    )
+    assert spoofed.status_code == 421
+
+
+@pytest.mark.asyncio
+async def test_spoofed_forwarded_headers_are_honored_only_when_trusted(
+    tmp_path: Path,
+) -> None:
+    """The opt-in trusted-proxy model restores forwarded-header behavior."""
+
+    async def run(*, trust_forwarded: bool) -> int:
+        async with _live_bridge(
+            tmp_path, trust_forwarded_headers=trust_forwarded
+        ) as bridge:
+            ingress = bridge.public_url.removeprefix("https://")
+            response = await bridge.client.post(
+                f"{bridge.public_url}/app-backends/{APP_NAME}/session",
+                headers={
+                    **_bootstrap_headers(),
+                    "Host": "evil.test",
+                    "X-Forwarded-Host": ingress,
+                    "X-Forwarded-Proto": "https",
+                },
+            )
+            return response.status_code
+
+    assert await run(trust_forwarded=False) == 421
+    assert await run(trust_forwarded=True) == 200
 
 
 @pytest.mark.asyncio

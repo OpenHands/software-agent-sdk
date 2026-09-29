@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, Protocol
@@ -19,7 +20,6 @@ from pydantic import BaseModel
 
 from openhands.agent_server.auth_router import (
     _append_partitioned_to_last_set_cookie,
-    _request_is_secure_context,
 )
 from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.proxy import (
@@ -71,12 +71,20 @@ class _AppBackendSession:
 
 
 class AppBackendSessionStore:
-    """Own short-lived app sessions and their live WebSocket bridges."""
+    """Own short-lived app sessions and their live WebSocket bridges.
+
+    A background reaper enforces expiry on its own: an already-bridged
+    WebSocket never calls :meth:`authorize` again, so opportunistic pruning
+    alone would let a socket keep forwarding past its TTL until some unrelated
+    session traffic happened to arrive.
+    """
 
     def __init__(self, ttl_seconds: int = APP_BACKEND_SESSION_TTL_SECONDS) -> None:
         self.ttl_seconds = ttl_seconds
         self._sessions: dict[bytes, _AppBackendSession] = {}
         self._lock = asyncio.Lock()
+        self._reaper: asyncio.Task[None] | None = None
+        self._reaper_wakeup = asyncio.Event()
 
     @staticmethod
     def _digest(token: str) -> bytes:
@@ -119,6 +127,10 @@ class AppBackendSessionStore:
             if self._sessions.get(session.token_digest) is not session:
                 raise RuntimeError("App backend session was revoked")
             session.sockets.add(task)
+            # A socket attached to a session created by an instance without a
+            # running reaper (or after `shutdown`) still needs one.
+            self._ensure_reaper_locked()
+            self._reaper_wakeup.set()
 
     async def detach_socket(
         self, session: _AppBackendSession, task: asyncio.Task[None]
@@ -141,6 +153,12 @@ class AppBackendSessionStore:
         await self._revoke_digests(digests)
 
     async def shutdown(self) -> None:
+        reaper = self._reaper
+        self._reaper = None
+        if reaper is not None:
+            reaper.cancel()
+            with suppress(asyncio.CancelledError):
+                await reaper
         async with self._lock:
             digests = set(self._sessions)
         await self._revoke_digests(digests)
@@ -167,6 +185,37 @@ class AppBackendSessionStore:
                 self._sessions.pop(digest)
                 for task in session.sockets:
                     task.cancel()
+
+    def _ensure_reaper_locked(self) -> None:
+        if self._reaper is None or self._reaper.done():
+            self._reaper = asyncio.create_task(self._reap_expired_loop())
+
+    async def _reap_expired_loop(self) -> None:
+        """Cancel expired sessions even when no request traffic arrives.
+
+        The loop sleeps until the earliest attached-socket expiry, waking early
+        whenever a session is created or a socket attached, so a bridged
+        WebSocket is terminated at its TTL rather than at the next unrelated
+        request. It exits (and clears ``_reaper``) once no bridged sockets
+        remain, at which point opportunistic pruning covers new sessions.
+        """
+        while True:
+            async with self._lock:
+                self._prune_expired_locked()
+                deadlines = [
+                    session.expires_at
+                    for session in self._sessions.values()
+                    if session.sockets
+                ]
+                if not deadlines:
+                    self._reaper = None
+                    return
+                delay = max(min(deadlines) - time.time(), 0.0)
+                self._reaper_wakeup.clear()
+            try:
+                await asyncio.wait_for(self._reaper_wakeup.wait(), timeout=delay)
+            except TimeoutError:
+                pass
 
 
 def get_app_backend_session_store(
@@ -223,11 +272,24 @@ def _allowed_control_origin(config: Config, origin: str) -> bool:
 
 
 def _request_origin(request: Request | WebSocket) -> str | None:
-    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
+    """Derive the request origin from the connection the server actually saw.
+
+    ``X-Forwarded-Proto``/``X-Forwarded-Host`` are client-controllable, so they
+    are honored only when ``trust_forwarded_headers`` marks a deployment where a
+    proxy terminates TLS in front of this server. Otherwise the request's own
+    scheme and ``Host`` decide — the same inputs a spoofing client cannot fake.
+    """
+    config: Config | None = getattr(request.app.state, "config", None)
+    trust_forwarded = bool(config and config.trust_forwarded_headers)
+    if trust_forwarded:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "")
+        scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
+        forwarded_host = request.headers.get("x-forwarded-host", "")
+        host = forwarded_host.split(",")[0].strip() or request.headers.get("host", "")
+    else:
+        scheme = request.url.scheme
+        host = request.headers.get("host", "")
     scheme = {"ws": "http", "wss": "https"}.get(scheme, scheme)
-    forwarded_host = request.headers.get("x-forwarded-host", "")
-    host = forwarded_host.split(",")[0].strip() or request.headers.get("host", "")
     return _origin(f"{scheme}://{host}")
 
 
@@ -258,12 +320,24 @@ def _require_app_origin(origin: str | None, public_url: str) -> None:
 
 
 def _validate_proxy_path(path: str) -> None:
+    """Reject path traversal in an already once-decoded routing path.
+
+    Starlette decodes the raw URL once before ``path`` reaches us, so every
+    remaining ``%`` is encoded data the upstream will decode again. Decoding to
+    a fixed point therefore mirrors what the upstream path parser sees,
+    regardless of how deeply the caller nested the encoding. Each changing round
+    consumes at least one ``%XX`` escape, so ``len(path) + 1`` rounds is a hard
+    upper bound; reaching it means the value never converged and must be
+    rejected rather than forwarded.
+    """
     candidate = path
-    for _ in range(3):
+    for _ in range(len(path) + 1):
         decoded = unquote(candidate)
         if decoded == candidate:
             break
         candidate = decoded
+    else:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backend path")
     if "\\" in candidate or any(part in {".", ".."} for part in candidate.split("/")):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid backend path")
 
@@ -299,6 +373,22 @@ def _cookie_path(extension_name: str) -> str:
     return f"{_APP_BACKEND_PATH}/{extension_name}"
 
 
+def _session_cookie_is_secure(request: Request) -> bool:
+    """Whether a ``Secure`` app-session cookie can be issued for this request.
+
+    Uses :func:`_request_origin`, so it makes the same non-spoofable
+    trusted-proxy decision as the ingress checks rather than reading
+    ``X-Forwarded-*`` unconditionally.
+    """
+    origin = _request_origin(request)
+    if origin is None:
+        return False
+    parsed = urlparse(origin)
+    if parsed.scheme == "https":
+        return True
+    return parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
 def _set_session_cookie(
     response: Response,
     request: Request,
@@ -306,8 +396,7 @@ def _set_session_cookie(
     token: str,
     max_age: int,
 ) -> None:
-    secure = _request_is_secure_context(request)
-    if not secure:
+    if not _session_cookie_is_secure(request):
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Canvas App sessions require HTTPS or a loopback secure context",

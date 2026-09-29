@@ -94,4 +94,58 @@ describe('CanvasExtensionsClient', () => {
       'use app_backend_ingress_url from /server_info'
     );
   });
+
+  it('combines a caller signal with the client timeout for session bootstrap', async () => {
+    const captured: AbortSignal[] = [];
+    global.fetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      captured.push(init.signal as AbortSignal);
+      return new Promise((_resolve, reject) => {
+        (init.signal as AbortSignal).addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        );
+      });
+    }) as unknown as typeof fetch;
+
+    const client = new CanvasExtensionsClient({
+      host: 'https://agent.example.test',
+      appBackendIngressUrl: 'https://apps.example.test',
+      timeout: 60000,
+    });
+    const controller = new AbortController();
+    const pending = client.createAppBackendSession('demo/app', controller.signal);
+
+    expect(captured).toHaveLength(1);
+    // The signal handed to fetch must be neither the bare caller signal nor
+    // the bare timeout signal: it has to fire when either one fires.
+    expect(captured[0]).not.toBe(controller.signal);
+    expect(captured[0].aborted).toBe(false);
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(captured[0].aborted).toBe(true);
+  });
+
+  it('keeps the timeout signal when no caller signal is supplied', async () => {
+    const captured: AbortSignal[] = [];
+    global.fetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      captured.push(init.signal as AbortSignal);
+      return Promise.resolve(
+        new Response(JSON.stringify({ ingress_url: 'https://apps.example.test/x' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as unknown as typeof fetch;
+
+    const client = new CanvasExtensionsClient({
+      host: 'https://agent.example.test',
+      appBackendIngressUrl: 'https://apps.example.test',
+    });
+    await client.createAppBackendSession('demo');
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toBeInstanceOf(AbortSignal);
+    expect(captured[0].aborted).toBe(false);
+  });
 });

@@ -100,21 +100,33 @@ export class CanvasExtensionsClient {
     return response.data;
   }
 
-  async createAppBackendSession(name: string): Promise<AgentServerAppBackendSessionResponse> {
+  /**
+   * Bootstrap an authenticated session for an app backend.
+   *
+   * `signal` is the caller's lifecycle signal (e.g. a React mount
+   * `AbortController`); it is combined with the client timeout so teardown or a
+   * retry cancels the in-flight bootstrap instead of letting it resolve into a
+   * superseded consumer and revoke the session the live frame is using.
+   */
+  async createAppBackendSession(
+    name: string,
+    signal?: AbortSignal
+  ): Promise<AgentServerAppBackendSessionResponse> {
     const client = this.requireAppBackendClient();
     const response = await client.post<AgentServerAppBackendSessionResponse>(
       `/app-backends/${encodeURIComponent(name)}/session`,
       undefined,
-      { credentials: 'include' }
+      { credentials: 'include', signal }
     );
     return response.data;
   }
 
-  async revokeAppBackendSession(name: string): Promise<void> {
+  async revokeAppBackendSession(name: string, signal?: AbortSignal): Promise<void> {
     const client = this.requireAppBackendClient();
     await client.delete(`/app-backends/${encodeURIComponent(name)}/session`, {
       credentials: 'include',
       acceptableStatusCodes: new Set([204]),
+      signal,
     });
   }
 
