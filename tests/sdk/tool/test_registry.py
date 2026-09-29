@@ -106,10 +106,21 @@ class _InternalHelloTool(_SimpleHelloTool):
 
 
 @pytest.fixture(autouse=True)
-def _unsealed_catalog(monkeypatch):
-    from openhands.sdk.tool import registry
+def _isolated_registry(monkeypatch):
+    from openhands.sdk.tool import client_tool, registry
 
     monkeypatch.setattr(registry, "_SEALED_CATALOG", None)
+    for module, name in (
+        (registry, "_REG"),
+        (registry, "_USABILITY_REG"),
+        (registry, "_TOOL_CLASSES"),
+        (client_tool, "_client_action_types"),
+        (client_tool, "_client_action_schemas"),
+        (client_tool, "_client_tool_names"),
+    ):
+        monkeypatch.setattr(
+            module, name, type(getattr(module, name))(getattr(module, name))
+        )
 
 
 def _catalog() -> dict[str, dict]:

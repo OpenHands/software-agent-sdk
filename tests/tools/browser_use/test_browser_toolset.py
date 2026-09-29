@@ -482,9 +482,9 @@ def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
     )
     from openhands.sdk.tool.registry import resolve_tool
 
-    migrated = fold_retired_tool_switches(
-        {"tools": None, "enable_sub_agents": True}, enable_browser=True
-    )["tools"]
+    migrated = fold_retired_tool_switches({"tools": None, "enable_sub_agents": True})[
+        "tools"
+    ]
     specs = resolve_tool_specs(migrated)
     assert [spec.name for spec in specs] == [
         "terminal",

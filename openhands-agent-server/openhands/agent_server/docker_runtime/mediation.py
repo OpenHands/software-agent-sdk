@@ -66,7 +66,7 @@ async def prepare_start(
         if value is not None or name not in {"agent", "agent_settings"}
     }
     context = {"cipher": config.cipher} if body.get("secrets_encrypted") else None
-    if body.get("agent_settings") is not None:
+    if body.get("agent") is None and body.get("agent_settings") is not None:
         settings = resolve_settings_tools(
             validate_agent_settings(body["agent_settings"], context=context),
             browser_available=configured_browser_available(config),

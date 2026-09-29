@@ -76,8 +76,12 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
-from openhands.sdk.settings.model import validate_agent_settings
+from openhands.sdk.settings.model import (
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.tool.client_tool import register_client_tools
+from openhands.sdk.tool.defaults import resolve_tool_specs
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -1693,14 +1697,16 @@ class ConversationService:
                 }
             request = request.model_copy(update=updates)
         elif request.agent_settings is not None:
-            agent_settings = request.agent_settings
-            agent = await asyncio.to_thread(
-                lambda: resolve_settings_tools(
-                    validate_agent_settings(agent_settings),
-                    browser_available=self._configured_browser(),
-                ).create_agent()
+            agent_settings = validate_agent_settings(request.agent_settings)
+            resolved = resolve_settings_tools(
+                agent_settings, browser_available=self._configured_browser()
             )
-            request = request.model_copy(update={"agent": agent})
+            if isinstance(agent_settings, OpenHandsAgentSettings) and isinstance(
+                resolved, OpenHandsAgentSettings
+            ):
+                if resolved.tools != resolve_tool_specs(agent_settings.tools):
+                    agent = await asyncio.to_thread(resolved.create_agent)
+                    request = request.model_copy(update={"agent": agent})
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to

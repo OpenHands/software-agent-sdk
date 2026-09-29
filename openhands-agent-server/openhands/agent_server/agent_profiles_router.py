@@ -16,7 +16,7 @@ import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel, Field, PlainValidator, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PlainValidator, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
@@ -114,6 +114,8 @@ def _raw_profile_payload(value: Any) -> dict[str, Any] | None:
 
 
 class MaterializeAgentProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # Kept raw so the draft goes through the same migrations as a save.
     profile: Annotated[
         dict[str, Any] | None,

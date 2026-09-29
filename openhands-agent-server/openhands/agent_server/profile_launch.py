@@ -2,7 +2,11 @@
 
 from typing import NamedTuple
 
-from openhands.agent_server.config import ACPSkillSourcing, Config
+from openhands.agent_server.config import (
+    DEFAULT_CONVERSATION_IMAGE,
+    ACPSkillSourcing,
+    Config,
+)
 from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.settings import AgentSettingsConfig, OpenHandsAgentSettings
@@ -26,7 +30,9 @@ def configured_browser_available(config: Config) -> bool | None:
     if not config.enable_browser:
         return False
     if config.conversation_runtime == "docker":
-        return config.conversation_image_has_browser
+        if config.conversation_image_has_browser is not None:
+            return config.conversation_image_has_browser
+        return config.conversation_image == DEFAULT_CONVERSATION_IMAGE
     return None
 
 

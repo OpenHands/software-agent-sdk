@@ -40,15 +40,14 @@ def resolve_tool_specs(
     tools: Sequence[Tool] | None,
     *,
     enable_browser: bool = False,
-    enable_switch_llm: bool = True,
 ) -> list[Tool]:
     """Resolve ``tools`` to specs: ``None`` is the standard set, a list is kept."""
     if tools is not None:
         return list(tools)
-    resolved = _preset_specs(enable_browser=enable_browser)
-    if enable_switch_llm:
-        resolved.append(Tool(name=SWITCH_LLM_TOOL_NAME))
-    return resolved
+    return [
+        *_preset_specs(enable_browser=enable_browser),
+        Tool(name=SWITCH_LLM_TOOL_NAME),
+    ]
 
 
 def launch_tool_specs(
@@ -98,32 +97,37 @@ _BOOL_ADAPTER = TypeAdapter(bool)
 
 
 def fold_retired_tool_switches(
-    payload: Mapping[str, Any], *, enable_browser: bool
+    payload: Mapping[str, Any], *, sparse: bool = False
 ) -> dict[str, Any]:
-    """Pop the retired tool switches from ``payload`` into its ``tools``."""
+    """Fold the retired switches into ``tools``; ``sparse`` skips absent ones."""
     folded = dict(payload)
-    sub_agents = _BOOL_ADAPTER.validate_python(folded.pop("enable_sub_agents", False))
-    switch_llm = _BOOL_ADAPTER.validate_python(
-        folded.pop("enable_switch_llm_tool", True)
-    )
+    sub_agents = _pop_switch(folded, "enable_sub_agents", None if sparse else False)
+    switch_llm = _pop_switch(folded, "enable_switch_llm_tool", None if sparse else True)
     tools = folded.get("tools")
     if tools is not None and not isinstance(tools, list):
         return folded
-    if tools is None and not sub_agents and switch_llm:
+    if tools is None and not sub_agents and switch_llm is not False:
         return folded
     # "The standard set plus/minus one tool" is not expressible, so pin it.
-    entries = (
-        _preset_specs(enable_browser=enable_browser)
-        if tools is None
-        else [t if isinstance(t, Tool) else Tool.model_validate(t) for t in tools]
-    )
-    # `enable_sub_agents` only ever applied to the default set.
-    if sub_agents and tools is None:
-        entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
+    if tools is None:
+        entries = _preset_specs(enable_browser=True)
+        # `enable_sub_agents` only ever applied to the default set.
+        if sub_agents:
+            entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
+        if switch_llm is None:
+            switch_llm = True
+    else:
+        entries = [t if isinstance(t, Tool) else Tool.model_validate(t) for t in tools]
     selected = [canonical_tool_name(e.name) == SWITCH_LLM_TOOL_NAME for e in entries]
-    if not switch_llm:
+    if switch_llm is False:
         entries = [e for e, is_switch in zip(entries, selected) if not is_switch]
-    elif not any(selected):
+    elif switch_llm and not any(selected):
         entries.append(Tool(name=SWITCH_LLM_TOOL_NAME))
     folded["tools"] = entries
     return folded
+
+
+def _pop_switch(payload: dict[str, Any], key: str, default: bool | None) -> bool | None:
+    if key not in payload:
+        return default
+    return _BOOL_ADAPTER.validate_python(payload.pop(key))

@@ -1053,6 +1053,17 @@ def test_materialize_valid_openhands_profile(client_with_llm_store, store, llm_s
     assert body["dangling_mcp_server_refs"] == []
 
 
+def test_materialize_rejects_an_unwrapped_draft(client_with_llm_store, store):
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    response = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize",
+        json={"llm_profile_ref": "other", "tools": []},
+    )
+
+    assert response.status_code == 422
+
+
 def test_materialize_valid_acp_profile(client_with_llm_store, store):
     """Valid ACP profile returns 200 + valid=True (no LLM ref needed)."""
     store.save(ACPAgentProfile(name="acp-p", acp_server="codex", acp_model="gpt-5.5"))

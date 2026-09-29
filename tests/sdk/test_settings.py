@@ -34,6 +34,7 @@ from openhands.sdk.settings import (
     LLMSummarizingCondenserSettings,
     NoOpCondenserSettings,
     VerificationSettings,
+    apply_agent_settings_diff,
 )
 from openhands.sdk.settings.model import ACPServerKind
 from openhands.sdk.workspace import LocalWorkspace
@@ -983,6 +984,7 @@ def test_retired_enable_sub_agents_folds_into_the_default_tools() -> None:
         "terminal",
         "file_editor",
         "task_tracker",
+        "browser_tool_set",
         "task_tool_set",
     ]
 
@@ -1081,8 +1083,67 @@ def test_retired_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> No
     bare = OpenHandsAgentSettings.model_validate(
         {"llm": LLM(model="test-model"), "tools": [], "enable_sub_agents": True}
     )
-    assert [t.name for t in explicit.tools or []] == ["terminal", "switch_llm"]
-    assert [t.name for t in bare.tools or []] == ["switch_llm"]
+    assert [t.name for t in explicit.tools or []] == ["terminal"]
+    assert bare.tools == []
+
+
+@pytest.mark.parametrize(
+    ("diff", "expected"),
+    [
+        ({"enable_sub_agents": False}, ["terminal"]),
+        ({"enable_sub_agents": True}, ["terminal"]),
+        ({"enable_switch_llm_tool": True}, ["terminal", "switch_llm"]),
+    ],
+)
+def test_sparse_retired_switch_diff_changes_only_what_it_names(
+    diff: dict[str, bool], expected: list[str]
+) -> None:
+    base = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[Tool(name="terminal")]
+    )
+
+    settings = apply_agent_settings_diff(base, diff)
+
+    assert [t.name for t in settings.tools or []] == expected
+
+
+@pytest.mark.parametrize(
+    ("diff", "expected"),
+    [
+        (
+            {"enable_switch_llm_tool": False},
+            ["terminal", "file_editor", "task_tracker", "browser_tool_set"],
+        ),
+        (
+            {"enable_sub_agents": True},
+            [
+                "terminal",
+                "file_editor",
+                "task_tracker",
+                "browser_tool_set",
+                "task_tool_set",
+                "switch_llm",
+            ],
+        ),
+    ],
+)
+def test_live_retired_switch_pins_the_same_set_as_the_v6_migration(
+    diff: dict[str, bool], expected: list[str]
+) -> None:
+    live = apply_agent_settings_diff(
+        OpenHandsAgentSettings(llm=LLM(model="test-model")), diff
+    )
+    migrated = validate_agent_settings(
+        {
+            "schema_version": 6,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            **diff,
+        }
+    )
+
+    assert [t.name for t in live.tools or []] == expected
+    assert migrated.tools == live.tools
 
 
 def test_retired_tool_switches_are_not_serialized() -> None:

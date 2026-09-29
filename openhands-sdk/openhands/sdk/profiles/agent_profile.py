@@ -373,7 +373,7 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
 def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     """Fold the retired tool switches into ``tools``."""
     if payload.get("agent_kind", "openhands") == "openhands":
-        migrated = fold_retired_tool_switches(payload, enable_browser=True)
+        migrated = fold_retired_tool_switches(payload)
     else:
         migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
     migrated["schema_version"] = 3

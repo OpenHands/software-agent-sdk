@@ -69,6 +69,9 @@ def _default_web_url() -> str | None:
     return None
 
 
+DEFAULT_CONVERSATION_IMAGE = "ghcr.io/openhands/agent-server:latest-python"
+
+
 class WebhookSpec(BaseModel):
     """Spec to create a webhook. All webhook requests use POST method."""
 
@@ -347,10 +350,13 @@ class Config(BaseModel):
         ),
     )
     conversation_runtime: Literal["local", "docker"] = "local"
-    conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
-    conversation_image_has_browser: bool = Field(
-        default=True,
-        description="Whether conversation_image ships the browser (chromium) stack.",
+    conversation_image: str = DEFAULT_CONVERSATION_IMAGE
+    conversation_image_has_browser: bool | None = Field(
+        default=None,
+        description=(
+            "Whether conversation_image ships the browser (chromium) stack. "
+            "Unset means true only for the default image."
+        ),
     )
     enable_browser: bool = Field(
         default=True,

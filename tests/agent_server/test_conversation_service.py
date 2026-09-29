@@ -35,7 +35,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, AgentBase, Message
+from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -4341,3 +4341,44 @@ async def test_settings_launch_resolves_tools_for_this_server(
         await conversation_service.start_conversation(request)
 
     assert [t.name for t in captured["agent"].tools] == expected
+
+
+async def test_explicit_agent_wins_over_agent_settings(conversation_service, tmp_path):
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": [{"name": "file_editor"}],
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == ["terminal"]

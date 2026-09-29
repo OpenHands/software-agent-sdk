@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import DEFAULT_CONVERSATION_IMAGE, Config
 from openhands.agent_server.docker_runtime.mediation import (
     prepare_start,
     serialize_start,
@@ -229,3 +229,38 @@ async def test_settings_launch_follows_the_container_browser(
 
     names = [tool.name for tool in prepared.agent.tools]
     assert ("browser_tool_set" in names) is has_browser
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image", "has_browser"),
+    [(DEFAULT_CONVERSATION_IMAGE, True), ("example.com/custom:tag", False)],
+)
+async def test_unset_image_browser_is_on_only_for_the_default_image(
+    tmp_path, monkeypatch, image, has_browser
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={"conversation_runtime": "docker", "conversation_image": image}
+    )
+    body = {
+        "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+        "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+    }
+
+    prepared, _ = await prepare_start(body, runtime_config)
+
+    names = [tool.name for tool in prepared.agent.tools]
+    assert ("browser_tool_set" in names) is has_browser
+
+
+@pytest.mark.asyncio
+async def test_explicit_agent_is_not_rebuilt_from_agent_settings(tmp_path, monkeypatch):
+    body = {
+        "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+        "agent": {"kind": "Agent", "llm": {"model": "test"}, "tools": []},
+        "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+    }
+
+    prepared, _ = await prepare_start(body, config(tmp_path, monkeypatch))
+
+    assert prepared.agent.tools == []
