@@ -1,6 +1,5 @@
 {
   "__expected__": {
-    "schema_version": 3,
     "active_profile": "fixture-v3-profile",
     "agent_settings.schema_version": 7,
     "agent_settings.agent_kind": "openhands",

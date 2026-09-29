@@ -1104,6 +1104,7 @@ def test_sparse_retired_switch_diff_changes_only_what_it_names(
 
     settings = apply_agent_settings_diff(base, diff)
 
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert [t.name for t in settings.tools or []] == expected
 
 
@@ -1142,6 +1143,8 @@ def test_live_retired_switch_pins_the_same_set_as_the_v6_migration(
         }
     )
 
+    assert isinstance(live, OpenHandsAgentSettings)
+    assert isinstance(migrated, OpenHandsAgentSettings)
     assert [t.name for t in live.tools or []] == expected
     assert migrated.tools == live.tools
 
