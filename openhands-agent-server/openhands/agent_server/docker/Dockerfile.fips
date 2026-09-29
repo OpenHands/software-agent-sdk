@@ -17,13 +17,21 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+# `make install_fips` honours $libdir, which is `lib64` on x86_64 (the target
+# sets `multilib 64`) but plain `lib` on aarch64 (linux-aarch64 has no
+# multilib). Resolve the module to one fixed path here so the COPY in the final
+# stage is architecture-independent and works once this image is built for both
+# architectures like the other agent-server variants.
 RUN curl -fsSLo openssl.tar.gz \
         "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_FIPS_VERSION}/openssl-${OPENSSL_FIPS_VERSION}.tar.gz" \
     && echo "${OPENSSL_FIPS_SHA256}  openssl.tar.gz" | sha256sum -c - \
     && tar -xzf openssl.tar.gz --strip-components=1 \
     && ./Configure enable-fips \
     && make -j"$(nproc)" \
-    && make install_fips DESTDIR=/fips
+    && make install_fips DESTDIR=/fips \
+    && fips_module="$(find /fips -type f -path '*/ossl-modules/fips.so' -print -quit)" \
+    && test -n "$fips_module" \
+    && install -D -m 0444 "$fips_module" /fips-module/fips.so
 
 FROM debian:trixie-slim AS node-fips-builder
 ARG NODE_VERSION
@@ -47,7 +55,7 @@ FROM ${BASE_IMAGE} AS binary-fips
 USER root
 
 COPY --from=node-fips-builder /src/out/Release/node /usr/local/bin/node-fips
-COPY --from=fips-builder /fips/usr/local/lib64/ossl-modules/fips.so \
+COPY --from=fips-builder /fips-module/fips.so \
     /usr/local/lib/ossl-modules/fips.so
 COPY --from=fips-builder /fips/usr/local/ssl/fipsmodule.cnf \
     /etc/ssl/fipsmodule.cnf

@@ -203,6 +203,22 @@ def test_fips_image_is_separate_and_uses_validated_provider() -> None:
     # The ACP runtime is the regression this scoping exists to prevent, so the
     # entrypoint has to exercise it rather than only the primary Node.
     assert "ACP_NODE_DIR" in entrypoint
+    # The entrypoint must re-exec the base image's init. Every other target ends
+    # in `tini -- ...` because the server spawns subprocess trees that need
+    # reaping; a bare `exec "$@"` would make it PID 1 with no init.
+    assert 'exec tini -- "$@"' in entrypoint
+    assert 'exec "$@"' not in entrypoint
+    # The FIPS module lands in $libdir, which is `lib64` on x86_64 but plain
+    # `lib` on arm64 (linux-aarch64 sets no `multilib`), so no COPY may hardcode
+    # either. The build resolves the module to one arch-independent path.
+    copy_sources = re.findall(r"(?m)^COPY\s+--from=\S+\s+(\S+)", dockerfile_text)
+    assert copy_sources
+    for source in copy_sources:
+        assert not source.endswith("/lib64/ossl-modules/fips.so"), (
+            f"{AGENT_SERVER_FIPS_DOCKERFILE}: COPY source {source!r} hardcodes "
+            "the x86_64 multilib path, which does not exist on arm64"
+        )
+    assert "ossl-modules/fips.so" in dockerfile_text
 
 
 def test_agent_server_uses_one_pinned_npm_version_for_both_node_runtimes() -> None:

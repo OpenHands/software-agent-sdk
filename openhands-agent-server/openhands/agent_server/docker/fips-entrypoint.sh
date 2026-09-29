@@ -15,4 +15,8 @@ if [ -x "$acp_node" ]; then
     "$acp_node" -e 'process.exit(0)'
 fi
 
-exec "$@"
+# Re-exec through the base image's init. Every other agent-server target ends
+# its ENTRYPOINT with `tini` because the server spawns long-lived subprocess
+# trees (terminals, tmux, shell/git APIs) that need reaping; execing the server
+# directly would leave it as PID 1 and orphan those processes.
+exec tini -- "$@"
