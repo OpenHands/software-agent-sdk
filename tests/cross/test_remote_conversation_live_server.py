@@ -2663,3 +2663,49 @@ def test_interrupt_endpoint_cancels_running_conversation(
         assert events_resp.status_code == 200
         items = events_resp.json()["items"]
         assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"
+
+
+def test_idle_pause_fence_is_authenticated_and_excludes_execution(
+    tmp_path, monkeypatch
+):
+    from openhands.agent_server import server_details_router as details
+
+    monkeypatch.setattr(details, "_active_executions", 0)
+    monkeypatch.setattr(details, "_idle_pause_fenced", False)
+    monkeypatch.setattr(details, "_last_event_time", time.time() - 1201)
+    with live_server_env(tmp_path, monkeypatch, session_api_keys=["fence-key"]) as env:
+        with httpx.Client(base_url=env["host"]) as client:
+            payload = {"minimum_idle_seconds": 1200}
+            for headers in ({}, {"X-Session-API-Key": "wrong"}):
+                assert (
+                    client.post(
+                        "/idle_pause_fence", json=payload, headers=headers
+                    ).status_code
+                    == 401
+                )
+                assert (
+                    client.post(
+                        "/idle_pause_fence/release", headers=headers
+                    ).status_code
+                    == 401
+                )
+            headers = {"X-Session-API-Key": "fence-key"}
+            response = client.post("/idle_pause_fence", json=payload, headers=headers)
+            assert response.status_code == 200
+            assert response.json()["claimed"]
+            assert not details.begin_execution()
+            assert (
+                client.post("/idle_pause_fence/release", headers=headers).status_code
+                == 200
+            )
+            assert details.begin_execution()
+            try:
+                assert not client.post(
+                    "/idle_pause_fence", json=payload, headers=headers
+                ).json()["claimed"]
+            finally:
+                details.finish_execution()
+    with live_server_env(tmp_path, monkeypatch, session_api_keys=[]) as env:
+        with httpx.Client(base_url=env["host"]) as client:
+            assert client.post("/idle_pause_fence", json=payload).status_code == 401
+            assert client.post("/idle_pause_fence/release").status_code == 401

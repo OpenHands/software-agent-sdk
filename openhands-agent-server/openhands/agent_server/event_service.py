@@ -92,6 +92,10 @@ LEASE_RENEW_INTERVAL_SECONDS = 15.0
 # Bounds initial-state push so subscribe_to_events does not stall on a
 # subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
 INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
+# Keep this comfortably below runtime-api's 20-minute idle threshold. The
+# heartbeat runs only while EventService owns a live conversation run; passive
+# health, server-info, browser, and WebSocket polling never starts it.
+EXECUTION_ACTIVITY_HEARTBEAT_SECONDS = 60.0
 
 
 logger = get_logger(__name__)
@@ -1246,6 +1250,17 @@ class EventService:
         # Publish initial state update
         await self._publish_state_update()
 
+    async def _execution_activity_heartbeat(self) -> None:
+        """Keep runtime idle state fresh only while agent execution is active."""
+        from openhands.agent_server.server_details_router import (
+            update_last_execution_time,
+        )
+
+        update_last_execution_time()
+        while True:
+            await asyncio.sleep(EXECUTION_ACTIVITY_HEARTBEAT_SECONDS)
+            update_last_execution_time()
+
     async def run(self, acp_internal_rerun_generation: int | None = None):
         """Run the conversation asynchronously in the background.
 
@@ -1282,6 +1297,11 @@ class EventService:
             if self._run_task is not None and not self._run_task.done():
                 raise ValueError("conversation_already_running")
 
+            from openhands.agent_server.server_details_router import begin_execution
+
+            if not begin_execution():
+                raise ValueError("runtime_idle_pause_in_progress")
+
             # Capture conversation reference for the closure
             conversation = self._conversation
 
@@ -1289,6 +1309,9 @@ class EventService:
             loop = asyncio.get_running_loop()
 
             async def _run_and_publish():
+                activity_heartbeat = asyncio.create_task(
+                    self._execution_activity_heartbeat()
+                )
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1334,6 +1357,10 @@ class EventService:
                         )
                     await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:
+                    activity_heartbeat.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await activity_heartbeat
+
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status
@@ -1401,7 +1428,25 @@ class EventService:
                                     raise
 
             # Create task but don't await it - runs in background
-            self._run_task = asyncio.create_task(_run_and_publish())
+            try:
+                self._run_task = asyncio.create_task(_run_and_publish())
+            except BaseException:
+                from openhands.agent_server.server_details_router import (
+                    finish_execution,
+                )
+
+                finish_execution()
+                raise
+            else:
+
+                def _finish_execution(_task: asyncio.Task) -> None:
+                    from openhands.agent_server.server_details_router import (
+                        finish_execution,
+                    )
+
+                    finish_execution()
+
+                self._run_task.add_done_callback(_finish_execution)
 
     async def wait_for_run_completion(
         self, timeout: float | None = None
@@ -1465,7 +1510,43 @@ class EventService:
             if self._closing:
                 raise ValueError("inactive_service")
             self._goal_loop_outcome = None
-            self._goal_loop_task = asyncio.create_task(self._run_goal_loop(controller))
+            self._goal_loop_task = self._create_goal_loop_task(controller)
+
+    def _create_goal_loop_task(
+        self, controller: GoalController, *, resume: bool = False
+    ) -> asyncio.Task:
+        """Start one goal loop while holding the runtime execution fence."""
+        from openhands.agent_server.server_details_router import begin_execution
+
+        if not begin_execution():
+            raise ValueError("runtime_idle_pause_in_progress")
+
+        async def _run_with_heartbeat() -> None:
+            activity_heartbeat = asyncio.create_task(
+                self._execution_activity_heartbeat()
+            )
+            try:
+                await self._run_goal_loop(controller, resume=resume)
+            finally:
+                activity_heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await activity_heartbeat
+
+        try:
+            task = asyncio.create_task(_run_with_heartbeat())
+        except BaseException:
+            from openhands.agent_server.server_details_router import finish_execution
+
+            finish_execution()
+            raise
+
+        def _finish_goal_execution(_task: asyncio.Task) -> None:
+            from openhands.agent_server.server_details_router import finish_execution
+
+            finish_execution()
+
+        task.add_done_callback(_finish_goal_execution)
+        return task
 
     async def _run_goal_loop(
         self, controller: GoalController, *, resume: bool = False
@@ -1661,9 +1742,7 @@ class EventService:
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ValueError("inactive_service")
             self._goal_loop_outcome = None
-            self._goal_loop_task = asyncio.create_task(
-                self._run_goal_loop(controller, resume=True)
-            )
+            self._goal_loop_task = self._create_goal_loop_task(controller, resume=True)
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:

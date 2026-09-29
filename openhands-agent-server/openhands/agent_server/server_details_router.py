@@ -1,11 +1,12 @@
 import asyncio
 import os
 import sys
+import threading
 import time
 from importlib.metadata import version
 from typing import Literal
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from openhands.sdk.tool.registry import list_usable_tools
@@ -19,6 +20,9 @@ server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
 _last_event_time = time.time()
 _initialization_complete = asyncio.Event()
+_execution_guard = threading.Lock()
+_active_executions = 0
+_idle_pause_fenced = False
 
 
 def _package_version(dist_name: str) -> str:
@@ -77,9 +81,63 @@ class ServerInfo(BaseModel):
     redoc: str = "/redoc"
 
 
+class IdlePauseFenceRequest(BaseModel):
+    minimum_idle_seconds: int = Field(ge=1)
+
+
+class IdlePauseFenceResult(BaseModel):
+    claimed: bool
+    idle_time: float
+    active_executions: int
+
+
 def update_last_execution_time():
     global _last_event_time
-    _last_event_time = time.time()
+    with _execution_guard:
+        _last_event_time = time.time()
+
+
+def begin_execution() -> bool:
+    global _active_executions, _last_event_time
+    with _execution_guard:
+        if _idle_pause_fenced:
+            return False
+        _active_executions += 1
+        _last_event_time = time.time()
+        return True
+
+
+def finish_execution() -> None:
+    global _active_executions, _last_event_time
+    with _execution_guard:
+        if _active_executions <= 0:
+            raise RuntimeError("execution guard underflow")
+        _active_executions -= 1
+        _last_event_time = time.time()
+
+
+def claim_idle_pause(minimum_idle_seconds: int) -> IdlePauseFenceResult:
+    global _idle_pause_fenced
+    with _execution_guard:
+        idle_time = time.time() - _last_event_time
+        if _idle_pause_fenced or _active_executions or idle_time < minimum_idle_seconds:
+            return IdlePauseFenceResult(
+                claimed=False,
+                idle_time=idle_time,
+                active_executions=_active_executions,
+            )
+        _idle_pause_fenced = True
+        return IdlePauseFenceResult(
+            claimed=True,
+            idle_time=idle_time,
+            active_executions=0,
+        )
+
+
+def release_idle_pause() -> None:
+    global _idle_pause_fenced
+    with _execution_guard:
+        _idle_pause_fenced = False
 
 
 def mark_initialization_complete() -> None:
@@ -132,3 +190,31 @@ def build_server_info(
 @server_details_router.get("/server_info")
 async def get_server_info(request: Request) -> ServerInfo:
     return build_server_info(request.app.state.config.conversation_runtime)
+
+
+def _require_session_key(request: Request, session_api_key: str | None) -> None:
+    configured_keys = request.app.state.config.session_api_keys
+    if not configured_keys or session_api_key not in configured_keys:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+
+@server_details_router.post("/idle_pause_fence")
+async def acquire_idle_pause_fence(
+    body: IdlePauseFenceRequest,
+    request: Request,
+    session_api_key: str | None = Header(default=None, alias="X-Session-API-Key"),
+) -> IdlePauseFenceResult:
+    """Atomically fence new execution only when the runtime is genuinely idle."""
+    _require_session_key(request, session_api_key)
+    return claim_idle_pause(body.minimum_idle_seconds)
+
+
+@server_details_router.post("/idle_pause_fence/release")
+async def release_idle_pause_fence(
+    request: Request,
+    session_api_key: str | None = Header(default=None, alias="X-Session-API-Key"),
+) -> dict[str, str]:
+    """Release a claimed fence when runtime-api could not commit the pause."""
+    _require_session_key(request, session_api_key)
+    release_idle_pause()
+    return {"status": "released"}
