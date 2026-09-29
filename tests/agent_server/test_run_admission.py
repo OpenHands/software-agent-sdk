@@ -268,16 +268,16 @@ async def test_goal_rejected_before_scheduling(runs):
     assert spare._goal_loop_task is None
 
 
-async def test_rearm_survives_competing_claim_of_released_permit(runs_one):
-    """A request re-armed after its run finishes must not be dropped when a
-    competing caller claims the just-released permit before the re-arm's
-    ``run()`` can re-acquire it.
+async def test_rearm_resumes_parked_input_despite_competing_claim(runs_one):
+    """A run re-armed for input parked while its predecessor was wrapping up
+    must actually resume, even when a competing caller tries to claim capacity
+    in that window.
 
-    ``_run_and_publish`` calls ``release_slot()`` before its re-arm, so the
-    freed permit can be taken first. ``run()`` then raises
-    ``ConversationRunLimitExceeded`` from ``RunSlot.acquire``; if the re-arm
-    only handles ``ValueError`` that refusal escapes the background task and
-    the pending input is stranded.
+    ``_run_and_publish`` re-arms after its own run yields. Without holding the
+    conversation's session permit across the re-arm, the freed token could be
+    taken first and the parked message would be stranded (``send_message(run=True)``
+    already returned 200, so the client has no signal to retry). The session
+    permit is shared with the re-arm, so the parked input always runs.
     """
     service = await runs_one.create()
     await service.run()
@@ -290,18 +290,21 @@ async def test_rearm_survives_competing_claim_of_released_permit(runs_one):
     )
     assert service._rerun_requested is True
 
-    # Model a competing request claiming the permit the finishing run releases,
-    # before the re-arm's run() reaches RunSlot.acquire. The claim is made from
-    # the status read the re-arm performs after release_slot(), exactly the
-    # window in which the permit is free but the re-arm has not re-acquired it.
-    claimed = False
+    # From the status read the re-arm performs after its own run yields --
+    # exactly the window in which a fresh permit would look free -- try to
+    # claim capacity as a competing caller would. The conversation's session
+    # permit is still held, so the claim cannot succeed.
+    claim_attempted = False
     original_get_status = service._get_execution_status
 
     async def get_status_with_competing_claim():
-        nonlocal claimed
-        if not claimed and service._run_task is None:
-            claimed = True
-            await runs_one.owner._run_semaphore.acquire()
+        nonlocal claim_attempted
+        if not claim_attempted and service._run_task is None:
+            claim_attempted = True
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    runs_one.owner._run_semaphore.acquire(), timeout=0.25
+                )
         return await original_get_status()
 
     service._get_execution_status = get_status_with_competing_claim
@@ -309,22 +312,17 @@ async def test_rearm_survives_competing_claim_of_released_permit(runs_one):
     run_task = service._run_task
     assert run_task is not None
     runs_one.release.set()
-    # Pre-fix this raises ConversationRunLimitExceeded out of the background
-    # task, stranding the parked message with nothing left to reschedule it.
     await run_task
-    assert claimed, "the competing claim never happened"
+    assert claim_attempted, "the competing claim window was never observed"
 
-    # The refusal is handled like "conversation_already_running": the request
-    # stays pending so it is retried once capacity frees.
-    assert service._rerun_requested is True
-    assert service._run_task is None
-
-    # Capacity frees and the caller retries /run, as the 429 response
-    # instructs. The parked message must now get a run.
-    runs_one.owner._run_semaphore.release()
-    await service.run()
+    # The parked message resumed off the conversation's own session permit, so
+    # the competing claim could not pre-empt it.
     await wait_until(lambda: runs_one.tracker.entered >= 2)
+    assert service.get_conversation().state.last_user_message_id is not None
+
     runs_one.release.set()
     await service.wait_for_run_completion(5)
     await wait_until(lambda: runs_one.tracker.active == 0)
-    assert service.get_conversation().state.last_user_message_id is not None
+    # Once the chain settles the permit is returned to the shared pool.
+    await asyncio.wait_for(runs_one.owner._run_semaphore.acquire(), timeout=5)
+    runs_one.owner._run_semaphore.release()
