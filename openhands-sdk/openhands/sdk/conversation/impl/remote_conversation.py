@@ -700,6 +700,7 @@ class RemoteConversation(BaseConversation):
     _cleanup_initiated: bool
     _terminal_status_queue: Queue[str]
     _run_armed: threading.Event
+    _title: str | None
     delete_on_close: bool = False
 
     def __init__(
@@ -721,6 +722,7 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        title: str | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
@@ -754,6 +756,7 @@ class RemoteConversation(BaseConversation):
             secrets: Optional secrets to initialize the conversation with
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            title: Optional user-defined conversation title.
             user_id: Optional user ID to associate with observability traces
             client_tools: Optional list of client-defined tool specs. These tools
                       have no server-side executor — when the agent calls them an
@@ -795,6 +798,8 @@ class RemoteConversation(BaseConversation):
                     attached_client_tools.append(
                         ClientToolSpec.model_validate(raw_spec)
                     )
+                if title is None:
+                    title = info.get("title")
 
         if should_create:
             # Import here to avoid circular imports
@@ -885,6 +890,8 @@ class RemoteConversation(BaseConversation):
             client_tools=[*(client_tools or []), *attached_client_tools],
             visualizer=visualizer,
         )
+        if title is not None:
+            self._title = title
 
         # Initialize secrets if provided
         if secrets:
@@ -987,6 +994,7 @@ class RemoteConversation(BaseConversation):
             ],
             visualizer=visualizer,
         )
+        conversation._title = info.get("title")
         return conversation
 
     def _initialize_connection(
@@ -1004,6 +1012,7 @@ class RemoteConversation(BaseConversation):
     ) -> None:
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
+        self._title = None
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
@@ -1188,6 +1197,10 @@ class RemoteConversation(BaseConversation):
     @property
     def id(self) -> ConversationID:
         return self._id
+
+    @property
+    def title(self) -> str | None:
+        return self._title
 
     @property
     def state(self) -> RemoteState:
@@ -1615,6 +1628,7 @@ class RemoteConversation(BaseConversation):
             f"{CONVERSATIONS_PATH}/{self._id}",
             json={"title": title},
         )
+        self._title = title
 
     @observe(
         name="conversation.generate_title",
@@ -1728,8 +1742,8 @@ class RemoteConversation(BaseConversation):
             self.agent.model_dump(context={"expose_secrets": True}),
         )
 
-        # Use server-returned tags (which include merged title) rather than
-        # the input tags, so the client-side object stays consistent.
+        # ConversationInfo returns title and tags as separate top-level fields.
+        server_title: str | None = fork_info.get("title")
         server_tags: dict[str, str] | None = fork_info.get("tags") or None
 
         return RemoteConversation(
@@ -1739,6 +1753,7 @@ class RemoteConversation(BaseConversation):
             max_iteration_per_run=self.max_iteration_per_run,
             delete_on_close=self.delete_on_close,
             tags=server_tags,
+            title=server_title,
         )
 
     def navigate_to(self, event_id: EventID | None) -> None:
