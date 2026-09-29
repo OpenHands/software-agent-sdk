@@ -252,7 +252,7 @@ async def test_launch_skills_survive_native_acp_sourcing_and_trigger_later(
     with (
         patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(resolved_agent, launched),
+            return_value=(resolved_agent, launched, None),
         ),
         patch(
             "openhands.agent_server.persistence.get_settings_store",
