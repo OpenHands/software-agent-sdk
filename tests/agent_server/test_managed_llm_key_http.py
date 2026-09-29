@@ -11,7 +11,7 @@ import pytest
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.sdk import LLM, Agent
 from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.llm.exceptions import LLMAuthenticationError
+from openhands.sdk.llm.exceptions import LLMAuthenticationError, LLMRateLimitError
 
 
 @dataclass
@@ -20,6 +20,7 @@ class RecoveryProvider:
     refresh_status: int = 200
     refresh_key: str = "fresh-key"
     reject_fresh_key: bool = False
+    exhausted: bool = False
     refresh_timed_out: bool = False
     requests: list[str] = field(default_factory=list)
     refresh_headers: list[str | None] = field(default_factory=list)
@@ -56,6 +57,17 @@ def recovery_provider(monkeypatch):
             provider.requests.append(key)
             if key != "Bearer fresh-key" or provider.reject_fresh_key:
                 self.reply(401, {"error": {"message": "token_not_found_in_db"}})
+                return
+            if provider.exhausted:
+                self.reply(
+                    429,
+                    {
+                        "error": {
+                            "message": "Budget has been exceeded!",
+                            "type": "budget_exceeded",
+                        }
+                    },
+                )
                 return
             self.reply(
                 200,
@@ -117,7 +129,12 @@ def managed_llm(recovery_provider):
 
 
 def messages():
-    return [Message(role="user", content=[TextContent(text="continue")])]
+    return [
+        Message(
+            role="system", content=[TextContent(text="You are a helpful assistant.")]
+        ),
+        Message(role="user", content=[TextContent(text="continue")]),
+    ]
 
 
 @pytest.mark.parametrize("use_async", [False, True])
@@ -164,6 +181,28 @@ async def test_concurrent_calls_recover_independently(recovery_provider, managed
     assert recovery_provider.requests.count("Bearer stale-key") == 4
     assert recovery_provider.requests.count("Bearer fresh-key") == 4
     assert recovery_provider.refresh_headers == ["fixture-session"] * 4
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_refreshed_key_respects_budget_and_resumes(
+    recovery_provider, managed_llm, use_async
+):
+    async def call():
+        if use_async:
+            return await managed_llm.acompletion(messages())
+        return managed_llm.completion(messages())
+
+    recovery_provider.exhausted = True
+    with pytest.raises(LLMRateLimitError):
+        await call()
+    assert recovery_provider.requests == ["Bearer stale-key", "Bearer fresh-key"]
+    assert recovery_provider.refresh_headers == ["fixture-session"]
+
+    recovery_provider.exhausted = False
+    response = await call()
+    assert response.message.content == [TextContent(text="resumed")]
+    assert recovery_provider.requests == ["Bearer stale-key", "Bearer fresh-key"] * 2
+    assert recovery_provider.refresh_headers == ["fixture-session"] * 2
 
 
 async def test_refresh_does_not_block_event_loop(recovery_provider, managed_llm):
