@@ -4,6 +4,7 @@ from typing import Final
 
 from litellm.exceptions import (
     APIConnectionError,
+    APIError,
     AuthenticationError,
     BadRequestError,
     BudgetExceededError,
@@ -181,3 +182,10 @@ def is_content_policy_violation(exception: Exception) -> bool:
         return False
     s = str(exception).lower()
     return any(p in s for p in CONTENT_POLICY_PATTERNS)
+
+
+def is_transient_http_error(exception: BaseException) -> bool:
+    """Match provider HTTP failures eligible for retry and model fallback."""
+    return isinstance(exception, APIError) and (
+        exception.status_code in (408, 409, 429) or 500 <= exception.status_code < 600
+    )

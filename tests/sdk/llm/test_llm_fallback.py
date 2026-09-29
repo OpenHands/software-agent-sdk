@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from litellm.exceptions import (
     APIConnectionError,
+    APIError,
     ContextWindowExceededError,
     RateLimitError,
 )
@@ -790,3 +791,19 @@ async def test_aresponses_fallback_receives_call_context(mock_aresp, mock_resp):
     fb_call_kwargs = mock_resp.call_args_list[-1].kwargs
     assert fb_call_kwargs.get("prompt_cache_key") == "cache-abc"
     assert fb_call_kwargs["extra_headers"]["x-litellm-session-id"] == "sess-xyz"
+
+
+@pytest.mark.parametrize(
+    "status", [408, 409, 429, 501, 505, 520, 522, 524, 599, 402, 403, 405, 406, 410]
+)
+def test_fallback_respects_provider_http_status(status):
+    strategy = FallbackStrategy(fallback_llms=["backup"])
+    error = APIError(
+        status_code=status,
+        message="Provider request failed",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    assert strategy.should_fallback(error) is (
+        status in (408, 409, 429) or status >= 500
+    )

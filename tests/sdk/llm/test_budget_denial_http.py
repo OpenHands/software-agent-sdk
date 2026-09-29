@@ -47,8 +47,11 @@ def provider():
 @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize(
     "status,budget_denied",
-    [(429, False), (502, False), (429, True)],
-    ids=["rate-limit", "bad-gateway", "budget"],
+    [
+        (code, False)
+        for code in (408, 409, 429, 502, 520, 522, 524, 599, 402, 403, 405, 406, 410)
+    ]
+    + [(429, True)],
 )
 async def test_http_rate_limit_retry_and_budget_recovery(
     provider, api_mode, use_async, status, budget_denied
@@ -62,9 +65,7 @@ async def test_http_rate_limit_retry_and_budget_recovery(
                     "type": "budget_exceeded" if budget_denied else "provider_error",
                     "message": "Budget has been exceeded! Team=t"
                     if budget_denied
-                    else "Bad gateway"
-                    if status == 502
-                    else "Too many requests",
+                    else "Provider request failed",
                     "code": str(status),
                 }
             },
@@ -134,6 +135,12 @@ async def test_http_rate_limit_retry_and_budget_recovery(
         with pytest.raises(LLMRateLimitError, match="Budget has been exceeded"):
             await call()
         assert len(requests) == 1
+
+    if status in (402, 403, 405, 406, 410):
+        with pytest.raises(Exception, match="Provider request failed"):
+            await call()
+        assert len(requests) == 1
+        return
 
     response = await call()
     assert response.message.content == [TextContent(text="resumed")]

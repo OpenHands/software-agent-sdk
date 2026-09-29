@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from litellm.exceptions import (
     APIConnectionError,
+    BadGatewayError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -15,7 +16,10 @@ from litellm.exceptions import (
 from pydantic import BaseModel, Field, PrivateAttr
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
-from openhands.sdk.llm.exceptions.classifier import is_budget_exceeded_error
+from openhands.sdk.llm.exceptions.classifier import (
+    is_budget_exceeded_error,
+    is_transient_http_error,
+)
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 
@@ -29,6 +33,7 @@ logger = get_logger(__name__)
 # Exceptions that trigger fallback to alternate LLMs (after retries exhausted).
 _LLM_FALLBACK_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
+    BadGatewayError,
     RateLimitError,
     ServiceUnavailableError,
     LiteLLMTimeout,
@@ -59,8 +64,9 @@ class FallbackStrategy(BaseModel):
 
     def should_fallback(self, error: Exception) -> bool:
         """Whether this error type is eligible for fallback."""
-        return isinstance(
-            error, _LLM_FALLBACK_EXCEPTIONS
+        return (
+            isinstance(error, _LLM_FALLBACK_EXCEPTIONS)
+            or is_transient_http_error(error)
         ) and not is_budget_exceeded_error(error)
 
     def try_fallback(
