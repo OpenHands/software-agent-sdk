@@ -600,7 +600,6 @@ async def materialize_agent_profile(
         browser_available=inputs.browser_available,
         check_usable=can_probe_tools(config),
     )
-    # Reported rather than raised: a launch would fail on it, the preview must not.
     if inputs.skill_discovery_error is not None:
         diagnostics.errors.append(
             f"Skill discovery failed: {inputs.skill_discovery_error}"

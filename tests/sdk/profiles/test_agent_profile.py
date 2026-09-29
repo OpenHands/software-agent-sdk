@@ -326,32 +326,45 @@ def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> Non
     assert profile.disabled_skills == []
 
 
+@pytest.mark.parametrize("schema_version", [1, 2])
 @pytest.mark.parametrize(
-    "payload",
+    ("switches", "expected"),
     [
-        {"name": "default", "revision": 1},
-        {"name": "bare", "revision": 0},
+        ({}, None),
+        ({"enable_switch_llm_tool": True}, None),
+        (
+            {"enable_sub_agents": True},
+            [
+                "terminal",
+                "file_editor",
+                "task_tracker",
+                "browser_tool_set",
+                "task_tool_set",
+                "switch_llm",
+            ],
+        ),
+        (
+            {"enable_switch_llm_tool": False},
+            ["terminal", "file_editor", "task_tracker", "browser_tool_set"],
+        ),
     ],
 )
-def test_v1_explicit_empty_tools_keep_only_switch_llm(
-    payload: dict[str, object],
+def test_legacy_empty_tools_migrate_as_the_standard_set(
+    schema_version, switches, expected
 ) -> None:
-    """An explicitly bare agent stays bare of exec tools.
-
-    It does not come out of the migration as ``[]`` though: ``switch_llm`` was
-    attached by the default-on switch regardless of ``tools``, so preserving
-    behaviour means saying so in the list.
-    """
     profile = validate_agent_profile(
         {
-            "schema_version": 1,
+            "schema_version": schema_version,
+            "name": "default",
             "llm_profile_ref": "default",
             "tools": [],
-            **payload,
+            **switches,
         }
     )
     assert isinstance(profile, OpenHandsAgentProfile)
-    assert [tool.name for tool in profile.tools or []] == ["switch_llm"]
+    assert (
+        None if profile.tools is None else [tool.name for tool in profile.tools]
+    ) == expected
 
 
 def test_v2_sub_agents_switch_pins_the_standard_set_plus_delegation() -> None:
@@ -490,14 +503,79 @@ def test_v2_rejects_a_non_boolean_switch() -> None:
         )
 
 
+_PINNED_WITH_SUB_AGENTS = [
+    "terminal",
+    "file_editor",
+    "task_tracker",
+    "browser_tool_set",
+    "task_tool_set",
+    "switch_llm",
+]
+
+
 @pytest.mark.parametrize("schema_version", [AGENT_PROFILE_SCHEMA_VERSION, None])
-@pytest.mark.parametrize("switch", ["enable_sub_agents", "enable_switch_llm_tool"])
-def test_current_payload_rejects_retired_switches(schema_version, switch) -> None:
-    payload = {"name": "oh", "llm_profile_ref": "d", switch: True}
+@pytest.mark.parametrize(
+    ("switch", "value", "tools", "expected"),
+    [
+        ("enable_sub_agents", True, None, _PINNED_WITH_SUB_AGENTS),
+        (
+            "enable_sub_agents",
+            False,
+            [{"name": "terminal"}, {"name": "task_tool_set"}],
+            ["terminal"],
+        ),
+        (
+            "enable_switch_llm_tool",
+            False,
+            [{"name": "terminal"}, {"name": "switch_llm"}],
+            ["terminal"],
+        ),
+        (
+            "enable_switch_llm_tool",
+            True,
+            [{"name": "terminal"}],
+            ["terminal", "switch_llm"],
+        ),
+    ],
+)
+def test_current_payload_accepts_retired_switches_as_deprecated_input(
+    schema_version, switch, value, tools, expected
+) -> None:
+    payload = {"name": "oh", "llm_profile_ref": "d", "tools": tools, switch: value}
     if schema_version is not None:
         payload["schema_version"] = schema_version
-    with pytest.raises(ValidationError, match=switch):
-        validate_agent_profile(payload)
+    profile = validate_agent_profile(payload)
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == expected
+    assert switch not in profile.model_dump(mode="json")
+
+
+def test_current_payload_without_retired_switches_keeps_tools_unset() -> None:
+    profile = validate_agent_profile({"name": "oh", "llm_profile_ref": "d"})
+
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is None
+
+
+@pytest.mark.parametrize("name", ["switch_llm", "SwitchLLMTool", "think", "finish"])
+def test_params_on_a_parameterless_builtin_are_rejected(name) -> None:
+    with pytest.raises(ValidationError, match="does not accept parameters"):
+        validate_agent_profile(
+            _current_payload(tools=[{"name": name, "params": {"a": 1}}])
+        )
+
+
+def test_v2_params_on_a_parameterless_builtin_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="does not accept parameters"):
+        validate_agent_profile(
+            {
+                "schema_version": 2,
+                "name": "oh",
+                "llm_profile_ref": "d",
+                "tools": [{"name": "switch_llm", "params": {"a": 1}}],
+            }
+        )
 
 
 @pytest.mark.parametrize(

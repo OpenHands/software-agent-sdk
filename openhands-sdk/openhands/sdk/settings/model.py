@@ -548,12 +548,7 @@ class AgentSettingsBase(BaseModel):
             return data
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-        payload = _apply_persisted_migrations(
-            data,
-            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-            migrations=_AGENT_SETTINGS_MIGRATIONS,
-            payload_name="AgentSettings",
-        )
+        payload = _migrate_agent_settings_payload(data)
         return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
@@ -736,6 +731,35 @@ def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
         migrated = fold_retired_tool_switches(payload)
     migrated["schema_version"] = 7
     return migrated
+
+
+def _migrate_agent_settings_payload(data: Any) -> dict[str, Any]:
+    payload = _copy_persisted_payload(data)
+    if payload.get("schema_version") is not None:
+        return _apply_persisted_migrations(
+            payload,
+            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+            migrations=_AGENT_SETTINGS_MIGRATIONS,
+            payload_name="AgentSettings",
+        )
+    # An unversioned payload is a request: don't impose the retired switches'
+    # persisted defaults on it.
+    payload = _apply_persisted_migrations(
+        payload,
+        current_version=6,
+        migrations=_AGENT_SETTINGS_MIGRATIONS,
+        payload_name="AgentSettings",
+    )
+    if payload.get("agent_kind", "openhands") == "acp":
+        payload = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
+    payload["schema_version"] = 7
+    payload = _apply_persisted_migrations(
+        payload,
+        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+        migrations=_AGENT_SETTINGS_MIGRATIONS,
+        payload_name="AgentSettings",
+    )
+    return payload
 
 
 _MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
@@ -2086,12 +2110,7 @@ def validate_agent_settings(
     """
     if isinstance(data, OpenHandsAgentSettings | ACPAgentSettings):
         return data
-    payload = _apply_persisted_migrations(
-        data,
-        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-        migrations=_AGENT_SETTINGS_MIGRATIONS,
-        payload_name="AgentSettings",
-    )
+    payload = _migrate_agent_settings_payload(data)
     # The v1->v2 migration renames the deprecated ``agent_kind: 'llm'`` tag, but
     # only while advancing ``schema_version``. A payload already at the current
     # version keeps the ``llm`` tag and would dispatch to the deprecated

@@ -8,8 +8,14 @@ from openhands.agent_server.config import (
     Config,
 )
 from openhands.agent_server.skills_service import discover_profile_skills
+from openhands.sdk.agent import Agent
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
-from openhands.sdk.settings import AgentSettingsConfig, OpenHandsAgentSettings
+from openhands.sdk.settings import (
+    AgentSettingsConfig,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool import BROWSER_TOOL_NAME, is_tool_usable, launch_tool_specs
 
@@ -32,8 +38,16 @@ def configured_browser_available(config: Config) -> bool | None:
     if config.conversation_runtime == "docker":
         if config.conversation_image_has_browser is not None:
             return config.conversation_image_has_browser
-        return config.conversation_image == DEFAULT_CONVERSATION_IMAGE
+        return _is_stock_image(config.conversation_image)
     return None
+
+
+def _is_stock_image(image: str) -> bool:
+    stock_repo = DEFAULT_CONVERSATION_IMAGE.rsplit(":", 1)[0]
+    repo = image.split("@", 1)[0]
+    if repo.rfind(":") > repo.rfind("/"):
+        repo = repo.rsplit(":", 1)[0]
+    return repo == stock_repo
 
 
 def _browser_available(configured: bool | None) -> bool:
@@ -50,6 +64,26 @@ def resolve_settings_tools(
         settings.tools, browser_available=_browser_available(browser_available)
     )
     return settings.model_copy(update={"tools": tools})
+
+
+def with_launch_browser(
+    agent: AgentBase,
+    agent_settings: dict,
+    *,
+    browser_available: bool | None = None,
+) -> AgentBase:
+    """Add or drop the browser on an agent built from ``agent_settings``."""
+    settings = validate_agent_settings(agent_settings)
+    if not isinstance(settings, OpenHandsAgentSettings) or not isinstance(agent, Agent):
+        return agent
+    launch = launch_tool_specs(
+        settings.tools, browser_available=_browser_available(browser_available)
+    )
+    tools = [tool for tool in agent.tools if tool.name != BROWSER_TOOL_NAME]
+    tools += [tool for tool in launch if tool.name == BROWSER_TOOL_NAME]
+    if tools == list(agent.tools):
+        return agent
+    return agent.model_copy(update={"tools": tools})
 
 
 def gather_profile_launch_inputs(

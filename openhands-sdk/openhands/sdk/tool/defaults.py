@@ -68,6 +68,25 @@ def canonical_tool_name(name: str) -> str:
     return tool_class.name if tool_class is not None else name
 
 
+def reject_builtin_params(tools: Sequence[Tool]) -> None:
+    """Raise if a built-in that takes no parameters is given some."""
+    from openhands.sdk.tool.builtins import (
+        BUILT_IN_TOOLS_WITH_PARAMS,
+        builtin_tool_class,
+    )
+    from openhands.sdk.tool.registry import registered_tool_class
+
+    for tool in tools:
+        tool_class = builtin_tool_class(tool.name)
+        if (
+            set(tool.params) - {"response_schema"}
+            and tool_class is not None
+            and tool_class.__name__ not in BUILT_IN_TOOLS_WITH_PARAMS
+            and registered_tool_class(tool.name) in (None, tool_class)
+        ):
+            raise ValueError(f"Tool {tool.name!r} does not accept parameters")
+
+
 def _preset_specs(*, enable_browser: bool) -> list[Tool]:
     specs = [Tool(name=name) for name in DEFAULT_EXEC_TOOL_NAMES]
     if enable_browser:
@@ -106,25 +125,36 @@ def fold_retired_tool_switches(
     tools = folded.get("tools")
     if tools is not None and not isinstance(tools, list):
         return folded
+    # Persisted `[]` predates `None` as the default.
+    if not sparse and tools == []:
+        tools = folded["tools"] = None
     if tools is None and not sub_agents and switch_llm is not False:
         return folded
     # "The standard set plus/minus one tool" is not expressible, so pin it.
     if tools is None:
         entries = _preset_specs(enable_browser=True)
-        # `enable_sub_agents` only ever applied to the default set.
         if sub_agents:
             entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
         if switch_llm is None:
             switch_llm = True
     else:
         entries = [t if isinstance(t, Tool) else Tool.model_validate(t) for t in tools]
-    selected = [canonical_tool_name(e.name) == SWITCH_LLM_TOOL_NAME for e in entries]
-    if switch_llm is False:
-        entries = [e for e, is_switch in zip(entries, selected) if not is_switch]
-    elif switch_llm and not any(selected):
-        entries.append(Tool(name=SWITCH_LLM_TOOL_NAME))
+        # A dense payload's `False` is only the default, which never removed a tool.
+        if sparse and sub_agents is False:
+            entries = _toggle(entries, SUB_AGENT_TOOL_NAME, False)
+    if switch_llm is not None:
+        entries = _toggle(entries, SWITCH_LLM_TOOL_NAME, switch_llm)
     folded["tools"] = entries
     return folded
+
+
+def _toggle(entries: list[Tool], name: str, enabled: bool) -> list[Tool]:
+    selected = [canonical_tool_name(e.name) == name for e in entries]
+    if not enabled:
+        return [e for e, is_selected in zip(entries, selected) if not is_selected]
+    if not any(selected):
+        return [*entries, Tool(name=name)]
+    return entries
 
 
 def _pop_switch(payload: dict[str, Any], key: str, default: bool | None) -> bool | None:

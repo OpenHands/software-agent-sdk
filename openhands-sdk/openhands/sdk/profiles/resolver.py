@@ -241,7 +241,7 @@ def _build_openhands_settings(
     mcp_config: dict[str, MCPServer],
     filtered_skills: list[Skill],
     *,
-    browser_available: bool,
+    browser_available: bool | None,
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
@@ -260,7 +260,11 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": launch_tool_specs(profile.tools, browser_available=browser_available),
+        "tools": (
+            profile.tools
+            if browser_available is None
+            else launch_tool_specs(profile.tools, browser_available=browser_available)
+        ),
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -275,13 +279,15 @@ def _build_openhands_settings(
 
 
 def _unusable_tools(
-    tools: list[Tool], *, browser_available: bool, check_usable: bool
+    tools: list[Tool] | None, *, browser_available: bool | None, check_usable: bool
 ) -> list[str]:
+    if tools is None:
+        return [] if browser_available is not False else [BROWSER_TOOL_NAME]
     return [
         tool.name
         for tool in tools
         if not (
-            browser_available
+            browser_available is not False
             if tool.name == BROWSER_TOOL_NAME
             else is_tool_available(tool.name, check_usable=check_usable)
         )
@@ -339,7 +345,7 @@ def resolve_agent_profile(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
-    browser_available: bool = False,
+    browser_available: bool | None = None,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
 
@@ -354,7 +360,8 @@ def resolve_agent_profile(
     allow-list, the ``disabled_skills`` deny-list can never dangle, so this
     never raises for skills. ``cipher`` decrypts the referenced LLM profile.
     ``browser_available`` says whether the runtime the agent will run on can
-    use the browser tool set; the caller probes it.
+    use the browser tool set; the caller probes it. ``None`` leaves ``tools``
+    as the profile stores them.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
@@ -394,7 +401,7 @@ def resolve_agent_profile_dry_run(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
-    browser_available: bool = False,
+    browser_available: bool | None = None,
     check_usable: bool = True,
 ) -> AgentProfileDiagnostics:
     """Compute :class:`AgentProfileDiagnostics` without raising or side effects.
@@ -434,18 +441,16 @@ def resolve_agent_profile_dry_run(
             available_skills, profile.disabled_skills
         )
         diagnostics.disabled_skills = profile.disabled_skills
-        if profile.tools is not None:
-            diagnostics.unusable_tools = _unusable_tools(
-                profile.tools,
-                browser_available=browser_available,
-                check_usable=check_usable,
+        diagnostics.unusable_tools = _unusable_tools(
+            profile.tools,
+            browser_available=browser_available,
+            check_usable=check_usable,
+        )
+        failing = [n for n in diagnostics.unusable_tools if n != BROWSER_TOOL_NAME]
+        if failing:
+            diagnostics.errors.append(
+                "Tool(s) this server cannot run: " + ", ".join(failing)
             )
-            # A launch leaves out a browser it cannot run; any other tool fails it.
-            failing = [n for n in diagnostics.unusable_tools if n != BROWSER_TOOL_NAME]
-            if failing:
-                diagnostics.errors.append(
-                    "Tool(s) this server cannot run: " + ", ".join(failing)
-                )
     else:
         filtered_skills = _apply_disabled_skills(available_skills, [])
     diagnostics.resolved_skills = [s.name for s in filtered_skills]

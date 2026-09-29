@@ -35,6 +35,8 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.tool.defaults import canonical_tool_name
+from openhands.sdk.tool.registry import registered_tool_class
 
 
 if TYPE_CHECKING:
@@ -90,6 +92,10 @@ class Task(BaseModel):
         self.error = error
         self.result = None
         self.status = TaskStatus.ERROR
+
+
+def _tool_identity(name: str) -> object:
+    return registered_tool_class(name) or canonical_tool_name(name)
 
 
 class TaskManager:
@@ -375,9 +381,25 @@ class TaskManager:
 
         sub_agent = factory.factory_func(sub_agent_llm)
 
+        parent_tools = {_tool_identity(tool.name) for tool in parent.agent.tools}
+        tools = [
+            tool
+            for tool in sub_agent.tools
+            if _tool_identity(tool.name) in parent_tools
+        ]
+        if len(tools) != len(sub_agent.tools):
+            logger.info(
+                "Sub-agent %r limited to its parent's tools: dropped %s",
+                factory.definition.name,
+                sorted({t.name for t in sub_agent.tools} - {t.name for t in tools}),
+            )
+
         # ensuring that the sub-agent LLM has stream deactivated
         sub_agent = sub_agent.model_copy(
-            update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
+            update={
+                "llm": sub_agent.llm.model_copy(update={"stream": False}),
+                "tools": tools,
+            }
         )
         return sub_agent
 

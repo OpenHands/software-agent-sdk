@@ -234,9 +234,16 @@ async def test_settings_launch_follows_the_container_browser(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("image", "has_browser"),
-    [(DEFAULT_CONVERSATION_IMAGE, True), ("example.com/custom:tag", False)],
+    [
+        (DEFAULT_CONVERSATION_IMAGE, True),
+        ("ghcr.io/openhands/agent-server:1.50.0-python", True),
+        ("ghcr.io/openhands/agent-server@sha256:" + "0" * 64, True),
+        ("ghcr.io/openhands/agent-server-custom:tag", False),
+        ("example.com/custom:tag", False),
+        ("localhost:5000/agent-server", False),
+    ],
 )
-async def test_unset_image_browser_is_on_only_for_the_default_image(
+async def test_unset_image_browser_is_on_only_for_the_stock_image(
     tmp_path, monkeypatch, image, has_browser
 ):
     runtime_config = config(tmp_path, monkeypatch).model_copy(

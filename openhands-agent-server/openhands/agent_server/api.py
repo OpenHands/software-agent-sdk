@@ -183,7 +183,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         if not deferred:
             emit_server_started()
 
-        # Later registrations are per-conversation and vanish on restart.
         seal_tool_catalog()
 
         vscode_service = get_vscode_service()

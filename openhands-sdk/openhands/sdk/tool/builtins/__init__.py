@@ -61,6 +61,8 @@ BUILT_IN_TOOL_CLASSES = {
     ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
 }
 
+BUILT_IN_TOOLS_WITH_PARAMS = frozenset({ClassifyAndSwitchLLMTool.__name__})
+
 
 def builtin_tool_class(name: str) -> type[ToolDefinition] | None:
     """Return the built-in tool class named by its class name or its tool name."""
@@ -74,6 +76,7 @@ def builtin_tool_class(name: str) -> type[ToolDefinition] | None:
 __all__ = [
     "BUILT_IN_TOOLS",
     "BUILT_IN_TOOL_CLASSES",
+    "BUILT_IN_TOOLS_WITH_PARAMS",
     "builtin_tool_class",
     "ClassifyAndSwitchLLMTool",
     "ClassifyAndSwitchLLMAction",

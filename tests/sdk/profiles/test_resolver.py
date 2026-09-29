@@ -168,10 +168,14 @@ def test_openhands_profile_tools_selection_is_used_as_given(
 
 @pytest.mark.parametrize(
     ("browser_available", "expected"),
-    [(True, ["terminal", "browser_tool_set"]), (False, ["terminal"])],
+    [
+        (True, ["terminal", "browser_tool_set"]),
+        (False, ["terminal"]),
+        (None, ["terminal", "browser_tool_set"]),
+    ],
 )
 def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
-    llm_store: LLMProfileStore, browser_available: bool, expected: list[str]
+    llm_store: LLMProfileStore, browser_available: bool | None, expected: list[str]
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="pinned",
@@ -191,12 +195,28 @@ def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
     assert [tool.name for tool in settings.tools or []] == expected
 
 
+def test_resolve_without_browser_availability_keeps_unset_tools_unset(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(name="default", llm_profile_ref="default")
+
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config={}, available_skills=None
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.tools is None
+
+
 @pytest.mark.parametrize(
     ("tools", "browser_available", "unusable", "failing"),
     [
         ([Tool(name="browser_tool_set")], False, ["browser_tool_set"], []),
         ([Tool(name="browser_tool_set")], True, [], []),
-        (None, False, [], []),
+        (None, False, ["browser_tool_set"], []),
+        (None, True, [], []),
+        (None, None, [], []),
+        ([Tool(name="browser_tool_set")], None, [], []),
         (
             [Tool(name="finish"), Tool(name="not_registered")],
             True,
@@ -208,7 +228,7 @@ def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
 def test_dry_run_reports_selected_tools_it_cannot_run(
     llm_store: LLMProfileStore,
     tools: list[Tool] | None,
-    browser_available: bool,
+    browser_available: bool | None,
     unusable: list[str],
     failing: list[str],
 ) -> None:

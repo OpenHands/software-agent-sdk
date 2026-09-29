@@ -22,6 +22,7 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from openhands.sdk.settings.model import (
@@ -36,7 +37,9 @@ from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
     canonical_tool_name,
     fold_retired_tool_switches,
+    reject_builtin_params,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 3
@@ -211,11 +214,28 @@ class OpenHandsAgentProfile(AgentProfileBase):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_retired_tool_switches(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping) or not any(
+            key in data for key in RETIRED_TOOL_SWITCHES
+        ):
+            return data
+        warn_deprecated(
+            "OpenHandsAgentProfile.enable_sub_agents and "
+            "OpenHandsAgentProfile.enable_switch_llm_tool",
+            deprecated_in="1.50.0",
+            removed_in="1.55.0",
+            details="Select task_tool_set and switch_llm in `tools` instead.",
+        )
+        return fold_retired_tool_switches(data, sparse=True)
+
     @field_validator("tools")
     @classmethod
     def _canonicalize_tools(cls, tools: list[Tool] | None) -> list[Tool] | None:
         if tools is None:
             return None
+        reject_builtin_params(tools)
         by_name: dict[str, Tool] = {}
         for tool in tools:
             name = canonical_tool_name(tool.name)

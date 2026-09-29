@@ -12,6 +12,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
+    get_agent_factory,
     register_agent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -1165,3 +1166,43 @@ class TestRunErrorSurfacing:
             cast(LocalConversation, conv), ConversationExecutionStatus.STUCK
         )
         assert "stuck" in detail.lower()
+
+
+@pytest.mark.parametrize(
+    ("parent_tools", "expected"),
+    [
+        (["terminal", "file_editor"], ["terminal", "file_editor"]),
+        (["file_editor"], ["file_editor"]),
+        ([], []),
+    ],
+)
+def test_sub_agent_gets_no_tool_its_parent_lacks(tmp_path, parent_tools, expected):
+    from openhands.sdk.subagent.registry import agent_definition_to_factory
+    from openhands.sdk.tool import Tool
+
+    _reset_registry_for_tests()
+
+    agent_def = AgentDefinition(
+        name="scoped_agent",
+        description="Agent asking for terminal and file_editor",
+        model="inherit",
+        tools=["terminal", "file_editor"],
+        system_prompt="You are scoped.",
+    )
+    register_agent(
+        name="scoped_agent",
+        factory_func=agent_definition_to_factory(agent_def),
+        description=agent_def,
+    )
+    parent = LocalConversation(
+        agent=Agent(llm=_make_llm(), tools=[Tool(name=n) for n in parent_tools]),
+        workspace=str(tmp_path),
+        visualizer=None,
+        delete_on_close=False,
+    )
+    manager = TaskManager()
+    manager._ensure_parent(parent)
+
+    sub_agent = manager._get_sub_agent_from_factory(get_agent_factory("scoped_agent"))
+
+    assert [tool.name for tool in sub_agent.tools] == expected

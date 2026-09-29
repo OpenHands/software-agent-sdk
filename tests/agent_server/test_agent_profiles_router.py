@@ -1331,10 +1331,30 @@ def test_save_migrates_a_v2_profile_carrying_retired_switches(client):
     assert "enable_switch_llm_tool" not in prof
 
 
-def test_save_rejects_retired_switches_on_a_current_profile(client):
+def test_save_accepts_retired_switches_as_deprecated_input(client):
     response = client.post(
         "/api/agent-profiles/p",
         json={"llm_profile_ref": "default", "enable_switch_llm_tool": False},
+    )
+
+    assert response.status_code == 201
+    assert _tool_names(client, "p") == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+    ]
+    stored = client.get("/api/agent-profiles/p").json()["profile"]
+    assert "enable_switch_llm_tool" not in stored
+
+
+def test_save_rejects_params_on_a_parameterless_builtin(client):
+    response = client.post(
+        "/api/agent-profiles/p",
+        json={
+            "llm_profile_ref": "default",
+            "tools": [{"name": "switch_llm", "params": {"a": 1}}],
+        },
     )
 
     assert response.status_code == 422

@@ -37,7 +37,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.profile_launch import (
     gather_profile_launch_inputs,
-    resolve_settings_tools,
+    with_launch_browser,
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
@@ -78,10 +78,8 @@ from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.settings.model import (
     OpenHandsAgentSettings,
-    validate_agent_settings,
 )
 from openhands.sdk.tool.client_tool import register_client_tools
-from openhands.sdk.tool.defaults import resolve_tool_specs
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -393,7 +391,6 @@ def _resolve_agent_from_profile(
         get_llm_profile_store,
     )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
-    from openhands.sdk.settings.model import OpenHandsAgentSettings
 
     store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
@@ -1697,16 +1694,14 @@ class ConversationService:
                 }
             request = request.model_copy(update=updates)
         elif request.agent_settings is not None:
-            agent_settings = validate_agent_settings(request.agent_settings)
-            resolved = resolve_settings_tools(
-                agent_settings, browser_available=self._configured_browser()
+            agent = await asyncio.to_thread(
+                with_launch_browser,
+                request.agent,
+                request.agent_settings,
+                browser_available=self._configured_browser(),
             )
-            if isinstance(agent_settings, OpenHandsAgentSettings) and isinstance(
-                resolved, OpenHandsAgentSettings
-            ):
-                if resolved.tools != resolve_tool_specs(agent_settings.tools):
-                    agent = await asyncio.to_thread(resolved.create_agent)
-                    request = request.model_copy(update={"agent": agent})
+            if agent is not request.agent:
+                request = request.model_copy(update={"agent": agent})
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to
