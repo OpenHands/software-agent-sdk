@@ -209,8 +209,16 @@ class PersistedSettings(BaseModel):
 
     @property
     def llm_api_key_is_set(self) -> bool:
-        """Check if an LLM API key is configured."""
-        raw = self.agent_settings.llm.api_key
+        """Check if an LLM API key is configured.
+
+        A ``provider_connection_id`` on the persisted snapshot is treated as
+        "key is configured": the key lives in the connection store and the
+        snapshot itself stores no inline copy (see OpenHands/OpenHands#17803).
+        """
+        llm = self.agent_settings.llm
+        if llm.provider_connection_id:
+            return True
+        raw = llm.api_key
         if raw is None:
             return False
         secret_value = (

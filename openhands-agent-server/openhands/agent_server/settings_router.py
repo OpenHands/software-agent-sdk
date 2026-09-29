@@ -24,6 +24,7 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
+from openhands.sdk.llm.llm_profile_store import strip_connection_owned_fields
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
@@ -319,14 +320,49 @@ def _resolve_active_profile_llm(
             detail=f"Profile '{profile_name}' not found",
         )
 
+    # Persist pointer-only when a connection is linked — GET re-resolves.
+    # See OpenHands/OpenHands#17803.
+    llm_for_settings = strip_connection_owned_fields(llm)
     return cast(
         SettingsUpdatePayload,
         {
             **update_data,
             "agent_settings_diff": {
                 **(agent_diff if isinstance(agent_diff, dict) else {}),
-                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+                "llm": llm_for_settings.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
             },
+        },
+    )
+
+
+def _strip_connection_owned_fields_in_diff(
+    update_data: SettingsUpdatePayload,
+) -> SettingsUpdatePayload:
+    """Enforce the pointer-only invariant on incoming ``agent_settings_diff.llm``.
+
+    The frontend often echoes an LLM object it received from ``GET /api/settings``
+    (which is resolved) straight back into a PATCH. Without this hook, the round
+    trip would re-persist the resolved snapshot next to ``provider_connection_id``
+    and reintroduce the very drift #17803 removed.
+    """
+    agent_diff = update_data.get("agent_settings_diff")
+    if not isinstance(agent_diff, dict):
+        return update_data
+    llm_diff = agent_diff.get("llm")
+    if not isinstance(llm_diff, dict):
+        return update_data
+    if not llm_diff.get("provider_connection_id"):
+        return update_data
+    if llm_diff.get("api_key") is None and llm_diff.get("base_url") is None:
+        return update_data
+    cleaned_llm = {**llm_diff, "api_key": None, "base_url": None}
+    return cast(
+        SettingsUpdatePayload,
+        {
+            **update_data,
+            "agent_settings_diff": {**agent_diff, "llm": cleaned_llm},
         },
     )
 
@@ -337,6 +373,7 @@ def _apply_settings_update(
     before_update: Callable[[PersistedSettings], None] | None = None,
 ) -> SettingsResponse:
     update_data = _resolve_active_profile_llm(request, update_data)
+    update_data = _strip_connection_owned_fields_in_diff(update_data)
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:

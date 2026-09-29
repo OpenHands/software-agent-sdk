@@ -396,15 +396,114 @@ def test_get_settings_re_resolves_provider_connection(client):
     assert settings["agent_settings"]["llm"]["base_url"] == "https://new.example"
 
 
+def test_patch_settings_echo_of_resolved_llm_persists_pointer_only(
+    client, temp_settings_dir
+):
+    """Echoing GET's resolved LLM back into PATCH must not re-persist creds.
+
+    The frontend commonly reads ``GET /api/settings`` (resolved) and later
+    PATCHes with the same payload. Without the strip, that round trip would
+    rehydrate the connection-owned fields into ``settings.json``, reintroducing
+    the drift OpenHands/OpenHands#17803 fixes.
+    """
+    import json
+    from pathlib import Path
+
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+            "base_url": "https://old.example",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+
+    resolved = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()["agent_settings"]["llm"]
+    assert resolved["api_key"] == "sk-ant-old"
+    assert resolved["base_url"] == "https://old.example"
+
+    # Echo the resolved LLM back verbatim as a PATCH.
+    assert (
+        client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": resolved}},
+        ).status_code
+        == 200
+    )
+
+    on_disk = json.loads((Path(temp_settings_dir) / "settings.json").read_text())
+    assert on_disk["agent_settings"]["llm"]["provider_connection_id"] == connection_id
+    assert on_disk["agent_settings"]["llm"]["api_key"] is None
+    assert on_disk["agent_settings"]["llm"]["base_url"] is None
+
+
+def test_llm_api_key_is_set_true_when_only_connection_pointer_present(
+    client, temp_settings_dir
+):
+    """``llm_api_key_is_set`` treats a linked connection as configured.
+
+    After #17803 the persisted snapshot holds ``api_key: null`` when a
+    connection is linked, so the property must consult the pointer or the
+    UI would prompt for setup even though a key is configured.
+    """
+    import json
+    from pathlib import Path
+
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-only",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+
+    # Precondition: on-disk snapshot really has no inline key.
+    on_disk = json.loads((Path(temp_settings_dir) / "settings.json").read_text())
+    assert on_disk["agent_settings"]["llm"]["api_key"] is None
+
+    settings = client.get("/api/settings").json()
+    assert settings["llm_api_key_is_set"] is True
+
+
 def test_provider_connection_rotation_does_not_rewrite_persisted_snapshot(
     client, temp_settings_dir
 ):
     """Rotation refreshes the GET response but leaves the on-disk snapshot alone.
 
     The read-side fix (OpenHands/OpenHands#17803) resolves connections on read
-    rather than at write time. The invariant this test pins: PATCH on a
-    connection does not touch ``settings.json`` — that avoids write amplification
-    on every key rotation.
+    rather than at write time. Two invariants pinned here:
+
+    1. When a profile is linked to a connection, the persisted snapshot stores
+       the pointer only — ``api_key`` and ``base_url`` are ``null`` — so there
+       is no duplicated value that could disagree with the connection.
+    2. PATCH on a connection does not touch ``settings.json`` — no write
+       amplification, no lock contention on the settings store.
     """
     import json
     from pathlib import Path
@@ -430,8 +529,14 @@ def test_provider_connection_rotation_does_not_rewrite_persisted_snapshot(
     assert client.post("/api/profiles/provider-profile/activate").status_code == 200
 
     settings_path = Path(temp_settings_dir) / "settings.json"
-    mtime_before = settings_path.stat().st_mtime_ns
 
+    # Invariant 1: snapshot is pointer-only, no inline creds duplicated.
+    on_disk = json.loads(settings_path.read_text())
+    assert on_disk["agent_settings"]["llm"]["provider_connection_id"] == connection_id
+    assert on_disk["agent_settings"]["llm"]["api_key"] is None
+    assert on_disk["agent_settings"]["llm"]["base_url"] is None
+
+    mtime_before = settings_path.stat().st_mtime_ns
     assert (
         client.patch(
             f"/api/llm/provider-connections/{connection_id}",
@@ -440,14 +545,15 @@ def test_provider_connection_rotation_does_not_rewrite_persisted_snapshot(
         == 200
     )
 
+    # Invariant 2: PATCH on the connection does not touch settings.json.
     assert settings_path.stat().st_mtime_ns == mtime_before, (
         "connection PATCH should not touch settings.json"
     )
     on_disk = json.loads(settings_path.read_text())
-    # Snapshot key stays as it was resolved at activation.
-    assert on_disk["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+    assert on_disk["agent_settings"]["llm"]["api_key"] is None
+    assert on_disk["agent_settings"]["llm"]["base_url"] is None
 
-    # But the GET response sees the fresh key thanks to read-side resolution.
+    # GET sees the fresh key thanks to read-side resolution.
     settings = client.get(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()

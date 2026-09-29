@@ -32,6 +32,7 @@ from openhands.sdk.llm.exceptions import (
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     ProfileLimitExceeded,
+    strip_connection_owned_fields,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
@@ -482,11 +483,15 @@ async def activate_profile(
             detail=f"Profile '{name}' not found",
         )
 
+    # Never persist connection-owned fields alongside the pointer — GET
+    # /api/settings re-resolves them on read. See OpenHands/OpenHands#17803.
+    llm_for_settings = strip_connection_owned_fields(llm)
+
     settings_store = get_settings_store(config)
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
         settings.agent_settings = settings.agent_settings.model_copy(
-            update={"llm": llm}
+            update={"llm": llm_for_settings}
         )
         settings.active_profile = name
         return settings
