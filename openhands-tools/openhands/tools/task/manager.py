@@ -34,6 +34,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
+from openhands.sdk.subagent.capabilities import prepare_subagent
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
 
@@ -373,7 +374,11 @@ class TaskManager:
         # Metrics object
         sub_agent_llm.reset_metrics()
 
-        sub_agent = factory.factory_func(sub_agent_llm)
+        sub_agent = prepare_subagent(
+            parent=parent.agent,
+            child=factory.factory_func(sub_agent_llm),
+            limits=parent.agent.subagent_capability_limits,
+        )
 
         # ensuring that the sub-agent LLM has stream deactivated
         sub_agent = sub_agent.model_copy(

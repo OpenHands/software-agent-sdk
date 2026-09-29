@@ -52,6 +52,7 @@ from openhands.sdk.mcp.config import (
     MCPServer,
 )
 from openhands.sdk.plugin import PluginSource
+from openhands.sdk.subagent.capabilities import SubagentCapabilityLimits
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.utils.pydantic_secrets import (
@@ -1290,6 +1291,14 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    mcp_server_refs: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Explicit MCP selection inherited by sub-agents. None preserves "
+            "unrestricted delegation; [] denies MCP servers."
+        ),
+    )
     enable_sub_agents: bool = Field(
         default=False,
         description="Enable sub-agent delegation via TaskToolSet.",
@@ -1479,6 +1488,14 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
+        limits = (
+            SubagentCapabilityLimits.from_selection(
+                tools=tools if self.tools is not None else None,
+                mcp_server_refs=self.mcp_server_refs,
+            )
+            if self.tools is not None or self.mcp_server_refs is not None
+            else None
+        )
         return Agent(
             llm=llm,
             tools=tools,
@@ -1487,6 +1504,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             agent_context=self.agent_context,
             condenser=condenser,
             critic=self.build_critic(),
+            subagent_capability_limits=limits,
             tool_concurrency_limit=self.tool_concurrency_limit,
         )
 
