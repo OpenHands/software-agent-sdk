@@ -166,6 +166,7 @@ class EventService:
     _lease_task: asyncio.Task | None = field(default=None, init=False)
     _external_lease_renewal: bool = field(default=False, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     # Background task for a /goal loop that is running inside this conversation.
     _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
@@ -1282,7 +1283,11 @@ class EventService:
             # Start run in background
             loop = asyncio.get_running_loop()
 
+            queued_generation = self._explicit_interrupt_generation
+
             async def _run_and_publish():
+                semaphore = self._run_semaphore
+                release_slot = False
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1306,10 +1311,28 @@ class EventService:
                         and type(conversation).arun is not BaseConversation.arun
                         and type(conversation.agent).astep is not AgentBase.astep
                     )
+                    if semaphore is not None:
+                        await semaphore.acquire()
+                        release_slot = True
+                    if self._explicit_interrupt_generation != queued_generation:
+                        return
                     if has_native_arun:
                         await conversation.arun()
                     else:
-                        await loop.run_in_executor(self._run_executor, conversation.run)
+                        future = loop.run_in_executor(
+                            self._run_executor, conversation.run
+                        )
+                        if semaphore is not None:
+                            # Cancelling the asyncio waiter cannot stop its thread.
+                            # The worker retains the slot until it actually exits.
+                            def release_when_done(done: asyncio.Future) -> None:
+                                semaphore.release()
+                                if not done.cancelled():
+                                    done.exception()
+
+                            future.add_done_callback(release_when_done)
+                            release_slot = False
+                        await asyncio.shield(future)
                 except Exception as exc:
                     logger.exception("Error during conversation run")
                     # Backstop: a run that raised before reaching its own error
@@ -1328,6 +1351,8 @@ class EventService:
                         )
                     await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:
+                    if release_slot and semaphore is not None:
+                        semaphore.release()
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status
@@ -1811,7 +1836,8 @@ class EventService:
 
         # Drain in-flight run before teardown so MCP close doesn't race
         # with a tool call mid-step.
-        if self._run_task is not None and not self._run_task.done():
+        run_task = self._run_task
+        if run_task is not None and not run_task.done():
             if self._conversation is not None:
                 loop = asyncio.get_running_loop()
                 try:
@@ -1824,9 +1850,9 @@ class EventService:
             # transition to PAUSED cleanly.  For the legacy thread-pool
             # path the underlying thread keeps running but the wrapper
             # task still settles, unblocking the wait below.
-            self._run_task.cancel()
+            run_task.cancel()
             try:
-                await asyncio.wait_for(self._run_task, timeout=10.0)
+                await asyncio.wait_for(run_task, timeout=10.0)
             except asyncio.CancelledError:
                 pass  # Expected after cancel()
             except Exception as exc:
