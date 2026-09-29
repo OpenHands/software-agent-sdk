@@ -2786,3 +2786,44 @@ def test_runtime_requires_existing_conversation(
     )
     response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
     assert response.status_code == 404
+
+
+def test_start_conversation_on_archived_id_returns_conflict(
+    client, mock_conversation_service
+):
+    """Archived start/resume is a 409, matching the Docker runtime.
+
+    Previously the archived record was re-composed into a 200 response for a
+    conversation that was never started.
+    """
+    from openhands.agent_server.conversation_service import ConversationArchivedError
+
+    mock_conversation_service.start_conversation.side_effect = (
+        ConversationArchivedError(
+            "Conversation is archived; unarchive it before using its runtime"
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="t"),
+            tools=[],
+        ),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        conversation_id=uuid4(),
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json=request.model_dump(mode="json"),
+        )
+
+        assert response.status_code == 409
+        assert "archived" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()

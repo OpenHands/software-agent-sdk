@@ -21,6 +21,7 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
+    ConversationArchivedError,
     ConversationService,
     InvalidParentConversation,
 )
@@ -299,6 +300,10 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     try:
         info, is_new = await conversation_service.start_conversation(request)
+    except ConversationArchivedError as e:
+        # Matches the Docker runtime, which rejects start/resume of an archived
+        # conversation with 409 rather than silently returning a stale record.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
     except ProfileNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except DanglingMcpServerRef as e:

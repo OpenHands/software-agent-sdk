@@ -306,6 +306,15 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
+class ConversationArchivedError(ValueError):
+    """An archived conversation cannot be started or resumed.
+
+    Archiving retains history but releases the runtime; the caller must
+    unarchive before execution can be restarted. Mirrors the Docker runtime's
+    409 rejection so both runtimes reject the same operation identically.
+    """
+
+
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
 
@@ -1514,6 +1523,19 @@ class ConversationService:
         ):
             async with self._conversation_lifecycle(conversation_id):
                 existing_event_service = self._event_services.get(conversation_id)
+                current_record = self._conversation_records.get(conversation_id)
+                if (
+                    current_record is not None
+                    and current_record.stored.archived_at is not None
+                ):
+                    # Archiving releases the runtime and retains history. A
+                    # start/resume on an archived id must fail loudly instead of
+                    # returning 200 for a conversation that never came up; the
+                    # caller unarchives first, exactly as Docker requires.
+                    raise ConversationArchivedError(
+                        "Conversation is archived; unarchive it before using "
+                        "its runtime"
+                    )
                 stored = (
                     existing_event_service.stored
                     if existing_event_service is not None
@@ -2113,6 +2135,13 @@ class ConversationService:
         if record is None:
             return None
         return EventService.for_persisted_events(record.stored, self.conversations_dir)
+
+    async def is_conversation_archived(self, conversation_id: UUID) -> bool:
+        """Whether the catalog marks this conversation as archived."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        record = self._conversation_records.get(conversation_id)
+        return record is not None and record.stored.archived_at is not None
 
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
