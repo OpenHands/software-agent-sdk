@@ -1,11 +1,20 @@
 """Tests for LLM router."""
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.llm_router import (
+    ERR_INVALID_URL,
+    ERR_NETWORK_ERROR,
+    ERR_NOT_OPENHANDS_INSTALL,
+    ERR_OLD_OPENHANDS_INSTALL,
+    ERR_PROXY_LOOKS_LIKE_PRODUCT_URL,
+    ERR_PROXY_PROBE_FAILED,
+    ERR_TIMEOUT,
+    _normalize_url,
     list_models,
     list_providers,
     list_verified_models,
@@ -361,3 +370,282 @@ def test_openai_subscription_logout_endpoint(client, monkeypatch):
     assert response.json()["connected"] is False
     assert FakeAuth.logged_out is True
     assert llm_router._PENDING_OPENAI_DEVICE_LOGINS == {}
+
+
+# --- OpenHands LiteLLM proxy discovery -----------------------------------
+#
+# These tests cover the fallback matrix in OpenHands/OpenHands#17810: each
+# failure mode must surface as its own structured error code, so the frontend
+# can render distinct copy instead of a bare LiteLLM 405.
+
+_SAAS_APP_URL = "https://app.all-hands.dev"
+_SAAS_PROXY_URL = "https://llm-proxy.app.all-hands.dev"
+
+
+def _install_mock_transport(monkeypatch, handler):
+    """Route every httpx.AsyncClient the router opens through ``handler``.
+
+    ``discover_openhands_proxy`` constructs its client with a timeout kwarg, so
+    the replacement must accept and preserve ``**kwargs``.
+    """
+    from openhands.agent_server import llm_router as mod
+
+    original_async_client = httpx.AsyncClient
+
+    def _factory(**kwargs):
+        kwargs.pop("transport", None)
+        return original_async_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", _factory)
+
+
+class TestNormalizeUrl:
+    """Users copy-paste URLs from browsers, terminals, and each other; the
+    endpoint must accept the common variants without punishing typos."""
+
+    def test_adds_https_when_missing(self):
+        assert _normalize_url("app.all-hands.dev") == "https://app.all-hands.dev"
+
+    def test_strips_whitespace_and_trailing_slash(self):
+        assert (
+            _normalize_url("  https://app.all-hands.dev/  ")
+            == "https://app.all-hands.dev"
+        )
+
+    def test_preserves_http_scheme(self):
+        assert _normalize_url("http://localhost:12000") == "http://localhost:12000"
+
+    def test_rejects_empty(self):
+        assert _normalize_url("") is None
+        assert _normalize_url("   ") is None
+
+    def test_rejects_non_http_scheme(self):
+        assert _normalize_url("ftp://example.com") is None
+
+    def test_rejects_scheme_without_host(self):
+        assert _normalize_url("https://") is None
+
+
+def test_discover_proxy_happy_path(client, monkeypatch):
+    """Row 1 of the fallback matrix: modern SaaS response, probe OK."""
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.path == "/api/v1/web-client/config":
+            return httpx.Response(
+                200,
+                json={
+                    "app_mode": "saas",
+                    "llm_proxy_base_url": _SAAS_PROXY_URL,
+                },
+            )
+        if request.url.path == "/health/liveliness":
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": _SAAS_APP_URL},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "app_url": _SAAS_APP_URL,
+        "llm_proxy_base_url": _SAAS_PROXY_URL,
+        "verified": True,
+        "error": None,
+        "error_message": None,
+    }
+    # Confirm both hops were exercised — the config lookup and the probe.
+    assert any(_SAAS_APP_URL in c for c in calls)
+    assert any("/health/liveliness" in c for c in calls)
+
+
+def test_discover_proxy_old_install_missing_field(client, monkeypatch):
+    """Row 2: valid WebClientConfig but no llm_proxy_base_url (pre-#577 OHE)."""
+
+    def handler(request):
+        if request.url.path == "/api/v1/web-client/config":
+            # An old install that predates the enterprise#577 field.
+            return httpx.Response(200, json={"app_mode": "self_hosted"})
+        # Should not be reached — the probe only runs after a proxy URL is found.
+        raise AssertionError(f"unexpected request to {request.url}")
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": "https://openhands.mycorp.example"},
+    )
+    body = response.json()
+    assert body["llm_proxy_base_url"] is None
+    assert body["verified"] is False
+    assert body["error"] == ERR_OLD_OPENHANDS_INSTALL
+
+
+def test_discover_proxy_probe_405_looks_like_product_url(client, monkeypatch):
+    """Row 3: proxy URL is really a chat product URL — the exact #17803 bug.
+
+    The endpoint MUST surface this as its own error code so the frontend can
+    tell the user 'this URL looks like a product URL, not the LiteLLM proxy'
+    instead of a bare LiteLLM 405.
+    """
+    bad_proxy = "https://app.all-hands.dev"
+
+    def handler(request):
+        if request.url.path == "/api/v1/web-client/config":
+            return httpx.Response(
+                200,
+                json={
+                    "app_mode": "saas",
+                    # An admin misconfigured LITE_LLM_API_URL to the product URL.
+                    "llm_proxy_base_url": bad_proxy,
+                },
+            )
+        if request.url.path == "/health/liveliness":
+            # LiteLLM SaaS responds 405 to unknown routes on the product URL.
+            return httpx.Response(405, json={"detail": "Method Not Allowed"})
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": _SAAS_APP_URL},
+    )
+    body = response.json()
+    # The resolved URL is still returned so the UI can display it.
+    assert body["llm_proxy_base_url"] == bad_proxy
+    assert body["verified"] is False
+    assert body["error"] == ERR_PROXY_LOOKS_LIKE_PRODUCT_URL
+    assert "product URL" in body["error_message"]
+
+
+def test_discover_proxy_probe_other_5xx(client, monkeypatch):
+    """Row 3 variant: probe fails with a generic HTTP error."""
+
+    def handler(request):
+        if request.url.path == "/api/v1/web-client/config":
+            return httpx.Response(
+                200,
+                json={"app_mode": "saas", "llm_proxy_base_url": _SAAS_PROXY_URL},
+            )
+        if request.url.path == "/health/liveliness":
+            return httpx.Response(502)
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": _SAAS_APP_URL},
+    )
+    body = response.json()
+    assert body["verified"] is False
+    assert body["error"] == ERR_PROXY_PROBE_FAILED
+
+
+def test_discover_proxy_config_404_not_openhands(client, monkeypatch):
+    """Row 4: URL isn't an OpenHands install at all."""
+
+    def handler(request):
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": "https://example.com"},
+    )
+    body = response.json()
+    assert body["llm_proxy_base_url"] is None
+    assert body["verified"] is False
+    assert body["error"] == ERR_NOT_OPENHANDS_INSTALL
+
+
+def test_discover_proxy_config_non_json(client, monkeypatch):
+    """Row 4 variant: URL returns 200 but not JSON — e.g. a marketing page."""
+
+    def handler(request):
+        return httpx.Response(200, text="<html>hi</html>")
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": "https://example.com"},
+    )
+    assert response.json()["error"] == ERR_NOT_OPENHANDS_INSTALL
+
+
+def test_discover_proxy_config_missing_app_mode(client, monkeypatch):
+    """Row 4 variant: JSON without WebClientConfig shape."""
+
+    def handler(request):
+        return httpx.Response(200, json={"hello": "world"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": "https://example.com"},
+    )
+    assert response.json()["error"] == ERR_NOT_OPENHANDS_INSTALL
+
+
+def test_discover_proxy_timeout(client, monkeypatch):
+    """Row 5: outbound request times out."""
+
+    def handler(request):
+        raise httpx.ConnectTimeout("timed out")
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": _SAAS_APP_URL},
+    )
+    body = response.json()
+    assert body["verified"] is False
+    assert body["error"] == ERR_TIMEOUT
+
+
+def test_discover_proxy_network_error(client, monkeypatch):
+    """Row 5 variant: DNS / connection error."""
+
+    def handler(request):
+        raise httpx.ConnectError("nodename nor servname provided")
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": _SAAS_APP_URL},
+    )
+    body = response.json()
+    assert body["verified"] is False
+    assert body["error"] == ERR_NETWORK_ERROR
+
+
+def test_discover_proxy_invalid_url_never_touches_network(client, monkeypatch):
+    """Garbage in the app_url must be rejected before we make any outbound call.
+
+    Otherwise the endpoint becomes a trivial SSRF beacon."""
+    called = []
+
+    def handler(request):
+        called.append(request.url)
+        return httpx.Response(200)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = client.post(
+        "/api/llm/discover-openhands-proxy",
+        json={"app_url": "not a url"},
+    )
+    body = response.json()
+    assert body["error"] == ERR_INVALID_URL
+    assert called == []

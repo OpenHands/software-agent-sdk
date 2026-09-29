@@ -6,7 +6,9 @@ import asyncio
 import secrets
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
@@ -261,3 +263,271 @@ async def logout_openai_subscription() -> SubscriptionStatusResponse:
         _PENDING_OPENAI_DEVICE_LOGINS.clear()
         auth.logout()
     return SubscriptionStatusResponse(connected=False)
+
+
+# --- OpenHands LiteLLM proxy discovery -----------------------------------
+#
+# Powers the provider=openhands connection form in Agent Canvas
+# (see OpenHands/OpenHands#17810). Users type the OpenHands account URL they
+# log in at (e.g. https://app.all-hands.dev, https://openhands.mycorp.example);
+# this endpoint resolves that to the LiteLLM proxy URL by asking the account's
+# own WebClientConfig, then optionally probing the proxy's health endpoint so
+# a misconfigured URL is caught before the user burns a conversation on it.
+#
+# Never raises. Every failure mode surfaces as a structured error code so the
+# frontend can render each row of the fallback matrix with actionable copy
+# instead of a bare LiteLLM 405.
+
+DISCOVERY_TIMEOUT_SECONDS = 10.0
+
+# Error codes returned in the ``error`` field, one per fallback-matrix row.
+ERR_OLD_OPENHANDS_INSTALL = "old_openhands_install"
+ERR_NOT_OPENHANDS_INSTALL = "not_openhands_install"
+ERR_INVALID_URL = "invalid_url"
+ERR_TIMEOUT = "timeout"
+ERR_NETWORK_ERROR = "network_error"
+ERR_PROXY_LOOKS_LIKE_PRODUCT_URL = "proxy_looks_like_product_url"
+ERR_PROXY_PROBE_FAILED = "proxy_probe_failed"
+
+
+class DiscoverOpenHandsProxyRequest(BaseModel):
+    """Client-supplied OpenHands account URL to resolve to a LiteLLM proxy."""
+
+    app_url: str = Field(
+        description=(
+            "The user's OpenHands account URL — the URL they log in at "
+            "(e.g. https://app.all-hands.dev or https://openhands.mycorp.example). "
+            "Not the LiteLLM proxy URL; the whole point of this endpoint is to "
+            "derive that."
+        ),
+    )
+
+
+class DiscoverOpenHandsProxyResponse(BaseModel):
+    """Result of resolving an OpenHands account URL to a LiteLLM proxy.
+
+    ``verified=True`` means the LiteLLM proxy responded successfully to a
+    liveliness probe, so the frontend can lock the derived ``base_url`` into
+    the connection form with confidence. Any other outcome — including
+    "proxy URL known but probe failed" — surfaces via ``error`` so each
+    fallback-matrix row gets its own copy on the UI.
+    """
+
+    app_url: str
+    llm_proxy_base_url: str | None = None
+    verified: bool = False
+    error: str | None = None
+    error_message: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable elaboration of ``error``. The frontend is free to "
+            "override with its own localized copy, but the message is useful "
+            "as a fallback and in logs."
+        ),
+    )
+
+
+def _normalize_url(raw: str) -> str | None:
+    """Best-effort normalization of a user-typed URL.
+
+    - Strips whitespace and trailing slashes.
+    - Adds ``https://`` when the scheme is missing (users copy-paste hostnames).
+    - Rejects everything that doesn't parse to an ``http`` or ``https`` URL
+      with a host, so garbage never reaches the outbound request.
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if "://" not in value:
+        value = "https://" + value
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    # Whitespace inside the host is only ever a user-typed typo (urlparse won't
+    # reject it), so bounce it here rather than letting the DNS layer decide.
+    if any(ch.isspace() for ch in parsed.netloc):
+        return None
+    # Drop any trailing slash on the path so join operations behave.
+    path = parsed.path.rstrip("/")
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _looks_like_web_client_config(payload: object) -> bool:
+    """Cheap shape check: is this response actually a ``WebClientConfig``?
+
+    ``app_mode`` is present on both SaaS and OHE (see the enterprise
+    ``WebClientConfig`` model) and is the field with the least chance of being
+    an accidental collision with an unrelated JSON endpoint.
+    """
+    return isinstance(payload, dict) and "app_mode" in payload
+
+
+async def _probe_liveliness(
+    client: httpx.AsyncClient, proxy_base_url: str
+) -> tuple[bool, str | None, str | None]:
+    """Probe ``<proxy_base_url>/health/liveliness`` — unauth, cheap.
+
+    Returns ``(ok, error_code, error_message)``.
+    A 405 specifically means the URL routes to a chat product, not a LiteLLM
+    proxy — the exact #17803 symptom — so it gets its own code.
+    """
+    probe_url = proxy_base_url.rstrip("/") + "/health/liveliness"
+    try:
+        response = await client.get(probe_url)
+    except httpx.TimeoutException:
+        return False, ERR_TIMEOUT, f"Timed out probing {probe_url}."
+    except httpx.HTTPError as exc:
+        return (
+            False,
+            ERR_NETWORK_ERROR,
+            f"Network error probing {probe_url}: {exc}",
+        )
+
+    if response.status_code == 200:
+        return True, None, None
+    if response.status_code == 405:
+        return (
+            False,
+            ERR_PROXY_LOOKS_LIKE_PRODUCT_URL,
+            (
+                f"{proxy_base_url} responded 405 Method Not Allowed to "
+                "GET /health/liveliness. This URL looks like an OpenHands "
+                "product URL, not the LiteLLM proxy."
+            ),
+        )
+    return (
+        False,
+        ERR_PROXY_PROBE_FAILED,
+        (
+            f"{probe_url} responded {response.status_code}, expected 200. "
+            "The LiteLLM proxy is unreachable or misconfigured."
+        ),
+    )
+
+
+@llm_router.post(
+    "/discover-openhands-proxy",
+    response_model=DiscoverOpenHandsProxyResponse,
+)
+async def discover_openhands_proxy(
+    request: DiscoverOpenHandsProxyRequest,
+) -> DiscoverOpenHandsProxyResponse:
+    """Resolve an OpenHands account URL to its LiteLLM proxy base URL.
+
+    Fetches ``<app_url>/api/v1/web-client/config``, reads ``llm_proxy_base_url``
+    from the response, and probes the resolved proxy's liveliness endpoint.
+    Never raises — every failure mode returns a structured ``error`` code so
+    the frontend can render actionable copy for each fallback-matrix row.
+    """
+    app_url = _normalize_url(request.app_url)
+    if app_url is None:
+        return DiscoverOpenHandsProxyResponse(
+            app_url=request.app_url,
+            llm_proxy_base_url=None,
+            verified=False,
+            error=ERR_INVALID_URL,
+            error_message=(
+                f"{request.app_url!r} is not a valid http(s) URL. "
+                "Expected something like https://app.all-hands.dev."
+            ),
+        )
+
+    config_url = app_url + "/api/v1/web-client/config"
+    async with httpx.AsyncClient(
+        timeout=DISCOVERY_TIMEOUT_SECONDS, follow_redirects=True
+    ) as client:
+        try:
+            config_response = await client.get(config_url)
+        except httpx.TimeoutException:
+            return DiscoverOpenHandsProxyResponse(
+                app_url=app_url,
+                llm_proxy_base_url=None,
+                verified=False,
+                error=ERR_TIMEOUT,
+                error_message=(
+                    f"Timed out fetching {config_url}. Check the URL and your "
+                    "network connection."
+                ),
+            )
+        except httpx.HTTPError as exc:
+            return DiscoverOpenHandsProxyResponse(
+                app_url=app_url,
+                llm_proxy_base_url=None,
+                verified=False,
+                error=ERR_NETWORK_ERROR,
+                error_message=(
+                    f"Could not reach {config_url}: {exc}. Check that the "
+                    "URL is correct and reachable from this agent-server."
+                ),
+            )
+
+        if config_response.status_code != 200:
+            return DiscoverOpenHandsProxyResponse(
+                app_url=app_url,
+                llm_proxy_base_url=None,
+                verified=False,
+                error=ERR_NOT_OPENHANDS_INSTALL,
+                error_message=(
+                    f"{app_url} doesn't look like an OpenHands install: "
+                    f"{config_url} returned {config_response.status_code}."
+                ),
+            )
+
+        try:
+            payload = config_response.json()
+        except ValueError:
+            return DiscoverOpenHandsProxyResponse(
+                app_url=app_url,
+                llm_proxy_base_url=None,
+                verified=False,
+                error=ERR_NOT_OPENHANDS_INSTALL,
+                error_message=(
+                    f"{app_url} doesn't look like an OpenHands install: "
+                    f"{config_url} did not return JSON."
+                ),
+            )
+
+        if not _looks_like_web_client_config(payload):
+            return DiscoverOpenHandsProxyResponse(
+                app_url=app_url,
+                llm_proxy_base_url=None,
+                verified=False,
+                error=ERR_NOT_OPENHANDS_INSTALL,
+                error_message=(
+                    f"{app_url} doesn't look like an OpenHands install: "
+                    f"{config_url} response is missing 'app_mode'."
+                ),
+            )
+
+        llm_proxy_base_url = payload.get("llm_proxy_base_url")
+        if not llm_proxy_base_url:
+            return DiscoverOpenHandsProxyResponse(
+                app_url=app_url,
+                llm_proxy_base_url=None,
+                verified=False,
+                error=ERR_OLD_OPENHANDS_INSTALL,
+                error_message=(
+                    f"{app_url} is an OpenHands install, but its "
+                    "WebClientConfig has no llm_proxy_base_url field. Ask "
+                    "your admin to upgrade, or enter the LiteLLM proxy URL "
+                    "manually."
+                ),
+            )
+
+        ok, probe_error, probe_message = await _probe_liveliness(
+            client, llm_proxy_base_url
+        )
+        # llm_proxy_base_url is returned even on probe failure so the frontend
+        # can display "we resolved it to X but couldn't reach it".
+        return DiscoverOpenHandsProxyResponse(
+            app_url=app_url,
+            llm_proxy_base_url=llm_proxy_base_url,
+            verified=ok,
+            error=probe_error,
+            error_message=probe_message,
+        )
