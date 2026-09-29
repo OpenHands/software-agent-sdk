@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable
@@ -61,6 +62,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContentPolicyViolationError,
@@ -677,7 +679,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             self._step(conversation, on_event, stream)
 
     def _step(
@@ -887,7 +893,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             await self._astep(conversation, on_event, stream)
 
     async def _astep(
@@ -1060,6 +1070,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         message: Message = llm_response.message
         response_type = classify_response(message)
+        if response_type is not LLMResponseType.TOOL_CALLS:
+            # Resolve outside the event loop and state lock. A lookup may call
+            # this server, and update_secrets() may register another source while
+            # we await it. Repeat until the registry is stable under the lock.
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    message = await asyncio.to_thread(
+                        self._mask_secrets, message, conversation
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
@@ -1068,7 +1090,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    stream,
+                    mask_secrets=False,
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1079,6 +1107,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_event,
                     stream,
                     response_type=response_type,
+                    mask_secrets=False,
                 )
 
     def _requires_user_confirmation(
