@@ -13,7 +13,7 @@ from openhands.agent_server import profiles_router as profiles_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message
 from openhands.sdk.llm.auth.credentials import OAuthCredentials
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
@@ -1763,6 +1763,33 @@ def test_validate_profile_success(client):
     body = response.json()
     assert body["valid"] is True
     assert body["error"] is None
+
+
+def test_validate_profile_sends_system_first(client):
+    """The pre-flight ping must open with a system message (repo invariant #5146)."""
+    from unittest.mock import MagicMock
+
+    captured: dict[str, list[Message]] = {}
+
+    async def fake_acompletion(self, messages, **kwargs):
+        captured["messages"] = list(messages)
+        return MagicMock()
+
+    with (
+        patch("openhands.sdk.llm.llm.LLM.uses_responses_api", return_value=False),
+        patch(
+            "openhands.sdk.llm.llm.LLM.acompletion",
+            new=fake_acompletion,
+        ),
+    ):
+        response = client.post(
+            "/api/profiles/test-profile/validate",
+            json={"llm": {"model": "gpt-4o", "api_key": "sk-test"}},
+        )
+
+    assert response.status_code == 200
+    msgs = captured["messages"]
+    assert [m.role for m in msgs] == ["system", "user"]
 
 
 def test_validate_profile_responses_api(client):
