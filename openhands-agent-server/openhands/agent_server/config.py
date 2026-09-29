@@ -352,6 +352,13 @@ class Config(BaseModel):
         default=True,
         description="Whether conversation_image ships the browser (chromium) stack.",
     )
+    enable_browser: bool = Field(
+        default=True,
+        description=(
+            "Whether conversations may get the browser tool set. When false, "
+            "launches leave it out even where chromium is available."
+        ),
+    )
     conversation_container_memory: str | None = "4g"
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)

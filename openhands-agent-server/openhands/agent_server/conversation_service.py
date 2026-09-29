@@ -35,7 +35,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.persistence import FileSecretsStore
-from openhands.agent_server.profile_launch import gather_profile_launch_inputs
+from openhands.agent_server.profile_launch import (
+    gather_profile_launch_inputs,
+    resolve_settings_tools,
+)
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
@@ -73,6 +76,7 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
+from openhands.sdk.settings.model import validate_agent_settings
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -356,7 +360,7 @@ def _resolve_agent_from_profile(
     cipher: "Cipher | None",
     mcp_config: "dict[str, MCPServer]",
     acp_skill_sourcing: ACPSkillSourcing = "native",
-    container_browser: bool | None = None,
+    browser_available: bool | None = None,
 ) -> "tuple[AgentBase, LaunchedAgentProfile, set[str] | None]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
@@ -404,7 +408,7 @@ def _resolve_agent_from_profile(
         ) from exc
 
     inputs = gather_profile_launch_inputs(
-        profile, acp_skill_sourcing, container_browser
+        profile, acp_skill_sourcing, browser_available
     )
     # Fail loudly rather than silently launching a zero-skill agent.
     if inputs.skill_discovery_error is not None:
@@ -688,6 +692,7 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
+    enable_browser: bool = True
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -884,6 +889,9 @@ class ConversationService:
     def _profile_allows_secret(stored: StoredConversation, name: str) -> bool:
         profile = stored.launched_agent_profile
         return profile is None or profile.allows_secret(name)
+
+    def _configured_browser(self) -> bool | None:
+        return None if self.enable_browser else False
 
     @staticmethod
     def _is_codex_agent(agent: AgentBase | None) -> bool:
@@ -1672,6 +1680,7 @@ class ConversationService:
                 self.cipher,
                 mcp_config,
                 acp_skill_sourcing=self.acp_skill_sourcing,
+                browser_available=self._configured_browser(),
             )
             updates: dict[str, Any] = {"agent": resolved_agent}
             # Enforced here, not client-side: a caller that sends more secrets
@@ -1683,6 +1692,15 @@ class ConversationService:
                     if name in allowed_secrets
                 }
             request = request.model_copy(update=updates)
+        elif request.agent_settings is not None:
+            agent_settings = request.agent_settings
+            agent = await asyncio.to_thread(
+                lambda: resolve_settings_tools(
+                    validate_agent_settings(agent_settings),
+                    browser_available=self._configured_browser(),
+                ).create_agent()
+            )
+            request = request.model_copy(update={"agent": agent})
 
         # Applied unconditionally: a serialized agent always carries
         # ``load_memory`` (model_dump emits defaults), so there is no way to
@@ -2415,6 +2433,7 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            enable_browser=config.enable_browser,
         )
 
     async def _start_event_service(

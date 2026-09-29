@@ -3,7 +3,10 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from openhands.agent_server.profile_launch import container_browser_available
+from openhands.agent_server.profile_launch import (
+    can_probe_tools,
+    configured_browser_available,
+)
 from openhands.sdk.tool import BROWSER_TOOL_NAME
 from openhands.sdk.tool.registry import (
     ToolCatalogEntry,
@@ -45,16 +48,15 @@ async def get_tool_catalog(request: Request) -> ToolCatalogResponse:
     runtime conversations run in can run the tool.
     """
     config = getattr(request.app.state, "config", None)
-    container_browser = (
-        container_browser_available(config) if config is not None else None
-    )
-    if container_browser is None:
+    if config is None:
         return ToolCatalogResponse(tools=list_tool_catalog())
-    # This process cannot probe the conversation containers.
-    entries = [
-        entry.model_copy(update={"usable": container_browser})
-        if entry.name == BROWSER_TOOL_NAME
-        else entry
-        for entry in list_tool_catalog(check_usable=False)
-    ]
+    entries = list_tool_catalog(check_usable=can_probe_tools(config))
+    browser = configured_browser_available(config)
+    if browser is not None:
+        entries = [
+            entry.model_copy(update={"usable": browser})
+            if entry.name == BROWSER_TOOL_NAME
+            else entry
+            for entry in entries
+        ]
     return ToolCatalogResponse(tools=entries)

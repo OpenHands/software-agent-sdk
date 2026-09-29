@@ -975,8 +975,8 @@ def test_create_agent_defaults_tools_when_none() -> None:
 
 
 def test_retired_enable_sub_agents_folds_into_the_default_tools() -> None:
-    settings = OpenHandsAgentSettings(
-        llm=LLM(model="test-model"), enable_sub_agents=True
+    settings = OpenHandsAgentSettings.model_validate(
+        {"llm": LLM(model="test-model"), "enable_sub_agents": True}
     )
     agent = settings.create_agent()
     assert [t.name for t in agent.tools] == [
@@ -988,8 +988,8 @@ def test_retired_enable_sub_agents_folds_into_the_default_tools() -> None:
 
 
 def test_retired_switch_llm_off_folds_out_of_the_default_set() -> None:
-    settings = OpenHandsAgentSettings(
-        llm=LLM(model="test-model"), enable_switch_llm_tool=False
+    settings = OpenHandsAgentSettings.model_validate(
+        {"llm": LLM(model="test-model"), "enable_switch_llm_tool": False}
     )
     agent = settings.create_agent()
 
@@ -1071,13 +1071,15 @@ def test_registered_tool_named_like_a_builtin_is_not_replaced(monkeypatch) -> No
 
 def test_retired_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
     """The switch only ever fed the default set."""
-    explicit = OpenHandsAgentSettings(
-        llm=LLM(model="test-model"),
-        tools=[Tool(name="terminal")],
-        enable_sub_agents=True,
+    explicit = OpenHandsAgentSettings.model_validate(
+        {
+            "llm": LLM(model="test-model"),
+            "tools": [Tool(name="terminal")],
+            "enable_sub_agents": True,
+        }
     )
-    bare = OpenHandsAgentSettings(
-        llm=LLM(model="test-model"), tools=[], enable_sub_agents=True
+    bare = OpenHandsAgentSettings.model_validate(
+        {"llm": LLM(model="test-model"), "tools": [], "enable_sub_agents": True}
     )
     assert [t.name for t in explicit.tools or []] == ["terminal", "switch_llm"]
     assert [t.name for t in bare.tools or []] == ["switch_llm"]
@@ -1144,6 +1146,27 @@ def test_v6_settings_fold_the_retired_switches(
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.schema_version == 7
     assert [t.name for t in settings.tools or []] == expected
+
+
+def test_v6_settings_pin_the_standard_set_the_server_launches() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 6,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "enable_sub_agents": True,
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert [t.name for t in settings.tools or []] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "task_tool_set",
+        "switch_llm",
+    ]
 
 
 def test_explicitly_selected_switch_llm_is_not_added_twice() -> None:

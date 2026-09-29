@@ -15,7 +15,10 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.docker_runtime.provisioning import RuntimeIdentity
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
-from openhands.agent_server.profile_launch import container_browser_available
+from openhands.agent_server.profile_launch import (
+    configured_browser_available,
+    resolve_settings_tools,
+)
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -64,7 +67,10 @@ async def prepare_start(
     }
     context = {"cipher": config.cipher} if body.get("secrets_encrypted") else None
     if body.get("agent_settings") is not None:
-        settings = validate_agent_settings(body["agent_settings"], context=context)
+        settings = resolve_settings_tools(
+            validate_agent_settings(body["agent_settings"], context=context),
+            browser_available=configured_browser_available(config),
+        )
         body = {**body, "agent": settings.create_agent(), "agent_settings": None}
     request = StartConversationRequest.model_validate(body, context=context)
 
@@ -81,7 +87,7 @@ async def prepare_start(
             config.cipher,
             settings.agent_settings.mcp_config,
             acp_skill_sourcing=config.acp_skill_sourcing,
-            container_browser=container_browser_available(config),
+            browser_available=configured_browser_available(config),
         )
         secrets = request.secrets
         if allowed is not None:

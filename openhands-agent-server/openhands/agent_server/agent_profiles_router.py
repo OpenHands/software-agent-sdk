@@ -30,7 +30,8 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.profile_launch import (
-    container_browser_available,
+    can_probe_tools,
+    configured_browser_available,
     gather_profile_launch_inputs,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
@@ -575,12 +576,11 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    container_browser = container_browser_available(config)
     inputs = await asyncio.to_thread(
         gather_profile_launch_inputs,
         profile,
         config.acp_skill_sourcing,
-        container_browser,
+        configured_browser_available(config),
     )
     if inputs.skill_discovery_error is not None:
         logger.warning(
@@ -596,7 +596,7 @@ async def materialize_agent_profile(
         available_skills=inputs.available_skills,
         cipher=cipher,
         browser_available=inputs.browser_available,
-        check_usable=container_browser is None,
+        check_usable=can_probe_tools(config),
     )
     # Reported rather than raised: a launch would fail on it, the preview must not.
     if inputs.skill_discovery_error is not None:

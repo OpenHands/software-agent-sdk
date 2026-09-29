@@ -203,3 +203,29 @@ async def test_default_tools_profile_skips_browser_when_the_image_lacks_it(
     prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
 
     assert "browser_tool_set" not in [tool.name for tool in prepared.agent.tools]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "has_browser"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+async def test_settings_launch_follows_the_container_browser(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, has_browser
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": image_has_browser,
+            "enable_browser": enable_browser,
+        }
+    )
+    body = {
+        "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+        "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+    }
+
+    prepared, _ = await prepare_start(body, runtime_config)
+
+    names = [tool.name for tool in prepared.agent.tools]
+    assert ("browser_tool_set" in names) is has_browser

@@ -192,12 +192,17 @@ def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
 
 
 @pytest.mark.parametrize(
-    ("tools", "browser_available", "unusable"),
+    ("tools", "browser_available", "unusable", "failing"),
     [
-        ([Tool(name="browser_tool_set")], False, ["browser_tool_set"]),
-        ([Tool(name="browser_tool_set")], True, []),
-        (None, False, []),
-        ([Tool(name="finish"), Tool(name="not_registered")], True, ["not_registered"]),
+        ([Tool(name="browser_tool_set")], False, ["browser_tool_set"], []),
+        ([Tool(name="browser_tool_set")], True, [], []),
+        (None, False, [], []),
+        (
+            [Tool(name="finish"), Tool(name="not_registered")],
+            True,
+            ["not_registered"],
+            ["not_registered"],
+        ),
     ],
 )
 def test_dry_run_reports_selected_tools_it_cannot_run(
@@ -205,6 +210,7 @@ def test_dry_run_reports_selected_tools_it_cannot_run(
     tools: list[Tool] | None,
     browser_available: bool,
     unusable: list[str],
+    failing: list[str],
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="pinned", llm_profile_ref="default", tools=tools
@@ -218,8 +224,9 @@ def test_dry_run_reports_selected_tools_it_cannot_run(
         browser_available=browser_available,
     )
 
-    assert diagnostics.valid
     assert diagnostics.unusable_tools == unusable
+    assert diagnostics.valid is (failing == [])
+    assert all(name in " ".join(diagnostics.errors) for name in failing)
 
 
 @pytest.mark.parametrize(("check_usable", "unusable"), [(True, ["hello"]), (False, [])])
@@ -244,6 +251,7 @@ def test_dry_run_reports_a_registered_tool_that_is_not_usable(
     )
 
     assert diagnostics.unusable_tools == unusable
+    assert diagnostics.valid is (unusable == [])
 
 
 def test_openhands_copies_verification(
@@ -812,13 +820,15 @@ def test_dry_run_verdict_matches_real_resolve(
 
 
 @pytest.mark.parametrize("browser_available", [True, False])
-@pytest.mark.parametrize("tools", [None, [], [Tool(name="glob")]])
+@pytest.mark.parametrize("tools", [None, [], [Tool(name="hello")]])
 def test_dry_run_tools_match_the_launched_agent(
     llm_store: LLMProfileStore,
+    monkeypatch: pytest.MonkeyPatch,
     browser_available: bool,
     tools: list[Tool] | None,
 ) -> None:
     """``resolved_settings.tools`` is what the launch actually builds."""
+    monkeypatch.setitem(registry._REG, "hello", lambda _params, _state: [])
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", tools=tools)
     diag = resolve_agent_profile_dry_run(
         profile,

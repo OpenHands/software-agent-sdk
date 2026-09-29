@@ -51,6 +51,16 @@ def resolve_tool_specs(
     return resolved
 
 
+def launch_tool_specs(
+    tools: Sequence[Tool] | None, *, browser_available: bool
+) -> list[Tool]:
+    """Resolve ``tools`` for a runtime, leaving out a browser it cannot run."""
+    resolved = resolve_tool_specs(tools, enable_browser=browser_available)
+    if browser_available:
+        return resolved
+    return [tool for tool in resolved if tool.name != BROWSER_TOOL_NAME]
+
+
 def canonical_tool_name(name: str) -> str:
     """Return the tool name a spec resolves to, collapsing built-in class names."""
     from openhands.sdk.tool.builtins import builtin_tool_class

@@ -206,7 +206,7 @@ def registered_tool_class(name: str) -> type[ToolDefinition] | None:
 def is_tool_available(name: str, *, check_usable: bool = True) -> bool:
     """Whether ``resolve_tool`` resolves ``name`` and, if checked, it is usable."""
     with _LOCK:
-        checker = _USABILITY_REG.get(name) if name in _REG else None
+        checker = _USABILITY_REG.get(name, lambda: True) if name in _REG else None
     if checker is None:
         from openhands.sdk.tool.builtins import builtin_tool_class
 

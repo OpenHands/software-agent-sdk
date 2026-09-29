@@ -1362,3 +1362,22 @@ def test_new_client_spreading_stale_switches_keeps_its_tools_edit(client):
     )
 
     assert _tool_names(client, "p") == ["terminal", "task_tool_set"]
+
+
+@pytest.mark.parametrize(
+    ("tools", "valid"),
+    [([{"name": "terminal"}], True), ([{"name": "not_a_registered_tool"}], False)],
+)
+def test_materialize_is_invalid_when_a_selected_tool_cannot_run(
+    client_with_llm_store, llm_store, tools, valid
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {"agent_kind": "openhands", "llm_profile_ref": "base-llm", "tools": tools}
+
+    with patch(_DISCOVER, return_value=[]):
+        response = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={"profile": draft}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is valid

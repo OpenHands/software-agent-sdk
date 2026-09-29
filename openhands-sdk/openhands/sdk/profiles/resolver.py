@@ -47,7 +47,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, resolve_tool_specs
+from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, launch_tool_specs
 from openhands.sdk.tool.registry import is_tool_available
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -260,7 +260,7 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": _launch_tool_specs(profile.tools, browser_available=browser_available),
+        "tools": launch_tool_specs(profile.tools, browser_available=browser_available),
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -272,15 +272,6 @@ def _build_openhands_settings(
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
-
-
-def _launch_tool_specs(
-    tools: list[Tool] | None, *, browser_available: bool
-) -> list[Tool]:
-    resolved = resolve_tool_specs(tools, enable_browser=browser_available)
-    if browser_available:
-        return resolved
-    return [tool for tool in resolved if tool.name != BROWSER_TOOL_NAME]
 
 
 def _unusable_tools(
@@ -449,6 +440,12 @@ def resolve_agent_profile_dry_run(
                 browser_available=browser_available,
                 check_usable=check_usable,
             )
+            # A launch leaves out a browser it cannot run; any other tool fails it.
+            failing = [n for n in diagnostics.unusable_tools if n != BROWSER_TOOL_NAME]
+            if failing:
+                diagnostics.errors.append(
+                    "Tool(s) this server cannot run: " + ", ".join(failing)
+                )
     else:
         filtered_skills = _apply_disabled_skills(available_skills, [])
     diagnostics.resolved_skills = [s.name for s in filtered_skills]
