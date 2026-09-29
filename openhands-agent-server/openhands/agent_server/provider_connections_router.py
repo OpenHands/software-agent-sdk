@@ -3,10 +3,12 @@
 A provider connection is a shared ``api_key`` + optional ``base_url`` that one
 or more LLM profiles reference by id. The credential is resolved into a runnable
 :class:`~openhands.sdk.llm.llm.LLM` lazily, at profile-load time
-(:meth:`LLMProfileStore.load`) — this router only performs CRUD over the stored
-connections. Because resolution is read-at-use, rotating a key here takes effect
-the next time a linked profile is activated or launched; nothing is copied into
-active settings, so there is no separate refresh path to keep in sync.
+(:meth:`LLMProfileStore.load`). This router performs CRUD over the stored
+connections; ``update`` additionally cascades a re-resolve into the active
+settings snapshot (``settings.agent_settings.llm``) when the active profile is
+linked to the connection being changed, so an edit in the UI takes effect on the
+next conversation without requiring the user to also re-activate the profile.
+See OpenHands/OpenHands#17803.
 """
 
 from __future__ import annotations
@@ -110,6 +112,62 @@ def _active_settings_references_connection(config, connection_id: str) -> bool:
     if settings is None:
         return False
     return settings.agent_settings.llm.provider_connection_id == connection_id
+
+
+def _cascade_refresh_active_settings(config, connection_id: str, cipher) -> None:
+    """Re-materialize ``settings.agent_settings.llm`` when the active profile is
+    linked to ``connection_id``.
+
+    This mirrors ``activate_profile``: it reloads the active profile through the
+    profile store (which applies the fresh connection ``base_url``/``api_key``)
+    and swaps the resolved LLM into the persisted settings. Best-effort — the
+    connection update has already succeeded, so a failure here must not surface
+    as a 4xx/5xx to the client; it only means the snapshot stays stale until
+    the next profile re-activation, which is the pre-cascade behavior.
+    """
+    from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+
+    settings_store = get_settings_store(config)
+    settings = settings_store.load()
+    if settings is None:
+        return
+    active_profile = settings.active_profile
+    if not active_profile:
+        return
+    if settings.agent_settings.llm.provider_connection_id != connection_id:
+        return
+
+    profile_store = get_llm_profile_store()
+    try:
+        llm = profile_store.load(active_profile, cipher=cipher)
+    except (FileNotFoundError, ValueError, ProviderConnectionNotFound) as exc:
+        logger.warning(
+            "Skipping active-settings cascade for connection %s: %s",
+            connection_id,
+            exc,
+        )
+        return
+
+    def apply(settings):
+        settings.agent_settings = settings.agent_settings.model_copy(
+            update={"llm": llm}
+        )
+        return settings
+
+    try:
+        settings_store.update(apply)
+    except (OSError, PermissionError, RuntimeError) as exc:
+        logger.warning(
+            "Failed to cascade connection %s into active settings: %s",
+            connection_id,
+            exc,
+        )
+        return
+
+    logger.info(
+        "Cascaded connection update into active settings",
+        extra={"connection_id": connection_id, "active_profile": active_profile},
+    )
 
 
 def _raise_if_connection_is_referenced(config, connection_id: str) -> None:
@@ -236,6 +294,7 @@ async def update_provider_connection(
     logger.info(
         "Updated LLM provider connection", extra={"connection_id": connection_id}
     )
+    _cascade_refresh_active_settings(get_config(request), connection_id, cipher)
     return _to_response(updated)
 
 

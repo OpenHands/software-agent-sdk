@@ -260,21 +260,14 @@ def test_provider_connection_key_shared_by_linked_profiles(client):
     assert delete.status_code == 409
     assert "referenced by LLM profile" in delete.json()["detail"]
 
-    # Rotate the shared key. Read-at-use: active settings keep the previously
-    # resolved key until the profile is activated again (nothing is auto-copied).
+    # Rotate the shared key. The PATCH cascades into the active settings
+    # snapshot when the active profile is linked to this connection
+    # (OpenHands/OpenHands#17803).
     rotated = client.patch(
         f"/api/llm/provider-connections/{connection_id}",
         json={"api_key": "sk-ant-new"},
     )
     assert rotated.status_code == 200
-    settings = client.get(
-        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
-    ).json()
-    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
-
-    # Re-activating re-resolves the connection and applies the rotated key.
-    activated = client.post("/api/profiles/sonnet-4/activate")
-    assert activated.status_code == 200
     settings = client.get(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
@@ -356,11 +349,12 @@ def test_provider_connection_delete_rejects_active_settings_reference(client):
     assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
 
 
-def test_provider_connection_rotation_not_copied_into_active_settings(client):
-    """Read-at-use: rotating a key does not rewrite the resolved active settings.
+def test_provider_connection_rotation_cascades_into_active_settings(client):
+    """PATCH on a connection cascades into the active settings snapshot.
 
-    The active ``agent_settings.llm`` keeps the key resolved at activation time
-    until the profile is activated again — nothing is auto-copied on rotation.
+    See OpenHands/OpenHands#17803: without this cascade, a user who edits a
+    connection has no way to know the change hasn't reached the runtime until
+    the next launch fails with a cryptic LiteLLM error.
     """
     connection_id = client.post(
         "/api/llm/provider-connections",
@@ -388,18 +382,56 @@ def test_provider_connection_rotation_not_copied_into_active_settings(client):
     )
     assert rotated.status_code == 200
 
-    # Active settings still hold the key resolved at activation.
-    settings = client.get(
-        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
-    ).json()
-    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
-
-    # Re-activating re-resolves and picks up the rotated key.
-    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    # Cascade: rotation refreshes the active settings snapshot in place, no
+    # explicit re-activation required.
     settings = client.get(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
     assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
+
+
+def test_provider_connection_rotation_leaves_other_active_settings_alone(client):
+    """The cascade fires only when the active profile references this connection."""
+    conn_a = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "A",
+            "provider": "anthropic",
+            "api_key": "sk-a-old",
+        },
+    ).json()["id"]
+    conn_b = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "B",
+            "provider": "anthropic",
+            "api_key": "sk-b-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/uses-a",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": conn_a,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/uses-a/activate").status_code == 200
+
+    # Rotating an unrelated connection leaves the snapshot alone.
+    assert (
+        client.patch(
+            f"/api/llm/provider-connections/{conn_b}",
+            json={"api_key": "sk-b-new"},
+        ).status_code
+        == 200
+    )
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-a-old"
 
 
 def test_provider_connection_base_url_authoritative_on_activation(client):
