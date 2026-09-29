@@ -9,6 +9,7 @@ import threading
 import warnings
 from collections.abc import (
     AsyncIterable,
+    AsyncIterator,
     Awaitable,
     Callable,
     Iterable,
@@ -1173,6 +1174,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         return decorate
 
+    async def _anext_with_idle_timeout(
+        self, iterator: AsyncIterator[_T], timeout: float
+    ) -> _T:
+        """Await one chunk, converting only this idle timer's own expiry.
+
+        ``asyncio.timeout`` is used instead of ``asyncio.wait_for`` so that a
+        ``TimeoutError`` raised by the transport itself (for example a
+        provider-side read timeout) keeps its original identity instead of
+        being relabelled as an idle timeout.
+        """
+        timeout_context = asyncio.timeout(timeout)
+        try:
+            async with timeout_context:
+                return await anext(iterator)
+        except TimeoutError as error:
+            if not timeout_context.expired():
+                raise
+            raise self._timeout_error("stream idle timeout", timeout) from error
+
     async def _aiter_with_idle_timeout(
         self, stream: AsyncIterable[_T]
     ) -> AsyncIterable[_T]:
@@ -1183,12 +1203,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if timeout is None:
                     item = await anext(iterator)
                 else:
-                    item = await asyncio.wait_for(anext(iterator), timeout=timeout)
+                    item = await self._anext_with_idle_timeout(iterator, timeout)
             except StopAsyncIteration:
                 return
-            except TimeoutError as error:
-                assert timeout is not None
-                raise self._timeout_error("stream idle timeout", timeout) from error
             yield item
 
     def _build_completion_result(self, resp: ModelResponse) -> LLMResponse:

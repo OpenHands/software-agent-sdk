@@ -277,9 +277,13 @@ def _streaming_llm(base_url: str, **kwargs) -> LLM:
 @pytest.mark.asyncio
 async def test_async_stream_idle_timeout_retries_real_http_stream() -> None:
     async with _hung_chat_completion_server() as (base_url, attempts):
+        # The hard timeout needs real headroom: the idle-trigger path takes a
+        # couple of seconds here (two attempts to first chunk), so a tight
+        # `timeout` would let the outer hard timeout win under CPU contention
+        # and the error would read "hard timeout" instead of "idle timeout".
         llm = _streaming_llm(
             base_url,
-            timeout=2,
+            timeout=30,
             stream_idle_timeout=0.05,
             num_retries=2,
         )
@@ -291,6 +295,120 @@ async def test_async_stream_idle_timeout_retries_real_http_stream() -> None:
             )
 
     assert len(attempts) == 2
+
+
+class _TransportTimeoutStream:
+    """Async iterator whose first chunk raises a transport-level TimeoutError."""
+
+    def __init__(self, message: str = "transport read timed out") -> None:
+        self.message = message
+
+    def __aiter__(self) -> "_TransportTimeoutStream":
+        return self
+
+    async def __anext__(self):
+        raise TimeoutError(self.message)
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_disabled_preserves_transport_timeout() -> None:
+    """With `stream_idle_timeout=None` a real TimeoutError must pass through."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=300,
+        stream_idle_timeout=None,
+    )
+
+    with pytest.raises(TimeoutError, match="transport read timed out") as exc_info:
+        async for _ in llm._aiter_with_idle_timeout(_TransportTimeoutStream()):
+            pass
+
+    assert not isinstance(exc_info.value, LiteLLMTimeout)
+
+
+@pytest.mark.asyncio
+async def test_transport_timeout_is_not_relabelled_as_idle_timeout() -> None:
+    """An enabled idle timer must not claim a transport TimeoutError."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=300,
+        stream_idle_timeout=5,
+    )
+
+    with pytest.raises(TimeoutError, match="transport read timed out") as exc_info:
+        async for _ in llm._aiter_with_idle_timeout(_TransportTimeoutStream()):
+            pass
+
+    assert not isinstance(exc_info.value, LiteLLMTimeout)
+    assert "idle timeout" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_idle_timeout_still_fires_for_stalled_stream() -> None:
+    """The idle timer itself still raises the idle-timeout error."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=300,
+        stream_idle_timeout=0.01,
+    )
+
+    async def stalled() -> AsyncIterator[None]:
+        await asyncio.Event().wait()
+        yield None
+
+    with pytest.raises(LiteLLMTimeout, match="stream idle timeout after 0.01"):
+        async for _ in llm._aiter_with_idle_timeout(stalled()):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_hard_timeout_keeps_attribution_over_idle_timeout() -> None:
+    """An outer hard timeout must not be reported as an idle timeout."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=1,
+        stream_idle_timeout=30,
+    )
+
+    async def stalled() -> AsyncIterator[None]:
+        await asyncio.Event().wait()
+        yield None
+
+    async def consume() -> None:
+        async for _ in llm._aiter_with_idle_timeout(stalled()):
+            pass
+
+    wrapped = llm._async_hard_timeout_decorator()(consume)
+    with pytest.raises(LiteLLMTimeout, match="hard timeout after 1 seconds"):
+        await wrapped()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("idle_timeout", [None, 30])
+async def test_transport_timeout_survives_both_timeout_layers(
+    idle_timeout: float | None,
+) -> None:
+    """A transport TimeoutError reaches the caller unchanged, with either setting."""
+    llm = LLM(
+        model="gpt-4o-mini",
+        usage_id="test-llm",
+        timeout=300,
+        stream_idle_timeout=idle_timeout,
+    )
+
+    async def consume() -> None:
+        async for _ in llm._aiter_with_idle_timeout(_TransportTimeoutStream()):
+            pass
+
+    wrapped = llm._async_hard_timeout_decorator()(consume)
+    with pytest.raises(TimeoutError, match="transport read timed out") as exc_info:
+        await wrapped()
+
+    assert type(exc_info.value) is TimeoutError
 
 
 @pytest.mark.asyncio
