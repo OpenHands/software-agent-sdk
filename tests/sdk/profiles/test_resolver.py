@@ -26,11 +26,49 @@ from openhands.sdk.profiles import (
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
+from openhands.sdk.subagent.capabilities import (
+    SubagentCapabilityError,
+    prepare_subagent,
+)
 from openhands.sdk.tool import Tool
 
 
 _LLM_SECRET = "sk-LLM-SECRET-SHOULD-NOT-LEAK"
 _MCP_SECRET = "ghp_MCP_SECRET_SHOULD_NOT_LEAK"
+
+
+@pytest.mark.parametrize("selected", [None, [], ["fetch"]])
+def test_profile_mcp_selection_survives_settings_roundtrip(
+    selected: list[str] | None,
+    llm_store: LLMProfileStore,
+    mcp_config: dict[str, MCPServer],
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="limited", llm_profile_ref="default", mcp_server_refs=selected
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    restored = OpenHandsAgentSettings.model_validate_json(
+        settings.model_dump_json(context={"expose_secrets": "plaintext"})
+    )
+    parent = restored.create_agent()
+    assert restored.mcp_server_refs == selected
+    if selected is None:
+        assert parent.subagent_capability_limits is None
+    else:
+        assert parent.subagent_capability_limits is not None
+        assert parent.subagent_capability_limits.mcp_server_names == tuple(selected)
+        child = Agent(llm=parent.llm, mcp_config={"other": mcp_config["other"]})
+        with pytest.raises(SubagentCapabilityError):
+            prepare_subagent(
+                parent=parent, child=child, limits=parent.subagent_capability_limits
+            )
 
 
 @pytest.fixture
