@@ -18,6 +18,7 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_provider_connections_store,
     get_secrets_store,
     get_settings_store,
 )
@@ -109,6 +110,54 @@ def _validate_secret_name(name: str) -> None:
         )
 
 
+def _with_fresh_provider_connection(
+    request: Request, settings: PersistedSettings
+) -> PersistedSettings:
+    """Re-apply the referenced provider connection to ``agent_settings.llm``.
+
+    The persisted snapshot in ``settings.json`` was resolved at profile
+    activation time; a later PATCH to the connection leaves it stale and would
+    surface as an opaque LiteLLM error on the next conversation
+    (OpenHands/OpenHands#17803). Resolving on read makes GET /api/settings a
+    single source of truth without rewriting the file.
+
+    No-op when ``llm.provider_connection_id`` is unset, when the referenced
+    connection has been deleted (deletion is already blocked while referenced,
+    so this only fires under manual on-disk edits), or when the store read
+    fails — the pre-existing snapshot is returned unchanged in each case.
+    """
+    llm = settings.agent_settings.llm
+    connection_id = llm.provider_connection_id
+    if not connection_id:
+        return settings
+
+    config = get_config(request)
+    cipher = get_cipher(request)
+    try:
+        connection = get_provider_connections_store(config).get(
+            connection_id, cipher=cipher
+        )
+    except Exception as exc:  # noqa: BLE001 — read-side fallback must be total
+        logger.warning(
+            "Provider-connection lookup failed for %s; serving stale snapshot: %s",
+            connection_id,
+            exc,
+        )
+        return settings
+    if connection is None:
+        return settings
+
+    from pydantic import SecretStr
+
+    updates: dict = {"base_url": connection.base_url}
+    api_key = connection.api_key_value()
+    if api_key is not None:
+        updates["api_key"] = SecretStr(api_key)
+    fresh_llm = llm.model_copy(update=updates)
+    fresh_agent_settings = settings.agent_settings.model_copy(update={"llm": fresh_llm})
+    return settings.model_copy(update={"agent_settings": fresh_agent_settings})
+
+
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
 async def get_settings(request: Request) -> SettingsResponse:
     """Get current settings.
@@ -158,6 +207,13 @@ async def get_settings(request: Request) -> SettingsResponse:
         logger.warning("Settings accessed with PLAINTEXT secrets", extra=log_extra)
     else:
         logger.info("Settings accessed", extra=log_extra)
+
+    # Re-resolve the LLM against its provider connection before serialising.
+    # ``settings.agent_settings.llm`` is a snapshot taken at profile-activation
+    # time; a later connection edit leaves it stale (OpenHands/OpenHands#17803).
+    # Resolving on read makes the response always reflect the current connection
+    # without touching the persisted snapshot on disk.
+    settings = _with_fresh_provider_connection(request, settings)
 
     context = build_expose_context(expose_mode, config.cipher)
     with translate_missing_cipher():

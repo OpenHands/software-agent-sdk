@@ -100,6 +100,10 @@ def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkey
             "get_provider_connections_store",
             lambda config=None: provider_store,
         ),
+        patch(
+            "openhands.agent_server.settings_router.get_provider_connections_store",
+            lambda config=None: provider_store,
+        ),
     ):
         yield TestClient(app)
 
@@ -260,21 +264,14 @@ def test_provider_connection_key_shared_by_linked_profiles(client):
     assert delete.status_code == 409
     assert "referenced by LLM profile" in delete.json()["detail"]
 
-    # Rotate the shared key. Read-at-use: active settings keep the previously
-    # resolved key until the profile is activated again (nothing is auto-copied).
+    # Rotate the shared key. GET re-resolves against the connection
+    # (OpenHands/OpenHands#17803), so the response reflects the new key
+    # without an explicit re-activation.
     rotated = client.patch(
         f"/api/llm/provider-connections/{connection_id}",
         json={"api_key": "sk-ant-new"},
     )
     assert rotated.status_code == 200
-    settings = client.get(
-        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
-    ).json()
-    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
-
-    # Re-activating re-resolves the connection and applies the rotated key.
-    activated = client.post("/api/profiles/sonnet-4/activate")
-    assert activated.status_code == 200
     settings = client.get(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
@@ -356,12 +353,62 @@ def test_provider_connection_delete_rejects_active_settings_reference(client):
     assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
 
 
-def test_provider_connection_rotation_not_copied_into_active_settings(client):
-    """Read-at-use: rotating a key does not rewrite the resolved active settings.
+def test_get_settings_re_resolves_provider_connection(client):
+    """GET /api/settings re-resolves the referenced connection on read.
 
-    The active ``agent_settings.llm`` keeps the key resolved at activation time
-    until the profile is activated again — nothing is auto-copied on rotation.
+    See OpenHands/OpenHands#17803: the persisted ``agent_settings.llm`` snapshot
+    is only a hint — the response reflects the current connection so an edit
+    takes effect on the next launch without re-activation.
     """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+            "base_url": "https://old.example",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+
+    assert (
+        client.patch(
+            f"/api/llm/provider-connections/{connection_id}",
+            json={"api_key": "sk-ant-new", "base_url": "https://new.example"},
+        ).status_code
+        == 200
+    )
+
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
+    assert settings["agent_settings"]["llm"]["base_url"] == "https://new.example"
+
+
+def test_provider_connection_rotation_does_not_rewrite_persisted_snapshot(
+    client, temp_settings_dir
+):
+    """Rotation refreshes the GET response but leaves the on-disk snapshot alone.
+
+    The read-side fix (OpenHands/OpenHands#17803) resolves connections on read
+    rather than at write time. The invariant this test pins: PATCH on a
+    connection does not touch ``settings.json`` — that avoids write amplification
+    on every key rotation.
+    """
+    import json
+    from pathlib import Path
+
     connection_id = client.post(
         "/api/llm/provider-connections",
         json={
@@ -382,20 +429,25 @@ def test_provider_connection_rotation_not_copied_into_active_settings(client):
     )
     assert client.post("/api/profiles/provider-profile/activate").status_code == 200
 
-    rotated = client.patch(
-        f"/api/llm/provider-connections/{connection_id}",
-        json={"api_key": "sk-ant-new"},
+    settings_path = Path(temp_settings_dir) / "settings.json"
+    mtime_before = settings_path.stat().st_mtime_ns
+
+    assert (
+        client.patch(
+            f"/api/llm/provider-connections/{connection_id}",
+            json={"api_key": "sk-ant-new"},
+        ).status_code
+        == 200
     )
-    assert rotated.status_code == 200
 
-    # Active settings still hold the key resolved at activation.
-    settings = client.get(
-        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
-    ).json()
-    assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+    assert settings_path.stat().st_mtime_ns == mtime_before, (
+        "connection PATCH should not touch settings.json"
+    )
+    on_disk = json.loads(settings_path.read_text())
+    # Snapshot key stays as it was resolved at activation.
+    assert on_disk["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
 
-    # Re-activating re-resolves and picks up the rotated key.
-    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+    # But the GET response sees the fresh key thanks to read-side resolution.
     settings = client.get(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
