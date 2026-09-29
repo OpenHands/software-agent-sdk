@@ -45,21 +45,27 @@ def provider():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("api_mode", ["chat", "responses"])
 @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("budget_denied", [False, True], ids=["transient", "budget"])
+@pytest.mark.parametrize(
+    "status,budget_denied",
+    [(429, False), (502, False), (429, True)],
+    ids=["rate-limit", "bad-gateway", "budget"],
+)
 async def test_http_rate_limit_retry_and_budget_recovery(
-    provider, api_mode, use_async, budget_denied
+    provider, api_mode, use_async, status, budget_denied
 ):
     base_url, replies, requests = provider
     replies.append(
         (
-            429,
+            status,
             {
                 "error": {
-                    "type": "budget_exceeded" if budget_denied else "rate_limit_error",
+                    "type": "budget_exceeded" if budget_denied else "provider_error",
                     "message": "Budget has been exceeded! Team=t"
                     if budget_denied
+                    else "Bad gateway"
+                    if status == 502
                     else "Too many requests",
-                    "code": "429",
+                    "code": str(status),
                 }
             },
         )
@@ -114,7 +120,12 @@ async def test_http_rate_limit_retry_and_budget_recovery(
         retry_max_wait=0,
         retry_multiplier=0,
     )
-    messages = [Message(role="user", content=[TextContent(text="continue")])]
+    messages = [
+        Message(
+            role="system", content=[TextContent(text="You are a helpful assistant.")]
+        ),
+        Message(role="user", content=[TextContent(text="continue")]),
+    ]
 
     async def call():
         return await llm.agenerate(messages) if use_async else llm.generate(messages)
