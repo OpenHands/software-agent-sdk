@@ -2,7 +2,7 @@
 
 import asyncio
 import threading
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -24,6 +24,18 @@ async def wait_until(predicate):
 
 @pytest_asyncio.fixture
 async def runs(tmp_path, monkeypatch):
+    async with _runs(tmp_path, monkeypatch, max_concurrent_runs=2) as runs_fixture:
+        yield runs_fixture
+
+
+@pytest_asyncio.fixture
+async def runs_one(tmp_path, monkeypatch):
+    async with _runs(tmp_path, monkeypatch, max_concurrent_runs=1) as runs_fixture:
+        yield runs_fixture
+
+
+@asynccontextmanager
+async def _runs(tmp_path, monkeypatch, max_concurrent_runs):
     tracker = SimpleNamespace(active=0, peak=0, entered=0)
     release = threading.Event()
     lock = threading.Lock()
@@ -40,7 +52,8 @@ async def runs(tmp_path, monkeypatch):
             tracker.active -= 1
 
     async with ConversationService(
-        conversations_dir=tmp_path / "conversations", max_concurrent_runs=2
+        conversations_dir=tmp_path / "conversations",
+        max_concurrent_runs=max_concurrent_runs,
     ) as owner:
 
         async def create(mode="async", fail=False):
@@ -253,3 +266,65 @@ async def test_goal_rejected_before_scheduling(runs):
     with pytest.raises(ConversationRunLimitExceeded):
         await spare.start_goal_loop("Do something")
     assert spare._goal_loop_task is None
+
+
+async def test_rearm_survives_competing_claim_of_released_permit(runs_one):
+    """A request re-armed after its run finishes must not be dropped when a
+    competing caller claims the just-released permit before the re-arm's
+    ``run()`` can re-acquire it.
+
+    ``_run_and_publish`` calls ``release_slot()`` before its re-arm, so the
+    freed permit can be taken first. ``run()`` then raises
+    ``ConversationRunLimitExceeded`` from ``RunSlot.acquire``; if the re-arm
+    only handles ``ValueError`` that refusal escapes the background task and
+    the pending input is stranded.
+    """
+    service = await runs_one.create()
+    await service.run()
+    await wait_until(lambda: runs_one.tracker.active == 1)
+
+    # Deliver input while the only permit is held: run() refuses with
+    # "conversation_already_running" and the message is parked as pending.
+    await service.send_message(
+        Message(role="user", content=[TextContent(text="stranded")]), run=True
+    )
+    assert service._rerun_requested is True
+
+    # Model a competing request claiming the permit the finishing run releases,
+    # before the re-arm's run() reaches RunSlot.acquire. The claim is made from
+    # the status read the re-arm performs after release_slot(), exactly the
+    # window in which the permit is free but the re-arm has not re-acquired it.
+    claimed = False
+    original_get_status = service._get_execution_status
+
+    async def get_status_with_competing_claim():
+        nonlocal claimed
+        if not claimed and service._run_task is None:
+            claimed = True
+            await runs_one.owner._run_semaphore.acquire()
+        return await original_get_status()
+
+    service._get_execution_status = get_status_with_competing_claim
+
+    run_task = service._run_task
+    assert run_task is not None
+    runs_one.release.set()
+    # Pre-fix this raises ConversationRunLimitExceeded out of the background
+    # task, stranding the parked message with nothing left to reschedule it.
+    await run_task
+    assert claimed, "the competing claim never happened"
+
+    # The refusal is handled like "conversation_already_running": the request
+    # stays pending so it is retried once capacity frees.
+    assert service._rerun_requested is True
+    assert service._run_task is None
+
+    # Capacity frees and the caller retries /run, as the 429 response
+    # instructs. The parked message must now get a run.
+    runs_one.owner._run_semaphore.release()
+    await service.run()
+    await wait_until(lambda: runs_one.tracker.entered >= 2)
+    runs_one.release.set()
+    await service.wait_for_run_completion(5)
+    await wait_until(lambda: runs_one.tracker.active == 0)
+    assert service.get_conversation().state.last_user_message_id is not None

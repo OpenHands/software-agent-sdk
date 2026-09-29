@@ -1462,6 +1462,16 @@ class EventService:
                                     if acp_internal_rerun_still_valid
                                     else None
                                 )
+                            except ConversationRunLimitExceeded:
+                                # release_slot() ran before this re-arm, so a
+                                # competing request can claim the freed permit
+                                # first. Keep the request pending for the next
+                                # capacity-freeing event instead of letting the
+                                # refusal escape this background task.
+                                self._rerun_requested = True
+                                self._acp_internal_rerun_requested = (
+                                    acp_internal_rerun_requested
+                                )
                             except ValueError as e:
                                 if str(e) == "conversation_already_running":
                                     self._rerun_requested = True
