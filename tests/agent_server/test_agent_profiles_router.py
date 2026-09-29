@@ -602,6 +602,182 @@ def test_delete_clears_active_pointer(client, store):
     assert client.get("/api/settings").json()["active_agent_profile_id"] is None
 
 
+def test_delete_active_acp_profile_resets_agent_settings(client, store):
+    """Reproduces bug #5205: agent_settings.agent_kind stays 'acp' after deletion.
+
+    This test demonstrates the bug where agent_settings contains stale ACP configuration
+    after deleting the active ACP profile, then verifies the fix resets it properly.
+    """
+    # Save and activate an ACP profile
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+
+    # Verify the profile is active
+    settings = client.get("/api/settings").json()
+    assert settings["active_agent_profile_id"] == profile_id
+
+    # Manually set agent_settings to ACP state to reproduce the bug scenario
+    # In production, this state can occur from various paths (conversation creation,
+    # manual PATCH /api/settings, etc.)
+    response = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "acp_model": "gpt-5.5",
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    # Verify agent_settings now has ACP configuration (bug state setup)
+    settings_with_acp = client.get("/api/settings").json()
+    assert settings_with_acp["agent_settings"]["agent_kind"] == "acp"
+    assert settings_with_acp["agent_settings"]["acp_server"] == "codex"
+    assert settings_with_acp["agent_settings"]["acp_model"] == "gpt-5.5"
+
+    # Delete the ACP profile
+    # BUG (before fix): agent_settings would remain unchanged with agent_kind="acp"
+    # FIX (after): agent_settings is reset to default OpenHands
+    response = client.delete("/api/agent-profiles/codex-test")
+    assert response.status_code == 200
+
+    # Verify the fix: agent_settings is reset to default (agent_kind="openhands")
+    settings_after = client.get("/api/settings").json()
+    assert settings_after["active_agent_profile_id"] is None
+    assert settings_after["agent_settings"]["agent_kind"] == "openhands"
+    # Verify ACP-specific fields are cleared
+    assert settings_after["agent_settings"].get("acp_server") is None
+    assert settings_after["agent_settings"].get("acp_model") is None
+
+
+def test_delete_active_openhands_profile_does_not_reset_agent_settings(client, store):
+    """Deleting an active OpenHands profile only clears pointer, not agent_settings."""
+    # Save and activate an OpenHands profile
+    store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))
+    profile_id = client.get("/api/agent-profiles/custom-oh").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+
+    # Non-default state a blanket reset would destroy. ``agent_kind`` alone
+    # cannot detect one, since a full reset also yields "openhands".
+    assert (
+        client.post(
+            "/api/settings/mcp/github",
+            json={"transport": "http", "url": "https://github.example/mcp"},
+        ).status_code
+        == 201
+    )
+    agent_settings_before = client.get("/api/settings").json()["agent_settings"]
+    assert agent_settings_before["mcp_config"].keys() == {"github"}
+
+    # Delete the OpenHands profile
+    client.delete("/api/agent-profiles/custom-oh")
+
+    # Verify pointer is cleared but agent_settings unchanged (still openhands)
+    settings_after = client.get("/api/settings").json()
+    assert settings_after["active_agent_profile_id"] is None
+    assert settings_after["agent_settings"] == agent_settings_before
+
+
+def test_delete_active_acp_profile_keeps_openhands_settings_intact(client, store):
+    """An ACP profile is a pointer; it does not own ``agent_settings``.
+
+    ``activate_agent_profile`` never writes ``agent_settings``, so deleting an
+    ACP profile must not touch a healthy OpenHands configuration.
+    """
+    client.post(
+        "/api/profiles/my-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "api_key": "sk-secret",
+                "usage_id": "my-profile",
+            },
+            "include_secrets": True,
+        },
+    )
+    client.post("/api/profiles/my-profile/activate")
+    client.post(
+        "/api/settings/mcp/github",
+        json={"transport": "http", "url": "https://github.example/mcp"},
+    )
+
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+
+    before = client.get("/api/settings").json()
+    assert client.delete("/api/agent-profiles/codex-test").status_code == 200
+    after = client.get("/api/settings").json()
+
+    assert after["agent_settings"] == before["agent_settings"]
+    assert after["agent_settings"]["llm"]["model"] == "anthropic/claude-sonnet-4"
+    assert after["agent_settings"]["mcp_config"].keys() == {"github"}
+    assert after["active_profile"] == "my-profile"
+
+
+def test_delete_active_acp_profile_keeps_mcp_registry(client, store):
+    """The reset clears ACP state but not the server-wide MCP registry.
+
+    ``mcp_config`` is what every other profile resolves its ``mcp_server_refs``
+    against, so dropping it would leave unrelated profiles dangling.
+    """
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert (
+        client.post(
+            "/api/settings/mcp/github",
+            json={"transport": "http", "url": "https://github.example/mcp"},
+        ).status_code
+        == 201
+    )
+
+    assert client.delete("/api/agent-profiles/codex-test").status_code == 200
+
+    agent_settings = client.get("/api/settings").json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "openhands"
+    assert agent_settings.get("acp_server") is None
+    assert agent_settings["mcp_config"].keys() == {"github"}
+
+
+def test_delete_active_openhands_profile_clears_stale_acp_settings(client, store):
+    """The reset keys off ``agent_settings``, not the deleted profile's kind."""
+    store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))
+    profile_id = client.get("/api/agent-profiles/custom-oh").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "acp_model": "gpt-5.5",
+            }
+        },
+    )
+    assert client.get("/api/settings").json()["agent_settings"]["agent_kind"] == "acp"
+
+    assert client.delete("/api/agent-profiles/custom-oh").status_code == 200
+
+    assert (
+        client.get("/api/settings").json()["agent_settings"]["agent_kind"]
+        == "openhands"
+    )
+
+
 def test_rename_success(client, store):
     store.save(OpenHandsAgentProfile(name="old-name", llm_profile_ref="x"))
 

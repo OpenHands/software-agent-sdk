@@ -39,9 +39,9 @@ def _chunk(
     delta_kwargs: dict = {"role": "assistant"}
     if content is not None:
         delta_kwargs["content"] = content
-    delta = Delta(**delta_kwargs)
     if reasoning_content is not None:
-        object.__setattr__(delta, "reasoning_content", reasoning_content)
+        delta_kwargs["reasoning_content"] = reasoning_content
+    delta = Delta(**delta_kwargs)
     choice = StreamingChoices(delta=delta, index=index, finish_reason=None)
     return ModelResponseStream(id=chunk_id, choices=[choice], model="test-model")
 

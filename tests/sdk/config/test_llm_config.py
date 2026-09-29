@@ -31,7 +31,6 @@ def test_llm_config_defaults():
     assert config.output_cost_per_token is None
     assert config.ollama_base_url is None
     assert config.drop_params is True
-    assert config.modify_params is True
     assert config.disable_vision is None
     assert config.disable_stop_word is False
     assert config.caching_prompt is True
@@ -65,7 +64,6 @@ def test_llm_config_custom_values():
         output_cost_per_token=0.002,
         ollama_base_url="http://localhost:11434",
         drop_params=False,
-        modify_params=False,
         disable_vision=True,
         disable_stop_word=True,
         caching_prompt=False,
@@ -97,7 +95,6 @@ def test_llm_config_custom_values():
     assert config.output_cost_per_token == 0.002
     assert config.ollama_base_url == "http://localhost:11434"
     assert config.drop_params is False
-    assert config.modify_params is False
     assert config.disable_vision is True
     assert config.disable_stop_word is True
     assert config.caching_prompt is False
@@ -313,7 +310,6 @@ def test_llm_config_boolean_fields():
     """Test boolean field handling."""
     config = LLM(
         model="gpt-4o-mini",
-        modify_params=False,
         disable_vision=True,
         disable_stop_word=False,
         caching_prompt=True,
@@ -323,7 +319,6 @@ def test_llm_config_boolean_fields():
     )
 
     assert config.drop_params is True
-    assert config.modify_params is False
     assert config.disable_vision is True
     assert config.disable_stop_word is False
     assert config.caching_prompt is True
