@@ -59,6 +59,27 @@ uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_pr
 uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-opus-4-5", "extended_thinking": true}' --test-type condenser
 ```
 
+### Live Remote Subagent Test
+
+The remote-subagent scenario uses real LLM calls for both the local parent and
+its children, and provisions two independent Docker sandboxes through
+`workspace_factory`:
+
+```bash
+uv run python tests/integration/run_infer.py \
+  --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' \
+  --eval-ids t10_remote_subagent_workspaces
+```
+
+Set `LLM_API_KEY` and `LLM_BASE_URL` as for the other integration tests. Docker
+must be running, and the LLM endpoint must be reachable from its containers.
+The test builds a minimal Agent Server image from the current checkout by default,
+without browser, VS Code, Docker-in-Docker, or bundled ACP providers;
+set `AGENT_SERVER_IMAGE` to reuse an image built from the same feature revision.
+It verifies child-specific file contents and results, in-session task resume,
+parent-file isolation, and container cleanup. Missing credentials or Docker are
+prerequisite failures, not a mocked fallback or a successful live run.
+
 ## Automated Testing with GitHub Actions
 
 Tests are automatically executed via GitHub Actions using two separate workflows:
@@ -99,6 +120,8 @@ These tests must pass for releases and verify that the agent can successfully co
 - **t06_github_pr_browsing** - Tests GitHub PR browsing
 - **t07_interactive_commands** - Tests interactive command handling
 - **t08_image_file_viewing** - Tests image file viewing capabilities
+- **t10_remote_subagent_workspaces** - Tests real-LLM Task delegation and resume
+  through a workspace factory provisioning independent Docker containers
 
 ### Behavior Tests (`b*.py`) - **Optional**
 

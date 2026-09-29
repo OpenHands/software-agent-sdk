@@ -17,8 +17,8 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 # Module-level instruction for test runner
-INSTRUCTION = """Using the echo command, print the numbers 1 through 10.
-Use exactly 10 separate echo commands, one for each number."""
+INSTRUCTION = """Execute `echo 1` using the terminal tool and report its output.
+I will send additional numbers in separate messages."""
 
 
 class DelayedCondensationTest(BaseIntegrationTest):
@@ -72,15 +72,21 @@ class DelayedCondensationTest(BaseIntegrationTest):
         conversation.send_message(message=self.instruction_message)
         conversation.run()
 
-        # Add more messages to ensure we build up enough events
-        # This creates more atomic units for potential condensation
-        conversation.send_message(
-            message=Message(
-                role="user",
-                content=[TextContent(text="Now print the numbers 11 through 15.")],
+        for number in range(2, 9):
+            conversation.send_message(
+                message=Message(
+                    role="user",
+                    content=[
+                        TextContent(
+                            text=f"Execute `echo {number}` in the terminal "
+                            "and report its output."
+                        )
+                    ],
+                )
             )
-        )
-        conversation.run()
+            conversation.run()
+            if self.condensations:
+                break
 
     def verify_result(self) -> TestResult:
         """Verify soft requirement behavior.

@@ -1,6 +1,7 @@
 import asyncio
 import bisect
 import json
+import math
 import os
 import threading
 import time
@@ -695,6 +696,7 @@ class RemoteConversation(BaseConversation):
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
     max_iteration_per_run: int
+    max_budget_per_run: float | None
     workspace: RemoteWorkspace
     _client: httpx.Client
     _cleanup_initiated: bool
@@ -726,6 +728,7 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        max_budget_per_run: float | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -736,6 +739,8 @@ class RemoteConversation(BaseConversation):
             plugins: Optional list of plugins to load on the server. Each plugin
                     is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
+            max_budget_per_run: Maximum LLM cost in USD per run. On attach, a supplied
+                      budget must match the server's persisted budget.
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
@@ -764,12 +769,19 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
+        if max_budget_per_run is not None and (
+            not math.isfinite(max_budget_per_run) or max_budget_per_run <= 0
+        ):
+            raise ValueError("max_budget_per_run must be a finite positive number")
+        self.max_budget_per_run = max_budget_per_run
+
         # Client tool specs the server already has persisted for this
         # conversation (populated when re-attaching to an existing one). These
         # must be registered locally before the initial event sync so that
         # persisted ``ClientAction_*`` events can be deserialized.
         attached_client_tools: list[ClientToolSpec] = []
 
+        server_budget: float | None = None
         should_create = conversation_id is None
         if conversation_id is not None:
             # Try to attach to existing conversation
@@ -784,6 +796,15 @@ class RemoteConversation(BaseConversation):
                 should_create = True
             else:
                 info = resp.json()
+                persisted_budget = info.get("max_budget_per_run")
+                if (
+                    max_budget_per_run is not None
+                    and persisted_budget != max_budget_per_run
+                ):
+                    raise ValueError(
+                        "Remote conversation budget does not match max_budget_per_run"
+                    )
+                self.max_budget_per_run = persisted_budget
                 agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
@@ -846,6 +867,8 @@ class RemoteConversation(BaseConversation):
             }
             if user_id:
                 payload["user_id"] = user_id
+            if max_budget_per_run is not None:
+                payload["max_budget_per_run"] = max_budget_per_run
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -865,6 +888,7 @@ class RemoteConversation(BaseConversation):
                 json=payload,
             )
             data = resp.json()
+            server_budget = data.get("max_budget_per_run")
             # Expect a ConversationInfo
             cid = data.get("id") or data.get("conversation_id")
             if not cid:
@@ -876,33 +900,47 @@ class RemoteConversation(BaseConversation):
             workspace.register_conversation(str(conversation_id))
 
         assert conversation_id is not None
-        self._initialize_connection(
-            agent=agent,
-            workspace=workspace,
-            conversation_id=conversation_id,
-            callbacks=callbacks,
-            max_iteration_per_run=max_iteration_per_run,
-            client_tools=[*(client_tools or []), *attached_client_tools],
-            visualizer=visualizer,
-        )
+        self.delete_on_close = delete_on_close if should_create else False
+        try:
+            self._initialize_connection(
+                agent=agent,
+                workspace=workspace,
+                conversation_id=conversation_id,
+                callbacks=callbacks,
+                max_iteration_per_run=max_iteration_per_run,
+                client_tools=[*(client_tools or []), *attached_client_tools],
+                visualizer=visualizer,
+            )
 
-        # Initialize secrets if provided
-        if secrets:
-            # Convert dict[str, str] to dict[str, SecretValue]
-            secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
-            self.update_secrets(secret_values)
+            if should_create and max_budget_per_run is not None:
+                if server_budget != max_budget_per_run:
+                    raise ValueError(
+                        "Agent server did not acknowledge max_budget_per_run; "
+                        "upgrade the server before running a budgeted conversation."
+                    )
 
-        self._start_observability_span(
-            str(self._id),
-            span_name=observability_span_name,
-            user_id=user_id,
-            metadata=observability_metadata,
-            tags=observability_tags,
-            conversation_tags=tags,
-        )
-        # All hooks (including SessionStart/SessionEnd) are executed server-side.
-        # hook_config is sent in the creation payload.
-        self.delete_on_close = delete_on_close
+            # Initialize secrets if provided
+            if secrets:
+                # Convert dict[str, str] to dict[str, SecretValue]
+                secret_values: dict[str, SecretValue] = {
+                    k: v for k, v in secrets.items()
+                }
+                self.update_secrets(secret_values)
+
+            self._start_observability_span(
+                str(self._id),
+                span_name=observability_span_name,
+                user_id=user_id,
+                metadata=observability_metadata,
+                tags=observability_tags,
+                conversation_tags=tags,
+            )
+            # All hooks (including SessionStart/SessionEnd) are executed server-side.
+            # hook_config is sent in the creation payload.
+            self.delete_on_close = delete_on_close
+        except BaseException:
+            self.close()
+            raise
 
     @classmethod
     def create(
@@ -975,6 +1013,7 @@ class RemoteConversation(BaseConversation):
         ),
     ) -> Self:
         conversation = cls.__new__(cls)
+        conversation.max_budget_per_run = info.get("max_budget_per_run")
         conversation._initialize_connection(
             agent=_validate_remote_agent(info["agent"]),
             workspace=workspace,
@@ -1009,6 +1048,7 @@ class RemoteConversation(BaseConversation):
         self.workspace = workspace
         self._client = workspace.client
         self._cleanup_initiated = False
+        self._ws_client = None
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
 

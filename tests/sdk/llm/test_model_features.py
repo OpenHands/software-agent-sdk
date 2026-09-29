@@ -12,6 +12,7 @@ day it does (#4877).
 """
 
 import pytest
+from litellm import get_supported_openai_params
 from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
@@ -66,13 +67,6 @@ def test_model_matches(name, pattern, expected):
         ("moonshot/kimi-k2.5", False),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
-        # Route-dependent, and both directions are correct: OpenRouter accepts
-        # `reasoning_effort` and translates it, while Moonshot's own API does
-        # not take the parameter at all (see the two rows above). These follow
-        # LiteLLM's per-route `supported_openai_params` rather than an SDK
-        # override, so a value here tracks upstream and may move again (#4877).
-        ("openrouter/moonshotai/kimi-k2.5", True),
-        ("openrouter/moonshotai/kimi-k2-thinking", True),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
         ("openrouter/anthropic/claude-opus-4.5", True),
@@ -107,6 +101,17 @@ def test_model_matches(name, pattern, expected):
 def test_reasoning_effort_support(model, expected_reasoning):
     features = get_features(model)
     assert features.supports_reasoning_effort == expected_reasoning
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["openrouter/moonshotai/kimi-k2.5", "openrouter/moonshotai/kimi-k2-thinking"],
+)
+def test_openrouter_reasoning_effort_follows_provider_capabilities(model: str):
+    params = get_supported_openai_params(model) or []
+    expected = "reasoning_effort" in params
+    assert get_features(model).supports_reasoning_effort is expected
+    assert get_features(f"litellm_proxy/{model}").supports_reasoning_effort is expected
 
 
 @pytest.mark.parametrize(

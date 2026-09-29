@@ -24,7 +24,9 @@ from openhands.agent_server.config import Config
 def clear_web_url_env(monkeypatch):
     monkeypatch.delenv("OH_WEB_URL", raising=False)
     monkeypatch.delenv("RUNTIME_URL", raising=False)
-    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+    # Track the absent value before helpers mutate os.environ directly.
+    monkeypatch.setenv("TMUX_TMPDIR", "")
+    monkeypatch.delenv("TMUX_TMPDIR")
 
 
 def test_default_server_tmux_tmpdir_uses_current_pid(tmp_path, monkeypatch):

@@ -67,3 +67,11 @@ export function createTestLLMConfig() {
     ...(config.llmBaseUrl && { base_url: config.llmBaseUrl }),
   };
 }
+
+export function createTestAgentConfig() {
+  return {
+    kind: 'Agent',
+    llm: createTestLLMConfig(),
+    tools: [{ name: 'terminal' }, { name: 'file_editor' }],
+  };
+}

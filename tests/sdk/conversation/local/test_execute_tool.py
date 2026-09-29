@@ -217,38 +217,40 @@ def test_execute_tool_multiple_calls():
         assert result.result == f"executed_call_{i}"
 
 
+class ContextAwareExecutor(
+    ToolExecutor[ExecuteToolTestAction, ExecuteToolTestObservation]
+):
+    """Executor that uses conversation context."""
+
+    def __call__(
+        self,
+        action: ExecuteToolTestAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> ExecuteToolTestObservation:
+        # Verify conversation is passed
+        conv_id = str(conversation.id) if conversation else "no_conversation"
+        return ExecuteToolTestObservation.from_text(
+            f"conv_id: {conv_id}", result=f"context_{action.value}"
+        )
+
+
+class ContextAwareTool(
+    ToolDefinition[ExecuteToolTestAction, ExecuteToolTestObservation]
+):
+    @classmethod
+    def create(cls, conv_state=None, **params):
+        return [
+            cls(
+                description="Context-aware test tool",
+                action_type=ExecuteToolTestAction,
+                observation_type=ExecuteToolTestObservation,
+                executor=ContextAwareExecutor(),
+            )
+        ]
+
+
 def test_execute_tool_with_conversation_context():
     """Test that execute_tool passes conversation context to the executor."""
-
-    class ContextAwareExecutor(
-        ToolExecutor[ExecuteToolTestAction, ExecuteToolTestObservation]
-    ):
-        """Executor that uses conversation context."""
-
-        def __call__(
-            self,
-            action: ExecuteToolTestAction,
-            conversation: "LocalConversation | None" = None,
-        ) -> ExecuteToolTestObservation:
-            # Verify conversation is passed
-            conv_id = str(conversation.id) if conversation else "no_conversation"
-            return ExecuteToolTestObservation.from_text(
-                f"conv_id: {conv_id}", result=f"context_{action.value}"
-            )
-
-    class ContextAwareTool(
-        ToolDefinition[ExecuteToolTestAction, ExecuteToolTestObservation]
-    ):
-        @classmethod
-        def create(cls, conv_state=None, **params):
-            return [
-                cls(
-                    description="Context-aware test tool",
-                    action_type=ExecuteToolTestAction,
-                    observation_type=ExecuteToolTestObservation,
-                    executor=ContextAwareExecutor(),
-                )
-            ]
 
     register_tool_public("context_aware", ContextAwareTool)
 

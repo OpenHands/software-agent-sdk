@@ -146,6 +146,12 @@ class ConversationConfig(BaseModel):
         description="If set, the max number of iterations the agent will run "
         "before stopping. This is useful to prevent infinite loops.",
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Maximum LLM cost in USD per run; None means no cost limit.",
+    )
     stuck_detection: bool = Field(
         default=True,
         description="If true, the conversation will use stuck detection to "

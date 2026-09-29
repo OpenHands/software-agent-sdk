@@ -261,6 +261,7 @@ export class RemoteConversation implements IConversation {
 
   async run(): Promise<void> {
     await this.client.post(`/api/conversations/${this.id}/run`);
+    await this.state.refresh();
   }
 
   async pause(): Promise<void> {

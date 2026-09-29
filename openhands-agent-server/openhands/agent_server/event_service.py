@@ -1141,6 +1141,7 @@ class EventService:
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
             stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
+            max_budget_per_run=self.stored.max_budget_per_run,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
