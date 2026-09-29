@@ -1385,9 +1385,17 @@ class LocalConversation(BaseConversation):
                 "removals/updates won't reach the agent for this provider",
                 type(self._mcp_tool_provider).__name__,
             )
-        client = self._mcp_tool_provider.create_tools(
-            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
-        )
+        try:
+            client = self._mcp_tool_provider.create_tools(
+                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS, **create_kwargs
+            )
+        except Exception as exc:
+            logger.warning(
+                "MCP server startup failed for %s; continuing without its tools: %s",
+                ", ".join(sorted(mcp_config)),
+                exc,
+            )
+            return []
         return list(client.tools)
 
     def _on_mcp_tools_reconciled(
