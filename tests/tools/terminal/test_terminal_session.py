@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -836,7 +837,7 @@ PY
 printf middle; python - <<'PY'
 print('second')
 PY
-printf done
+sleep 0.2; printf done; echo completed > completion-marker
 """
     with tempfile.TemporaryDirectory() as temp_dir:
         session = create_terminal_session(
@@ -853,6 +854,28 @@ printf done
             assert "middle" in obs.text
             assert "second" in obs.text
             assert "done" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            marker = Path(temp_dir, "completion-marker")
+            assert marker.read_text().strip() == "completed"
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_chained_heredoc_script_preserves_trailing_exit_status(terminal_type):
+    command = "cat <<'EOF'\nbody\nEOF\nfalse\n"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 1
+            assert "body" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
         finally:
             session.close()
 

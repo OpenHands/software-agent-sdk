@@ -2,6 +2,7 @@
 
 import re
 import time
+import uuid
 from enum import Enum
 
 from openhands.sdk.logger import get_logger
@@ -25,6 +26,7 @@ from openhands.tools.terminal.terminal.interface import (
 from openhands.tools.terminal.timeout_policy import foreground_timeout_rejection_for
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    group_heredoc_script_for_execution,
     split_bash_commands,
 )
 from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
@@ -192,9 +194,11 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
+        echoed_command: str | None = None,
     ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
+        output_command = echoed_command or command
 
         # When PS1 metadata markers are missing (e.g., corrupted by TUI/ANSI
         # output or scrolled off-screen), fall back gracefully instead of
@@ -213,7 +217,7 @@ class TerminalSession(TerminalSessionBase):
                 "PS1 metadata markers.]"
             )
             command_output = self._get_command_output(
-                command,
+                output_command,
                 terminal_content,
                 metadata,
                 is_final=True,
@@ -271,7 +275,7 @@ class TerminalSession(TerminalSessionBase):
             )
         )
         command_output = self._get_command_output(
-            command,
+            output_command,
             raw_command_output,
             metadata,
             is_final=True,  # Command completed, flush filter state
@@ -467,6 +471,22 @@ class TerminalSession(TerminalSessionBase):
                 is_error=True,
             )
 
+        command_to_send = command
+        command_boundary_marker: str | None = None
+        if command and not is_input and not self.terminal.is_powershell():
+            command_to_send = group_heredoc_script_for_execution(command_to_send)
+            if command_to_send != command:
+                command_boundary_marker = f"__OH_COMMAND_FINISHED_{uuid.uuid4().hex}__"
+                marker_midpoint = len(command_boundary_marker) // 2
+                marker_start = command_boundary_marker[:marker_midpoint]
+                marker_end = command_boundary_marker[marker_midpoint:]
+                command_to_send += (
+                    "; (__openhands_status=$?; printf '\\n%s%s\\n' "
+                    f"'{marker_start}' '{marker_end}'; "
+                    'exit "$__openhands_status")'
+                )
+            command_to_send = escape_bash_special_chars(command_to_send)
+
         # Get initial state before sending command
         initial_terminal_output = self.terminal.read_screen()
         initial_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
@@ -546,13 +566,11 @@ class TerminalSession(TerminalSessionBase):
                     enter=not is_special_key,
                 )
             else:
-                # convert command to raw string (for bash terminals)
-                if not self.terminal.is_powershell():
-                    # Only escape for bash terminals, not PowerShell
-                    command = escape_bash_special_chars(command)
-                logger.debug("Sending command (command_length=%s)", len(command))
+                logger.debug(
+                    "Sending command (command_length=%s)", len(command_to_send)
+                )
                 self.terminal.send_keys(
-                    command,
+                    command_to_send,
                     enter=not is_special_key,
                 )
 
@@ -572,6 +590,10 @@ class TerminalSession(TerminalSessionBase):
             output_changed_since_command = (
                 cur_terminal_output != initial_terminal_output
             )
+            command_reached_boundary = (
+                command_boundary_marker is None
+                or command_boundary_marker in cur_terminal_output
+            )
 
             if cur_terminal_output != last_terminal_output:
                 last_terminal_output = cur_terminal_output
@@ -583,14 +605,35 @@ class TerminalSession(TerminalSessionBase):
             # Condition 2: The prompt count hasn't increased (potentially because the
             # initial one scrolled off), BUT the *current* visible terminal ends with a
             # prompt, indicating completion.
-            if (not sent_command or output_changed_since_command) and (
-                current_ps1_count > initial_ps1_count
-                or cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
+            if (
+                command_reached_boundary
+                and (not sent_command or output_changed_since_command)
+                and (
+                    current_ps1_count > initial_ps1_count
+                    or cur_terminal_output.rstrip().endswith(
+                        CMD_OUTPUT_PS1_END.rstrip()
+                    )
+                )
             ):
+                completed_terminal_output = cur_terminal_output
+                completed_ps1_matches = ps1_matches
+                if command_boundary_marker is not None:
+                    completed_terminal_output = completed_terminal_output.replace(
+                        command_boundary_marker, ""
+                    )
+                    completed_terminal_output = completed_terminal_output.replace(
+                        "\x1b[?2004l", ""
+                    ).replace("\x1b[?2004h", "")
+                    completed_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+                        completed_terminal_output
+                    )
                 obs = self._handle_completed_command(
                     command,
-                    terminal_content=cur_terminal_output,
-                    ps1_matches=ps1_matches,
+                    terminal_content=completed_terminal_output,
+                    ps1_matches=completed_ps1_matches,
+                    echoed_command=(
+                        command_to_send if command_boundary_marker is not None else None
+                    ),
                 )
                 return obs
 

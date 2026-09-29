@@ -2,6 +2,7 @@ import pytest
 
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    group_heredoc_script_for_execution,
     split_bash_commands,
 )
 
@@ -114,6 +115,20 @@ def test_single_commands(input_command, expected_output):
 )
 def test_heredoc_script_is_not_split(input_commands):
     assert split_bash_commands(input_commands) == [input_commands]
+
+
+def test_post_heredoc_statements_are_grouped_for_one_completion_prompt():
+    command = "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done\n"
+
+    assert group_heredoc_script_for_execution(command) == (
+        "{\ncat <<'EOF'\nbody\nEOF\nsleep 1; echo done\n}"
+    )
+
+
+def test_single_heredoc_is_not_grouped_for_execution():
+    command = "cat <<'EOF'\nbody\nEOF\n"
+
+    assert group_heredoc_script_for_execution(command) == command
 
 
 @pytest.mark.parametrize(

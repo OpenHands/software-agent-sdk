@@ -45,6 +45,34 @@ def _ends_with_heredoc(node: Node) -> bool:
     return last.type == "heredoc_end" and last.end_byte == node.end_byte
 
 
+def group_heredoc_script_for_execution(commands: str) -> str:
+    """Group scripts whose post-heredoc statements share an input submission.
+
+    Interactive bash emits a prompt after each top-level statement. When a complete
+    script is pasted at once, that intermediate prompt can appear before bash reads
+    a statement buffered after a heredoc terminator. A brace group gives the script
+    one completion prompt while preserving its effects in the current shell.
+    """
+    source = commands.encode()
+    result = parse(commands)
+    if result.has_error:
+        return commands
+
+    statements = [
+        child
+        for child in result.tree.root_node.named_children
+        if child.type != "comment"
+    ]
+    needs_group = any(
+        _ends_with_heredoc(current)
+        and b"\n" in source[current.end_byte : following.start_byte]
+        for current, following in zip(statements, statements[1:])
+    )
+    if not needs_group:
+        return commands
+    return "{\n" + commands.rstrip("\n") + "\n}"
+
+
 def split_bash_commands(commands: str) -> list[str]:
     """Split a multi-statement bash input into top-level statements.
 
