@@ -9,7 +9,6 @@ import threading
 import warnings
 from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
 
 from pydantic import (
@@ -25,6 +24,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
@@ -37,12 +37,14 @@ from openhands.sdk.llm.utils.runtime_metadata import (
     store_result,
 )
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
+    from openhands.sdk.llm.call_context import LLMCallContext
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -62,6 +64,7 @@ from litellm import (
 )
 from litellm.exceptions import (
     APIConnectionError,
+    BadGatewayError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -147,6 +150,7 @@ __all__ = ["LLM"]
 # Exceptions we retry on
 LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
+    BadGatewayError,
     RateLimitError,
     ServiceUnavailableError,
     LiteLLMTimeout,
@@ -198,25 +202,20 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 
 
-@dataclass(frozen=True)
-class LLMCallContext:
-    """Per-conversation state threaded through the completion call chain.
+def __getattr__(name: str) -> Any:
+    """Provide the deprecated pre-refactor import path for call context."""
+    if name == "LLMCallContext":
+        warn_deprecated(
+            "openhands.sdk.llm.llm.LLMCallContext",
+            deprecated_in="1.42.1",
+            removed_in="2.0.0",
+            details="Import LLMCallContext from openhands.sdk.llm instead.",
+            stacklevel=2,
+        )
+        from openhands.sdk.llm.call_context import LLMCallContext
 
-    The primary path threads this explicitly:
-    ``Agent.step()`` → ``llm.generate(call_context=...)``
-    → ``select_chat_options(call_context=...)``.
-
-    A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
-    (via ``_bind_conversation_context``) for callers that don't thread
-    context explicitly (e.g. the condenser's dedicated LLM).  The
-    PrivateAttr is:
-    * dropped on ``model_dump()`` / ``model_validate()`` round-trips,
-    * shallow-copied by ``model_copy()`` (sub-agent),
-    * never serialised into user-visible config.
-    """
-
-    prompt_cache_key: str | None = None
-    session_id: str | None = None
+        return LLMCallContext
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -639,7 +638,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
     _provider_info: LLMProvider | None = PrivateAttr(default=None)
-    _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
     # Provider-aware runtime metadata resolved lazily (see
@@ -1100,14 +1098,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Return a configured retry decorator using this LLM's retry settings.
 
-        Hard quota/usage-limit errors are excluded from retries so that, when a
-        :class:`~openhands.sdk.llm.FallbackStrategy` is configured, fallback to an
-        alternate model happens immediately instead of after the full retry
-        backoff — such errors will not recover until the limit resets or is raised.
+        Exhausted allowances skip backoff. Provider quota errors may fall back;
+        explicit budget denials stop without trying another model.
         """
-        retry_condition = retry_if_exception_type(LLM_RETRY_EXCEPTIONS) & (
-            retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
-        )
+        retry_condition = (
+            retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
+            | retry_if_exception(is_transient_http_error)
+        ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,
             retry_exceptions=retry_condition,
@@ -2412,6 +2409,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "drop_params": self.drop_params,
             "seed": self.seed,
             "messages": messages,
+            # The SDK owns retries so budget denials reach its classifier immediately.
+            "max_retries": 0,
             **self._aws_kwargs(),
             **kwargs,
         }
