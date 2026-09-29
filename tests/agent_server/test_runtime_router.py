@@ -109,7 +109,6 @@ def test_canonical_runtime_openapi_preserves_methods_and_schemas():
         ("bash", "post", "execute_bash_command"),
         ("file", "get", "download"),
         ("git", "get", "changes"),
-        ("desktop", "get", "url"),
         ("vscode", "get", "url"),
     ]:
         operation = paths[

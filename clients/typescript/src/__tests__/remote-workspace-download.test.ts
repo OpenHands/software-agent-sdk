@@ -5,12 +5,12 @@ describe('RemoteWorkspace downloads', () => {
 
   beforeEach(() => {
     workspace = new RemoteWorkspace({ host: 'https://example.com', workingDir: '/workspace' });
-    jest.spyOn(global, 'fetch').mockResolvedValue(new Response('file contents'));
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('file contents'));
   });
 
   afterEach(() => {
     workspace.close();
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('rejects browser downloads in Node.js before making a request', async () => {
@@ -32,14 +32,14 @@ describe('RemoteWorkspace downloads', () => {
   );
 
   it('triggers a download with the requested filename when a document is available', async () => {
-    const link = { href: '', download: '', click: jest.fn() };
-    const body = { appendChild: jest.fn(), removeChild: jest.fn() };
+    const link = { href: '', download: '', click: vi.fn() };
+    const body = { appendChild: vi.fn(), removeChild: vi.fn() };
     Object.defineProperty(global, 'document', {
       configurable: true,
       value: { createElement: () => link, body },
     });
-    jest.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download');
-    const revokeObjectURL = jest.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:download');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
 
     try {
       await workspace.downloadAndSave('/workspace/file.txt', 'saved.txt');
