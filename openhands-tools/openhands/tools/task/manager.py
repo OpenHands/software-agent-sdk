@@ -15,30 +15,38 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.sdk import Agent
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.conversation.types import TraceMetadataValue
+from openhands.sdk.event import ActionEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.tool.execution_context import (
+    ToolInvocation,
+    get_current_tool_invocation,
+)
+from openhands.tools.task.definition import TaskAction
+from openhands.tools.task.recovery import PersistedTask, TaskStore
 
-
-if TYPE_CHECKING:
-    from openhands.sdk.event import ActionEvent
 
 ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 
@@ -98,16 +106,60 @@ class TaskManager:
     def __init__(
         self,
         confirmation_handler: ConfirmationHandler | None = None,
+        *,
+        parent_state: ConversationState | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
+        self._parent_state = parent_state
+        self._task_store: TaskStore | None = None
+        self._records: dict[str, PersistedTask] = {}
 
-        # Set once in _ensure_parent: uses the parent's subagents dir
-        # when the parent persists, otherwise a temporary directory.
+        # Use the parent's subagents dir when it persists, otherwise a
+        # temporary directory created when the parent is attached.
         self._persistence_dir: Path | None = None
+        if parent_state is not None and parent_state.persistence_dir is not None:
+            self._restore_persistence(parent_state)
+
+    def _write_guard(self) -> AbstractContextManager[None]:
+        guard = (
+            self._parent_state._write_guard if self._parent_state is not None else None
+        )
+        return guard() if guard is not None else nullcontext()
+
+    def _restore_persistence(self, state: ConversationState) -> None:
+        assert state.persistence_dir is not None
+        self._persistence_dir = Path(state.persistence_dir) / _SUBAGENTS_DIR
+        self._task_store = TaskStore(
+            LocalFileStore(str(self._persistence_dir)),
+            parent_conversation_id=state.id,
+            write_guard=self._write_guard,
+        )
+        for record in self._task_store.load_all():
+            self._records[record.task_id] = record
+            self._tasks[record.task_id] = Task(
+                id=record.task_id,
+                conversation_id=record.conversation_id,
+                status=TaskStatus(record.status),
+                result=record.result,
+                error=record.error,
+            )
+
+    def _current_invocation(self) -> ToolInvocation | None:
+        invocation = get_current_tool_invocation()
+        if invocation is None:
+            return None
+        events = self.parent_conversation.state.events
+        event = events[events.get_index(invocation.action_id)]
+        # A workflow may use this manager inside a different outer tool call.
+        return (
+            invocation
+            if isinstance(event, ActionEvent) and isinstance(event.action, TaskAction)
+            else None
+        )
 
     def attach_parent(self, conversation: LocalConversation) -> None:
         """Attach the parent conversation used to create sub-agent tasks.
@@ -127,16 +179,16 @@ class TaskManager:
         self._ensure_parent(conversation)
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:
-        if self._parent_conversation is None:
-            self._parent_conversation = conversation
-            parent_persistence_dir = conversation.state.persistence_dir
-            if parent_persistence_dir is not None:
-                self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
-                self._persistence_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                self._persistence_dir = Path(
-                    tempfile.mkdtemp(prefix="openhands_tasks_")
-                )
+        with self._tasks_lock:
+            if self._parent_conversation is None:
+                self._parent_conversation = conversation
+                self._parent_state = conversation.state
+                if conversation.state.persistence_dir is not None:
+                    self._restore_persistence(conversation.state)
+                elif self._persistence_dir is None:
+                    self._persistence_dir = Path(
+                        tempfile.mkdtemp(prefix="openhands_tasks_")
+                    )
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -211,23 +263,63 @@ class TaskManager:
 
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
+            if self._tasks[resume].conversation is not None:
+                raise ValueError(f"Task '{resume}' already has a live execution")
             conversation_id = self._tasks[resume].conversation_id
-            with detached_delegate_context() as link:
-                conversation = LocalConversation(
-                    agent=worker_agent,
-                    workspace=self.parent_conversation.state.workspace.working_dir,
-                    persistence_dir=self._persistence_dir,
-                    conversation_id=conversation_id,
-                    hook_config=factory.definition.hooks,
-                    _parent_llm_call_context=(
-                        self.parent_conversation.get_llm_call_context()
-                    ),
-                    delete_on_close=True,
-                    observability_metadata=self._delegate_observability_metadata(
-                        task_id=resume, subagent_type=subagent_type, link=link
-                    ),
-                    observability_tags=["delegate"],
+            if self._task_store is not None:
+                record = next(
+                    r for r in self._task_store.load_all() if r.task_id == resume
                 )
+                if record.status == "running":
+                    raise ValueError(f"Task '{resume}' is still running")
+                assert self._persistence_dir is not None
+                child_dir = self._persistence_dir / conversation_id.hex
+                if not (child_dir / BASE_STATE).is_file():
+                    raise ValueError(f"Persisted child state for '{resume}' is missing")
+                watermark = len(EventLog(LocalFileStore(str(child_dir))))
+                # Claim the new revision before constructing a second runtime.
+                self._records[resume] = self._task_store.save(
+                    record.model_copy(
+                        update={
+                            "status": "running",
+                            "result": None,
+                            "error": None,
+                            "invocation": self._current_invocation(),
+                            "start_event_count": watermark,
+                            "subagent_type": subagent_type,
+                        }
+                    ),
+                    expected_revision=record.revision,
+                )
+
+            try:
+                with self._write_guard(), detached_delegate_context() as link:
+                    conversation = LocalConversation(
+                        agent=worker_agent,
+                        workspace=self.parent_conversation.state.workspace.working_dir,
+                        persistence_dir=self._persistence_dir,
+                        conversation_id=conversation_id,
+                        hook_config=factory.definition.hooks,
+                        _parent_llm_call_context=(
+                            self.parent_conversation.get_llm_call_context()
+                        ),
+                        delete_on_close=True,
+                        observability_metadata=self._delegate_observability_metadata(
+                            task_id=resume, subagent_type=subagent_type, link=link
+                        ),
+                        observability_tags=["delegate"],
+                    )
+                conversation._state.set_write_guard(self._write_guard)
+            except Exception as exc:
+                if self._task_store is not None:
+                    record = self._records[resume]
+                    self._records[resume] = self._task_store.save(
+                        record.model_copy(
+                            update={"status": "error", "error": str(exc)}
+                        ),
+                        expected_revision=record.revision,
+                    )
+                raise
 
             self._set_confirmation_policy(
                 conversation,
@@ -238,6 +330,8 @@ class TaskManager:
                 update={
                     "conversation": conversation,
                     "status": TaskStatus.RUNNING,
+                    "result": None,
+                    "error": None,
                 }
             )
 
@@ -270,17 +364,36 @@ class TaskManager:
 
         with self._tasks_lock:
             task_id, conversation_id = self._generate_ids()
+            if self._task_store is not None:
+                record = self._task_store.reserve(
+                    conversation_id=conversation_id,
+                    subagent_type=subagent_type,
+                    invocation=self._current_invocation(),
+                )
+                task_id = record.task_id
+                self._records[task_id] = record
 
-            sub_conversation = self._get_conversation(
-                description=description,
-                max_iteration_per_run=effective_max_iter,
-                max_budget_per_run=effective_max_budget,
-                task_id=task_id,
-                subagent_type=subagent_type,
-                worker_agent=worker_agent,
-                conversation_id=conversation_id,
-                hook_config=factory.definition.hooks,
-            )
+            try:
+                sub_conversation = self._get_conversation(
+                    description=description,
+                    max_iteration_per_run=effective_max_iter,
+                    max_budget_per_run=effective_max_budget,
+                    task_id=task_id,
+                    subagent_type=subagent_type,
+                    worker_agent=worker_agent,
+                    conversation_id=conversation_id,
+                    hook_config=factory.definition.hooks,
+                )
+            except Exception as exc:
+                if self._task_store is not None:
+                    record = self._records[task_id]
+                    self._records[task_id] = self._task_store.save(
+                        record.model_copy(
+                            update={"status": "error", "error": str(exc)}
+                        ),
+                        expected_revision=record.revision,
+                    )
+                raise
 
             self._set_confirmation_policy(
                 sub_conversation,
@@ -314,8 +427,8 @@ class TaskManager:
             label = description or task_id
             visualizer = parent_visualizer.create_sub_visualizer(label)
 
-        with detached_delegate_context() as link:
-            return LocalConversation(
+        with self._write_guard(), detached_delegate_context() as link:
+            conversation = LocalConversation(
                 agent=worker_agent,
                 workspace=parent.state.workspace.working_dir,
                 visualizer=visualizer,
@@ -332,6 +445,8 @@ class TaskManager:
                 ),
                 observability_tags=["delegate"],
             )
+        conversation._state.set_write_guard(self._write_guard)
+        return conversation
 
     def _delegate_observability_metadata(
         self,
@@ -409,8 +524,23 @@ class TaskManager:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
         finally:
-            self._update_parent_metrics(parent, task)
-            self._evict_task(task)
+            try:
+                if self._task_store is not None:
+                    with self._tasks_lock:
+                        record = self._records[task.id]
+                        self._records[task.id] = self._task_store.save(
+                            record.model_copy(
+                                update={
+                                    "status": task.status.value,
+                                    "result": task.result,
+                                    "error": task.error,
+                                }
+                            ),
+                            expected_revision=record.revision,
+                        )
+                self._update_parent_metrics(parent, task)
+            finally:
+                self._evict_task(task)
 
         return task
 
@@ -486,8 +616,8 @@ class TaskManager:
         # Only clean up when using a temp dir (parent had no persistence).
         # When the parent persists, subagent data lives under its directory.
         parent_persists = (
-            self._parent_conversation is not None
-            and self._parent_conversation.state.persistence_dir is not None
+            self._parent_state is not None
+            and self._parent_state.persistence_dir is not None
         )
         if (
             not parent_persists

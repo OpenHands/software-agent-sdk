@@ -216,7 +216,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
     @classmethod
     def create(
         cls,
-        conv_state: "ConversationState",  # noqa: ARG003
+        conv_state: "ConversationState",
         confirmation_handler: "ConfirmationHandler | None" = None,
     ) -> list[ToolDefinition]:
         """Create the task tool.
@@ -245,7 +245,9 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             task_tool_examples=task_tool_examples,
         )
 
-        manager = TaskManager(confirmation_handler=confirmation_handler)
+        manager = TaskManager(
+            confirmation_handler=confirmation_handler, parent_state=conv_state
+        )
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []
