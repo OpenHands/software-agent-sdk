@@ -890,8 +890,7 @@ def test_seed_preserves_openhands_fields(client):
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "enable_sub_agents": True,
-                "enable_switch_llm_tool": False,
+                "tools": [{"name": "terminal"}, {"name": "task_tool_set"}],
                 "tool_concurrency_limit": 3,
                 "agent_context": {"system_message_suffix": "be terse"},
                 "verification": {
@@ -904,14 +903,7 @@ def test_seed_preserves_openhands_fields(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    # Delegation was on, so the seed pins the list it was launching with.
-    assert [tool["name"] for tool in prof["tools"]] == [
-        "terminal",
-        "file_editor",
-        "task_tracker",
-        "browser_tool_set",
-        "task_tool_set",
-    ]
+    assert [tool["name"] for tool in prof["tools"]] == ["terminal", "task_tool_set"]
     assert "enable_sub_agents" not in prof
     assert "enable_switch_llm_tool" not in prof
     assert prof["tool_concurrency_limit"] == 3

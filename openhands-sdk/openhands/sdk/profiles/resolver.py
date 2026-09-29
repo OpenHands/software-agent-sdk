@@ -47,13 +47,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool.defaults import (
-    BROWSER_TOOL_NAME,
-    SUB_AGENT_TOOL_NAME,
-    SWITCH_LLM_TOOL_NAME,
-    canonical_tool_name,
-    resolve_tool_specs,
-)
+from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, resolve_tool_specs
 from openhands.sdk.tool.registry import is_tool_available
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
@@ -260,15 +254,13 @@ def _build_openhands_settings(
     purpose: user/public skills already arrive via ``filtered_skills``, so
     enabling the flags would double-load them.
     """
-    tools = _launch_tool_specs(profile.tools, browser_available=browser_available)
-    names = {canonical_tool_name(tool.name) for tool in tools}
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "openhands",
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": tools,
+        "tools": _launch_tool_specs(profile.tools, browser_available=browser_available),
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -277,8 +269,6 @@ def _build_openhands_settings(
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
-        "enable_sub_agents": SUB_AGENT_TOOL_NAME in names,
-        "enable_switch_llm_tool": SWITCH_LLM_TOOL_NAME in names,
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)

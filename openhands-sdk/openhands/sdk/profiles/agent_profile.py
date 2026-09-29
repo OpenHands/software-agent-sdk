@@ -9,7 +9,7 @@ See epic #3713 for the resolution model.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
@@ -33,11 +33,9 @@ from openhands.sdk.settings.model import (
 )
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.defaults import (
-    BROWSER_TOOL_NAME,
-    DEFAULT_EXEC_TOOL_NAMES,
-    SUB_AGENT_TOOL_NAME,
-    SWITCH_LLM_TOOL_NAME,
+    RETIRED_TOOL_SWITCHES,
     canonical_tool_name,
+    fold_retired_tool_switches,
 )
 
 
@@ -372,66 +370,12 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def fold_tool_switches_into_tools(
-    tools: Sequence[dict[str, Any] | Tool] | None,
-    *,
-    enable_sub_agents: bool,
-    enable_switch_llm_tool: bool,
-) -> list[Tool] | None:
-    """Express the legacy tool switches as a ``tools`` selection, or keep it unset."""
-    if tools is None and not enable_sub_agents and enable_switch_llm_tool:
-        return None
-    # "The standard set plus/minus one tool" is not expressible, so pin it.
-    entries = _pinned_standard_set() if tools is None else _as_tools(tools)
-    # `enable_sub_agents` only ever applied to the default set.
-    if enable_sub_agents and tools is None:
-        entries = _with_tool(entries, SUB_AGENT_TOOL_NAME)
-    if enable_switch_llm_tool:
-        return _with_tool(entries, SWITCH_LLM_TOOL_NAME)
-    return _without_tool(entries, SWITCH_LLM_TOOL_NAME)
-
-
-def _pinned_standard_set() -> list[Tool]:
-    return [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
-
-
-def _as_tools(tools: Sequence[dict[str, Any] | Tool]) -> list[Tool]:
-    return [
-        tool if isinstance(tool, Tool) else Tool.model_validate(tool) for tool in tools
-    ]
-
-
-def _with_tool(entries: list[Tool], name: str) -> list[Tool]:
-    if any(canonical_tool_name(entry.name) == name for entry in entries):
-        return entries
-    return [*entries, Tool(name=name)]
-
-
-def _without_tool(entries: list[Tool], name: str) -> list[Tool]:
-    return [entry for entry in entries if canonical_tool_name(entry.name) != name]
-
-
-_BOOL_ADAPTER = TypeAdapter(bool)
-
-
-def _pop_tool_switch(payload: dict[str, Any], key: str, default: bool) -> bool:
-    return _BOOL_ADAPTER.validate_python(payload.pop(key, default))
-
-
 def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     """Fold the retired tool switches into ``tools``."""
-    migrated = dict(payload)
-    sub_agents = _pop_tool_switch(migrated, "enable_sub_agents", False)
-    switch_llm = _pop_tool_switch(migrated, "enable_switch_llm_tool", True)
-    tools = migrated.get("tools")
-    if migrated.get("agent_kind", "openhands") == "openhands" and (
-        tools is None or isinstance(tools, list)
-    ):
-        migrated["tools"] = fold_tool_switches_into_tools(
-            tools,
-            enable_sub_agents=sub_agents,
-            enable_switch_llm_tool=switch_llm,
-        )
+    if payload.get("agent_kind", "openhands") == "openhands":
+        migrated = fold_retired_tool_switches(payload, enable_browser=True)
+    else:
+        migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
     migrated["schema_version"] = 3
     return migrated
 

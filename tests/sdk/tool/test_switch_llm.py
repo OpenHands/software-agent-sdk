@@ -55,10 +55,10 @@ def test_switch_llm_tool_description_lists_available_profiles(profile_store):
 
 
 def test_agent_settings_includes_switch_llm_tool_when_profiles_exist(profile_store):
-    # tools=[] (not the None default): these tests resolve tools for real via
-    # _ensure_agent_ready and tests/sdk registers no exec tools.
+    # An explicit list (not the None default): these tests resolve tools for
+    # real via _ensure_agent_ready and tests/sdk registers no exec tools.
     agent = OpenHandsAgentSettings(
-        llm=_make_llm("default-model", "default"), tools=[]
+        llm=_make_llm("default-model", "default"), tools=[Tool(name="switch_llm")]
     ).create_agent()
 
     assert "SwitchLLMTool" in agent.include_default_tools
@@ -72,7 +72,6 @@ def test_agent_settings_omits_switch_llm_tool_when_disabled(profile_store):
     agent = OpenHandsAgentSettings(
         llm=_make_llm("default-model", "default"),
         tools=[],
-        enable_switch_llm_tool=False,
     ).create_agent()
 
     assert "SwitchLLMTool" not in agent.include_default_tools
@@ -84,7 +83,7 @@ def test_agent_settings_omits_switch_llm_tool_when_disabled(profile_store):
 
 def test_agent_settings_includes_switch_llm_tool_without_profiles(empty_profile_store):
     agent = OpenHandsAgentSettings(
-        llm=_make_llm("default-model", "default"), tools=[]
+        llm=_make_llm("default-model", "default"), tools=[Tool(name="switch_llm")]
     ).create_agent()
 
     assert "SwitchLLMTool" in agent.include_default_tools

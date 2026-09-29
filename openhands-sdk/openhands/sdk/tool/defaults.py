@@ -11,7 +11,10 @@ that also registers the implementations; ``tests/cross`` asserts it stays in
 lockstep with these names.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from pydantic import TypeAdapter
 
 from openhands.sdk.tool.spec import Tool
 
@@ -78,3 +81,39 @@ def default_tool_specs(
     if enable_sub_agents:
         specs.append(Tool(name=SUB_AGENT_TOOL_NAME))
     return specs
+
+
+RETIRED_TOOL_SWITCHES = ("enable_sub_agents", "enable_switch_llm_tool")
+_BOOL_ADAPTER = TypeAdapter(bool)
+
+
+def fold_retired_tool_switches(
+    payload: Mapping[str, Any], *, enable_browser: bool
+) -> dict[str, Any]:
+    """Pop the retired tool switches from ``payload`` into its ``tools``."""
+    folded = dict(payload)
+    sub_agents = _BOOL_ADAPTER.validate_python(folded.pop("enable_sub_agents", False))
+    switch_llm = _BOOL_ADAPTER.validate_python(
+        folded.pop("enable_switch_llm_tool", True)
+    )
+    tools = folded.get("tools")
+    if tools is not None and not isinstance(tools, list):
+        return folded
+    if tools is None and not sub_agents and switch_llm:
+        return folded
+    # "The standard set plus/minus one tool" is not expressible, so pin it.
+    entries = (
+        _preset_specs(enable_browser=enable_browser)
+        if tools is None
+        else [t if isinstance(t, Tool) else Tool.model_validate(t) for t in tools]
+    )
+    # `enable_sub_agents` only ever applied to the default set.
+    if sub_agents and tools is None:
+        entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
+    selected = [canonical_tool_name(e.name) == SWITCH_LLM_TOOL_NAME for e in entries]
+    if not switch_llm:
+        entries = [e for e, is_switch in zip(entries, selected) if not is_switch]
+    elif not any(selected):
+        entries.append(Tool(name=SWITCH_LLM_TOOL_NAME))
+    folded["tools"] = entries
+    return folded

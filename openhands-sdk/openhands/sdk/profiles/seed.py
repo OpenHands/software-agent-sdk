@@ -14,7 +14,6 @@ from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
     build_profile_verification,
-    fold_tool_switches_into_tools,
 )
 
 
@@ -64,11 +63,7 @@ def build_seed_profile(
         name=name,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
-        tools=fold_tool_switches_into_tools(
-            agent_settings.tools,
-            enable_sub_agents=agent_settings.enable_sub_agents,
-            enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
-        ),
+        tools=agent_settings.tools,
         # Deny-list defaults to [] — the seeded default profile launches with all
         # discovered skills, matching the "all skills by default" model. No names
         # are frozen, so nothing can dangle at launch (the freeze-by-name seed

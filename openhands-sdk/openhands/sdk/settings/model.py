@@ -30,6 +30,7 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -54,6 +55,14 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    canonical_tool_name,
+    fold_retired_tool_switches,
+)
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
@@ -471,7 +480,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 6
+AGENT_SETTINGS_SCHEMA_VERSION = 7
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -702,6 +711,30 @@ def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
         llm.pop("modify_params", None)
         migrated["llm"] = llm
     migrated["schema_version"] = 6
+    return migrated
+
+
+def _warn_retired_tool_switches() -> None:
+    warn_deprecated(
+        "OpenHandsAgentSettings.enable_sub_agents and "
+        "OpenHandsAgentSettings.enable_switch_llm_tool",
+        deprecated_in="1.50.0",
+        removed_in="1.55.0",
+        details="Select task_tool_set and switch_llm in `tools` instead.",
+    )
+
+
+def _selects(tools: Sequence[Tool], name: str) -> bool:
+    return any(canonical_tool_name(tool.name) == name for tool in tools)
+
+
+def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    if payload.get("agent_kind", "openhands") == "acp":
+        migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
+    else:
+        migrated = fold_retired_tool_switches(payload, enable_browser=False)
+    migrated["schema_version"] = 7
     return migrated
 
 
@@ -1001,6 +1034,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
     5: _migrate_agent_settings_v5_to_v6,
+    6: _migrate_agent_settings_v6_to_v7,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1276,41 +1310,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Tools available to the agent. None (the default) resolves to the "
-            "standard exec set (see openhands.sdk.tool.defaults), plus the "
-            "sub-agent tool set when enable_sub_agents is set; [] is an "
-            "explicitly bare agent; a non-empty list is used exactly as given. "
-            "Environment-dependent tools (browser) are injected by the serving "
-            "layer, not the default."
+            "standard exec set plus switch_llm (see openhands.sdk.tool.defaults); "
+            "[] is an explicitly bare agent; a non-empty list is used exactly as "
+            "given. Environment-dependent tools (browser) are injected by the "
+            "serving layer, not the default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
                 prominence=SettingProminence.MAJOR,
-                variant="openhands",
-            ).model_dump()
-        },
-    )
-    enable_sub_agents: bool = Field(
-        default=False,
-        description="Enable sub-agent delegation via TaskToolSet.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Enable sub-agents",
-                prominence=SettingProminence.MAJOR,
-                variant="openhands",
-            ).model_dump()
-        },
-    )
-    enable_switch_llm_tool: bool = Field(
-        default=True,
-        description=(
-            "Enable the built-in switch_llm tool for switching between saved "
-            "LLM profiles."
-        ),
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Enable LLM switching tool",
-                prominence=SettingProminence.MINOR,
                 variant="openhands",
             ).model_dump()
         },
@@ -1422,6 +1430,26 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_retired_tool_switches(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping) or not any(
+            key in data for key in RETIRED_TOOL_SWITCHES
+        ):
+            return data
+        _warn_retired_tool_switches()
+        return fold_retired_tool_switches(data, enable_browser=False)
+
+    @property
+    def enable_sub_agents(self) -> bool:
+        _warn_retired_tool_switches()
+        return self.tools is not None and _selects(self.tools, SUB_AGENT_TOOL_NAME)
+
+    @property
+    def enable_switch_llm_tool(self) -> bool:
+        _warn_retired_tool_switches()
+        return self.tools is None or _selects(self.tools, SWITCH_LLM_TOOL_NAME)
+
     @field_validator("condenser", mode="before")
     @classmethod
     def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
@@ -1446,13 +1474,9 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.tool.builtins import (
             BUILT_IN_TOOLS,
             ClassifyAndSwitchLLMTool,
-            SwitchLLMTool,
             builtin_tool_class,
         )
-        from openhands.sdk.tool.defaults import (
-            SUB_AGENT_TOOL_NAME,
-            resolve_tool_specs,
-        )
+        from openhands.sdk.tool.defaults import resolve_tool_specs
         from openhands.sdk.tool.registry import registered_tool_class
         from openhands.sdk.tool.tool import ToolDefinition
 
@@ -1461,15 +1485,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             registered = registered_tool_class(name)
             return builtin if registered in (None, builtin) else None
 
-        specs = resolve_tool_specs(
-            self.tools, enable_switch_llm=self.enable_switch_llm_tool
-        )
-        if self.enable_sub_agents and self.tools is None:
-            specs.append(Tool(name=SUB_AGENT_TOOL_NAME))
-
+        specs = resolve_tool_specs(self.tools)
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-        if self.enable_switch_llm_tool:
-            include_default_tools.append(SwitchLLMTool.__name__)
 
         builtin_params: dict[str, dict[str, Any]] = {}
         for spec in specs:

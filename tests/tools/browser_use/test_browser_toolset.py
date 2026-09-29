@@ -476,14 +476,15 @@ def test_resolve_tool_survives_browser_executor_failure():
 
 def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
     """A migrated profile pinning `browser_tool_set` resolves without a browser."""
-    from openhands.sdk.profiles.agent_profile import fold_tool_switches_into_tools
-    from openhands.sdk.tool.defaults import resolve_tool_specs
+    from openhands.sdk.tool.defaults import (
+        fold_retired_tool_switches,
+        resolve_tool_specs,
+    )
     from openhands.sdk.tool.registry import resolve_tool
 
-    migrated = fold_tool_switches_into_tools(
-        None, enable_sub_agents=True, enable_switch_llm_tool=True
-    )
-    assert migrated is not None
+    migrated = fold_retired_tool_switches(
+        {"tools": None, "enable_sub_agents": True}, enable_browser=True
+    )["tools"]
     specs = resolve_tool_specs(migrated)
     assert [spec.name for spec in specs] == [
         "terminal",

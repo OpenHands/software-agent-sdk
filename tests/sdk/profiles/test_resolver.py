@@ -246,31 +246,6 @@ def test_dry_run_reports_a_registered_tool_that_is_not_usable(
     assert diagnostics.unusable_tools == unusable
 
 
-@pytest.mark.parametrize(
-    ("tools", "sub_agents", "switch_llm"),
-    [
-        (None, False, True),
-        ([Tool(name="terminal")], False, False),
-        ([Tool(name="task_tool_set"), Tool(name="SwitchLLMTool")], True, True),
-    ],
-)
-def test_resolved_settings_report_the_selected_switch_tools(
-    llm_store: LLMProfileStore,
-    tools: list[Tool] | None,
-    sub_agents: bool,
-    switch_llm: bool,
-) -> None:
-    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", tools=tools)
-
-    diagnostics = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config={}, available_skills=None
-    )
-
-    assert diagnostics.resolved_settings is not None
-    assert diagnostics.resolved_settings["enable_sub_agents"] is sub_agents
-    assert diagnostics.resolved_settings["enable_switch_llm_tool"] is switch_llm
-
-
 def test_openhands_copies_verification(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:
