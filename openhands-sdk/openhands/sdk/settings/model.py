@@ -1453,6 +1453,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             SUB_AGENT_TOOL_NAME,
             resolve_tool_specs,
         )
+        from openhands.sdk.tool.registry import registered_tool_class
+        from openhands.sdk.tool.tool import ToolDefinition
+
+        def as_builtin(name: str) -> type[ToolDefinition] | None:
+            builtin = builtin_tool_class(name)
+            registered = registered_tool_class(name)
+            return builtin if registered in (None, builtin) else None
 
         specs = resolve_tool_specs(
             self.tools, enable_switch_llm=self.enable_switch_llm_tool
@@ -1466,14 +1473,14 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         builtin_params: dict[str, dict[str, Any]] = {}
         for spec in specs:
-            builtin = builtin_tool_class(spec.name)
+            builtin = as_builtin(spec.name)
             if builtin is not None and spec.params:
                 builtin_params.setdefault(builtin.__name__, spec.params)
 
         tools: list[Tool] = []
         attached_builtins: set[str] = set()
         for spec in specs:
-            builtin = builtin_tool_class(spec.name)
+            builtin = as_builtin(spec.name)
             if builtin is None:
                 tools.append(spec)
                 continue

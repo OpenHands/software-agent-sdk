@@ -47,7 +47,15 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, resolve_tool_specs
+from openhands.sdk.tool.defaults import (
+    BROWSER_TOOL_NAME,
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    canonical_tool_name,
+    resolve_tool_specs,
+)
+from openhands.sdk.tool.registry import is_tool_available
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -94,8 +102,9 @@ class AgentProfileDiagnostics(BaseModel):
     unusable_tools: list[str] = Field(
         default_factory=list,
         description=(
-            "Selected tools the runtime cannot run. Launched as selected; they "
-            "fail when the agent uses them."
+            "Selected tools the runtime cannot run. An unavailable browser is "
+            "left out of the launch; any other such tool fails the launch or "
+            "fails when the agent uses it."
         ),
     )
 
@@ -251,13 +260,15 @@ def _build_openhands_settings(
     purpose: user/public skills already arrive via ``filtered_skills``, so
     enabling the flags would double-load them.
     """
+    tools = _launch_tool_specs(profile.tools, browser_available=browser_available)
+    names = {canonical_tool_name(tool.name) for tool in tools}
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "openhands",
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": resolve_tool_specs(profile.tools, enable_browser=browser_available),
+        "tools": tools,
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -266,13 +277,34 @@ def _build_openhands_settings(
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
-        # Pinned off so the settings defaults cannot re-add a tool the
-        # profile's ``tools`` did not ask for.
-        "enable_sub_agents": False,
-        "enable_switch_llm_tool": False,
+        "enable_sub_agents": SUB_AGENT_TOOL_NAME in names,
+        "enable_switch_llm_tool": SWITCH_LLM_TOOL_NAME in names,
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
+
+
+def _launch_tool_specs(
+    tools: list[Tool] | None, *, browser_available: bool
+) -> list[Tool]:
+    resolved = resolve_tool_specs(tools, enable_browser=browser_available)
+    if browser_available:
+        return resolved
+    return [tool for tool in resolved if tool.name != BROWSER_TOOL_NAME]
+
+
+def _unusable_tools(
+    tools: list[Tool], *, browser_available: bool, check_usable: bool
+) -> list[str]:
+    return [
+        tool.name
+        for tool in tools
+        if not (
+            browser_available
+            if tool.name == BROWSER_TOOL_NAME
+            else is_tool_available(tool.name, check_usable=check_usable)
+        )
+    ]
 
 
 def _build_acp_settings(
@@ -382,6 +414,7 @@ def resolve_agent_profile_dry_run(
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
     browser_available: bool = False,
+    check_usable: bool = True,
 ) -> AgentProfileDiagnostics:
     """Compute :class:`AgentProfileDiagnostics` without raising or side effects.
 
@@ -392,6 +425,9 @@ def resolve_agent_profile_dry_run(
     error to report — ``resolved_skills`` is just the catalog minus the disabled
     names. ``available_skills=None`` (discovery skipped or failed) means no
     user/public skills resolve.
+
+    ``check_usable=False`` skips the usability probes, for runtimes this
+    process cannot probe.
     """
     filtered_mcp, resolved, dangling = _compute_mcp_filter(
         mcp_config, profile.mcp_server_refs
@@ -417,12 +453,12 @@ def resolve_agent_profile_dry_run(
             available_skills, profile.disabled_skills
         )
         diagnostics.disabled_skills = profile.disabled_skills
-        if (
-            not browser_available
-            and profile.tools is not None
-            and any(tool.name == BROWSER_TOOL_NAME for tool in profile.tools)
-        ):
-            diagnostics.unusable_tools.append(BROWSER_TOOL_NAME)
+        if profile.tools is not None:
+            diagnostics.unusable_tools = _unusable_tools(
+                profile.tools,
+                browser_available=browser_available,
+                check_usable=check_usable,
+            )
     else:
         filtered_skills = _apply_disabled_skills(available_skills, [])
     diagnostics.resolved_skills = [s.name for s in filtered_skills]

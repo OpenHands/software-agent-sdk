@@ -47,7 +47,6 @@ from openhands.sdk.profiles import (
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
-    apply_tool_switch_request,
     build_seed_profile,
     resolve_agent_profile_dry_run,
     safe_validation_error_detail,
@@ -334,20 +333,11 @@ async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     return AgentProfileDetailResponse(name=name, profile=payload)
 
 
-def _load_stored_profile(name: str) -> OpenHandsAgentProfile | ACPAgentProfile | None:
-    with store_errors():
-        try:
-            return get_agent_profile_store().load(name)
-        except (FileNotFoundError, ValueError):
-            return None
-
-
 def _validate_profile_payload(
     payload: dict[str, Any],
-    stored: OpenHandsAgentProfile | ACPAgentProfile | None,
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
     try:
-        return validate_agent_profile(apply_tool_switch_request(payload, stored))
+        return validate_agent_profile(payload)
     except ValidationError as e:
         # Match FastAPI's request-validation shape (``detail`` is a list of
         # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
@@ -381,9 +371,7 @@ async def save_agent_profile(
     involved. Returns 409 if creating a new profile would exceed
     ``MAX_AGENT_PROFILES``.
     """
-    profile = _validate_profile_payload(
-        {**body, "name": name}, _load_stored_profile(name)
-    )
+    profile = _validate_profile_payload({**body, "name": name})
 
     store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
@@ -568,9 +556,7 @@ async def materialize_agent_profile(
     redacted (api_key_set booleans; no raw secrets).
     """
     if body is not None and body.profile is not None:
-        profile = _validate_profile_payload(
-            {**body.profile, "name": name}, _load_stored_profile(name)
-        )
+        profile = _validate_profile_payload({**body.profile, "name": name})
     else:
         store = get_agent_profile_store()
         try:
@@ -589,11 +575,12 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
+    container_browser = container_browser_available(config)
     inputs = await asyncio.to_thread(
         gather_profile_launch_inputs,
         profile,
         config.acp_skill_sourcing,
-        container_browser_available(config),
+        container_browser,
     )
     if inputs.skill_discovery_error is not None:
         logger.warning(
@@ -609,6 +596,7 @@ async def materialize_agent_profile(
         available_skills=inputs.available_skills,
         cipher=cipher,
         browser_available=inputs.browser_available,
+        check_usable=container_browser is None,
     )
     # Reported rather than raised: a launch would fail on it, the preview must not.
     if inputs.skill_discovery_error is not None:

@@ -21,9 +21,7 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
-    computed_field,
     field_validator,
-    model_validator,
 )
 
 from openhands.sdk.settings.model import (
@@ -41,10 +39,9 @@ from openhands.sdk.tool.defaults import (
     SWITCH_LLM_TOOL_NAME,
     canonical_tool_name,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 2
+AGENT_PROFILE_SCHEMA_VERSION = 3
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -216,25 +213,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
         ),
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _fold_legacy_tool_switches(cls, data: Any) -> Any:
-        if not isinstance(data, Mapping) or not any(
-            key in data for key in _LEGACY_TOOL_SWITCHES
-        ):
-            return data
-        payload = dict(data)
-        sub_agents = _pop_tool_switch(payload, "enable_sub_agents", False)
-        switch_llm = _pop_tool_switch(payload, "enable_switch_llm_tool", True)
-        tools = payload.get("tools")
-        if tools is None or isinstance(tools, list):
-            payload["tools"] = fold_tool_switches_into_tools(
-                tools,
-                enable_sub_agents=sub_agents,
-                enable_switch_llm_tool=switch_llm,
-            )
-        return payload
-
     @field_validator("tools")
     @classmethod
     def _canonicalize_tools(cls, tools: list[Tool] | None) -> list[Tool] | None:
@@ -247,21 +225,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
             if kept is None or (tool.params and not kept.params):
                 by_name[name] = Tool(name=name, params=tool.params)
         return list(by_name.values())
-
-    # Serialized so releases before ``tools`` selection read the same toolset.
-    @computed_field(  # type: ignore[prop-decorator]
-        description="Deprecated: whether `tools` selects task_tool_set."
-    )
-    @property
-    def enable_sub_agents(self) -> bool:
-        return self.tools is not None and _selects(self.tools, SUB_AGENT_TOOL_NAME)
-
-    @computed_field(  # type: ignore[prop-decorator]
-        description="Deprecated: whether `tools` selects switch_llm."
-    )
-    @property
-    def enable_switch_llm_tool(self) -> bool:
-        return self.tools is None or _selects(self.tools, SWITCH_LLM_TOOL_NAME)
 
 
 class ACPAgentProfile(AgentProfileBase):
@@ -405,9 +368,6 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
         and migrated.get("tools") == []
     ):
         migrated["tools"] = None
-    if migrated.get("agent_kind", "openhands") == "openhands":
-        # v1 predates the switch; it was on for every profile.
-        migrated.setdefault("enable_switch_llm_tool", True)
     migrated["schema_version"] = 2
     return migrated
 
@@ -431,62 +391,6 @@ def fold_tool_switches_into_tools(
     return _without_tool(entries, SWITCH_LLM_TOOL_NAME)
 
 
-def apply_tool_switch_request(
-    payload: Mapping[str, Any],
-    stored: OpenHandsAgentProfile | ACPAgentProfile | None = None,
-) -> dict[str, Any]:
-    """Apply the legacy tool switches a client changed from ``stored`` to ``tools``."""
-    body = dict(payload)
-    if body.get("agent_kind", "openhands") != "openhands":
-        return body
-    requested = {key: body.pop(key) for key in _LEGACY_TOOL_SWITCHES if key in body}
-    for key, value in requested.items():
-        if not isinstance(value, bool):
-            raise ValueError(f"AgentProfile.{key} must be a boolean.")
-    baseline = (
-        {
-            "enable_sub_agents": stored.enable_sub_agents,
-            "enable_switch_llm_tool": stored.enable_switch_llm_tool,
-        }
-        if isinstance(stored, OpenHandsAgentProfile)
-        else {}
-    )
-    changed = {
-        key: value
-        for key, value in requested.items()
-        if key not in baseline or baseline[key] != value
-    }
-    tools = body.get("tools")
-    if not changed or not (tools is None or isinstance(tools, list)):
-        return body
-    warn_deprecated(
-        "AgentProfile.enable_sub_agents and AgentProfile.enable_switch_llm_tool",
-        deprecated_in="1.50.0",
-        removed_in="1.55.0",
-        details="Select tools with `tools` instead.",
-    )
-    if tools is None:
-        body["tools"] = fold_tool_switches_into_tools(
-            None,
-            enable_sub_agents=requested.get("enable_sub_agents", False),
-            enable_switch_llm_tool=requested.get("enable_switch_llm_tool", True),
-        )
-        return body
-    entries = _as_tools(tools)
-    for key, name in (
-        ("enable_sub_agents", SUB_AGENT_TOOL_NAME),
-        ("enable_switch_llm_tool", SWITCH_LLM_TOOL_NAME),
-    ):
-        if key in changed:
-            entries = (
-                _with_tool(entries, name)
-                if changed[key]
-                else _without_tool(entries, name)
-            )
-    body["tools"] = entries
-    return body
-
-
 def _pinned_standard_set() -> list[Tool]:
     return [Tool(name=name) for name in (*DEFAULT_EXEC_TOOL_NAMES, BROWSER_TOOL_NAME)]
 
@@ -497,12 +401,8 @@ def _as_tools(tools: Sequence[dict[str, Any] | Tool]) -> list[Tool]:
     ]
 
 
-def _selects(entries: Sequence[Tool], name: str) -> bool:
-    return any(canonical_tool_name(entry.name) == name for entry in entries)
-
-
 def _with_tool(entries: list[Tool], name: str) -> list[Tool]:
-    if _selects(entries, name):
+    if any(canonical_tool_name(entry.name) == name for entry in entries):
         return entries
     return [*entries, Tool(name=name)]
 
@@ -511,18 +411,34 @@ def _without_tool(entries: list[Tool], name: str) -> list[Tool]:
     return [entry for entry in entries if canonical_tool_name(entry.name) != name]
 
 
-_LEGACY_TOOL_SWITCHES = ("enable_sub_agents", "enable_switch_llm_tool")
+_BOOL_ADAPTER = TypeAdapter(bool)
 
 
 def _pop_tool_switch(payload: dict[str, Any], key: str, default: bool) -> bool:
-    value = payload.pop(key, default)
-    if not isinstance(value, bool):
-        raise ValueError(f"AgentProfile.{key} must be a boolean.")
-    return value
+    return _BOOL_ADAPTER.validate_python(payload.pop(key, default))
+
+
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    migrated = dict(payload)
+    sub_agents = _pop_tool_switch(migrated, "enable_sub_agents", False)
+    switch_llm = _pop_tool_switch(migrated, "enable_switch_llm_tool", True)
+    tools = migrated.get("tools")
+    if migrated.get("agent_kind", "openhands") == "openhands" and (
+        tools is None or isinstance(tools, list)
+    ):
+        migrated["tools"] = fold_tool_switches_into_tools(
+            tools,
+            enable_sub_agents=sub_agents,
+            enable_switch_llm_tool=switch_llm,
+        )
+    migrated["schema_version"] = 3
+    return migrated
 
 
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 
@@ -548,10 +464,6 @@ def _apply_persisted_migrations(payload: dict[str, Any]) -> dict[str, Any]:
             f"AgentProfile schema_version {version} is newer than supported "
             f"version {AGENT_PROFILE_SCHEMA_VERSION}."
         )
-
-    if migrated.get("agent_kind") == "acp":
-        for key in _LEGACY_TOOL_SWITCHES:
-            migrated.pop(key, None)
 
     while version < AGENT_PROFILE_SCHEMA_VERSION:
         migrate = _AGENT_PROFILE_MIGRATIONS.get(version)

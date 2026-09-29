@@ -198,6 +198,25 @@ def is_tool_usable(name: str) -> bool:
     return _check_tool_usable(name, checker)
 
 
+def registered_tool_class(name: str) -> type[ToolDefinition] | None:
+    with _LOCK:
+        return _TOOL_CLASSES.get(name)
+
+
+def is_tool_available(name: str, *, check_usable: bool = True) -> bool:
+    """Whether ``resolve_tool`` resolves ``name`` and, if checked, it is usable."""
+    with _LOCK:
+        checker = _USABILITY_REG.get(name) if name in _REG else None
+    if checker is None:
+        from openhands.sdk.tool.builtins import builtin_tool_class
+
+        tool_class = builtin_tool_class(name)
+        if tool_class is None:
+            return False
+        checker = _usability_from_subclass(tool_class)
+    return not check_usable or _check_tool_usable(name, checker)
+
+
 def list_usable_tools() -> list[str]:
     with _LOCK:
         tool_names = list(_REG.keys())

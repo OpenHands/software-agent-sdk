@@ -20,6 +20,7 @@ from openhands.sdk.tool.defaults import (
 )
 from openhands.sdk.tool.registry import (
     ToolCatalogEntry,
+    is_tool_available,
     is_tool_usable,
     list_registered_tools,
     list_tool_catalog,
@@ -53,6 +54,7 @@ __all__ = [
     "SUB_AGENT_TOOL_NAME",
     "default_tool_specs",
     "resolve_tool_specs",
+    "is_tool_available",
     "is_tool_usable",
     "ToolDefinition",
     "ToolAnnotations",

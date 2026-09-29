@@ -8,7 +8,6 @@ from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile,
     OpenHandsAgentProfile,
     ProfileVerificationSettings,
-    apply_tool_switch_request,
     build_profile_verification,
     safe_validation_error_detail,
     validate_agent_profile,
@@ -66,5 +65,4 @@ __all__ = [
     "safe_validation_error_detail",
     "save_profile_preserving_identity",
     "validate_agent_profile",
-    "apply_tool_switch_request",
 ]

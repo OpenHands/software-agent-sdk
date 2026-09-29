@@ -71,10 +71,6 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   verification: ProfileVerificationSettings;
   /** Tools to launch with; `null` = the server's standard set. */
   tools: ProfileToolSpec[] | null;
-  /** @deprecated Select `task_tool_set` in `tools` instead. */
-  enable_sub_agents?: boolean;
-  /** @deprecated Select `switch_llm` in `tools` instead. */
-  enable_switch_llm_tool?: boolean;
   tool_concurrency_limit: number;
 }
 

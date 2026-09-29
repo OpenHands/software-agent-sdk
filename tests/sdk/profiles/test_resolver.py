@@ -26,7 +26,7 @@ from openhands.sdk.profiles import (
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool import Tool
+from openhands.sdk.tool import Tool, registry
 from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, BUILT_IN_TOOLS
 
 
@@ -166,8 +166,12 @@ def test_openhands_profile_tools_selection_is_used_as_given(
     assert settings.create_agent().tools == []
 
 
-def test_openhands_explicit_browser_is_kept_where_it_cannot_run(
-    llm_store: LLMProfileStore,
+@pytest.mark.parametrize(
+    ("browser_available", "expected"),
+    [(True, ["terminal", "browser_tool_set"]), (False, ["terminal"])],
+)
+def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
+    llm_store: LLMProfileStore, browser_available: bool, expected: list[str]
 ) -> None:
     profile = OpenHandsAgentProfile(
         name="pinned",
@@ -175,19 +179,16 @@ def test_openhands_explicit_browser_is_kept_where_it_cannot_run(
         tools=[Tool(name="terminal"), Tool(name="browser_tool_set")],
     )
 
-    for browser_available in (True, False):
-        settings = resolve_agent_profile(
-            profile,
-            llm_store=llm_store,
-            mcp_config={},
-            available_skills=None,
-            browser_available=browser_available,
-        )
-        assert isinstance(settings, OpenHandsAgentSettings)
-        assert [tool.name for tool in settings.tools or []] == [
-            "terminal",
-            "browser_tool_set",
-        ]
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=browser_available,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert [tool.name for tool in settings.tools or []] == expected
 
 
 @pytest.mark.parametrize(
@@ -196,9 +197,10 @@ def test_openhands_explicit_browser_is_kept_where_it_cannot_run(
         ([Tool(name="browser_tool_set")], False, ["browser_tool_set"]),
         ([Tool(name="browser_tool_set")], True, []),
         (None, False, []),
+        ([Tool(name="finish"), Tool(name="not_registered")], True, ["not_registered"]),
     ],
 )
-def test_dry_run_reports_a_selected_browser_it_cannot_run(
+def test_dry_run_reports_selected_tools_it_cannot_run(
     llm_store: LLMProfileStore,
     tools: list[Tool] | None,
     browser_available: bool,
@@ -218,6 +220,55 @@ def test_dry_run_reports_a_selected_browser_it_cannot_run(
 
     assert diagnostics.valid
     assert diagnostics.unusable_tools == unusable
+
+
+@pytest.mark.parametrize(("check_usable", "unusable"), [(True, ["hello"]), (False, [])])
+def test_dry_run_reports_a_registered_tool_that_is_not_usable(
+    llm_store: LLMProfileStore,
+    monkeypatch: pytest.MonkeyPatch,
+    check_usable: bool,
+    unusable: list[str],
+) -> None:
+    monkeypatch.setitem(registry._REG, "hello", lambda _params, _state: [])
+    monkeypatch.setitem(registry._USABILITY_REG, "hello", lambda: False)
+    profile = OpenHandsAgentProfile(
+        name="pinned", llm_profile_ref="default", tools=[Tool(name="hello")]
+    )
+
+    diagnostics = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        check_usable=check_usable,
+    )
+
+    assert diagnostics.unusable_tools == unusable
+
+
+@pytest.mark.parametrize(
+    ("tools", "sub_agents", "switch_llm"),
+    [
+        (None, False, True),
+        ([Tool(name="terminal")], False, False),
+        ([Tool(name="task_tool_set"), Tool(name="SwitchLLMTool")], True, True),
+    ],
+)
+def test_resolved_settings_report_the_selected_switch_tools(
+    llm_store: LLMProfileStore,
+    tools: list[Tool] | None,
+    sub_agents: bool,
+    switch_llm: bool,
+) -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", tools=tools)
+
+    diagnostics = resolve_agent_profile_dry_run(
+        profile, llm_store=llm_store, mcp_config={}, available_skills=None
+    )
+
+    assert diagnostics.resolved_settings is not None
+    assert diagnostics.resolved_settings["enable_sub_agents"] is sub_agents
+    assert diagnostics.resolved_settings["enable_switch_llm_tool"] is switch_llm
 
 
 def test_openhands_copies_verification(

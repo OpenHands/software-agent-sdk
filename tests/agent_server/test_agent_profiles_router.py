@@ -912,8 +912,8 @@ def test_seed_preserves_openhands_fields(client):
         "browser_tool_set",
         "task_tool_set",
     ]
-    assert prof["enable_sub_agents"] is True
-    assert prof["enable_switch_llm_tool"] is False
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
     # The seed disables nothing — the default profile launches with all
@@ -1309,9 +1309,9 @@ def test_materialize_rejects_a_draft_newer_than_save_accepts(client_with_llm_sto
     assert saved.status_code == 422
 
 
-def test_save_accepts_a_current_profile_carrying_retired_switches(client):
+def test_save_migrates_a_v2_profile_carrying_retired_switches(client):
     response = client.post(
-        "/api/agent-profiles/legacy-client",
+        "/api/agent-profiles/v2-profile",
         json={
             "schema_version": 2,
             "agent_kind": "openhands",
@@ -1322,10 +1322,19 @@ def test_save_accepts_a_current_profile_carrying_retired_switches(client):
     )
 
     assert response.status_code == 201
-    prof = client.get("/api/agent-profiles/legacy-client").json()["profile"]
+    prof = client.get("/api/agent-profiles/v2-profile").json()["profile"]
     assert prof["tools"] is None
-    assert prof["enable_sub_agents"] is False
-    assert prof["enable_switch_llm_tool"] is True
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
+
+
+def test_save_rejects_retired_switches_on_a_current_profile(client):
+    response = client.post(
+        "/api/agent-profiles/p",
+        json={"llm_profile_ref": "default", "enable_switch_llm_tool": False},
+    )
+
+    assert response.status_code == 422
 
 
 def _tool_names(client, name: str) -> list[str]:
@@ -1333,24 +1342,16 @@ def _tool_names(client, name: str) -> list[str]:
     return [tool["name"] for tool in prof["tools"] or []]
 
 
-def test_old_client_toggles_reach_an_explicit_tools_list(client):
-    client.post(
-        "/api/agent-profiles/p",
-        json={
-            "llm_profile_ref": "default",
-            "tools": [{"name": "terminal"}, {"name": "task_tool_set"}],
-        },
-    )
+def test_saving_a_copy_under_a_new_name_keeps_its_tools(client):
+    client.post("/api/agent-profiles/p", json={"llm_profile_ref": "default"})
     stored = client.get("/api/agent-profiles/p").json()["profile"]
-    assert stored["enable_sub_agents"] is True
-    assert stored["enable_switch_llm_tool"] is False
 
     client.post(
-        "/api/agent-profiles/p",
-        json={**stored, "enable_sub_agents": False, "enable_switch_llm_tool": True},
+        "/api/agent-profiles/copy",
+        json={**stored, "tools": [{"name": "terminal"}, {"name": "glob"}]},
     )
 
-    assert _tool_names(client, "p") == ["terminal", "switch_llm"]
+    assert _tool_names(client, "copy") == ["terminal", "glob"]
 
 
 def test_new_client_spreading_stale_switches_keeps_its_tools_edit(client):

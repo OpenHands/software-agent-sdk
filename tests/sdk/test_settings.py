@@ -1067,6 +1067,22 @@ def test_builtin_named_twice_is_attached_once(tools: list[Tool]) -> None:
     assert "FinishTool" not in agent.include_default_tools
 
 
+def test_registered_tool_named_like_a_builtin_is_not_replaced(monkeypatch) -> None:
+    from openhands.sdk.tool import registry
+    from openhands.sdk.tool.builtins import ThinkTool
+
+    class _CustomThinkTool(ThinkTool):
+        pass
+
+    monkeypatch.setitem(registry._TOOL_CLASSES, "think", _CustomThinkTool)
+
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[Tool(name="think")]
+    ).create_agent()
+
+    assert agent.tools == [Tool(name="think")]
+
+
 def test_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
     """The switch only ever fed the default set."""
     explicit = OpenHandsAgentSettings(
