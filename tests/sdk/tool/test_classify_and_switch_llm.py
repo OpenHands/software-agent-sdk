@@ -410,6 +410,49 @@ def test_classifier_call_is_accounted_in_conversation_stats(
     assert usage_id in conversation.conversation_stats.usage_to_metrics
 
 
+def test_classifier_call_receives_conversation_call_context(
+    profile_store, meta_store, monkeypatch
+) -> None:
+    """The classifier completion must carry the conversation's call context.
+
+    Regression: the classifier LLM is not reachable from ``Agent.step()``, so
+    nothing else threads context into its completion. Without an explicit
+    ``call_context`` the call would send no ``x-litellm-session-id`` header and
+    would not participate in the conversation's prompt cache.
+    """
+    conversation = _make_conversation()
+    _register_tool(conversation, meta_store)
+
+    seen: list[object] = []
+
+    real_load = conversation._profile_store.load
+
+    class RecordingClassifier(TestLLM):
+        __test__ = False
+
+        def completion(self, messages, *args, **kwargs):
+            seen.append(kwargs.get("call_context"))
+            return super().completion(messages, *args, **kwargs)
+
+    def fake_load(name: str, *, cipher=None):
+        if name != "classifier":
+            return real_load(name, cipher=cipher)
+        return RecordingClassifier.from_messages(
+            [Message(role="assistant", content=[TextContent(text="1")])],
+            usage_id="classifier",
+        )
+
+    monkeypatch.setattr(conversation._profile_store, "load", fake_load)
+
+    obs = conversation.execute_tool("route_task_to_model", ClassifyAndSwitchLLMAction())
+
+    assert isinstance(obs, ClassifyAndSwitchLLMObservation)
+    assert not obs.is_error
+    expected = conversation.get_llm_call_context()
+    assert seen == [expected]
+    assert expected.session_id == str(conversation._state.id)
+
+
 def test_repeated_routing_reuses_one_classifier_usage_bucket(
     profile_store, meta_store, monkeypatch
 ) -> None:
