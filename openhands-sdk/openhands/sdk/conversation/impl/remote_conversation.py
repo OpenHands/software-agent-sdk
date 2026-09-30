@@ -1,5 +1,6 @@
 import asyncio
 import bisect
+import importlib
 import json
 import os
 import threading
@@ -83,6 +84,18 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _restore_tool_registrations(tool_module_qualnames: Mapping[str, str]) -> None:
+    """Import the tool modules persisted with a remote conversation."""
+    for tool_name, module_qualname in tool_module_qualnames.items():
+        try:
+            importlib.import_module(module_qualname)
+        except ImportError as exc:
+            raise ImportError(
+                f"Cannot attach to a conversation that uses tool {tool_name!r}: "
+                f"failed to import module {module_qualname!r}: {exc}"
+            ) from exc
 
 
 def _websocket_close_code(exc: ConnectionClosed) -> int | None:
@@ -769,6 +782,10 @@ class RemoteConversation(BaseConversation):
         # must be registered locally before the initial event sync so that
         # persisted ``ClientAction_*`` events can be deserialized.
         attached_client_tools: list[ClientToolSpec] = []
+        # Tool modules persisted with the existing conversation. Importing them
+        # registers the dynamic action types the persisted events reference, so
+        # this has to happen before ``_initialize_connection`` syncs events.
+        attached_tool_module_qualnames: Mapping[str, str] = {}
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -795,6 +812,7 @@ class RemoteConversation(BaseConversation):
                     attached_client_tools.append(
                         ClientToolSpec.model_validate(raw_spec)
                     )
+                attached_tool_module_qualnames = info.get("tool_module_qualnames") or {}
 
         if should_create:
             # Import here to avoid circular imports
@@ -874,6 +892,10 @@ class RemoteConversation(BaseConversation):
             conversation_id = uuid.UUID(cid)
 
         assert conversation_id is not None
+        # Register the persisted tools before connecting so that events synced
+        # during ``_initialize_connection`` can be deserialized. ``_from_info``
+        # does the same for the ``attach``/``create`` entry points.
+        _restore_tool_registrations(attached_tool_module_qualnames)
         self._initialize_connection(
             agent=agent,
             workspace=workspace,
@@ -971,6 +993,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
     ) -> Self:
+        _restore_tool_registrations(info.get("tool_module_qualnames") or {})
         conversation = cls.__new__(cls)
         conversation._initialize_connection(
             agent=_validate_remote_agent(info["agent"]),
