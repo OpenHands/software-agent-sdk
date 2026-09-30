@@ -124,17 +124,17 @@ def main() -> int:
             "/api/settings",
             json={"agent_settings_diff": {"agent_context": {"load_memory": True}}},
         ).raise_for_status()
-        client.post(
-            "/api/profiles/mock",
-            json={
-                "llm": {
-                    "model": "openai/mock-test-model",
-                    "base_url": container_llm,
-                    "api_key": "sk",
+        for name, model in (
+            ("mock", "openai/mock-test-model"),
+            ("mock-fast", "openai/mock-fast-model"),
+        ):
+            client.post(
+                f"/api/profiles/{name}",
+                json={
+                    "llm": {"model": model, "base_url": container_llm, "api_key": "sk"},
+                    "include_secrets": True,
                 },
-                "include_secrets": True,
-            },
-        ).raise_for_status()
+            ).raise_for_status()
         profile = {
             "llm_profile_ref": "mock",
             "system_message_suffix": "DOCKER_PROFILE_SUFFIX",
@@ -320,6 +320,49 @@ def main() -> int:
                 entry["detail"] = launched.text[:300]
             rows[label] = entry
 
+        reply_with()
+        inline = client.post(
+            "/api/conversations",
+            params={"include_skills": "true"},
+            json={
+                "agent_profile": {
+                    **profile,
+                    "agent_kind": "openhands",
+                    "name": "inline-draft",
+                },
+                "agent_launch_additions": {"llm_profile_ref": "mock-fast"},
+                "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+                "autotitle": False,
+                "initial_message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello"}],
+                    "run": True,
+                },
+            },
+        )
+        inline_row: dict[str, Any] = {"status": inline.status_code}
+        if inline.status_code in (200, 201):
+            info = inline.json()
+            conversation_ids.append(info["id"])
+            for _ in range(240):
+                state = client.get(f"/api/conversations/{info['id']}").json()
+                if state.get("execution_status") not in ("running", "idle"):
+                    break
+                time.sleep(0.5)
+            seen = httpx.get(f"{llm_url}/admin/requests").json()["requests"]
+            first = seen[0] if seen else {}
+            inline_row.update(
+                {
+                    "model": first.get("model"),
+                    "suffix": "DOCKER_PROFILE_SUFFIX"
+                    in json.dumps(first.get("messages", [])),
+                    "launched_agent_profile": info.get("launched_agent_profile"),
+                }
+            )
+        else:
+            inline_row["detail"] = inline.text[:400]
+        rows["inline profile + llm_profile_ref through the Docker host"] = inline_row
+
         before = running_containers()
         broken = client.post(
             "/api/conversations",
@@ -378,6 +421,15 @@ def main() -> int:
     verdicts["secret_refs scope secrets in the container"] = launch.get(
         "secrets_seen"
     ) == ["ALLOWED"]
+    inline_row = rows["inline profile + llm_profile_ref through the Docker host"]
+    provenance = inline_row.get("launched_agent_profile") or {}
+    verdicts["inline profile with an LLM override launches through the host"] = (
+        inline_row["status"] in (200, 201)
+        and str(inline_row.get("model", "")).endswith("mock-fast-model")
+        and bool(inline_row.get("suffix"))
+        and provenance.get("inline") is True
+        and provenance.get("llm_profile_ref") == "mock-fast"
+    )
     for label in (
         "agent_settings through the Docker host",
         "raw agent through the Docker host",
