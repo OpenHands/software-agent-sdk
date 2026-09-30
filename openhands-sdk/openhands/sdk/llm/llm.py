@@ -24,6 +24,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.llm.utils.runtime_metadata import (
@@ -63,6 +64,7 @@ from litellm import (
 )
 from litellm.exceptions import (
     APIConnectionError,
+    BadGatewayError,
     InternalServerError,
     RateLimitError,
     ServiceUnavailableError,
@@ -148,6 +150,7 @@ __all__ = ["LLM"]
 # Exceptions we retry on
 LLM_RETRY_EXCEPTIONS: Final[tuple[type[Exception], ...]] = (
     APIConnectionError,
+    BadGatewayError,
     RateLimitError,
     ServiceUnavailableError,
     LiteLLMTimeout,
@@ -1095,14 +1098,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Return a configured retry decorator using this LLM's retry settings.
 
-        Hard quota/usage-limit errors are excluded from retries so that, when a
-        :class:`~openhands.sdk.llm.FallbackStrategy` is configured, fallback to an
-        alternate model happens immediately instead of after the full retry
-        backoff — such errors will not recover until the limit resets or is raised.
+        Exhausted allowances skip backoff. Provider quota errors may fall back;
+        explicit budget denials stop without trying another model.
         """
-        retry_condition = retry_if_exception_type(LLM_RETRY_EXCEPTIONS) & (
-            retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
-        )
+        retry_condition = (
+            retry_if_exception_type(LLM_RETRY_EXCEPTIONS)
+            | retry_if_exception(is_transient_http_error)
+        ) & retry_if_exception(lambda e: not is_quota_exhaustion_error(e))
         return self.retry_decorator(
             num_retries=self.num_retries,
             retry_exceptions=retry_condition,
@@ -2407,6 +2409,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "drop_params": self.drop_params,
             "seed": self.seed,
             "messages": messages,
+            # The SDK owns retries so budget denials reach its classifier immediately.
+            "max_retries": 0,
             **self._aws_kwargs(),
             **kwargs,
         }
