@@ -88,6 +88,27 @@ def test_server_info_reports_credential_binding_probe(client):
     assert payload["conversation_runtime"] == "local"
 
 
+def test_server_info_reports_configured_app_backend_bridge():
+    app = create_app(
+        Config(
+            static_files_path=None,
+            app_backend_public_url="https://apps.example.test",
+        )
+    )
+    with TestClient(app) as bridge_client:
+        payload = bridge_client.get("/server_info").json()
+
+    assert payload["app_backend_ingress_url"] == "https://apps.example.test"
+    assert "canvas_app_backend_bridge_v1" in payload["capabilities"]
+
+
+def test_server_info_omits_unconfigured_app_backend_bridge(client):
+    payload = client.get("/server_info").json()
+
+    assert payload["app_backend_ingress_url"] is None
+    assert "canvas_app_backend_bridge_v1" not in payload["capabilities"]
+
+
 def test_server_info_reports_configured_conversation_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     app = create_app(
