@@ -1071,8 +1071,7 @@ def test_registered_tool_named_like_a_builtin_is_not_replaced(monkeypatch) -> No
     assert agent.tools == [Tool(name="think")]
 
 
-def test_retired_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> None:
-    """The switch only ever fed the default set."""
+def test_retired_enable_sub_agents_input_adds_to_an_explicit_tools_list() -> None:
     explicit = OpenHandsAgentSettings.model_validate(
         {
             "llm": LLM(model="test-model"),
@@ -1083,15 +1082,16 @@ def test_retired_enable_sub_agents_does_not_reach_an_explicit_tools_list() -> No
     bare = OpenHandsAgentSettings.model_validate(
         {"llm": LLM(model="test-model"), "tools": [], "enable_sub_agents": True}
     )
-    assert [t.name for t in explicit.tools or []] == ["terminal"]
-    assert bare.tools == []
+    assert [t.name for t in explicit.tools or []] == ["terminal", "task_tool_set"]
+    assert [t.name for t in bare.tools or []] == ["task_tool_set"]
+    assert explicit.enable_sub_agents is True
 
 
 @pytest.mark.parametrize(
     ("diff", "expected"),
     [
         ({"enable_sub_agents": False}, ["terminal"]),
-        ({"enable_sub_agents": True}, ["terminal"]),
+        ({"enable_sub_agents": True}, ["terminal", "task_tool_set"]),
         ({"enable_switch_llm_tool": True}, ["terminal", "switch_llm"]),
     ],
 )
@@ -1278,6 +1278,29 @@ def test_persisted_empty_tools_migrate_as_the_standard_set(
     ) == expected
 
 
+@pytest.mark.parametrize(
+    ("tools", "expected"),
+    [
+        (None, None),
+        ([], None),
+        ([{"name": "terminal"}], ["terminal", "switch_llm"]),
+    ],
+)
+def test_unversioned_persisted_settings_migrate_as_legacy_rows(
+    tools: list[dict[str, str]] | None, expected: list[str] | None
+) -> None:
+    payload = {"agent_kind": "openhands", "llm": {"model": "m"}, "tools": tools}
+
+    settings = validate_agent_settings(payload, persisted=True)
+    concrete = OpenHandsAgentSettings.from_persisted(payload)
+
+    for loaded in (settings, concrete):
+        assert isinstance(loaded, OpenHandsAgentSettings)
+        assert (
+            None if loaded.tools is None else [t.name for t in loaded.tools]
+        ) == expected
+
+
 @pytest.mark.parametrize("schema_version", ["absent", None])
 @pytest.mark.parametrize(
     ("tools", "expected"),
@@ -1300,15 +1323,13 @@ def test_unversioned_settings_get_no_retired_switch_defaults(
     if schema_version is None:
         payload["schema_version"] = None
 
-    for settings in (
-        validate_agent_settings(payload),
-        OpenHandsAgentSettings.from_persisted(payload),
-    ):
-        assert isinstance(settings, OpenHandsAgentSettings)
-        assert settings.schema_version == 7
-        assert (
-            None if settings.tools is None else [t.name for t in settings.tools]
-        ) == expected
+    settings = validate_agent_settings(payload)
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == 7
+    assert (
+        None if settings.tools is None else [t.name for t in settings.tools]
+    ) == expected
 
 
 def test_unversioned_settings_still_fold_switches_they_carry() -> None:

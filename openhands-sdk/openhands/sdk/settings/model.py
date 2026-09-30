@@ -55,13 +55,21 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.builtins import (
+    BUILT_IN_TOOLS,
+    ClassifyAndSwitchLLMTool,
+    builtin_tool_class,
+)
 from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
     canonical_tool_name,
     fold_retired_tool_switches,
+    resolve_tool_specs,
 )
+from openhands.sdk.tool.registry import registered_tool_class
+from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
@@ -548,7 +556,7 @@ class AgentSettingsBase(BaseModel):
             return data
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-        payload = _migrate_agent_settings_payload(data)
+        payload = _migrate_agent_settings_payload(data, persisted=True)
         return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
@@ -713,8 +721,8 @@ def _warn_retired_tool_switches() -> None:
     warn_deprecated(
         "OpenHandsAgentSettings.enable_sub_agents and "
         "OpenHandsAgentSettings.enable_switch_llm_tool",
-        deprecated_in="1.50.0",
-        removed_in="1.55.0",
+        deprecated_in="1.51.0",
+        removed_in="1.56.0",
         details="Select task_tool_set and switch_llm in `tools` instead.",
     )
 
@@ -728,14 +736,19 @@ def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("agent_kind", "openhands") == "acp":
         migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
     else:
+        # Persisted `[]` predates `None` as the default.
+        if payload.get("tools") == []:
+            payload = {**payload, "tools": None}
         migrated = fold_retired_tool_switches(payload)
     migrated["schema_version"] = 7
     return migrated
 
 
-def _migrate_agent_settings_payload(data: Any) -> dict[str, Any]:
+def _migrate_agent_settings_payload(
+    data: Any, *, persisted: bool = False
+) -> dict[str, Any]:
     payload = _copy_persisted_payload(data)
-    if payload.get("schema_version") is not None:
+    if persisted or payload.get("schema_version") is not None:
         return _apply_persisted_migrations(
             payload,
             current_version=AGENT_SETTINGS_SCHEMA_VERSION,
@@ -1494,15 +1507,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-        from openhands.sdk.tool import Tool
-        from openhands.sdk.tool.builtins import (
-            BUILT_IN_TOOLS,
-            ClassifyAndSwitchLLMTool,
-            builtin_tool_class,
-        )
-        from openhands.sdk.tool.defaults import resolve_tool_specs
-        from openhands.sdk.tool.registry import registered_tool_class
-        from openhands.sdk.tool.tool import ToolDefinition
 
         def as_builtin(name: str) -> type[ToolDefinition] | None:
             builtin = builtin_tool_class(name)
@@ -2101,16 +2105,19 @@ def validate_agent_settings(
     data: Any,
     *,
     context: Mapping[str, Any] | None = None,
+    persisted: bool = False,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Load and validate an agent-settings payload.
 
     Persisted payloads are migrated to the current schema version before
     validation, including legacy ``agent_kind: "llm"`` payloads from before the
-    ``OpenHandsAgentSettings`` rename.
+    ``OpenHandsAgentSettings`` rename. Pass ``persisted=True`` for stored data,
+    so a payload without ``schema_version`` is migrated as a legacy row rather
+    than validated as a request.
     """
     if isinstance(data, OpenHandsAgentSettings | ACPAgentSettings):
         return data
-    payload = _migrate_agent_settings_payload(data)
+    payload = _migrate_agent_settings_payload(data, persisted=persisted)
     # The v1->v2 migration renames the deprecated ``agent_kind: 'llm'`` tag, but
     # only while advancing ``schema_version``. A payload already at the current
     # version keeps the ``llm`` tag and would dispatch to the deprecated
@@ -2119,6 +2126,11 @@ def validate_agent_settings(
     if payload.get("agent_kind") == "llm":
         payload["agent_kind"] = "openhands"
     return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
+
+
+def agent_settings_tools_unset(data: Mapping[str, Any]) -> bool:
+    """Whether an agent-settings payload leaves ``tools`` to the standard set."""
+    return _migrate_agent_settings_payload(data).get("tools") is None
 
 
 def _merge_patch(base: dict[str, Any], diff: Mapping[str, Any]) -> dict[str, Any]:

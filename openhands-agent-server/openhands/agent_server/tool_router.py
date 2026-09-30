@@ -1,8 +1,11 @@
 """Tool router for OpenHands SDK."""
 
+import asyncio
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.profile_launch import (
     can_probe_tools,
     configured_browser_available,
@@ -47,10 +50,10 @@ async def get_tool_catalog(request: Request) -> ToolCatalogResponse:
     Clients offer the ``user_selectable`` entries; ``usable`` says whether the
     runtime conversations run in can run the tool.
     """
-    config = getattr(request.app.state, "config", None)
-    if config is None:
-        return ToolCatalogResponse(tools=list_tool_catalog())
-    entries = list_tool_catalog(check_usable=can_probe_tools(config))
+    config: Config = request.app.state.config
+    entries = await asyncio.to_thread(
+        list_tool_catalog, check_usable=can_probe_tools(config)
+    )
     browser = configured_browser_available(config)
     if browser is not None:
         entries = [

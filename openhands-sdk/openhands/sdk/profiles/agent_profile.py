@@ -224,8 +224,8 @@ class OpenHandsAgentProfile(AgentProfileBase):
         warn_deprecated(
             "OpenHandsAgentProfile.enable_sub_agents and "
             "OpenHandsAgentProfile.enable_switch_llm_tool",
-            deprecated_in="1.50.0",
-            removed_in="1.55.0",
+            deprecated_in="1.51.0",
+            removed_in="1.56.0",
             details="Select task_tool_set and switch_llm in `tools` instead.",
         )
         return fold_retired_tool_switches(data, sparse=True)

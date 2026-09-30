@@ -125,9 +125,6 @@ def fold_retired_tool_switches(
     tools = folded.get("tools")
     if tools is not None and not isinstance(tools, list):
         return folded
-    # Persisted `[]` predates `None` as the default.
-    if not sparse and tools == []:
-        tools = folded["tools"] = None
     if tools is None and not sub_agents and switch_llm is not False:
         return folded
     # "The standard set plus/minus one tool" is not expressible, so pin it.
@@ -139,9 +136,9 @@ def fold_retired_tool_switches(
             switch_llm = True
     else:
         entries = [t if isinstance(t, Tool) else Tool.model_validate(t) for t in tools]
-        # A dense payload's `False` is only the default, which never removed a tool.
-        if sparse and sub_agents is False:
-            entries = _toggle(entries, SUB_AGENT_TOOL_NAME, False)
+        # A stored switch only ever fed the default set.
+        if sparse and sub_agents is not None:
+            entries = _toggle(entries, SUB_AGENT_TOOL_NAME, sub_agents)
     if switch_llm is not None:
         entries = _toggle(entries, SWITCH_LLM_TOOL_NAME, switch_llm)
     folded["tools"] = entries

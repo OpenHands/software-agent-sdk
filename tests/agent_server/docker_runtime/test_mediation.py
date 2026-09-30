@@ -237,6 +237,8 @@ async def test_settings_launch_follows_the_container_browser(
     [
         (DEFAULT_CONVERSATION_IMAGE, True),
         ("ghcr.io/openhands/agent-server:1.50.0-python", True),
+        ("ghcr.io/openhands/agent-server:latest-python-minimal", False),
+        ("ghcr.io/openhands/agent-server:abc1234-python-minimal-amd64", False),
         ("ghcr.io/openhands/agent-server@sha256:" + "0" * 64, True),
         ("ghcr.io/openhands/agent-server-custom:tag", False),
         ("example.com/custom:tag", False),

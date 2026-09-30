@@ -4314,6 +4314,18 @@ async def test_refresh_persisted_conversation_only_decrypts_requested_record(
         (False, True, None, ["terminal", "file_editor", "task_tracker"]),
         (True, True, [{"name": "terminal"}], ["terminal"]),
         (
+            True,
+            True,
+            [{"name": "browser_tool_set"}, {"name": "terminal"}],
+            ["browser_tool_set", "terminal"],
+        ),
+        (
+            True,
+            False,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+        (
             False,
             True,
             [{"name": "terminal"}, {"name": "browser_tool_set"}],

@@ -450,6 +450,7 @@ class PersistedSettings(BaseModel):
             data["agent_settings"] = validate_agent_settings(
                 coerced,
                 context=info.context,
+                persisted=True,
             )
 
         # Apply migrations for conversation_settings

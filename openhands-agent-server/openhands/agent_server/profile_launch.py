@@ -1,5 +1,6 @@
 """Deployment inputs an agent profile is resolved against."""
 
+import re
 from typing import NamedTuple
 
 from openhands.agent_server.config import (
@@ -14,10 +15,15 @@ from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     OpenHandsAgentSettings,
-    validate_agent_settings,
+    agent_settings_tools_unset,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool import BROWSER_TOOL_NAME, is_tool_usable, launch_tool_specs
+from openhands.sdk.tool import (
+    BROWSER_TOOL_NAME,
+    Tool,
+    is_tool_usable,
+    launch_tool_specs,
+)
 
 
 class ProfileLaunchInputs(NamedTuple):
@@ -42,12 +48,16 @@ def configured_browser_available(config: Config) -> bool | None:
     return None
 
 
+_BROWSERLESS_FLAVOR = re.compile(r"-minimal(-(amd64|arm64))?$")
+
+
 def _is_stock_image(image: str) -> bool:
     stock_repo = DEFAULT_CONVERSATION_IMAGE.rsplit(":", 1)[0]
     repo = image.split("@", 1)[0]
+    tag = ""
     if repo.rfind(":") > repo.rfind("/"):
-        repo = repo.rsplit(":", 1)[0]
-    return repo == stock_repo
+        repo, tag = repo.rsplit(":", 1)
+    return repo == stock_repo and not _BROWSERLESS_FLAVOR.search(tag)
 
 
 def _browser_available(configured: bool | None) -> bool:
@@ -73,16 +83,17 @@ def with_launch_browser(
     browser_available: bool | None = None,
 ) -> AgentBase:
     """Add or drop the browser on an agent built from ``agent_settings``."""
-    settings = validate_agent_settings(agent_settings)
-    if not isinstance(settings, OpenHandsAgentSettings) or not isinstance(agent, Agent):
+    if not isinstance(agent, Agent):
         return agent
-    launch = launch_tool_specs(
-        settings.tools, browser_available=_browser_available(browser_available)
+    has_browser = any(tool.name == BROWSER_TOOL_NAME for tool in agent.tools)
+    want_browser = _browser_available(browser_available) and (
+        has_browser or agent_settings_tools_unset(agent_settings)
     )
-    tools = [tool for tool in agent.tools if tool.name != BROWSER_TOOL_NAME]
-    tools += [tool for tool in launch if tool.name == BROWSER_TOOL_NAME]
-    if tools == list(agent.tools):
+    if want_browser == has_browser:
         return agent
+    tools = [tool for tool in agent.tools if tool.name != BROWSER_TOOL_NAME]
+    if want_browser:
+        tools.append(Tool(name=BROWSER_TOOL_NAME))
     return agent.model_copy(update={"tools": tools})
 
 

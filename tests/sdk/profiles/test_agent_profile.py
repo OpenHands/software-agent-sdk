@@ -326,7 +326,6 @@ def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> Non
     assert profile.disabled_skills == []
 
 
-@pytest.mark.parametrize("schema_version", [1, 2])
 @pytest.mark.parametrize(
     ("switches", "expected"),
     [
@@ -349,12 +348,10 @@ def test_v1_profile_migrates_legacy_embedded_skills(skills: list[object]) -> Non
         ),
     ],
 )
-def test_legacy_empty_tools_migrate_as_the_standard_set(
-    schema_version, switches, expected
-) -> None:
+def test_v1_seed_empty_tools_migrate_as_the_standard_set(switches, expected) -> None:
     profile = validate_agent_profile(
         {
-            "schema_version": schema_version,
+            "schema_version": 1,
             "name": "default",
             "llm_profile_ref": "default",
             "tools": [],
@@ -365,6 +362,34 @@ def test_legacy_empty_tools_migrate_as_the_standard_set(
     assert (
         None if profile.tools is None else [tool.name for tool in profile.tools]
     ) == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"schema_version": 1, "name": "default", "revision": 1},
+        {"schema_version": 1, "name": "bare", "revision": 0},
+        {"schema_version": 2, "name": "default", "revision": 0},
+        {"schema_version": 2, "name": "bare", "revision": 3},
+    ],
+)
+@pytest.mark.parametrize(
+    ("switches", "expected"),
+    [
+        ({"enable_switch_llm_tool": False}, []),
+        ({}, ["switch_llm"]),
+        ({"enable_sub_agents": True, "enable_switch_llm_tool": False}, []),
+    ],
+)
+def test_explicit_empty_tools_stay_explicit(
+    payload: dict[str, object], switches: dict[str, bool], expected: list[str]
+) -> None:
+    profile = validate_agent_profile(
+        {"llm_profile_ref": "default", "tools": [], **payload, **switches}
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert [tool.name for tool in profile.tools or []] == expected
+    assert profile.tools is not None
 
 
 def test_v2_sub_agents_switch_pins_the_standard_set_plus_delegation() -> None:
@@ -518,6 +543,12 @@ _PINNED_WITH_SUB_AGENTS = [
     ("switch", "value", "tools", "expected"),
     [
         ("enable_sub_agents", True, None, _PINNED_WITH_SUB_AGENTS),
+        (
+            "enable_sub_agents",
+            True,
+            [{"name": "terminal"}],
+            ["terminal", "task_tool_set"],
+        ),
         (
             "enable_sub_agents",
             False,

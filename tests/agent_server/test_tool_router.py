@@ -32,9 +32,11 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
+    from openhands.agent_server.config import Config
     from openhands.agent_server.tool_router import tool_router
 
     app = FastAPI()
+    app.state.config = Config()
     app.include_router(tool_router, prefix="/api")
     response = TestClient(app).get("/api/tools/catalog")
 
