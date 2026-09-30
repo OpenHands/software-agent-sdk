@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 import subprocess
 import time
 from contextlib import suppress
@@ -52,7 +53,9 @@ _SHARED_CACHE_ENV = {
     "npm_config_cache": f"{_SHARED_CACHE_DIR}/npm",
 }
 # Detached caches sit beside, not inside, the bind-mounted persistence dir.
+# Shed workspace dirs reuse it so the startup sweep reclaims them too.
 _PRUNED_CACHE_PREFIX = ".cache-pruned-"
+_DISK_BUDGET_INTERVAL = 300.0
 
 
 @dataclass(slots=True)
@@ -95,6 +98,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
+        self._disk_budget_task: asyncio.Task[None] | None = None
         self._reclaims: set[asyncio.Task[None]] = set()
 
     def configure_service(self, service: ConversationService) -> None:
@@ -138,6 +142,8 @@ class DockerConversationRegistry(ConversationRegistry):
         self._reclaim(await asyncio.to_thread(self.detach_stopped_caches))
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
+        if self.config.conversation_runtime_disk_budget:
+            self._disk_budget_task = asyncio.create_task(self._disk_budget_loop())
 
     def add_execution_routes(self, router: APIRouter) -> None:
         from openhands.agent_server.docker_runtime.routers import (
@@ -299,11 +305,12 @@ class DockerConversationRegistry(ConversationRegistry):
         await self._prune_cache(conversation_id)
 
     async def shutdown(self) -> None:
-        if self._eviction_task is not None:
-            self._eviction_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._eviction_task
-            self._eviction_task = None
+        for loop in (self._eviction_task, self._disk_budget_task):
+            if loop is not None:
+                loop.cancel()
+                with suppress(asyncio.CancelledError):
+                    await loop
+        self._eviction_task = self._disk_budget_task = None
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
         # Last, so it also covers the stops above; the next start sweeps them.
@@ -444,6 +451,101 @@ class DockerConversationRegistry(ConversationRegistry):
             try:
                 (persistence_dir / name).rename(target)
             except FileNotFoundError:
+                continue
+            detached.append(target)
+        return detached
+
+    async def _disk_budget_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_DISK_BUDGET_INTERVAL)
+            try:
+                await self._enforce_disk_budget()
+            except Exception:
+                logger.exception("error_enforcing_docker_runtime_disk_budget")
+
+    async def _enforce_disk_budget(self) -> None:
+        """Shed rebuildable workspace dirs of stopped runtimes, oldest first."""
+        budget = self.config.conversation_runtime_disk_budget
+        data_root = self.provisioning.data_root
+        if not budget or _disk_usage(data_root) <= budget:
+            return
+        shed = 0
+        for conversation_id in await asyncio.to_thread(self._runtimes_oldest_first):
+            if self.get(conversation_id) or self.is_starting(conversation_id):
+                continue
+            try:
+                ignored = await asyncio.to_thread(self._ignored_dirs, conversation_id)
+            except Exception:
+                logger.warning(
+                    "Failed to list rebuildable files of runtime %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+                continue
+            if not ignored:
+                continue
+            async with self._lock:
+                # Listing ran unlocked; a runtime resumed since keeps its files.
+                if self.get(conversation_id) or self.is_starting(conversation_id):
+                    continue
+                detached = self._detach_all(conversation_id, ignored)
+            await self._delete(detached)
+            shed += 1
+            if _disk_usage(data_root) <= budget:
+                break
+        logger.info(
+            "Runtime disk above %.0f%% budget: shed rebuildable files of %d "
+            "stopped runtimes, now at %.0f%%",
+            budget * 100,
+            shed,
+            _disk_usage(data_root) * 100,
+        )
+
+    def _runtimes_oldest_first(self) -> list[UUID]:
+        activity: list[tuple[float, UUID]] = []
+        for runtime_dir in self.provisioning.data_root.iterdir():
+            try:
+                conversation_id = UUID(hex=runtime_dir.name)
+            except ValueError:
+                continue
+            if runtime_dir.is_symlink() or not runtime_dir.is_dir():
+                continue
+            state = self.conversation_dir(conversation_id) / "base_state.json"
+            try:
+                last = state.stat().st_mtime
+            except OSError:
+                last = runtime_dir.stat().st_mtime
+            activity.append((last, conversation_id))
+        return [conversation_id for _, conversation_id in sorted(activity)]
+
+    def _ignored_dirs(self, conversation_id: UUID) -> list[Path]:
+        """Gitignored dirs of a workspace this registry provisioned itself."""
+        identity = self.provisioning.load_optional(conversation_id)
+        if identity is None or identity.workspace_path.is_symlink():
+            return []
+        workspace = identity.workspace_path.resolve()
+        # A caller-supplied workspace is someone's checkout, not ours to prune.
+        runtime_dir = self.provisioning.runtime_dir(conversation_id).resolve()
+        if not workspace.is_relative_to(runtime_dir):
+            return []
+        repos = [workspace, *(git.parent for git in workspace.glob("*/.git"))]
+        return [
+            path
+            for repo in repos
+            if (repo / ".git").exists()
+            for path in _git_ignored_dirs(repo)
+            if path.parent.resolve().is_relative_to(workspace)
+        ]
+
+    def _detach_all(self, conversation_id: UUID, paths: list[Path]) -> list[Path]:
+        runtime_dir = self.provisioning.runtime_dir(conversation_id)
+        detached: list[Path] = []
+        for path in paths:
+            target = runtime_dir / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
+            try:
+                path.rename(target)
+            except OSError:
+                logger.warning("Failed to shed %s", path, exc_info=True)
                 continue
             detached.append(target)
         return detached
@@ -600,6 +702,47 @@ def _validate_shared_cache_dir(path: Path | None) -> Path | None:
             "and not a symlink"
         )
     return path.resolve()
+
+
+def _disk_usage(path: Path) -> float:
+    usage = shutil.disk_usage(path)
+    return usage.used / (usage.used + usage.free)
+
+
+def _git_ignored_dirs(repo: Path) -> list[Path]:
+    result = subprocess.run(
+        [
+            "git",
+            "--no-optional-locks",
+            # The repo's own config is agent-writable; fsmonitor would run it.
+            "-c",
+            "core.fsmonitor=false",
+            "-C",
+            str(repo),
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ],
+        env=sanitized_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        path
+        for entry in result.stdout.split("\0")
+        if entry.endswith("/")
+        and (path := repo / entry.rstrip("/")).is_dir()
+        and not path.is_symlink()
+        # An ignored checkout is someone's work, not build output.
+        and not (path / ".git").exists()
+    ]
 
 
 def _remove(path: Path) -> None:

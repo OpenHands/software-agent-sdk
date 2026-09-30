@@ -384,6 +384,20 @@ class Config(BaseModel):
             "prunable cache per conversation."
         ),
     )
+    conversation_runtime_disk_budget: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description=(
+            "Fraction of the runtime-data filesystem that may be in use before "
+            "stopped Docker conversations shed the gitignored directories of "
+            "their workspaces (node_modules, .venv, build output), least "
+            "recently active first. Tracked files, untracked work and ignored "
+            "files are kept; a resumed conversation reinstalls what was shed. "
+            "Only workspaces provisioned inside runtime-data are touched. Unset "
+            "(the default) disables it."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
