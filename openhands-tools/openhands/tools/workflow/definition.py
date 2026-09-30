@@ -173,7 +173,7 @@ class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
 class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
     """Tool set that creates the dynamic workflow tool."""
 
-    catalog_description: ClassVar[str] = "Run the workflows defined for this project."
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(
