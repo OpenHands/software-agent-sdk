@@ -42,8 +42,13 @@ def _clean_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _fresh_vscode_service(monkeypatch):
-    """/api/init updates the VSCode service singleton; give each test its own."""
+    """/api/init updates the VSCode service singleton; give each test its own.
+
+    The service takes its token from the default config, which is loaded at
+    import time, before ``_clean_env`` runs, so reset that too.
+    """
     monkeypatch.setattr("openhands.agent_server.vscode_service._vscode_service", None)
+    monkeypatch.setattr("openhands.agent_server.config._default_config", None)
 
 
 def _reset_conversation_singleton():
