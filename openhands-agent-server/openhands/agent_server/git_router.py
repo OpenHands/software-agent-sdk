@@ -1,12 +1,24 @@
 """Git router for OpenHands SDK."""
 
 import asyncio
+import base64
 import functools
 import logging
+import re
 from pathlib import Path
+from typing import Literal, Self
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query
+import httpx
+from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.persistence import (
+    SECRET_NAME_PATTERN,
+    FileSecretsStore,
+    get_secrets_store,
+)
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
@@ -38,6 +50,211 @@ _COMMIT_QUERY_DESCRIPTION = (
 # Hex-only so a path/query value can never reach git argv as an option
 # (list-args protect against shell injection, not option injection).
 _SHA_PATTERN = r"^[0-9a-fA-F]{4,64}$"
+
+RepositoryProvider = Literal["github", "gitlab", "bitbucket"]
+RepositoryValidationStatus = Literal[
+    "accessible", "missing_credentials", "denied", "not_found", "unavailable"
+]
+
+_REPOSITORY_IDENTIFIER_PATTERN = (
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)+$"
+)
+_REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*$"
+_MAX_CREDENTIAL_NAMES = 5
+_PROVIDER_TIMEOUT_SECONDS = 5.0
+_PROVIDER_API_BASE_URLS: dict[RepositoryProvider, str] = {
+    "github": "https://api.github.com",
+    "gitlab": "https://gitlab.com/api/v4",
+    "bitbucket": "https://api.bitbucket.org/2.0",
+}
+
+
+class ValidateRepositoryRequest(BaseModel):
+    """Bounded input for checking access to a hosted Git repository."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: RepositoryProvider
+    repository: str = Field(
+        min_length=3,
+        max_length=255,
+        description="Provider-local owner/repository, including subgroups on GitLab.",
+    )
+    ref: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Branch, tag, or commit to check through the provider API.",
+    )
+    credential_names: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_CREDENTIAL_NAMES,
+        description=(
+            "Stored secret names in priority order; the first nonempty value is used. "
+            "An empty list checks anonymous access."
+        ),
+    )
+
+    @field_validator("repository")
+    @classmethod
+    def _validate_repository(cls, repository: str) -> str:
+        if not re.fullmatch(_REPOSITORY_IDENTIFIER_PATTERN, repository):
+            raise ValueError("repository must be a provider repository identifier")
+        return repository
+
+    @field_validator("ref")
+    @classmethod
+    def _validate_ref(cls, ref: str | None) -> str | None:
+        if ref is not None and not re.fullmatch(_REF_PATTERN, ref):
+            raise ValueError("ref must be a bounded git ref")
+        return ref
+
+    @field_validator("credential_names")
+    @classmethod
+    def _validate_credential_names(cls, credential_names: list[str]) -> list[str]:
+        if len(set(credential_names)) != len(credential_names):
+            raise ValueError("credential_names must not contain duplicates")
+        if not all(SECRET_NAME_PATTERN.fullmatch(name) for name in credential_names):
+            raise ValueError("credential_names must be valid secret names")
+        return credential_names
+
+    @model_validator(mode="after")
+    def _validate_provider_repository_shape(self) -> Self:
+        if self.provider in {"github", "bitbucket"} and self.repository.count("/") != 1:
+            raise ValueError(
+                "repository must have owner/repository form for this provider"
+            )
+        return self
+
+
+class ValidateRepositoryResponse(BaseModel):
+    """Sanitized provider API verdict, not a guarantee that git clone will work.
+
+    Providers may return ``not_found`` for private repositories. ``unavailable``
+    means the check is inconclusive, including redirects, throttling, and transport
+    failures; it does not imply that retrying will succeed.
+    """
+
+    status: RepositoryValidationStatus
+
+
+def _provider_repository_url(
+    provider: RepositoryProvider, repository: str, ref: str | None
+) -> str:
+    """Build a fixed-host URL, encoding GitLab project IDs and refs as single parts."""
+    if provider == "github":
+        path = f"/repos/{quote(repository, safe='/')}"
+        ref_endpoint = "commits"
+    elif provider == "gitlab":
+        path = f"/projects/{quote(repository, safe='')}"
+        ref_endpoint = "repository/commits"
+    else:
+        path = f"/repositories/{quote(repository, safe='/')}"
+        ref_endpoint = "commit"
+    if ref is not None:
+        path += f"/{ref_endpoint}/{quote(ref, safe='')}"
+    return f"{_PROVIDER_API_BASE_URLS[provider]}{path}"
+
+
+def _provider_auth_headers(
+    provider: RepositoryProvider, token: str | None
+) -> dict[str, str]:
+    """Return the provider authorization header used by repository access."""
+    if token is None:
+        return {}
+    if provider == "gitlab":
+        # OAuth tokens require Bearer; GitLab access tokens also accept it.
+        return {"Authorization": f"Bearer {token}"}
+    if provider == "bitbucket":
+        # The SDK's clone path uses ``x-token-auth`` for a bare Bitbucket
+        # token, while the UI also accepts an explicit ``username:token``.
+        # Preserve either spelling as HTTP Basic credentials for the API check.
+        credentials = token if ":" in token else f"x-token-auth:{token}"
+        encoded = base64.b64encode(credentials.encode()).decode("ascii")
+        return {"Authorization": f"Basic {encoded}"}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _resolve_provider_credential(
+    store: FileSecretsStore, credential_names: list[str]
+) -> str | None:
+    """Read the first nonempty secret in priority order; run outside the event loop.
+
+    Later names are fallbacks for missing values, not retries after API rejection.
+    """
+    for name in credential_names:
+        token = store.get_secret(name)
+        if token:
+            return token
+    return None
+
+
+@git_router.post(
+    "/validate-repository",
+    response_model=ValidateRepositoryResponse,
+)
+async def validate_repository(
+    request: Request,
+    repository_request: ValidateRepositoryRequest,
+) -> ValidateRepositoryResponse:
+    """Check provider API access using named secrets or anonymous access.
+
+    Provider I/O has an overall deadline. Response bodies are discarded and
+    redirects are not followed, so credentials stay on the configured API host.
+    """
+    update_last_execution_time()
+    token: str | None = None
+    if repository_request.credential_names:
+        try:
+            config = get_config(request)
+            # File-backed stores use a synchronous lock; keep both initialization
+            # and the credential read off the request event loop.
+            store = await asyncio.to_thread(get_secrets_store, config)
+            token = await asyncio.to_thread(
+                _resolve_provider_credential,
+                store,
+                repository_request.credential_names,
+            )
+        except (HTTPException, OSError, RuntimeError, ValueError):
+            return ValidateRepositoryResponse(status="unavailable")
+        if token is None:
+            return ValidateRepositoryResponse(status="missing_credentials")
+
+    try:
+        url = _provider_repository_url(
+            repository_request.provider,
+            repository_request.repository,
+            repository_request.ref,
+        )
+        headers = _provider_auth_headers(repository_request.provider, token)
+        # The verdict only needs the status and headers. Streaming avoids
+        # buffering provider response bodies that may contain sensitive details.
+        async with asyncio.timeout(_PROVIDER_TIMEOUT_SECONDS):
+            async with httpx.AsyncClient(
+                timeout=_PROVIDER_TIMEOUT_SECONDS,
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                async with client.stream("GET", url, headers=headers) as response:
+                    response_status = response.status_code
+                    response_headers = response.headers
+    except (httpx.TransportError, TimeoutError, UnicodeError):
+        return ValidateRepositoryResponse(status="unavailable")
+
+    if 200 <= response_status < 300:
+        return ValidateRepositoryResponse(status="accessible")
+    if response_status == 401:
+        return ValidateRepositoryResponse(status="denied")
+    if response_status == 403:
+        if (
+            response_headers.get("retry-after")
+            or response_headers.get("x-ratelimit-remaining") == "0"
+        ):
+            return ValidateRepositoryResponse(status="unavailable")
+        return ValidateRepositoryResponse(status="denied")
+    if response_status == 404:
+        return ValidateRepositoryResponse(status="not_found")
+    return ValidateRepositoryResponse(status="unavailable")
 
 
 async def _get_git_changes(path: str, ref: str | None) -> list[GitChange]:
