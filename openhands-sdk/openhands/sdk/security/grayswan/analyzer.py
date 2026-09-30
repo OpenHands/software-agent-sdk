@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from pydantic import Field, PrivateAttr, SecretStr, model_validator
 
-from openhands.sdk.event import ActionEvent, LLMConvertibleEvent
+from openhands.sdk.event import ActionEvent, LLMConvertibleEvent, SystemPromptEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.grayswan.utils import convert_events_to_openai_messages
@@ -248,10 +248,19 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
             return SecurityRisk.UNKNOWN
 
         try:
-            # Limit to recent history
+            # Limit to recent history, but always keep the leading SystemPromptEvent
+            # so the request still opens with a system message (repo invariant).
             recent_events = self._events
             if len(recent_events) > self.history_limit:
-                recent_events = recent_events[-self.history_limit :]
+                window = recent_events[-self.history_limit :]
+                # Re-include the leading system prompt if the tail window dropped it.
+                if recent_events and isinstance(recent_events[0], SystemPromptEvent):
+                    if not any(isinstance(e, SystemPromptEvent) for e in window):
+                        recent_events = [recent_events[0], *window]
+                    else:
+                        recent_events = window
+                else:
+                    recent_events = window
 
             # Convert events to OpenAI message format
             events_to_process: list[LLMConvertibleEvent] = list(recent_events) + [
@@ -262,6 +271,19 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
             if not openai_messages:
                 logger.warning("No valid messages to analyze")
                 return SecurityRisk.UNKNOWN
+
+            # Guarantee the repo invariant: the request must open with a system
+            # message. If no SystemPromptEvent was available (e.g. it was never
+            # set or the bounded window excluded it and none could be re-added),
+            # synthesize a minimal system message so the request is system-first.
+            if openai_messages[0].get("role") != "system":
+                openai_messages.insert(
+                    0,
+                    {
+                        "role": "system",
+                        "content": "You are a security analysis assistant.",
+                    },
+                )
 
             logger.debug(
                 f"Converted {len(events_to_process)} events into "

@@ -1,7 +1,7 @@
 import { AgentProfilesClient } from './agent-profiles-client';
 import { BashClient } from './bash-client';
+import { CanvasExtensionsClient } from './canvas-extensions-client';
 import { ConversationClient } from './conversation-client';
-import { DesktopClient } from './desktop-client';
 import { FileClient } from './file-client';
 import { HooksClient } from './hooks-client';
 import { HttpClient, type ResponseType } from './http-client';
@@ -125,6 +125,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly conversations: ConversationClient;
   readonly files: FileClient;
   readonly bash: BashClient;
+  readonly canvasExtensions: CanvasExtensionsClient;
   readonly settings: SettingsClient;
   readonly profiles: ProfilesClient;
   readonly agentProfiles: AgentProfilesClient;
@@ -136,7 +137,6 @@ export class AgentServerClient extends OpenHandsClient {
   readonly plugins: PluginsClient;
   readonly tools: ToolClient;
   readonly vscode: VSCodeClient;
-  readonly desktop: DesktopClient;
   readonly shared: SharedClient;
   readonly llm: LLMMetadataClient;
   readonly workspaces: WorkspacesClient;
@@ -160,6 +160,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.conversations = new ConversationClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.bash = new BashClient(clientOptions);
+    this.canvasExtensions = new CanvasExtensionsClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.profiles = new ProfilesClient(clientOptions);
     this.agentProfiles = new AgentProfilesClient(clientOptions);
@@ -171,7 +172,6 @@ export class AgentServerClient extends OpenHandsClient {
     this.plugins = new PluginsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
     this.vscode = new VSCodeClient(clientOptions);
-    this.desktop = new DesktopClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);

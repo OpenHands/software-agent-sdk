@@ -352,7 +352,11 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_backend_manager = AsyncMock()
+            mock_app.state = SimpleNamespace(
+                config=Config(),
+                canvas_extension_backend_manager=mock_backend_manager,
+            )
 
             async with api_lifespan(mock_app):
                 # Exit the context to trigger shutdown
@@ -361,6 +365,7 @@ class TestServiceParallelization:
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
             mock_tool_preload_service.stop.assert_called_once()
+            mock_backend_manager.shutdown.assert_awaited_once()
 
     async def test_services_handle_none_values(self):
         """Test that the lifespan handles None service values correctly."""
@@ -387,6 +392,37 @@ class TestServiceParallelization:
 
             # Verify conversation service was set up
             assert mock_app.state.conversation_service == mock_conversation_service
+
+    async def test_registry_starts_before_conversation_recovery(self):
+        events = []
+        registry = SimpleNamespace(
+            configure_service=lambda _service: events.append("configure"),
+            start=AsyncMock(side_effect=lambda: events.append("registry")),
+            shutdown=AsyncMock(),
+        )
+        service = AsyncMock()
+        service.__aenter__.side_effect = lambda: events.append("service") or service
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service",
+                return_value=None,
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(
+                config=Config(), conversation_registry=registry
+            )
+
+            async with api_lifespan(mock_app):
+                pass
+
+        assert events[:3] == ["configure", "registry", "service"]
 
     async def test_lifespan_defaults_and_restores_tmux_tmpdir(
         self, tmp_path, monkeypatch

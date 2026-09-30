@@ -43,6 +43,13 @@ interface AgentProfileBase {
    * `null` = all; `[]` = none; a non-null list = filter to the named keys.
    */
   mcp_server_refs: string[] | null;
+  /**
+   * Which of the user's saved secrets to expose. Names only — the values live
+   * in the secrets store. `null` = all; `[]` = none; a non-null list = filter
+   * to the named keys. Strict: nothing is added back, so an ACP profile must
+   * list its own provider credential to receive it.
+   */
+  secret_refs?: string[] | null;
 }
 
 /** `agent_kind="openhands"` variant — references an LLM profile by name. */
@@ -118,6 +125,9 @@ export interface AgentProfileDiagnostics {
   valid: boolean;
   errors: string[];
 
+  /** Secret scope; `null` = unrestricted. */
+  secret_refs?: string[] | null;
+
   // OpenHands LLM reference.
   llm_profile_ref: string | null;
   llm_profile_resolved: boolean;
@@ -137,11 +147,19 @@ export interface AgentProfileDiagnostics {
   resolved_settings: Record<string, unknown> | null;
 }
 
-// ── Provenance (Part B — lands with PR #3784) ────────────────────────────────
+// ── Launch provenance ──────────────────────────────────────────────────────
+
+/** Mirrors `openhands.sdk.profiles.agent_profile.LaunchedAgentProfile`. */
+export interface LaunchedAgentProfile {
+  agent_profile_id: string;
+  revision: number;
+  /** Launch-time secret allow-list, also enforced on resume. */
+  secret_refs?: string[] | null;
+}
 
 /**
  * Provenance snapshot recorded when a profile launches a conversation.
- * Mirrors `openhands.sdk.profiles.agent_profile.LaunchedProfile`.
+ * @deprecated Use LaunchedAgentProfile, which mirrors the server payload.
  *
  * Stored on the conversation so clients can identify which profile is current
  * without fragile settings-comparison. See epic #3713.

@@ -134,7 +134,7 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     with (
         patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(resolved_agent, launched),
+            return_value=(resolved_agent, launched, None),
         ) as resolve_profile,
         patch.object(
             service,

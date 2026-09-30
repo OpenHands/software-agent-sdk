@@ -246,9 +246,7 @@ class VisionInspectExecutor(ToolExecutor):
                 ],
             ),
         ]
-        from openhands.sdk.agent.utils import make_llm_completion
-
-        response = make_llm_completion(vision_llm, messages, tools=[])
+        response = vision_llm.generate(messages=messages, store=False)
         answer = next(
             (
                 content.text
