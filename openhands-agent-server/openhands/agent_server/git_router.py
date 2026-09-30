@@ -33,6 +33,7 @@ from openhands.sdk.workspace.repo import GitProvider
 
 
 git_router = APIRouter(prefix="/git", tags=["Git"])
+runtime_git_router = APIRouter(prefix="/git", tags=["Git"])
 logger = logging.getLogger(__name__)
 
 
@@ -151,10 +152,11 @@ async def git_repositories_search(
     except UnsupportedGitProviderError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except GitProviderAPIError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
 
 
 @git_router.get("/changes")
+@runtime_git_router.get("/changes")
 async def git_changes_query(
     path: str = Query(..., description="The git repository path"),
     ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
@@ -171,6 +173,7 @@ async def git_changes_query(
 
 
 @git_router.get("/diff")
+@runtime_git_router.get("/diff")
 async def git_diff_query(
     path: str = Query(..., description="The file path to get diff for"),
     ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
@@ -196,6 +199,7 @@ async def git_diff_query(
 
 
 @git_router.get("/commits")
+@runtime_git_router.get("/commits")
 async def git_commits_query(
     path: str = Query(..., description="The git repository path"),
     limit: int = Query(50, ge=1, le=200, description="Maximum commits to return"),
@@ -210,6 +214,7 @@ async def git_commits_query(
 
 
 @git_router.get("/commits/{sha}/changes")
+@runtime_git_router.get("/commits/{sha}/changes")
 async def git_commit_changes_query(
     sha: str = PathParam(..., pattern=_SHA_PATTERN, description="Commit SHA"),
     path: str = Query(..., description="The git repository path"),

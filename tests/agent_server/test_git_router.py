@@ -5,10 +5,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.git_provider_service import GitProviderAPIError
+from openhands.agent_server.runtime_router import create_runtime_router
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.models import (
     GitChange,
@@ -105,6 +108,40 @@ def test_git_repositories_search_reports_missing_token(client):
         "next_page_id": None,
         "missing_token": True,
     }
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 502, 504])
+def test_git_repositories_search_preserves_provider_error_status(client, status_code):
+    """Provider auth/retry failures should stay distinguishable."""
+    with patch(
+        "openhands.agent_server.git_router.search_provider_repositories",
+        new_callable=AsyncMock,
+    ) as search_provider_repositories:
+        search_provider_repositories.side_effect = GitProviderAPIError(
+            "GitHub repository search failed", status_code=status_code
+        )
+
+        response = client.get(
+            "/api/git/repositories/search", params={"provider": "github"}
+        )
+
+    assert response.status_code == status_code
+    if status_code < 500:
+        assert response.json() == {"detail": "GitHub repository search failed"}
+
+
+def test_runtime_git_router_excludes_repository_search():
+    """Repository search uses the global secrets store, not conversation secrets."""
+    paths = {
+        route.path
+        for route in create_runtime_router().routes
+        if isinstance(route, APIRoute)
+    }
+
+    assert (
+        "/conversations/{runtime_conversation_id}/git/repositories/search" not in paths
+    )
+    assert "/conversations/{runtime_conversation_id}/git/changes" in paths
 
 
 # =============================================================================

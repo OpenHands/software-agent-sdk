@@ -1,8 +1,7 @@
 """Remote git provider repository discovery for Agent Server."""
 
-from __future__ import annotations
-
 import re
+from typing import Final
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -16,17 +15,23 @@ from openhands.sdk.workspace.repo import PROVIDER_TOKEN_NAMES, GitProvider
 
 logger = get_logger(__name__)
 
-_GITHUB_API_URL = "https://api.github.com"
-_GITHUB_TOKEN_CANDIDATES = (
+_GITHUB_API_URL: Final[str] = "https://api.github.com"
+_GITHUB_USER_REPOS_PATH: Final[str] = "/user/repos"
+_GITHUB_ACCEPT_HEADER: Final[str] = "application/vnd.github+json"
+_GITHUB_API_VERSION: Final[str] = "2022-11-28"
+_GITHUB_REPOSITORY_SORT: Final[str] = "pushed"
+_GITHUB_REPOSITORY_AFFILIATION: Final[str] = "owner,collaborator,organization_member"
+_GITHUB_REQUEST_TIMEOUT_SECS: Final[int] = 15
+_GITHUB_TOKEN_CANDIDATES: Final[tuple[str, ...]] = (
     PROVIDER_TOKEN_NAMES[GitProvider.GITHUB],
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "github",
 )
-_PROVIDER_TOKEN_CANDIDATES: dict[GitProvider, tuple[str, ...]] = {
+_PROVIDER_TOKEN_CANDIDATES: Final[dict[GitProvider, tuple[str, ...]]] = {
     GitProvider.GITHUB: _GITHUB_TOKEN_CANDIDATES,
 }
-_LINK_PART_RE = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
+_LINK_PART_RE: Final[re.Pattern[str]] = re.compile(r'<([^>]+)>;\s*rel="([^"]+)"')
 
 
 class GitProviderRepositorySearchError(Exception):
@@ -39,6 +44,10 @@ class UnsupportedGitProviderError(GitProviderRepositorySearchError):
 
 class GitProviderAPIError(GitProviderRepositorySearchError):
     """Raised when a provider API request fails."""
+
+    def __init__(self, message: str, *, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 async def search_provider_repositories(
@@ -72,8 +81,7 @@ async def search_provider_repositories(
 def _resolve_provider_token(config: Config, provider: GitProvider) -> str | None:
     store = get_secrets_store(config)
     for name in _PROVIDER_TOKEN_CANDIDATES.get(provider, ()):  # pragma: no branch
-        value = store.get_secret(name)
-        if value:
+        if value := store.get_secret(name):
             return value
     return None
 
@@ -85,59 +93,106 @@ async def _search_github_repositories(
     limit: int,
     page_id: str | None,
 ) -> GitProviderRepositoryPage:
-    page = _parse_github_page_id(page_id)
-    params: dict[str, str | int] = {
-        "per_page": limit,
-        "page": page,
-        "sort": "pushed",
-        "affiliation": "owner,collaborator,organization_member",
-    }
+    page, offset = _parse_github_page_id(page_id)
+    normalized_query = query.casefold() if query else None
     headers = {
-        "Accept": "application/vnd.github+json",
+        "Accept": _GITHUB_ACCEPT_HEADER,
         "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
+        "X-GitHub-Api-Version": _GITHUB_API_VERSION,
     }
 
-    try:
-        async with httpx.AsyncClient(
-            base_url=_GITHUB_API_URL,
-            headers=headers,
-            timeout=15,
-        ) as client:
-            response = await client.get("/user/repos", params=params)
-            response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code
-        logger.warning("GitHub repository search failed: status=%s", status_code)
-        raise GitProviderAPIError("GitHub repository search failed") from e
-    except httpx.HTTPError as e:
-        logger.warning("GitHub repository search failed: %s", type(e).__name__)
-        raise GitProviderAPIError("GitHub repository search failed") from e
+    items: list[GitProviderRepository] = []
+    next_page_id: str | None = None
+    async with httpx.AsyncClient(
+        base_url=_GITHUB_API_URL,
+        headers=headers,
+        timeout=_GITHUB_REQUEST_TIMEOUT_SECS,
+    ) as client:
+        while len(items) < limit:
+            response = await _get_github_repository_page(client, page, limit)
+            page_items = [_github_repository_to_model(item) for item in response.json()]
+            if normalized_query:
+                page_items = [
+                    item
+                    for item in page_items
+                    if normalized_query in item.full_name.casefold()
+                ]
+            if offset:
+                page_items = page_items[offset:]
 
-    items = [_github_repository_to_model(item) for item in response.json()]
-    if query:
-        normalized_query = query.casefold()
-        items = [
-            item for item in items if normalized_query in item.full_name.casefold()
-        ]
+            remaining = limit - len(items)
+            items.extend(page_items[:remaining])
+            next_page_id = _next_github_page_id(response.headers.get("link"))
+            if normalized_query is None:
+                break
+            if len(page_items) > remaining:
+                return GitProviderRepositoryPage(
+                    items=items,
+                    next_page_id=f"{page}:{offset + remaining}",
+                    missing_token=False,
+                )
+
+            if next_page_id is None:
+                break
+            page, offset = _parse_github_page_id(next_page_id)
 
     return GitProviderRepositoryPage(
         items=items,
-        next_page_id=_next_github_page_id(response.headers.get("link")),
+        next_page_id=next_page_id,
         missing_token=False,
     )
 
 
-def _parse_github_page_id(page_id: str | None) -> int:
-    if page_id is None:
-        return 1
+async def _get_github_repository_page(
+    client: httpx.AsyncClient, page: int, limit: int
+) -> httpx.Response:
+    params: dict[str, str | int] = {
+        "per_page": limit,
+        "page": page,
+        "sort": _GITHUB_REPOSITORY_SORT,
+        "affiliation": _GITHUB_REPOSITORY_AFFILIATION,
+    }
     try:
-        page = int(page_id)
+        response = await client.get(_GITHUB_USER_REPOS_PATH, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code
+        logger.warning("GitHub repository search failed: status=%s", status_code)
+        raise GitProviderAPIError(
+            "GitHub repository search failed",
+            status_code=_map_github_status_code(status_code),
+        ) from e
+    except httpx.TimeoutException as e:
+        logger.warning("GitHub repository search timed out")
+        raise GitProviderAPIError(
+            "GitHub repository search timed out", status_code=504
+        ) from e
+    except httpx.HTTPError as e:
+        logger.warning("GitHub repository search failed: %s", type(e).__name__)
+        raise GitProviderAPIError("GitHub repository search failed") from e
+    return response
+
+
+def _parse_github_page_id(page_id: str | None) -> tuple[int, int]:
+    if page_id is None:
+        return 1, 0
+    try:
+        raw_page, _, raw_offset = page_id.partition(":")
+        page = int(raw_page)
+        offset = int(raw_offset) if raw_offset else 0
     except ValueError as e:
-        raise GitProviderAPIError("Invalid repository page_id") from e
-    if page < 1:
-        raise GitProviderAPIError("Invalid repository page_id")
-    return page
+        raise GitProviderAPIError("Invalid repository page_id", status_code=400) from e
+    if page < 1 or offset < 0:
+        raise GitProviderAPIError("Invalid repository page_id", status_code=400)
+    return page, offset
+
+
+def _map_github_status_code(status_code: int) -> int:
+    if status_code in {401, 403}:
+        return status_code
+    if status_code >= 500:
+        return 502
+    return 400
 
 
 def _next_github_page_id(link_header: str | None) -> str | None:
