@@ -21,6 +21,7 @@ _GITHUB_ACCEPT_HEADER: Final[str] = "application/vnd.github+json"
 _GITHUB_API_VERSION: Final[str] = "2022-11-28"
 _GITHUB_REPOSITORY_SORT: Final[str] = "pushed"
 _GITHUB_REPOSITORY_AFFILIATION: Final[str] = "owner,collaborator,organization_member"
+_GITHUB_REPOSITORY_PAGE_SIZE: Final[int] = 100
 _GITHUB_REQUEST_TIMEOUT_SECS: Final[int] = 15
 _GITHUB_TOKEN_CANDIDATES: Final[tuple[str, ...]] = (
     PROVIDER_TOKEN_NAMES[GitProvider.GITHUB],
@@ -109,7 +110,7 @@ async def _search_github_repositories(
         timeout=_GITHUB_REQUEST_TIMEOUT_SECS,
     ) as client:
         while len(items) < limit:
-            response = await _get_github_repository_page(client, page, limit)
+            response = await _get_github_repository_page(client, page)
             page_items = [_github_repository_to_model(item) for item in response.json()]
             if normalized_query:
                 page_items = [
@@ -123,14 +124,14 @@ async def _search_github_repositories(
             remaining = limit - len(items)
             items.extend(page_items[:remaining])
             next_page_id = _next_github_page_id(response.headers.get("link"))
-            if normalized_query is None:
-                break
             if len(page_items) > remaining:
                 return GitProviderRepositoryPage(
                     items=items,
                     next_page_id=f"{page}:{offset + remaining}",
                     missing_token=False,
                 )
+            if normalized_query is None:
+                break
 
             if next_page_id is None:
                 break
@@ -144,10 +145,10 @@ async def _search_github_repositories(
 
 
 async def _get_github_repository_page(
-    client: httpx.AsyncClient, page: int, limit: int
+    client: httpx.AsyncClient, page: int
 ) -> httpx.Response:
     params: dict[str, str | int] = {
-        "per_page": limit,
+        "per_page": _GITHUB_REPOSITORY_PAGE_SIZE,
         "page": page,
         "sort": _GITHUB_REPOSITORY_SORT,
         "affiliation": _GITHUB_REPOSITORY_AFFILIATION,

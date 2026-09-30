@@ -133,7 +133,7 @@ async def test_search_provider_repositories_maps_github_repositories(monkeypatch
         (
             "/user/repos",
             {
-                "per_page": 30,
+                "per_page": 100,
                 "page": 2,
                 "sort": "pushed",
                 "affiliation": "owner,collaborator,organization_member",
@@ -178,7 +178,7 @@ async def test_search_provider_repositories_filters_across_pages(monkeypatch):
         (
             "/user/repos",
             {
-                "per_page": 2,
+                "per_page": 100,
                 "page": 1,
                 "sort": "pushed",
                 "affiliation": "owner,collaborator,organization_member",
@@ -187,7 +187,7 @@ async def test_search_provider_repositories_filters_across_pages(monkeypatch):
         (
             "/user/repos",
             {
-                "per_page": 2,
+                "per_page": 100,
                 "page": 2,
                 "sort": "pushed",
                 "affiliation": "owner,collaborator,organization_member",
@@ -235,6 +235,43 @@ async def test_search_provider_repositories_rejects_invalid_page_id(monkeypatch)
         )
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_search_provider_repositories_cursor_survives_limit_changes(
+    monkeypatch,
+):
+    _patch_provider_token(monkeypatch)
+    repos = [_repo(f"OpenHands/r{i:02d}", i) for i in range(10)]
+    captured = _patch_github_client(
+        monkeypatch,
+        [FakeResponse(repos), FakeResponse(repos)],
+    )
+
+    first = await search_provider_repositories(
+        Config(), GitProvider.GITHUB, query="OpenHands/r", limit=4
+    )
+    second = await search_provider_repositories(
+        Config(),
+        GitProvider.GITHUB,
+        query="OpenHands/r",
+        limit=2,
+        page_id=first.next_page_id,
+    )
+
+    assert [item.full_name for item in first.items] == [
+        "OpenHands/r00",
+        "OpenHands/r01",
+        "OpenHands/r02",
+        "OpenHands/r03",
+    ]
+    assert first.next_page_id == "1:4"
+    assert [item.full_name for item in second.items] == [
+        "OpenHands/r04",
+        "OpenHands/r05",
+    ]
+    assert second.next_page_id == "1:6"
+    assert [params["per_page"] for _path, params in captured["calls"]] == [100, 100]
 
 
 @pytest.mark.asyncio
