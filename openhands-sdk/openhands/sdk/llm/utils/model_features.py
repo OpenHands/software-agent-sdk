@@ -53,6 +53,7 @@ class ModelFeatures:
     supports_sampling_params: bool | None
     supports_extended_thinking: bool
     supports_prompt_cache: bool
+    supports_prompt_cache_key: bool
     supports_stop_words: bool
     supports_responses_api: bool
     force_string_serializer: bool
@@ -109,7 +110,6 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
 
 
 REASONING_EFFORT_MODEL_OVERRIDES = {
-    "gpt-5.2-codex": "gpt-5.2-codex",
     "kimi-k3": "moonshot/kimi-k3",
 }
 
@@ -389,6 +389,12 @@ def get_features(
         supports_extended_thinking=thinking_mode == "manual",
         supports_prompt_cache=_supports_explicit_prompt_cache(
             model, model_info, overrides
+        ),
+        supports_prompt_cache_key=_resolved_bool(
+            "supports_prompt_cache_key",
+            overrides=overrides,
+            metadata=model_info,
+            fallback="prompt_cache_key" in supported_params,
         ),
         supports_stop_words=_resolved_bool(
             "supports_stop_words",

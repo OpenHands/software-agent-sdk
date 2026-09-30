@@ -313,7 +313,6 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                 loaded.model_copy(update={"usage_id": usage_id})
             )
             conversation.llm_registry.add(classifier_llm)
-            conversation._bind_conversation_context(classifier_llm)
 
         # 2) Single classifier call over the recent conversation.
         transcript = _recent_messages_text(conversation) or "(no messages yet)"
@@ -343,7 +342,10 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
                 )
             ]
         try:
-            response = classifier_llm.completion(messages)
+            response = classifier_llm.completion(
+                messages,
+                call_context=conversation.get_llm_call_context(),
+            )
         except Exception as exc:
             return ClassifyAndSwitchLLMObservation.from_text(
                 text=f"Classifier call failed: {type(exc).__name__}: {exc}",
