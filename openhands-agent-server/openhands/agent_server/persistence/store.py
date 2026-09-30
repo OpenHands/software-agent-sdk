@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import SecretStr
 
 from openhands.agent_server.persistence.models import (
+    PERSISTED_SETTINGS_SCHEMA_VERSION,
     CustomSecret,
     PersistedSettings,
     PersistedWorkspaces,
@@ -32,6 +33,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+from openhands.sdk.settings import default_agent_settings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -420,6 +422,177 @@ class FileSettingsStore(SettingsStore):
             updated = update_fn(settings)
             self.save(updated)
             return updated
+
+
+def _looks_like_orphaned_acp_from_deleted_profile(
+    settings: PersistedSettings,
+    agent_profile_summaries: list[dict[str, Any]],
+) -> bool:
+    """True when ``settings`` matches the exact #5205 bug fingerprint.
+
+    Cross-store predicate (payload alone is not enough — a user may
+    legitimately configure ACP directly via ``PATCH /api/settings`` without
+    a profile):
+
+    - ``agent_settings.agent_kind == 'acp'`` and
+    - ``active_agent_profile_id is None`` (delete endpoint cleared pointer
+      but pre-#5206 code left ``agent_settings`` intact) and
+    - the agent profile store contains at least one profile and
+    - none of those profiles is an ACP profile (if the user still has an
+      ACP profile, the current ACP settings are still consistent with a
+      live profile choice; don't rewrite them)
+
+    Rationale for the "store contains any profile" clause: the profile
+    store is seeded from ``agent_settings`` the first time
+    ``GET /api/agent-profiles`` runs on an empty store, so a fresh install
+    that only ever PATCH'd to ACP directly has an *empty* store. Applying
+    the repair there would silently discard the user's ACP configuration
+    they haven't yet exercised the profile UI on. The bug from #5205, by
+    contrast, requires the user to have created **and then deleted** an
+    ACP profile, so at least one profile must have existed at some point.
+    In that flow the seed step for the next OpenHands profile leaves at
+    least one profile behind, matching this predicate.
+    """
+    if settings.agent_settings.agent_kind != "acp":
+        return False
+    if settings.active_agent_profile_id is not None:
+        return False
+    if not agent_profile_summaries:
+        return False
+    if any(summary.get("agent_kind") == "acp" for summary in agent_profile_summaries):
+        return False
+    return True
+
+
+def apply_startup_settings_migrations(
+    store: FileSettingsStore,
+    *,
+    agent_profile_summaries: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Persist pending settings migrations and one-time data repairs at boot.
+
+    Two-phase behavior:
+
+    1. If the on-disk ``schema_version`` is below the current supported
+       version, re-save the file through ``store.update`` so
+       :func:`PersistedSettings.from_persisted`'s migrators land on disk.
+       This is the once-per-user schema advance.
+    2. If the resulting settings match the #5205 orphaned-ACP fingerprint
+       — see :func:`_looks_like_orphaned_acp_from_deleted_profile` — reset
+       ``agent_settings`` to the default OpenHands shape. The predicate
+       needs the agent profile store, which is why the repair lives here
+       (in a startup hook that has cross-store access) rather than in the
+       payload-only ``_PERSISTED_SETTINGS_MIGRATIONS`` table.
+
+    Returns ``True`` when the file was rewritten (either phase). Both
+    phases are wrapped in the same ``store.update`` call to keep the read/
+    modify/write under a single ``flock`` and single atomic rename.
+
+    Behavior:
+        - No settings file: no-op, returns ``False``. Never creates a default
+          file at boot; empty state stays empty until the user acts.
+        - File corrupted / undecryptable: :meth:`FileSettingsStore.update`
+          refuses to overwrite; the ``RuntimeError`` is caught and logged
+          rather than crashing the process.
+        - Already at current version and predicate unmatched: no rewrite.
+
+    Args:
+        store: the settings store to migrate.
+        agent_profile_summaries: optional pre-fetched summaries from
+            :meth:`~openhands.sdk.profiles.agent_profile_store.AgentProfileStore.list_summaries`.
+            Injected for testing; when ``None`` the function fetches them
+            from the global :func:`get_agent_profile_store` singleton.
+    """
+    path = store._path
+    if not path.exists():
+        logger.debug("No settings file present; skipping startup migrations.")
+        return False
+
+    # Peek at the on-disk schema_version *without* going through
+    # ``load()``: ``load()`` runs the migrators and returns an in-memory
+    # object already at the current version, which would defeat the
+    # "only rewrite if migration is pending" gate below.
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (PermissionError, OSError):
+        logger.error(
+            "Cannot read settings for startup migration",
+            exc_info=True,
+        )
+        return False
+    except json.JSONDecodeError:
+        logger.error(
+            "Settings file is corrupted; skipping startup migrations.",
+            exc_info=True,
+        )
+        return False
+
+    on_disk_version = raw.get("schema_version", 0) if isinstance(raw, dict) else 0
+    if not isinstance(on_disk_version, int) or isinstance(on_disk_version, bool):
+        on_disk_version = 0
+    schema_migration_pending = on_disk_version < PERSISTED_SETTINGS_SCHEMA_VERSION
+
+    if agent_profile_summaries is None:
+        try:
+            agent_profile_summaries = get_agent_profile_store().list_summaries()
+        except Exception:
+            logger.exception(
+                "Could not list agent profiles for startup repair; "
+                "skipping cross-store repair predicate."
+            )
+            agent_profile_summaries = []
+
+    # Speculatively load once (through the read-time migrators) to test
+    # the repair predicate without holding the flock. ``store.update``
+    # below re-loads under the lock, so the check is only informational —
+    # skipping the write when nothing needs doing avoids gratuitous
+    # atomic-renames on every boot.
+    try:
+        current = store.load()
+    except (PermissionError, OSError):
+        logger.error("Cannot read settings for startup repair check", exc_info=True)
+        return False
+    if current is None:
+        logger.error(
+            "Settings file present but unreadable; skipping startup migrations.",
+        )
+        return False
+
+    orphaned = _looks_like_orphaned_acp_from_deleted_profile(
+        current, agent_profile_summaries
+    )
+    if not schema_migration_pending and not orphaned:
+        return False
+
+    if schema_migration_pending:
+        logger.info(
+            "Applying startup settings migrations: schema_version %d -> %d",
+            on_disk_version,
+            PERSISTED_SETTINGS_SCHEMA_VERSION,
+        )
+    if orphaned:
+        logger.warning(
+            "Repairing orphaned ACP agent_settings (#5205) at startup: "
+            "agent_kind='acp' with no active_agent_profile_id and no ACP profile "
+            "in the profile store. Resetting agent_settings to default OpenHands.",
+        )
+
+    # Re-check the predicate under the flock to keep the repair atomic
+    # with concurrent PATCH /api/settings writes.
+    def _apply(s: PersistedSettings) -> PersistedSettings:
+        if _looks_like_orphaned_acp_from_deleted_profile(
+            s, agent_profile_summaries or []
+        ):
+            s.agent_settings = default_agent_settings()
+        return s
+
+    try:
+        store.update(_apply)
+    except RuntimeError:
+        logger.error("Failed to persist startup settings migrations", exc_info=True)
+        return False
+    return True
 
 
 class FileSecretsStore(SecretsStore):
