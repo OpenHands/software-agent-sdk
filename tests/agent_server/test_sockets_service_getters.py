@@ -203,3 +203,36 @@ async def test_bash_events_socket_uses_app_state_bash_event_service():
 
     per_app_bash_svc.subscribe_to_events.assert_called_once()
     per_app_bash_svc.unsubscribe_from_events.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_events_socket_reports_error_without_rendering_traceback():
+    """A failed receive still reaches the client without Rich on the event loop."""
+    from unittest.mock import patch
+
+    from openhands.agent_server.sockets import events_socket
+
+    mock_event_svc = MagicMock(spec=EventService)
+    mock_event_svc.subscribe_to_events = AsyncMock(return_value=uuid4())
+    mock_event_svc.unsubscribe_from_events = AsyncMock(return_value=True)
+    per_app_conv_svc = MagicMock(spec=ConversationService)
+    per_app_conv_svc.get_event_service = AsyncMock(return_value=mock_event_svc)
+    error = RuntimeError("bad input")
+    error.__context__ = error
+    ws = MagicMock()
+    ws.accept = AsyncMock()
+    ws.receive_json = AsyncMock(side_effect=[error, WebSocketDisconnect()])
+    ws.send_json = AsyncMock()
+    ws.headers = {}
+    ws.app.state = SimpleNamespace(
+        conversation_service=per_app_conv_svc,
+        config=Config(session_api_keys=[]),
+    )
+    with patch.object(sockets_mod, "logger") as logger:
+        await events_socket(uuid4(), ws, session_api_key=None)
+    ws.send_json.assert_awaited_once()
+    assert ws.send_json.call_args.args[0]["code"] == "RuntimeError"
+    assert ws.send_json.call_args.args[0]["detail"] == "bad input"
+    logger.exception.assert_not_called()
+    logger.error.assert_called_once_with("error_in_subscription: %s", "RuntimeError")
+    mock_event_svc.unsubscribe_from_events.assert_awaited_once()

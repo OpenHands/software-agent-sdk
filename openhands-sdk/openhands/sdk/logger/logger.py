@@ -16,7 +16,8 @@ from logging.handlers import TimedRotatingFileHandler
 import litellm
 from pythonjsonlogger.json import JsonFormatter
 from rich.console import Console
-from rich.logging import RichHandler
+
+from openhands.sdk.logger.bounded_rich_handler import BoundedRichHandler
 
 
 # ========= ENV (loaded at import) =========
@@ -131,7 +132,7 @@ def setup_logging(
             root.addHandler(ch)
         else:
             # Rich console handler
-            rich_handler = RichHandler(
+            rich_handler = BoundedRichHandler(
                 console=Console(stderr=True),
                 omit_repeated_times=False,
                 rich_tracebacks=ENV_RICH_TRACEBACKS,
