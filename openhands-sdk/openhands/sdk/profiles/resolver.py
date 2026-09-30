@@ -29,13 +29,12 @@ Resource-specific secret channels:
 from __future__ import annotations
 
 import shlex
-from collections.abc import Container, Mapping
+from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
@@ -125,11 +124,6 @@ class AgentProfileDiagnostics(BaseModel):
     acp_base_url_secret_name: str | None = None
     acp_file_secret_names: list[str] = Field(default_factory=list)
 
-    # Meta-profile routing (OpenHands only).
-    meta_profile_ref: str | None = None
-    dangling_meta_profile_ref: str | None = None
-    dangling_meta_profile_llm_refs: list[str] = Field(default_factory=list)
-
     # Redacted resolved settings, present iff ``valid``.
     resolved_settings: dict[str, Any] | None = None
 
@@ -138,7 +132,6 @@ class AgentProfileDiagnostics(BaseModel):
     # once it starts (e.g. ``browser_tool_set``).
     resolved_tools: list[str] = Field(default_factory=list)
     pending: list[str] = Field(default_factory=list)
-    runtime: dict[str, Any] | None = None
 
 
 def _server_names(mcp_config: dict[str, MCPServer]) -> list[str]:
@@ -242,9 +235,6 @@ def _build_openhands_settings(
     llm: LLM,
     mcp_config: dict[str, MCPServer],
     filtered_skills: list[Skill],
-    *,
-    meta_profile: MetaProfile | None = None,
-    meta_profile_llms: Mapping[str, LLM] | None = None,
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
@@ -275,12 +265,6 @@ def _build_openhands_settings(
         "verification": profile.verification.model_dump(),
         "enable_sub_agents": profile.enable_sub_agents,
         "enable_switch_llm_tool": profile.enable_switch_llm_tool,
-        "enable_classify_and_switch_llm_tool": (
-            profile.enable_classify_and_switch_llm_tool
-        ),
-        "active_meta_profile": profile.meta_profile_ref,
-        "meta_profile": meta_profile,
-        "meta_profile_llms": dict(meta_profile_llms or {}),
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)

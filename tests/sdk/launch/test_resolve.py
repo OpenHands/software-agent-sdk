@@ -10,7 +10,6 @@ from openhands.sdk.launch import (
     UnresolvedProfileReferences,
     resolve,
 )
-from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
@@ -43,7 +42,6 @@ def test_a_stored_profile_resolves_with_its_provenance():
     assert resolved.profile.agent_profile_id == profile.id
     assert resolved.profile.revision == 4
     assert resolved.profile.secret_refs == ["GITHUB_TOKEN"]
-    assert resolved.profile.inline is False
     assert resolved.allowed_secrets == frozenset({"GITHUB_TOKEN"})
 
 
@@ -52,26 +50,11 @@ def test_an_unknown_profile_id_is_not_found():
         resolve(uuid4(), fakes.stores())
 
 
-def test_an_inline_profile_is_recorded_as_inline_and_not_stored():
-    draft = _profile(name="draft")
-    stores = fakes.stores()
-
-    resolved = resolve(draft, stores)
-
-    assert resolved.profile is not None
-    assert resolved.profile.inline is True
-    assert resolved.profile.agent_profile_id == draft.id
-    assert stores.agent_profiles is not None
-    assert stores.agent_profiles.name_for_id(draft.id) is None
-
-
 def test_every_dangling_reference_is_reported_together():
     profile = OpenHandsAgentProfile(
         name="p",
         llm_profile_ref="missing-llm",
         mcp_server_refs=["present", "missing-mcp"],
-        enable_classify_and_switch_llm_tool=True,
-        meta_profile_ref="missing-meta",
     )
 
     with pytest.raises(UnresolvedProfileReferences) as exc_info:
@@ -81,7 +64,6 @@ def test_every_dangling_reference_is_reported_together():
     assert detail["code"] == "unresolved_profile_references"
     assert detail["dangling_llm_profile_ref"] == "missing-llm"
     assert detail["dangling_mcp_server_refs"] == ["missing-mcp"]
-    assert detail["dangling_meta_profile_ref"] == "missing-meta"
 
 
 def test_the_profile_llm_streams_without_changing_the_stored_llm():
@@ -92,21 +74,6 @@ def test_the_profile_llm_streams_without_changing_the_stored_llm():
     settings = _openhands(resolved)
     assert settings.llm.stream is True
     assert stored_llm.stream is False
-
-
-def test_a_per_launch_llm_override_is_used_and_recorded():
-    llms = {"default": fakes.llm("default-model"), "fast": fakes.llm("fast-model")}
-
-    resolved = resolve(_profile(), fakes.stores(llms=llms), llm_profile_ref="fast")
-
-    assert _openhands(resolved).llm.model == "fast-model"
-    assert resolved.profile is not None
-    assert resolved.profile.llm_profile_ref == "fast"
-
-
-def test_an_llm_override_for_an_acp_profile_is_rejected():
-    with pytest.raises(AgentLaunchError, match="OpenHands"):
-        resolve(ACPAgentProfile(name="a"), fakes.stores(), llm_profile_ref="fast")
 
 
 @pytest.mark.parametrize(
@@ -143,75 +110,6 @@ def test_an_acp_profile_gets_the_whole_catalog_whatever_the_runtime():
     assert [s.name for s in context.skills] == ["alpha"]
     assert context.current_datetime is None
     assert context.load_project_skills is False
-
-
-def test_a_meta_profile_and_the_llms_it_routes_to_are_copied_in():
-    meta = MetaProfile(
-        classifier_model="classifier",
-        classes=[MetaProfileClass(description="ui", model="vision")],
-    )
-    llms = {
-        "default": fakes.llm(),
-        "classifier": fakes.llm("classifier-model"),
-        "vision": fakes.llm("vision-model"),
-    }
-    profile = _profile(
-        enable_classify_and_switch_llm_tool=True, meta_profile_ref="router"
-    )
-
-    settings = _openhands(
-        resolve(profile, fakes.stores(llms=llms, metas={"router": meta}))
-    )
-
-    assert settings.enable_classify_and_switch_llm_tool is True
-    assert settings.active_meta_profile == "router"
-    assert settings.meta_profile == meta
-    assert {name: llm.model for name, llm in settings.meta_profile_llms.items()} == {
-        "classifier": "classifier-model",
-        "vision": "vision-model",
-    }
-
-
-def test_a_meta_profile_routing_to_a_missing_llm_fails_the_launch():
-    meta = MetaProfile(
-        classifier_model="classifier",
-        classes=[MetaProfileClass(description="ui", model="missing")],
-    )
-    llms = {"default": fakes.llm(), "classifier": fakes.llm()}
-    profile = _profile(
-        enable_classify_and_switch_llm_tool=True, meta_profile_ref="router"
-    )
-
-    with pytest.raises(UnresolvedProfileReferences) as exc_info:
-        resolve(profile, fakes.stores(llms=llms, metas={"router": meta}))
-
-    assert exc_info.value.meta_profile_llm_refs == ["missing"]
-
-
-def test_direct_routing_copies_every_saved_llm():
-    meta = MetaProfile(
-        classifier_model="classifier",
-        prompt_template="Pick a model for {{ instance_text }}",
-    )
-    llms = {"default": fakes.llm(), "classifier": fakes.llm(), "other": fakes.llm()}
-    profile = _profile(
-        enable_classify_and_switch_llm_tool=True, meta_profile_ref="router"
-    )
-
-    settings = _openhands(
-        resolve(profile, fakes.stores(llms=llms, metas={"router": meta}))
-    )
-
-    assert set(settings.meta_profile_llms) == {"default", "classifier", "other"}
-
-
-def test_a_disabled_routing_tool_ignores_its_meta_profile_ref():
-    profile = _profile(meta_profile_ref="missing")
-
-    settings = _openhands(resolve(profile, fakes.stores()))
-
-    assert settings.enable_classify_and_switch_llm_tool is False
-    assert settings.meta_profile is None
 
 
 def _failing_llm_store(exc: Exception) -> LaunchStores:

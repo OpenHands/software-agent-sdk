@@ -22,7 +22,6 @@ def preview_launch(
     stores: LaunchStores,
     runtime: LaunchRuntime,
     *,
-    llm_profile_ref: str | None = None,
     load_memory: bool = False,
 ) -> AgentProfileDiagnostics:
     """Report what launching ``profile`` into ``runtime`` would build, without raising.
@@ -38,12 +37,10 @@ def preview_launch(
         mcp_server_refs=profile.mcp_server_refs,
         resolved_mcp_config_keys=resolved_keys,
         secret_refs=profile.secret_refs,
-        runtime=runtime.model_dump(mode="json"),
     )
     if isinstance(profile, OpenHandsAgentProfile):
-        diagnostics.llm_profile_ref = llm_profile_ref or profile.llm_profile_ref
+        diagnostics.llm_profile_ref = profile.llm_profile_ref
         diagnostics.disabled_skills = profile.disabled_skills
-        diagnostics.meta_profile_ref = profile.meta_profile_ref
     else:
         (
             diagnostics.acp_api_key_secret_name,
@@ -52,7 +49,7 @@ def preview_launch(
         ) = _acp_credential_channels(profile.acp_server)
 
     try:
-        resolved = resolve(profile, stores, llm_profile_ref=llm_profile_ref)
+        resolved = resolve(profile, stores)
         launched = finalize(resolved, runtime, load_memory=load_memory)
     except UnresolvedProfileReferences as exc:
         diagnostics.errors.extend(exc.problems)
@@ -60,8 +57,6 @@ def preview_launch(
             isinstance(profile, OpenHandsAgentProfile) and exc.llm_profile_ref is None
         )
         diagnostics.dangling_mcp_server_refs = exc.mcp_server_refs
-        diagnostics.dangling_meta_profile_ref = exc.meta_profile_ref
-        diagnostics.dangling_meta_profile_llm_refs = exc.meta_profile_llm_refs
         return diagnostics
     except (AgentLaunchError, LaunchStoreError) as exc:
         diagnostics.errors.append(f"Failed to build agent settings: {exc}")

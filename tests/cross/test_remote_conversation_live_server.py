@@ -723,14 +723,9 @@ def test_openai_chat_completions_gateway_over_real_server(
         include_secrets=True,
     )
 
-    def llm_profiles() -> LLMProfileStore:
-        return LLMProfileStore(base_dir=profiles_dir)
-
-    with (
-        patch(
-            "openhands.agent_server.openai.service.get_llm_profile_store", llm_profiles
-        ),
-        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
+    with patch(
+        "openhands.agent_server.openai.service.get_llm_profile_store",
+        lambda: LLMProfileStore(base_dir=profiles_dir),
     ):
         with live_server_env(tmp_path, monkeypatch) as env:
             with httpx.Client() as client:

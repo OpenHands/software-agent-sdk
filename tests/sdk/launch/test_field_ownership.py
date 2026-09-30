@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.launch import resolve
-from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
@@ -78,6 +77,7 @@ PROFILE = Profile()
 LAUNCH = Launch()
 
 _CATALOG = Fixed(False)
+_ROUTING = NotOnProfile("meta-profile routing has no profile field yet")
 
 OPENHANDS_CONTEXT = {
     "skills": Reference("disabled_skills"),
@@ -105,10 +105,10 @@ OPENHANDS_FIELDS: dict[str, Any] = {
     "tools": PROFILE,
     "enable_sub_agents": PROFILE,
     "enable_switch_llm_tool": PROFILE,
-    "enable_classify_and_switch_llm_tool": PROFILE,
-    "active_meta_profile": Reference("meta_profile_ref"),
-    "meta_profile": Reference("meta_profile_ref"),
-    "meta_profile_llms": Reference("meta_profile_ref"),
+    "enable_classify_and_switch_llm_tool": _ROUTING,
+    "active_meta_profile": _ROUTING,
+    "meta_profile": _ROUTING,
+    "meta_profile_llms": _ROUTING,
     "tool_concurrency_limit": PROFILE,
     "mcp_config": Reference("mcp_server_refs"),
     "agent_context": Nested(OPENHANDS_CONTEXT),
@@ -245,8 +245,6 @@ def _non_default_openhands_profile() -> OpenHandsAgentProfile:
         ),
         enable_sub_agents=True,
         enable_switch_llm_tool=False,
-        enable_classify_and_switch_llm_tool=True,
-        meta_profile_ref="router",
         tool_concurrency_limit=3,
     )
 
@@ -268,11 +266,7 @@ _PROFILE_TO_SETTINGS_VALUE = {"acp_command": lambda value: value.split()}
 
 
 def _stores():
-    meta = MetaProfile(
-        classifier_model="default",
-        classes=[MetaProfileClass(description="all", model="default")],
-    )
-    return fakes.stores(mcp={"srv": MCPServer(command="echo")}, metas={"router": meta})
+    return fakes.stores(mcp={"srv": MCPServer(command="echo")})
 
 
 @pytest.mark.parametrize(

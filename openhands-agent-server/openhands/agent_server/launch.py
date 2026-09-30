@@ -34,10 +34,6 @@ from openhands.sdk.launch import (
     ResolvedLaunch,
     resolve,
 )
-from openhands.sdk.llm.meta_profile_store import (
-    MetaProfileStore,
-    default_meta_profile_dir,
-)
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.model import (
@@ -56,14 +52,11 @@ _SECRETS_ADAPTER: TypeAdapter[dict[str, SecretSource]] = TypeAdapter(
 def server_launch_stores(
     settings: PersistedSettings, cipher: Cipher | None
 ) -> LaunchStores:
-    llm_store = get_llm_profile_store()
     return LaunchStores(
-        llm_profiles=llm_store,
-        llm_profile_names=lambda: [n.removesuffix(".json") for n in llm_store.list()],
+        llm_profiles=get_llm_profile_store(),
         mcp_config=settings.agent_settings.mcp_config,
         skills=discover_profile_skills,
         agent_profiles=get_agent_profile_store(),
-        meta_profiles=MetaProfileStore(base_dir=default_meta_profile_dir()),
         cipher=cipher,
     )
 
@@ -93,14 +86,8 @@ def launch_source(
 ) -> LaunchSource:
     """Turn the request's agent source into a launch source (blocking)."""
     context = _decryption_context(request, cipher)
-    additions = request.agent_launch_additions
-    llm_profile_ref = additions.llm_profile_ref if additions else None
     if request.agent_profile_id is not None:
-        return resolve(
-            request.agent_profile_id, stores(), llm_profile_ref=llm_profile_ref
-        )
-    if request.agent_profile is not None:
-        return resolve(request.agent_profile, stores(), llm_profile_ref=llm_profile_ref)
+        return resolve(request.agent_profile_id, stores())
     agent: AgentBase | None = request.agent
     if agent is not None:
         if context is None:
@@ -198,7 +185,7 @@ def forward_to_runtime(
     forwarded = request.model_copy(
         update={"secrets": materialize_secrets(scoped), "secrets_encrypted": True}
     )
-    sources = {"agent", "agent_settings", "agent_profile_id", "agent_profile"}
+    sources = {"agent", "agent_settings", "agent_profile_id"}
     payload = forwarded.model_dump(
         mode="json",
         context={"cipher": cipher},
@@ -211,10 +198,6 @@ def forward_to_runtime(
     payload[field] = model.model_copy(
         update=_forwarded_context(model.agent_context, load_memory=load_memory)
     ).model_dump(mode="json", context={"cipher": cipher})
-    additions = dict(payload.get("agent_launch_additions") or {})
-    # Already applied by resolve; without a profile source it is invalid.
-    additions.pop("llm_profile_ref", None)
-    payload["agent_launch_additions"] = additions or None
     return payload
 
 

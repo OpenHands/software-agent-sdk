@@ -75,10 +75,6 @@ def build_seed_profile(
         verification=build_profile_verification(agent_settings.verification),
         enable_sub_agents=agent_settings.enable_sub_agents,
         enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
-        enable_classify_and_switch_llm_tool=(
-            agent_settings.enable_classify_and_switch_llm_tool
-        ),
-        meta_profile_ref=agent_settings.active_meta_profile,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
     )

@@ -8,7 +8,6 @@ from uuid import UUID
 
 from openhands.sdk import LLM
 from openhands.sdk.launch import LaunchStores
-from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.skills import Skill
@@ -48,17 +47,6 @@ class LLMProfiles:
             raise FileNotFoundError(name) from None
 
 
-class MetaProfiles:
-    def __init__(self, metas: Mapping[str, MetaProfile]) -> None:
-        self.metas = dict(metas)
-
-    def load(self, name: str) -> MetaProfile:
-        try:
-            return self.metas[name]
-        except KeyError:
-            raise FileNotFoundError(name) from None
-
-
 def llm(model: str = "gpt-4o", **kwargs: Any) -> LLM:
     return LLM(model=model, usage_id="agent", **kwargs)
 
@@ -68,14 +56,10 @@ def stores(
     llms: Mapping[str, LLM] | None = None,
     mcp: Mapping[str, MCPServer] | None = None,
     skills: Sequence[Skill] = (),
-    metas: Mapping[str, MetaProfile] | None = None,
 ) -> LaunchStores:
-    llm_profiles = LLMProfiles({"default": llm()} if llms is None else llms)
     return LaunchStores(
-        llm_profiles=llm_profiles,
-        llm_profile_names=lambda: list(llm_profiles.llms),
+        llm_profiles=LLMProfiles({"default": llm()} if llms is None else llms),
         mcp_config=dict(mcp or {}),
         skills=lambda: list(skills),
         agent_profiles=AgentProfiles(*profiles),
-        meta_profiles=MetaProfiles(metas or {}),
     )
