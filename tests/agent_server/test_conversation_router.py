@@ -14,6 +14,7 @@ from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.launch import launch_source
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -26,7 +27,9 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.launch import LaunchRuntime, LaunchStores, finalize
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import (
@@ -606,6 +609,13 @@ def test_start_conversation_existing(
         client.app.dependency_overrides.clear()
 
 
+def _launched_agent(request: StartConversationRequest) -> AgentBase:
+    def no_stores() -> LaunchStores:
+        raise AssertionError("an agent_settings launch reads no store")
+
+    return finalize(launch_source(request, no_stores, None), LaunchRuntime()).agent
+
+
 def test_start_conversation_accepts_openhands_agent_settings(
     client, mock_conversation_service
 ):
@@ -644,9 +654,11 @@ def test_start_conversation_accepts_openhands_agent_settings(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert request.agent.kind == "Agent"
-        assert request.agent.llm.model == "settings-model"
+        assert request.agent is None
         assert "agent_settings" not in request.model_dump(mode="json")
+        agent = _launched_agent(request)
+        assert agent.kind == "Agent"
+        assert agent.llm.model == "settings-model"
     finally:
         client.app.dependency_overrides.clear()
 
@@ -698,8 +710,9 @@ def test_start_conversation_agent_settings_uses_sdk_default_tools(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert "SwitchLLMTool" in request.agent.include_default_tools
-        assert {tool.name for tool in request.agent.tools} == {
+        agent = _launched_agent(request)
+        assert "SwitchLLMTool" in agent.include_default_tools
+        assert {tool.name for tool in agent.tools} == {
             "terminal",
             "file_editor",
             "task_tracker",
@@ -782,12 +795,13 @@ def test_start_conversation_accepts_acp_agent_settings(
 
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
-        assert request.agent.kind == "ACPAgent"
-        assert request.agent.acp_command == ["echo", "settings"]
-        assert request.agent.acp_args == ["--verbose"]
-        assert request.agent.acp_model == "acp-test-model"
-        assert request.agent.acp_session_mode == "bypassPermissions"
-        assert request.agent.acp_prompt_timeout == 123.0
+        agent = _launched_agent(request)
+        assert isinstance(agent, ACPAgent)
+        assert agent.acp_command == ["echo", "settings"]
+        assert agent.acp_args == ["--verbose"]
+        assert agent.acp_model == "acp-test-model"
+        assert agent.acp_session_mode == "bypassPermissions"
+        assert agent.acp_prompt_timeout == 123.0
 
     finally:
         client.app.dependency_overrides.clear()

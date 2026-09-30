@@ -255,7 +255,7 @@ async def test_start_conversation_registers_and_injects_client_tools(
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -324,17 +324,12 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         confirmation_policy=NeverConfirm(),
         secrets_encrypted=True,
     )
-    assert (
-        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
-            "GITHUB_PERSONAL_ACCESS_TOKEN"
-        ]
-        == encrypted_mcp_token
-    )
+    assert request.agent is None
 
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)

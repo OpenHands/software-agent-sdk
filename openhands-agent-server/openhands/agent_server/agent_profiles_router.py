@@ -22,6 +22,8 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     store_errors,
 )
+from openhands.agent_server.config import Config
+from openhands.agent_server.launch import server_launch_stores, target_launch_runtime
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -29,7 +31,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
-from openhands.agent_server.skills_service import discover_profile_skills
+from openhands.sdk.launch import preview_launch
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -41,7 +43,6 @@ from openhands.sdk.profiles import (
     AgentProfileStore,
     ProfileLimitExceeded,
     build_seed_profile,
-    resolve_agent_profile_dry_run,
     safe_validation_error_detail,
     save_profile_preserving_identity,
     validate_agent_profile,
@@ -202,7 +203,7 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
 
 def _seed_default_profile(
     store: AgentProfileStore,
-    request: Request,
+    config: Config,
     settings: PersistedSettings,
     cipher: Cipher | None,
 ) -> None:
@@ -233,7 +234,7 @@ def _seed_default_profile(
         store.save(profile, max_profiles=MAX_AGENT_PROFILES)
 
         profile_id = str(profile.id)
-        settings_store = get_settings_store(get_config(request))
+        settings_store = get_settings_store(config)
 
         def set_pointer(s: PersistedSettings) -> PersistedSettings:
             s.active_agent_profile_id = profile_id
@@ -241,6 +242,20 @@ def _seed_default_profile(
 
         settings_store.update(set_pointer)
         logger.info(f"Seeded default agent profile '{profile.name}' (id={profile_id})")
+
+
+def active_agent_profile_id(config: Config, cipher: Cipher | None) -> str | None:
+    """Return the active Agent Profile id, seeding ``default`` on first use."""
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    if settings.active_agent_profile_id is None:
+        store = get_agent_profile_store()
+        with store_errors():
+            existing = store.list()
+        if not existing:
+            _seed_default_profile(store, config, settings, cipher)
+            settings = settings_store.load() or settings
+    return settings.active_agent_profile_id
 
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
@@ -270,7 +285,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
         existing = store.list()
 
     if not existing and settings.active_agent_profile_id is None:
-        _seed_default_profile(store, request, settings, get_cipher(request))
+        _seed_default_profile(store, config, settings, get_cipher(request))
         settings = settings_store.load() or settings
 
     with store_errors():
@@ -510,11 +525,12 @@ async def activate_agent_profile(
 async def materialize_agent_profile(
     request: Request, name: ProfileName
 ) -> AgentProfileDiagnostics:
-    """Dry-run resolve a profile's LLM/MCP references; return a diagnostics report.
+    """Preview the launch of a profile; return a diagnostics report.
 
-    Dangling LLM/MCP references are reported in the body (valid=False) rather
-    than raising — the only error status is 404 (unknown profile name).
-    resolved_settings is redacted (api_key_set booleans; no raw secrets).
+    Runs the same resolve and finalize as a launch, against the runtime this
+    server launches into. Dangling references are reported in the body
+    (valid=False) rather than raising — the only error status is 404 (unknown
+    profile name). resolved_settings is redacted (no raw secrets).
     """
     store = get_agent_profile_store()
     try:
@@ -526,42 +542,13 @@ async def materialize_agent_profile(
             detail=f"Agent profile '{name}' not found",
         )
 
-    # Still needed here (unlike the profile load above): resolve_agent_profile_
-    # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
-    cipher = get_cipher(request)
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    mcp_config = settings.agent_settings.mcp_config
-
-    # Discover skills off the event loop so the dry-run can report which skills
-    # (catalog minus ``disabled_skills``) resolve. Mirrors the launch rule in
-    # ``conversation_service._resolve_agent_from_profile`` so the preview matches
-    # a real launch: an ACP profile is only given a catalog where the CLI cannot
-    # read the user's own configuration (#4019). A discovery failure must not 500
-    # the preview: pass ``available_skills=None`` and surface the failure as its
-    # own diagnostic below.
-    discovery_error: str | None = None
-    available_skills = None
-    if profile.agent_kind == "openhands" or (
-        config.acp_skill_sourcing == "openhands_managed"
-    ):
-        try:
-            available_skills = await asyncio.to_thread(discover_profile_skills)
-        except Exception as exc:
-            available_skills = None
-            discovery_error = str(exc)
-            logger.warning("Skill discovery failed during materialize: %s", exc)
-
-    llm_store = get_llm_profile_store()
-    diagnostics = resolve_agent_profile_dry_run(
+    context = settings.agent_settings.agent_context
+    return await asyncio.to_thread(
+        preview_launch,
         profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=available_skills,
-        cipher=cipher,
+        server_launch_stores(settings, get_cipher(request)),
+        target_launch_runtime(config),
+        load_memory=context is not None and context.load_memory,
     )
-    if discovery_error is not None:
-        diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")
-        diagnostics.valid = False
-        diagnostics.resolved_settings = None
-    return diagnostics

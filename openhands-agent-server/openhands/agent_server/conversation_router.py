@@ -13,7 +13,6 @@ from fastapi import (
     Response,
     status,
 )
-from pydantic import SecretStr
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
@@ -25,6 +24,7 @@ from openhands.agent_server.conversation_service import (
     InvalidParentConversation,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
@@ -37,7 +37,6 @@ from openhands.agent_server.models import (
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
-    SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
@@ -47,21 +46,17 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
-from openhands.sdk import LLM, Agent, TextContent
+from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
-from openhands.sdk.profiles.resolver import (
-    DanglingMcpServerRef,
-    ProfileNotFound,
-)
+from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
-from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.preset.default import get_default_tools
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -70,20 +65,20 @@ conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 # Examples
 
 START_CONVERSATION_EXAMPLES = [
-    StartConversationRequest(
-        agent=Agent(
-            llm=LLM(
-                usage_id="your-llm-service",
-                model="your-model-provider/your-model-name",
-                api_key=SecretStr("your-api-key-here"),
-            ),
-            tools=get_default_tools(enable_browser=True),
-        ),
-        workspace=LocalWorkspace(working_dir="workspace/project"),
-        initial_message=SendMessageRequest(
-            role="user", content=[TextContent(text="Flip a coin!")]
-        ),
-    ).model_dump(exclude_defaults=True, mode="json")
+    {
+        "agent_settings": {
+            "llm": {
+                "usage_id": "your-llm-service",
+                "model": "your-model-provider/your-model-name",
+                "api_key": "your-api-key-here",
+            },
+        },
+        "workspace": {"working_dir": "workspace/project"},
+        "initial_message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "Flip a coin!"}],
+        },
+    }
 ]
 
 
@@ -268,13 +263,8 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     try:
         info, is_new = await conversation_service.start_conversation(request)
-    except ProfileNotFound as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    except DanglingMcpServerRef as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
-        ) from e
+    except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
+        raise launch_http_exception(e) from e
     except ClientToolRegistrationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
