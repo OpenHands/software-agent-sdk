@@ -53,15 +53,6 @@ def _is_encodable(text: str, encoding: str) -> bool:
     return True
 
 
-# Control bytes that never appear in ordinary text files.
-_BINARY_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
-
-
-def _decodes_as_text(text: str) -> bool:
-    """Return True if decoded content contains no binary control bytes."""
-    return _BINARY_CONTROL_CHARS.search(text) is None
-
-
 class FileEditor:
     """
     An filesystem editor tool that allows the agent to
@@ -750,14 +741,7 @@ class FileEditor:
 
         Used to override binaryornot misclassification of non-UTF-8 text files.
         """
-        for encoding in (self._encoding_manager.get_encoding(path), "utf-8"):
-            try:
-                text = path.read_text(encoding=encoding)
-            except (UnicodeDecodeError, LookupError):
-                continue
-            if _decodes_as_text(text):
-                return True
-        return False
+        return self._encoding_manager.resolve_text_encoding(path) is not None
 
     @with_encoding
     def read_file(

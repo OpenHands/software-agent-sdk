@@ -87,6 +87,27 @@ def test_validate_pdf_file(tmp_path):
     editor.validate_file(pdf_file)
 
 
+def test_validate_short_non_utf8_text_file(tmp_path):
+    """Short non-UTF-8 files must not be rejected as binary.
+
+    They fall below the encoding detector's confidence threshold, so the
+    detected encoding is utf-8 and decoding with it fails. The editor must
+    still recover them via a candidate codec.
+    """
+    editor = FileEditor()
+
+    latin1_file = tmp_path / "latin1.txt"
+    latin1_file.write_bytes(b"Caf\xe9 r\xe9sum\xe9\n")
+
+    cp1251_file = tmp_path / "cp1251.txt"
+    cp1251_file.write_bytes("Привет мир, это тест\n".encode("cp1251"))
+
+    for path in (latin1_file, cp1251_file):
+        assert is_binary(str(path)), f"{path.name} should be flagged by binaryornot"
+        editor.validate_file(path)
+        assert editor.read_file(path)
+
+
 def test_validate_image_file(tmp_path):
     """Test that image files are detected as binary."""
     editor = FileEditor()
