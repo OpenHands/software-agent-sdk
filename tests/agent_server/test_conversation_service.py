@@ -35,7 +35,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, AgentBase, Message
+from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -117,6 +117,30 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
         assert reloaded.agent.llm.model == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_server_resolved_tool_modules_are_persisted(tmp_path):
+    """A lightweight creator need not import the runtime's tool modules."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+
+    meta = json.loads((conversations_dir / info.id.hex / "meta.json").read_text())
+    assert meta["tool_module_qualnames"]["terminal"] == (
+        "openhands.tools.terminal.definition"
+    )
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:

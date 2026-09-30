@@ -346,6 +346,23 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    app_backend_public_url: str | None = Field(
+        default=None,
+        description=(
+            "Separate browser origin that exposes authenticated Canvas App backends"
+        ),
+    )
+    trust_forwarded_headers: bool = Field(
+        default=False,
+        description=(
+            "Trust X-Forwarded-Proto/X-Forwarded-Host from the immediate peer "
+            "when deriving a request origin or secure-context decision. Enable "
+            "only when a reverse proxy or load balancer terminates TLS in front "
+            "of this server and strips client-supplied values for those headers. "
+            "Left disabled, a client can spoof them to assert an origin the "
+            "server did not actually receive."
+        ),
+    )
     conversation_runtime: Literal["local", "docker"] = "local"
     conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
     conversation_container_memory: str | None = "4g"
