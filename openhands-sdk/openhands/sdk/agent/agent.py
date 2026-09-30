@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable
@@ -61,6 +62,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
     LLMContentPolicyViolationError,
@@ -120,6 +122,18 @@ INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
 
 def _latest_user_message_contains_image(messages: list[Message]) -> bool:
+    """Check if the most recent user message contains image content.
+
+    Scans the message list in reverse order to find the latest user message
+    and checks whether it contains any image attachments.
+
+    Args:
+        messages: List of conversation messages to search.
+
+    Returns:
+        True if the most recent user message contains images, False otherwise.
+        Returns False if no user messages are found.
+    """
     for message in reversed(messages):
         if message.role == "user":
             return message.contains_image
@@ -127,6 +141,18 @@ def _latest_user_message_contains_image(messages: list[Message]) -> bool:
 
 
 def _non_multimodal_image_message(model: str) -> Message:
+    """Create an error message for when images are sent to a non-vision model.
+
+    Constructs a user-friendly assistant message explaining that the current
+    model does not support image understanding and suggesting the user switch
+    to a multimodal model.
+
+    Args:
+        model: The name of the current model that does not support vision.
+
+    Returns:
+        A Message object containing an assistant response with the error explanation.
+    """
     return Message(
         role="assistant",
         content=[
@@ -144,6 +170,20 @@ def _non_multimodal_image_message(model: str) -> Message:
 def _replace_latest_user_images_with_references(
     messages: list[Message],
 ) -> list[Message]:
+    """Replace images in the most recent user message containing images.
+
+    Searches backward, skipping user messages without images. Each image URL
+    becomes a textual reference to the inspect_image_with_vision tool, with a
+    zero-based image index within the selected message.
+
+    Args:
+        messages: List of conversation messages to process.
+
+    Returns:
+        A new list with the selected message copied and its images replaced.
+        Other messages and non-image content are unchanged. If no user message
+        contains images, returns a shallow copy of the original list.
+    """
     rewritten = list(messages)
     for index in range(len(rewritten) - 1, -1, -1):
         message = rewritten[index]
@@ -639,7 +679,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             self._step(conversation, on_event, stream)
 
     def _step(
@@ -849,7 +893,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
-        with StreamContext.open(conversation, on_token) as stream:
+        call_context = conversation.get_llm_call_context()
+        with (
+            llm_call_context_scope(call_context),
+            StreamContext.open(conversation, on_token) as stream,
+        ):
             await self._astep(conversation, on_event, stream)
 
     async def _astep(
@@ -1022,6 +1070,18 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         message: Message = llm_response.message
         response_type = classify_response(message)
+        if response_type is not LLMResponseType.TOOL_CALLS:
+            # Resolve outside the event loop and state lock. A lookup may call
+            # this server, and update_secrets() may register another source while
+            # we await it. Repeat until the registry is stable under the lock.
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    message = await asyncio.to_thread(
+                        self._mask_secrets, message, conversation
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
@@ -1030,7 +1090,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    stream,
+                    mask_secrets=False,
                 )
             case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
                 self._handle_no_content_response(
@@ -1041,6 +1107,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     on_event,
                     stream,
                     response_type=response_type,
+                    mask_secrets=False,
                 )
 
     def _requires_user_confirmation(
