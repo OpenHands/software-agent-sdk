@@ -74,9 +74,11 @@ def test_git_repositories_search_success(client):
         "missing_token": False,
     }
     search_provider_repositories.assert_awaited_once()
-    _, provider = search_provider_repositories.await_args.args
+    await_args = search_provider_repositories.await_args
+    assert await_args is not None
+    _, provider = await_args.args
     assert provider.value == "github"
-    assert search_provider_repositories.await_args.kwargs == {
+    assert await_args.kwargs == {
         "query": None,
         "limit": 30,
         "page_id": "1",
