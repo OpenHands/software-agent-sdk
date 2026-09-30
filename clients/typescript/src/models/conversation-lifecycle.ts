@@ -64,12 +64,16 @@ export function normalizeCloudConversationLifecycle(
       ? archivedAt !== null
       : inferLegacyCloudArchiveState(conversation.sandbox_status);
 
+  const runtimeStatus =
+    conversation.runtime_status ?? cloudRuntimeStatus(conversation.sandbox_status);
+
   return {
     isArchived,
     archivedAt,
-    runtimeStatus: conversation.runtime_status ?? cloudRuntimeStatus(conversation.sandbox_status),
+    runtimeStatus,
     executionStatus: cloudExecutionStatus(conversation.execution_status),
-    canResume: conversation.can_resume ?? (!isArchived && conversation.sandbox_status === 'PAUSED'),
+    // Matches the Agent Server, which reports an available runtime as resumable.
+    canResume: conversation.can_resume ?? (!isArchived && runtimeStatus === 'available'),
   };
 }
 

@@ -192,6 +192,24 @@ describe('normalizeCloudConversationLifecycle', () => {
     }
   );
 
+  it.each([
+    ['RUNNING', true],
+    ['PAUSED', true],
+    ['STARTING', false],
+    ['ERROR', false],
+    ['MISSING', false],
+  ] as const)(
+    'infers legacy Cloud resumability for sandbox status %s as %s',
+    (sandboxStatus, canResume) => {
+      expect(
+        normalizeCloudConversationLifecycle({
+          sandbox_status: sandboxStatus,
+          execution_status: ConversationExecutionStatus.RUNNING,
+        })
+      ).toMatchObject({ canResume });
+    }
+  );
+
   it('uses explicit resumability for unarchived conversations', () => {
     expect(
       normalizeCloudConversationLifecycle({
