@@ -21,8 +21,15 @@ _SERVER_ARGS = ["-m", "tests.sdk.mcp.stdio_test_server"]
 
 
 class AbandonedCloseMCPClient(MCPClient):
+    alive_after_forced_cleanup: list[bool] | None = None
+
     async def close(self) -> None:
         """Simulate an async close path that leaves its transport running."""
+
+    def _force_kill_subprocesses(self, pids: Sequence[int]) -> None:
+        super()._force_kill_subprocesses(pids)
+        # Sampled before executor teardown, which would also unwind the transport.
+        self.alive_after_forced_cleanup = [_is_alive(pid) for pid in pids]
 
 
 class RecordingMCPClient(MCPClient):
@@ -67,7 +74,7 @@ def _wait_until_dead(pid: int) -> None:
 
 def test_sync_close_kills_only_its_owned_stdio_process() -> None:
     """Clients with identical commands must not kill each other's server."""
-    first = _client(AbandonedCloseMCPClient)
+    first = cast(AbandonedCloseMCPClient, _client(AbandonedCloseMCPClient))
     second = _client()
     try:
         first_pids = first._get_transport_subprocess_pids()
@@ -77,6 +84,7 @@ def test_sync_close_kills_only_its_owned_stdio_process() -> None:
 
         first.sync_close()
 
+        assert first.alive_after_forced_cleanup == [False]
         _wait_until_dead(first_pids[0])
         assert _is_alive(second_pids[0])
     finally:
