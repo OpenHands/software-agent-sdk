@@ -3,7 +3,6 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from openhands.agent_server.config import get_default_config
 from openhands.agent_server.profile_launch import (
     can_probe_tools,
     configured_browser_available,
@@ -24,9 +23,7 @@ from openhands.tools.preset.planning import register_planning_tools
 
 tool_router = APIRouter(prefix="/tools", tags=["Tools"])
 register_default_tools(enable_browser=True)
-register_builtins_agents(
-    enable_browser=configured_browser_available(get_default_config()) is not False
-)
+register_builtins_agents(enable_browser=True)
 register_gemini_tools(enable_browser=True)
 register_planning_tools()
 

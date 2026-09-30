@@ -2,8 +2,6 @@
 
 import importlib
 
-import pytest
-
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
     get_agent_factory,
@@ -28,24 +26,6 @@ def test_builtin_agents_registered_on_tool_router_import():
         assert callable(factory.factory_func)
 
     _reset_registry_for_tests()
-
-
-def test_browser_sub_agent_is_not_registered_when_the_browser_is_off(monkeypatch):
-    import openhands.agent_server.config as config_mod
-    import openhands.agent_server.tool_router as mod
-    from openhands.agent_server.config import Config
-
-    monkeypatch.setattr(config_mod, "_default_config", Config(enable_browser=False))
-    _reset_registry_for_tests()
-    try:
-        importlib.reload(mod)
-        assert get_agent_factory("explore") is not None
-        with pytest.raises(ValueError):
-            get_agent_factory("web-researcher")
-    finally:
-        _reset_registry_for_tests()
-        monkeypatch.undo()
-        importlib.reload(mod)
 
 
 def test_catalog_offers_the_stock_tools_a_profile_may_pick():
