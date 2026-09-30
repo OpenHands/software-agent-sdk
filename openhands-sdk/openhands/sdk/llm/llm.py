@@ -7,9 +7,26 @@ import json
 import os
 import threading
 import warnings
-from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    TypeVar,
+    get_args,
+    get_origin,
+)
 
 from pydantic import (
     BaseModel,
@@ -201,6 +218,8 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 
+_T = TypeVar("_T")
+
 
 def __getattr__(name: str) -> Any:
     """Provide the deprecated pre-refactor import path for call context."""
@@ -353,8 +372,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     timeout: int | None = Field(
         default=300,
         ge=0,
-        description="HTTP timeout in seconds. Default is 300s (5 minutes). "
-        "Set to None to disable timeout (not recommended for production).",
+        description=(
+            "HTTP and hard per-attempt timeout in seconds. Default is 300s "
+            "(5 minutes). Set to None to disable the hard timeout."
+        ),
+        json_schema_extra=field_meta(),
+    )
+    stream_idle_timeout: float | None = Field(
+        default=300,
+        ge=0,
+        description=(
+            "Maximum seconds between chunks in an asynchronous streaming "
+            "response. Default is 300s (5 minutes); set to None to disable."
+        ),
         json_schema_extra=field_meta(),
     )
 
@@ -704,6 +734,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         model_val = d.get("model")
         if not model_val:
             raise ValueError("model must be specified in LLM")
+
+        if "stream_idle_timeout" not in d:
+            d["stream_idle_timeout"] = d.get("timeout", 300)
 
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
@@ -1113,6 +1146,69 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_multiplier=self.retry_multiplier,
             retry_listener=self._retry_listener_fn,
         )
+
+    def _timeout_error(self, detail: str, seconds: float) -> LiteLLMTimeout:
+        return LiteLLMTimeout(
+            message=f"LLM {detail} after {seconds:g} seconds",
+            model=self.model,
+            llm_provider=self._infer_litellm_provider() or "unknown",
+        )
+
+    def _async_hard_timeout_decorator(
+        self,
+    ) -> Callable[[Callable[..., Awaitable[_T]]], Callable[..., Awaitable[_T]]]:
+        def decorate(
+            function: Callable[..., Awaitable[_T]],
+        ) -> Callable[..., Awaitable[_T]]:
+            async def wrapped(*args: Any, **kwargs: Any) -> _T:
+                if self.timeout is None:
+                    return await function(*args, **kwargs)
+                timeout_context = asyncio.timeout(self.timeout)
+                try:
+                    async with timeout_context:
+                        return await function(*args, **kwargs)
+                except TimeoutError as error:
+                    if not timeout_context.expired():
+                        raise
+                    raise self._timeout_error("hard timeout", self.timeout) from error
+
+            return wrapped
+
+        return decorate
+
+    async def _anext_with_idle_timeout(
+        self, iterator: AsyncIterator[_T], timeout: float
+    ) -> _T:
+        """Await one chunk, converting only this idle timer's own expiry.
+
+        ``asyncio.timeout`` is used instead of ``asyncio.wait_for`` so that a
+        ``TimeoutError`` raised by the transport itself (for example a
+        provider-side read timeout) keeps its original identity instead of
+        being relabelled as an idle timeout.
+        """
+        timeout_context = asyncio.timeout(timeout)
+        try:
+            async with timeout_context:
+                return await anext(iterator)
+        except TimeoutError as error:
+            if not timeout_context.expired():
+                raise
+            raise self._timeout_error("stream idle timeout", timeout) from error
+
+    async def _aiter_with_idle_timeout(
+        self, stream: AsyncIterable[_T]
+    ) -> AsyncIterable[_T]:
+        timeout = self.stream_idle_timeout
+        iterator = aiter(stream)
+        while True:
+            try:
+                if timeout is None:
+                    item = await anext(iterator)
+                else:
+                    item = await self._anext_with_idle_timeout(iterator, timeout)
+            except StopAsyncIteration:
+                return
+            yield item
 
     def _build_completion_result(self, resp: ModelResponse) -> LLMResponse:
         """Convert a raw :class:`ModelResponse` into an :class:`LLMResponse`."""
@@ -1826,6 +1922,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._async_hard_timeout_decorator()
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2136,6 +2233,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._async_hard_timeout_decorator()
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:
@@ -2182,7 +2280,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 completed_response = getattr(ret, "completed_response", None)
                 if hasattr(ret, "__aiter__"):
                     stream = cast(AsyncIterable[Any], ret)
-                    async for event in stream:
+                    async for event in self._aiter_with_idle_timeout(stream):
                         if event is None:
                             continue
                         if isinstance(event, ResponseCompletedEvent):
@@ -2465,7 +2563,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # back a plain sync generator from ``litellm_acompletion``
             if hasattr(ret, "__aiter__"):
                 stream = cast(AsyncIterable[ModelResponseStream], ret)
-                async for chunk in stream:
+                async for chunk in self._aiter_with_idle_timeout(stream):
                     await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
             else:

@@ -23,6 +23,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
+    RunSlot,
     _without_agent_context_secret,
 )
 from openhands.agent_server.models import (
@@ -739,6 +740,7 @@ class ConversationService:
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
@@ -1637,6 +1639,15 @@ class ConversationService:
                 )
             return conversation_info, False
 
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            return await self._create_conversation(request, conversation_id, run_slot)
+
+    async def _create_conversation(
+        self,
+        request: StartConversationRequest,
+        conversation_id: UUID,
+        run_slot: RunSlot,
+    ) -> tuple[ConversationInfo, bool]:
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:
@@ -1905,7 +1916,8 @@ class ConversationService:
             message = Message(
                 role=initial_message.role, content=initial_message.content
             )
-            await event_service.send_message(message, True)
+            await event_service.send_message(message, False)
+            await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
         conversation_info = _compose_conversation_info(event_service.stored, state)
@@ -2238,6 +2250,7 @@ class ConversationService:
             max_workers=self.max_concurrent_runs,
             thread_name_prefix="conversation-run",
         )
+        self._run_semaphore = asyncio.Semaphore(self.max_concurrent_runs)
         self._event_services = {}
         self._conversation_records = await asyncio.to_thread(self._load_catalog_sync)
 
@@ -2497,6 +2510,7 @@ class ConversationService:
         # _renew_all_leases_loop task on ConversationService.
         event_service._external_lease_renewal = True
         event_service._run_executor = self._run_executor
+        event_service._run_semaphore = self._run_semaphore
 
         try:
             await event_service.start()

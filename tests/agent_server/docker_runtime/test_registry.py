@@ -208,7 +208,7 @@ async def test_terminal_idle_runtime_is_stopped(tmp_path, monkeypatch):
     conversation_id = uuid4()
     runtime._containers[conversation_id] = container(conversation_id)
     runtime._last_access[conversation_id] = 0
-    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    service = set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
     stopped = []
     monkeypatch.setattr(
         ConversationContainer,
@@ -223,6 +223,7 @@ async def test_terminal_idle_runtime_is_stopped(tmp_path, monkeypatch):
 
     assert runtime.get(conversation_id) is None
     assert stopped == [f"container-{conversation_id}"]
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
 
 
 @pytest.mark.asyncio
