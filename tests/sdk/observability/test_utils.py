@@ -54,8 +54,14 @@ def test_get_env_reads_dotenv_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OH_TEST_ENV_KEY", raising=False)
-    (tmp_path / ".env").write_text("OH_TEST_ENV_KEY=from-dotenv\n")
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("OH_TEST_ENV_KEY=from-dotenv\n")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "dotenv.main.find_dotenv",
+        lambda *args, **kwargs: str(dotenv_path),
+        raising=True,
+    )
     assert get_env("OH_TEST_ENV_KEY") == "from-dotenv"
 
 
