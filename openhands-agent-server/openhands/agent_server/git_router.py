@@ -4,9 +4,16 @@ import asyncio
 import functools
 import logging
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query
+from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
 
+from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.git_provider_service import (
+    GitProviderAPIError,
+    UnsupportedGitProviderError,
+    search_provider_repositories,
+)
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
@@ -16,7 +23,13 @@ from openhands.sdk.git.git_commits import (
     get_git_commits,
 )
 from openhands.sdk.git.git_diff import get_git_diff
-from openhands.sdk.git.models import GitChange, GitCommitsPage, GitDiff
+from openhands.sdk.git.models import (
+    GitChange,
+    GitCommitsPage,
+    GitDiff,
+    GitProviderRepositoryPage,
+)
+from openhands.sdk.workspace.repo import GitProvider
 
 
 git_router = APIRouter(prefix="/git", tags=["Git"])
@@ -110,6 +123,35 @@ async def _get_commit_file_diff(path: str, commit: str) -> GitDiff:
     except GitRepositoryError:
         logger.debug("Path %s is not in a git repository; returning empty diff", path)
         return GitDiff(modified=None, original=None)
+
+
+@git_router.get("/repositories/search", response_model=GitProviderRepositoryPage)
+async def git_repositories_search(
+    request: Request,
+    provider: Annotated[GitProvider, Query(description="Git provider to search")],
+    query: Annotated[
+        str | None, Query(description="Optional repository name filter")
+    ] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=100, description="Maximum repositories to return")
+    ] = 100,
+    page_id: Annotated[
+        str | None, Query(description="Provider-specific page cursor")
+    ] = None,
+) -> GitProviderRepositoryPage:
+    """List repositories accessible to a configured git provider token."""
+    try:
+        return await search_provider_repositories(
+            get_config(request),
+            provider,
+            query=query,
+            limit=limit,
+            page_id=page_id,
+        )
+    except UnsupportedGitProviderError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except GitProviderAPIError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @git_router.get("/changes")

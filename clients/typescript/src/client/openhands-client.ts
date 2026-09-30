@@ -3,6 +3,7 @@ import { BashClient } from './bash-client';
 import { CanvasExtensionsClient } from './canvas-extensions-client';
 import { ConversationClient } from './conversation-client';
 import { FileClient } from './file-client';
+import { GitClient } from './git-client';
 import { HooksClient } from './hooks-client';
 import { HttpClient, type ResponseType } from './http-client';
 import { LLMMetadataClient } from './llm-client';
@@ -133,6 +134,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly skills: SkillsClient;
   readonly subAgents: SubAgentsClient;
   readonly hooks: HooksClient;
+  readonly git: GitClient;
   readonly mcp: MCPClient;
   readonly plugins: PluginsClient;
   readonly tools: ToolClient;
@@ -168,6 +170,7 @@ export class AgentServerClient extends OpenHandsClient {
     this.skills = new SkillsClient(clientOptions);
     this.subAgents = new SubAgentsClient(clientOptions);
     this.hooks = new HooksClient(clientOptions);
+    this.git = new GitClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
     this.plugins = new PluginsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
