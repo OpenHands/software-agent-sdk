@@ -2,7 +2,7 @@
 
 Covers:
 - the agent-source rules of ``StartConversationRequest``
-- profile, agent_settings and raw-agent launches in the service
+- profile, inline-profile, agent_settings and raw-agent launches in the service
 - unknown-id 404 / dangling-ref 422 / store 5xx (router layer)
 - LaunchedAgentProfile provenance round-trip through StoredConversation
 """
@@ -33,6 +33,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import PersistedSettings
 from openhands.sdk import LLM, Agent, AgentBase, AgentContext
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -224,6 +225,15 @@ class TestStartConversationRequestValidation:
                 workspace=LocalWorkspace(working_dir="/tmp"),
             )
 
+    def test_an_inline_profile_is_validated(self):
+        req = StartConversationRequest.model_validate(
+            {
+                "agent_profile": {"name": "draft", "llm_profile_ref": "default"},
+                "workspace": {"working_dir": "/tmp"},
+            }
+        )
+        assert isinstance(req.agent_profile, OpenHandsAgentProfile)
+
     @pytest.mark.parametrize(
         "sources",
         [
@@ -231,6 +241,14 @@ class TestStartConversationRequestValidation:
             {
                 "agent_profile_id": str(uuid4()),
                 "agent_settings": {"agent_kind": "openhands"},
+            },
+            {
+                "agent_profile_id": str(uuid4()),
+                "agent_profile": {"name": "d", "llm_profile_ref": "x"},
+            },
+            {
+                "agent_profile": {"name": "d", "llm_profile_ref": "x"},
+                "agent": _make_agent(),
             },
         ],
     )
@@ -246,6 +264,7 @@ class TestStartConversationRequestValidation:
                 "agent_profile_id": str(uuid4()),
                 "agent": None,
                 "agent_settings": None,
+                "agent_profile": None,
                 "workspace": {"working_dir": "/tmp"},
             }
         )
@@ -254,6 +273,14 @@ class TestStartConversationRequestValidation:
     def test_no_agent_source_is_invalid(self):
         with pytest.raises(ValidationError, match="agent_profile_id"):
             StartConversationRequest(workspace=LocalWorkspace(working_dir="/tmp"))
+
+    def test_an_llm_override_needs_a_profile_source(self):
+        with pytest.raises(ValidationError, match="llm_profile_ref"):
+            StartConversationRequest(
+                agent=_make_agent(),
+                agent_launch_additions=AgentLaunchAdditions(llm_profile_ref="fast"),
+                workspace=LocalWorkspace(working_dir="/tmp"),
+            )
 
     def test_agent_profile_id_present_in_request_payload(self):
         """agent_profile_id must survive model_dump() for HTTP transport."""
@@ -286,6 +313,19 @@ class TestProfileLaunch:
         assert stored.launched_agent_profile.revision == 3
         assert stored.launched_agent_profile.secret_refs == ["GITHUB_TOKEN"]
         assert launched.profile == stored.launched_agent_profile
+
+    @pytest.mark.asyncio
+    async def test_an_inline_profile_is_recorded_as_inline(self, tmp_path):
+        draft = _make_openhands_profile()
+        request = StartConversationRequest(
+            agent_profile=draft, workspace=LocalWorkspace(working_dir=str(tmp_path))
+        )
+
+        stored, _ = await _start(tmp_path, request)
+
+        assert stored.launched_agent_profile is not None
+        assert stored.launched_agent_profile.inline is True
+        assert stored.launched_agent_profile.agent_profile_id == draft.id
 
     @pytest.mark.asyncio
     async def test_an_unknown_profile_is_not_found(self, tmp_path):
@@ -408,6 +448,25 @@ class TestProfileLaunch:
         context = captured["agent"].agent_context
         assert context is not None
         assert [skill.name for skill in context.skills] == expected
+
+    @pytest.mark.asyncio
+    async def test_a_per_launch_llm_override_is_used_and_recorded(self, tmp_path):
+        profile = _make_openhands_profile()
+        stores = fakes.stores(
+            profile, llms={"default": fakes.llm("slow"), "fast": fakes.llm("fast")}
+        )
+        request = _profile_request(
+            tmp_path,
+            profile,
+            agent_launch_additions=AgentLaunchAdditions(llm_profile_ref="fast"),
+        )
+
+        stored, launched = await _start(tmp_path, request, stores=stores)
+
+        assert isinstance(launched.agent, Agent)
+        assert launched.agent.llm.model == "fast"
+        assert stored.launched_agent_profile is not None
+        assert stored.launched_agent_profile.llm_profile_ref == "fast"
 
     @pytest.mark.asyncio
     async def test_a_profile_launch_has_a_fresh_timestamp(self, tmp_path):

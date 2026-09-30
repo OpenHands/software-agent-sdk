@@ -42,12 +42,26 @@ def test_a_stored_profile_resolves_with_its_provenance():
     assert resolved.profile.agent_profile_id == profile.id
     assert resolved.profile.revision == 4
     assert resolved.profile.secret_refs == ["GITHUB_TOKEN"]
+    assert resolved.profile.inline is False
     assert resolved.allowed_secrets == frozenset({"GITHUB_TOKEN"})
 
 
 def test_an_unknown_profile_id_is_not_found():
     with pytest.raises(ProfileNotFound):
         resolve(uuid4(), fakes.stores())
+
+
+def test_an_inline_profile_is_recorded_as_inline_and_not_stored():
+    draft = _profile(name="draft")
+    stores = fakes.stores()
+
+    resolved = resolve(draft, stores)
+
+    assert resolved.profile is not None
+    assert resolved.profile.inline is True
+    assert resolved.profile.agent_profile_id == draft.id
+    assert stores.agent_profiles is not None
+    assert stores.agent_profiles.name_for_id(draft.id) is None
 
 
 def test_every_dangling_reference_is_reported_together():
@@ -74,6 +88,21 @@ def test_the_profile_llm_streams_without_changing_the_stored_llm():
     settings = _openhands(resolved)
     assert settings.llm.stream is True
     assert stored_llm.stream is False
+
+
+def test_a_per_launch_llm_override_is_used_and_recorded():
+    llms = {"default": fakes.llm("default-model"), "fast": fakes.llm("fast-model")}
+
+    resolved = resolve(_profile(), fakes.stores(llms=llms), llm_profile_ref="fast")
+
+    assert _openhands(resolved).llm.model == "fast-model"
+    assert resolved.profile is not None
+    assert resolved.profile.llm_profile_ref == "fast"
+
+
+def test_an_llm_override_for_an_acp_profile_is_rejected():
+    with pytest.raises(AgentLaunchError, match="OpenHands"):
+        resolve(ACPAgentProfile(name="a"), fakes.stores(), llm_profile_ref="fast")
 
 
 @pytest.mark.parametrize(

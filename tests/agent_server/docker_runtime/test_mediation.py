@@ -186,7 +186,9 @@ async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
 
 
 @pytest.mark.asyncio
-async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
+async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
+    tmp_path, monkeypatch
+):
     runtime_config = config(tmp_path, monkeypatch)
     get_settings_store(runtime_config).save(
         PersistedSettings(
@@ -196,7 +198,8 @@ async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
         )
     )
     get_llm_profile_store().save("fast", LLM(model="fast-model"))
-    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="fast")
+    get_llm_profile_store().save("slow", LLM(model="slow-model"))
+    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="slow")
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
         "openhands.agent_server.launch.discover_profile_skills", lambda: []
@@ -204,10 +207,13 @@ async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
     request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
         agent_profile_id=profile.id,
+        agent_launch_additions=AgentLaunchAdditions(llm_profile_ref="fast"),
     )
 
-    payload, _, identity = await _forward(request, runtime_config)
+    payload, launched, identity = await _forward(request, runtime_config)
 
+    assert launched is not None and launched.llm_profile_ref == "fast"
+    assert payload["agent_launch_additions"] == {"system_message_suffix_append": None}
     assert payload["agent_settings"]["agent_context"]["load_memory"] is True
     received = StartConversationRequest.model_validate(payload)
     source = launch_source(received, _no_stores, identity.cipher)

@@ -86,8 +86,14 @@ def launch_source(
 ) -> LaunchSource:
     """Turn the request's agent source into a launch source (blocking)."""
     context = _decryption_context(request, cipher)
+    additions = request.agent_launch_additions
+    llm_profile_ref = additions.llm_profile_ref if additions else None
     if request.agent_profile_id is not None:
-        return resolve(request.agent_profile_id, stores())
+        return resolve(
+            request.agent_profile_id, stores(), llm_profile_ref=llm_profile_ref
+        )
+    if request.agent_profile is not None:
+        return resolve(request.agent_profile, stores(), llm_profile_ref=llm_profile_ref)
     agent: AgentBase | None = request.agent
     if agent is not None:
         if context is None:
@@ -185,7 +191,7 @@ def forward_to_runtime(
     forwarded = request.model_copy(
         update={"secrets": materialize_secrets(scoped), "secrets_encrypted": True}
     )
-    sources = {"agent", "agent_settings", "agent_profile_id"}
+    sources = {"agent", "agent_settings", "agent_profile_id", "agent_profile"}
     payload = forwarded.model_dump(
         mode="json",
         context={"cipher": cipher},
@@ -198,6 +204,10 @@ def forward_to_runtime(
     payload[field] = model.model_copy(
         update=_forwarded_context(model.agent_context, load_memory=load_memory)
     ).model_dump(mode="json", context={"cipher": cipher})
+    additions = dict(payload.get("agent_launch_additions") or {})
+    # Already applied by resolve; without a profile source it is invalid.
+    additions.pop("llm_profile_ref", None)
+    payload["agent_launch_additions"] = additions or None
     return payload
 
 

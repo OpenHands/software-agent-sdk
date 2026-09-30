@@ -1595,7 +1595,12 @@ class ConversationService:
         ).model_dump(
             mode="json",
             context={"expose_secrets": True},
-            exclude={"agent", "agent_profile_id", "agent_launch_additions"},
+            exclude={
+                "agent",
+                "agent_profile_id",
+                "agent_profile",
+                "agent_launch_additions",
+            },
         )
         launched_agent_profile = launched.profile or runtime_launched_profile
         if request.secrets_encrypted:
