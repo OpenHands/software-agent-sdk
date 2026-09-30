@@ -43,8 +43,14 @@ _PERSISTENCE_DIR = "/var/openhands/.openhands"
 _WORKSPACE_DIR = "/workspace"
 _SHARED_CACHE_DIR = "/var/openhands/shared-cache"
 _OWNER_LABEL = "ai.openhands.runtime-owner"
-# $HOME/.cache inside the container: uv, pip, npm and friends, all rebuildable.
-_CACHE_DIR = ".cache"
+# Rebuildable caches under $HOME: XDG tools (uv, pip, yarn, go) use .cache,
+# npm ignores XDG and uses .npm.
+_CACHE_DIRS = (".cache", ".npm")
+# XDG tools follow XDG_CACHE_HOME; npm has to be pointed in explicitly.
+_SHARED_CACHE_ENV = {
+    "XDG_CACHE_HOME": _SHARED_CACHE_DIR,
+    "npm_config_cache": f"{_SHARED_CACHE_DIR}/npm",
+}
 # Detached caches sit beside, not inside, the bind-mounted persistence dir.
 _PRUNED_CACHE_PREFIX = ".cache-pruned-"
 
@@ -379,8 +385,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 continue
             try:
                 detached.extend(runtime_dir.glob(f"{_PRUNED_CACHE_PREFIX}*"))
-                if cache := self._detach_cache(conversation_id):
-                    detached.append(cache)
+                detached.extend(self._detach_caches(conversation_id))
             except Exception:
                 logger.warning(
                     "Failed to prune conversation runtime cache %s",
@@ -401,7 +406,7 @@ class DockerConversationRegistry(ConversationRegistry):
             if self.get(conversation_id) or self.is_starting(conversation_id):
                 return
             try:
-                detached = self._detach_cache(conversation_id)
+                detached = self._detach_caches(conversation_id)
             except Exception:
                 logger.warning(
                     "Failed to prune conversation runtime cache %s",
@@ -409,8 +414,7 @@ class DockerConversationRegistry(ConversationRegistry):
                     exc_info=True,
                 )
                 return
-        if detached is not None:
-            self._reclaim([detached])
+        self._reclaim(detached)
 
     def _reclaim(self, paths: list[Path]) -> None:
         """Delete detached caches without holding up a request or startup."""
@@ -431,14 +435,17 @@ class DockerConversationRegistry(ConversationRegistry):
                     exc_info=True,
                 )
 
-    def _detach_cache(self, conversation_id: UUID) -> Path | None:
+    def _detach_caches(self, conversation_id: UUID) -> list[Path]:
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
         persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
-        detached = runtime_dir / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
-        try:
-            (persistence_dir / _CACHE_DIR).rename(detached)
-        except FileNotFoundError:
-            return None
+        detached: list[Path] = []
+        for name in _CACHE_DIRS:
+            target = runtime_dir / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
+            try:
+                (persistence_dir / name).rename(target)
+            except FileNotFoundError:
+                continue
+            detached.append(target)
         return detached
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
@@ -489,12 +496,12 @@ class DockerConversationRegistry(ConversationRegistry):
         ):
             flags.extend(("-v", f"{host}:{target}"))
         if self.shared_cache_dir is not None:
-            env["UV_CACHE_DIR"] = _SHARED_CACHE_DIR
+            env.update(_SHARED_CACHE_ENV)
+            for name in _SHARED_CACHE_ENV:
+                flags.extend(("-e", name))
             # Unlike -v, --mount fails on a missing source instead of creating it.
             flags.extend(
                 (
-                    "-e",
-                    "UV_CACHE_DIR",
                     "--mount",
                     f"type=bind,src={self.shared_cache_dir},dst={_SHARED_CACHE_DIR}",
                 )
@@ -519,6 +526,9 @@ class DockerConversationRegistry(ConversationRegistry):
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            # Core dumps land in the bind-mounted workspace at 1-2 GB each.
+            "--ulimit",
+            "core=0",
             "--add-host",
             "host.docker.internal:host-gateway",
             "--label",

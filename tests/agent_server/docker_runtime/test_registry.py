@@ -419,6 +419,7 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
 def seed_runtime(
     runtime: DockerConversationRegistry,
     status: ConversationExecutionStatus | None = ConversationExecutionStatus.FINISHED,
+    npm: bool = False,
 ) -> tuple[UUID, dict[Path, bytes]]:
     """Provision a runtime with a populated cache and the state that must survive.
 
@@ -430,6 +431,10 @@ def seed_runtime(
     cache = runtime_dir / "persistence" / ".cache" / "uv" / "wheels-v5"
     cache.mkdir(parents=True)
     (cache / "requests.whl").write_bytes(b"wheel")
+    if npm:
+        npm_cache = runtime_dir / "persistence" / ".npm" / "_cacache"
+        npm_cache.mkdir(parents=True)
+        (npm_cache / "index").write_bytes(b"left-pad")
     kept = {
         runtime_dir / "persistence" / ".bash_history": b"uv pip install requests",
         runtime_dir / "workspace" / ".venv" / "pyvenv.cfg": b"home = /usr",
@@ -447,8 +452,10 @@ def seed_runtime(
     return conversation_id, kept
 
 
-def cache_dir(runtime: DockerConversationRegistry, conversation_id: UUID) -> Path:
-    return runtime.provisioning.runtime_dir(conversation_id) / "persistence" / ".cache"
+def cache_dir(
+    runtime: DockerConversationRegistry, conversation_id: UUID, name: str = ".cache"
+) -> Path:
+    return runtime.provisioning.runtime_dir(conversation_id) / "persistence" / name
 
 
 def pruned_leftovers(runtime: DockerConversationRegistry) -> list[Path]:
@@ -555,6 +562,32 @@ async def test_explicit_stop_prunes_cache(
     assert not cache_dir(runtime, conversation_id).exists()
     assert_kept(kept)
     assert pruned_leftovers(runtime) == []
+
+
+@pytest.mark.asyncio
+async def test_stop_prunes_npm_cache_too(tmp_path, monkeypatch, stopped_containers):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime, npm=True)
+    runtime._containers[conversation_id] = container(conversation_id)
+
+    await runtime.stop(conversation_id)
+    await reclaimed(runtime)
+
+    assert not cache_dir(runtime, conversation_id).exists()
+    assert not cache_dir(runtime, conversation_id, ".npm").exists()
+    assert_kept(kept)
+    assert pruned_leftovers(runtime) == []
+
+
+def test_startup_prunes_npm_cache_too(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, kept = seed_runtime(runtime, npm=True)
+
+    detached = runtime.detach_stopped_caches()
+
+    assert len(detached) == 2
+    assert not cache_dir(runtime, conversation_id, ".npm").exists()
+    assert_kept(kept)
 
 
 @pytest.mark.asyncio
@@ -783,7 +816,7 @@ def mounts(command: list[str]) -> list[str]:
     ]
 
 
-def test_shared_cache_dir_is_mounted_as_uv_cache(tmp_path, monkeypatch):
+def test_shared_cache_dir_is_mounted_as_package_cache(tmp_path, monkeypatch):
     shared = tmp_path / "shared-cache"
     shared.mkdir()
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
@@ -805,15 +838,18 @@ def test_shared_cache_dir_is_mounted_as_uv_cache(tmp_path, monkeypatch):
         f"type=bind,src={shared.resolve()},dst=/var/openhands/shared-cache"
         in mounts(command)
     )
-    assert env["UV_CACHE_DIR"] == "/var/openhands/shared-cache"
-    assert ["-e", "UV_CACHE_DIR"] == command[
-        command.index("UV_CACHE_DIR") - 1 : command.index("UV_CACHE_DIR") + 1
-    ]
+    assert env["XDG_CACHE_HOME"] == "/var/openhands/shared-cache"
+    assert env["npm_config_cache"] == "/var/openhands/shared-cache/npm"
+    for name in ("XDG_CACHE_HOME", "npm_config_cache"):
+        assert ["-e", name] == command[
+            command.index(name) - 1 : command.index(name) + 1
+        ]
 
 
-def test_unset_shared_cache_dir_adds_no_mount_or_uv_cache(tmp_path, monkeypatch):
-    # A host-level UV_CACHE_DIR must not leak into the container either.
-    monkeypatch.setenv("UV_CACHE_DIR", "/host/uv-cache")
+def test_unset_shared_cache_dir_adds_no_mount_or_cache_env(tmp_path, monkeypatch):
+    # Host-level cache settings must not leak into the container either.
+    monkeypatch.setenv("XDG_CACHE_HOME", "/host/cache")
+    monkeypatch.setenv("npm_config_cache", "/host/npm")
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
     runtime.provisioning.create(conversation_id)
@@ -823,8 +859,23 @@ def test_unset_shared_cache_dir_adds_no_mount_or_uv_cache(tmp_path, monkeypatch)
 
     command, _ = commands[0]
     assert "--mount" not in command
-    assert "UV_CACHE_DIR" not in command
+    assert "XDG_CACHE_HOME" not in command
+    assert "npm_config_cache" not in command
     assert len(mounts(command)) == 3
+
+
+def test_container_writes_no_core_dumps(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    runtime.provisioning.create(conversation_id)
+    commands = capture_docker_run(runtime, monkeypatch)
+
+    runtime._build_container(conversation_id)
+
+    command, _ = commands[0]
+    assert ["--ulimit", "core=0"] == command[
+        command.index("--ulimit") : command.index("--ulimit") + 2
+    ]
 
 
 @pytest.mark.parametrize("kind", ["relative", "missing", "file", "symlink"])

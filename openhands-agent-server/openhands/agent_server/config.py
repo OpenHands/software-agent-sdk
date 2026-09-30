@@ -374,7 +374,8 @@ class Config(BaseModel):
         default=None,
         description=(
             "Host directory bind-mounted into every Docker conversation "
-            "container as its uv cache (UV_CACHE_DIR), so conversations reuse "
+            "container as its package cache (XDG_CACHE_HOME, which uv, pip and "
+            "yarn follow, plus npm_config_cache for npm), so conversations reuse "
             "downloaded packages instead of each filling a private cache. Must "
             "be an existing absolute directory, not a symlink, writable by the "
             "agent-server's user. Every conversation can read and write it, "
