@@ -560,6 +560,47 @@ def test_provider_connection_rotation_does_not_rewrite_persisted_snapshot(
     assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-new"
 
 
+def test_get_settings_surfaces_provider_connection_store_failure(client):
+    """A broken connections store fails GET /api/settings loudly, not silently.
+
+    The read-side resolver deliberately does not swallow store errors: falling
+    back to the stale snapshot would defeat the whole point of resolving on
+    read and re-open OpenHands/OpenHands#17803 with a warning log instead of a
+    wrong-config error. The exception must propagate so it surfaces as a 500
+    (rather than a stale 200) and the real problem gets fixed.
+    """
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/profiles/provider-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "provider_connection_id": connection_id,
+            },
+            "include_secrets": False,
+        },
+    )
+    assert client.post("/api/profiles/provider-profile/activate").status_code == 200
+
+    class _BrokenStore:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("connections store is corrupt")
+
+    with patch(
+        "openhands.agent_server.settings_router.get_provider_connections_store",
+        lambda config=None: _BrokenStore(),
+    ):
+        with pytest.raises(RuntimeError, match="connections store is corrupt"):
+            client.get("/api/settings", headers={"X-Expose-Secrets": "plaintext"})
+
+
 def test_provider_connection_base_url_authoritative_on_activation(client):
     """A connection's ``base_url`` wins on activation, including when cleared."""
     connection_id = client.post(

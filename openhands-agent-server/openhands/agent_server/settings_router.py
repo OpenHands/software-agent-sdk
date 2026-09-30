@@ -122,10 +122,17 @@ def _with_fresh_provider_connection(
     (OpenHands/OpenHands#17803). Resolving on read makes GET /api/settings a
     single source of truth without rewriting the file.
 
-    No-op when ``llm.provider_connection_id`` is unset, when the referenced
+    No-op when ``llm.provider_connection_id`` is unset or when the referenced
     connection has been deleted (deletion is already blocked while referenced,
-    so this only fires under manual on-disk edits), or when the store read
-    fails — the pre-existing snapshot is returned unchanged in each case.
+    so this only fires under manual on-disk edits) — the pre-existing snapshot
+    is returned unchanged in each case.
+
+    Store-read failures (corrupt JSON, cipher/decrypt errors, disk I/O) are
+    intentionally allowed to propagate: silently serving the stale snapshot in
+    that case would defeat the whole point of resolving on read and re-open
+    OpenHands/OpenHands#17803 with a warning log instead of a wrong-config
+    error. GET /api/settings should surface a 500 so the real problem gets
+    fixed, rather than hand back credentials that disagree with the store.
     """
     llm = settings.agent_settings.llm
     connection_id = llm.provider_connection_id
@@ -134,17 +141,9 @@ def _with_fresh_provider_connection(
 
     config = get_config(request)
     cipher = get_cipher(request)
-    try:
-        connection = get_provider_connections_store(config).get(
-            connection_id, cipher=cipher
-        )
-    except Exception as exc:  # noqa: BLE001 — read-side fallback must be total
-        logger.warning(
-            "Provider-connection lookup failed for %s; serving stale snapshot: %s",
-            connection_id,
-            exc,
-        )
-        return settings
+    connection = get_provider_connections_store(config).get(
+        connection_id, cipher=cipher
+    )
     if connection is None:
         return settings
 
