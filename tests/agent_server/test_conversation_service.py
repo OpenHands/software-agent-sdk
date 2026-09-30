@@ -37,6 +37,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -2170,11 +2171,11 @@ class TestConversationServiceStartConversation:
     async def test_concurrent_fork_same_id_forks_once(
         self, conversation_service, tmp_path
     ):
-        """Two concurrent forks onto one id must not both fork.
+        """Concurrent forks onto one id must not both fork.
 
-        The duplicate check runs before the fork's persistence work, so
-        without a re-check under the lock the loser would fork over the
-        winner's directory.
+        Losers must be rejected before ``fork()`` writes into the shared
+        persistence directory; otherwise they reopen the winner's directory
+        and fail on its already-persisted events instead of the duplicate id.
         """
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
@@ -2186,22 +2187,45 @@ class TestConversationServiceStartConversation:
                 confirmation_policy=NeverConfirm(),
             )
         )
+        source_service = await conversation_service.get_event_service(source.id)
+        assert source_service is not None
+        await source_service.send_message(
+            Message(role="user", content=[TextContent(text="hi")]), run=False
+        )
 
         fork_id = uuid4()
+        real_fork = LocalConversation.fork
+        fork_calls = 0
+
+        def fork_after_winner_commits(self, **kwargs):
+            # Force the harmful interleave: a later fork() call only runs once
+            # the winner is registered, as a slow loser's would.
+            nonlocal fork_calls
+            fork_calls += 1
+            if fork_calls > 1:
+                deadline = time.monotonic() + 5
+                while (
+                    fork_id not in conversation_service._conversation_records
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+            return real_fork(self, **kwargs)
 
         async def fork():
             return await conversation_service.fork_conversation(
                 source.id, fork_id=fork_id
             )
 
-        results = await asyncio.gather(fork(), fork(), return_exceptions=True)
+        with patch.object(LocalConversation, "fork", fork_after_winner_commits):
+            results = await asyncio.gather(fork(), fork(), return_exceptions=True)
         successes = [r for r in results if not isinstance(r, BaseException)]
         failures = [r for r in results if isinstance(r, BaseException)]
 
         assert len(successes) == 1
-        assert len(failures) == 1
-        assert "already exists" in str(failures[0])
         assert successes[0].id == fork_id
+        assert [str(f) for f in failures] == [
+            f"Conversation with id {fork_id} already exists"
+        ]
 
     @pytest.mark.asyncio
     async def test_start_conversation_reuse_checks_is_open(self, conversation_service):

@@ -2142,57 +2142,57 @@ class ConversationService:
             return None
 
         source_conversation = source_service.get_conversation()
-
-        # fork() deep-copies events, state, and writes to a new persistence dir.
-        fork_conv = await asyncio.to_thread(
-            source_conversation.fork,
-            conversation_id=fork_id,
-            title=title,
-            tags=tags,
-            reset_metrics=reset_metrics,
-            from_event_id=from_event_id,
-        )
-        # Extract the persisted data, then discard the temporary conversation.
-        fork_conv_id = fork_conv.id
-        fork_agent = cast(AgentBase, fork_conv.agent)
-        fork_workspace = fork_conv.workspace
-        fork_conv.delete_on_close = False
-        fork_conv.close()
-
-        # _start_event_service will resume from the persisted fork directory.
-        # Copy the source's stored metadata so request-level configuration
-        # (client_tools, tool_module_qualnames, agent_definitions, plugins,
-        # secrets, ...) is preserved on the fork, then override only the
-        # fork-specific fields. Without this, e.g. a fork of a client-tool
-        # conversation would lose ``client_tools`` in meta.json and be unable
-        # to re-register its tools after a server restart.
-        # Note: the agent is NOT stored in meta.json (StoredConversation) — the
-        # fork's agent is already persisted to the fork's base_state.json by
-        # ``source_conversation.fork`` above. It is passed to
-        # ``_start_event_service`` via ``agent=`` for the new-conversation path.
-        fork_overrides: dict[str, Any] = {
-            "id": fork_conv_id,
-            "workspace": fork_workspace,
-            "title": title,
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
-            "forked_from_conversation_id": source_id,
-            "forked_from_event_id": from_event_id,
-        }
-        if reset_metrics:
-            fork_overrides["metrics"] = None
-        if tags is not None:
-            fork_overrides["tags"] = tags
-        fork_stored = source_service.stored.model_copy(update=fork_overrides)
+        fork_conv_id = fork_id or uuid4()
         fork_dir = self.conversations_dir / fork_conv_id.hex
         async with self._conversation_lifecycle(fork_conv_id):
-            # Re-check under the lock: the duplicate check above runs before the
-            # awaits that prepare the fork, so a concurrent fork of the same id
-            # can have committed since. Raising before the ``try`` is deliberate
-            # -- its cleanup removes ``fork_dir``, which by now holds the
-            # winner's data.
+            # Re-check under the lock, before fork() writes into ``fork_dir``: a
+            # concurrent fork of the same id can have committed since the check
+            # above, and both fork() and the cleanup below would then touch the
+            # winner's persisted data.
             if self._has_conversation(fork_conv_id):
                 raise ValueError(f"Conversation with id {fork_id} already exists")
+
+            # fork() deep-copies events and state into ``fork_dir``.
+            fork_conv = await asyncio.to_thread(
+                source_conversation.fork,
+                conversation_id=fork_conv_id,
+                title=title,
+                tags=tags,
+                reset_metrics=reset_metrics,
+                from_event_id=from_event_id,
+            )
+            # Extract the persisted data, then discard the temporary conversation.
+            fork_agent = cast(AgentBase, fork_conv.agent)
+            fork_workspace = fork_conv.workspace
+            fork_conv.delete_on_close = False
+            fork_conv.close()
+
+            # _start_event_service will resume from the persisted fork directory.
+            # Copy the source's stored metadata so request-level configuration
+            # (client_tools, tool_module_qualnames, agent_definitions, plugins,
+            # secrets, ...) is preserved on the fork, then override only the
+            # fork-specific fields. Without this, e.g. a fork of a client-tool
+            # conversation would lose ``client_tools`` in meta.json and be unable
+            # to re-register its tools after a server restart.
+            # Note: the agent is NOT stored in meta.json (StoredConversation) — the
+            # fork's agent is already persisted to the fork's base_state.json by
+            # ``source_conversation.fork`` above. It is passed to
+            # ``_start_event_service`` via ``agent=`` for the new-conversation
+            # path.
+            fork_overrides: dict[str, Any] = {
+                "id": fork_conv_id,
+                "workspace": fork_workspace,
+                "title": title,
+                "created_at": utc_now(),
+                "updated_at": utc_now(),
+                "forked_from_conversation_id": source_id,
+                "forked_from_event_id": from_event_id,
+            }
+            if reset_metrics:
+                fork_overrides["metrics"] = None
+            if tags is not None:
+                fork_overrides["tags"] = tags
+            fork_stored = source_service.stored.model_copy(update=fork_overrides)
             try:
                 # If the service fails to start, clean up the orphaned
                 # persistence directory so we don't leave stale state on disk.
