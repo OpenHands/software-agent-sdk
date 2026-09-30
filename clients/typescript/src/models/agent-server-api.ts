@@ -69,3 +69,11 @@ export type AgentServerCanvasBackendStartResponse = AgentServerCanvasBackendStat
 export type AgentServerCanvasBackendStopResponse = AgentServerCanvasBackendStatus;
 export type AgentServerCanvasBackendDataDeleteResponse = AgentServerCanvasBackendStatus;
 export type AgentServerCanvasBackendLogsResponse = AgentServerCanvasBackendLogs;
+
+export interface AgentServerAppBackendSession {
+  ingress_url: string;
+  expires_at: string;
+  iframe_sandbox: string;
+}
+
+export type AgentServerAppBackendSessionResponse = AgentServerAppBackendSession;
