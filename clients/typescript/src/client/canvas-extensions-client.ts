@@ -1,5 +1,6 @@
 import { HttpClient } from './http-client';
 import type {
+  AgentServerAppBackendSessionResponse,
   AgentServerCanvasBackendDataDeleteResponse,
   AgentServerCanvasBackendLogsResponse,
   AgentServerCanvasBackendPrepareResponse,
@@ -12,21 +13,33 @@ export interface CanvasExtensionsClientOptions {
   host: string;
   apiKey?: string;
   timeout?: number;
+  appBackendIngressUrl?: string;
 }
 
 export class CanvasExtensionsClient {
   public readonly host: string;
   public readonly apiKey?: string;
+  public readonly appBackendIngressUrl?: string;
   private readonly client: HttpClient;
+  private readonly appBackendClient?: HttpClient;
 
   constructor(options: CanvasExtensionsClientOptions) {
     this.host = options.host.replace(/\/+$/, '');
     this.apiKey = options.apiKey;
+    this.appBackendIngressUrl = options.appBackendIngressUrl?.replace(/\/+$/, '');
+    const timeout = options.timeout || 60000;
     this.client = new HttpClient({
       baseUrl: this.host,
       apiKey: this.apiKey,
-      timeout: options.timeout || 60000,
+      timeout,
     });
+    if (this.appBackendIngressUrl) {
+      this.appBackendClient = new HttpClient({
+        baseUrl: this.appBackendIngressUrl,
+        apiKey: this.apiKey,
+        timeout,
+      });
+    }
   }
 
   private backendPath(name: string, suffix = ''): string {
@@ -87,7 +100,47 @@ export class CanvasExtensionsClient {
     return response.data;
   }
 
+  /**
+   * Bootstrap an authenticated session for an app backend.
+   *
+   * `signal` is the caller's lifecycle signal (e.g. a React mount
+   * `AbortController`); it is combined with the client timeout so teardown or a
+   * retry cancels the in-flight bootstrap instead of letting it resolve into a
+   * superseded consumer and revoke the session the live frame is using.
+   */
+  async createAppBackendSession(
+    name: string,
+    signal?: AbortSignal
+  ): Promise<AgentServerAppBackendSessionResponse> {
+    const client = this.requireAppBackendClient();
+    const response = await client.post<AgentServerAppBackendSessionResponse>(
+      `/app-backends/${encodeURIComponent(name)}/session`,
+      undefined,
+      { credentials: 'include', signal }
+    );
+    return response.data;
+  }
+
+  async revokeAppBackendSession(name: string, signal?: AbortSignal): Promise<void> {
+    const client = this.requireAppBackendClient();
+    await client.delete(`/app-backends/${encodeURIComponent(name)}/session`, {
+      credentials: 'include',
+      acceptableStatusCodes: new Set([204]),
+      signal,
+    });
+  }
+
+  private requireAppBackendClient(): HttpClient {
+    if (!this.appBackendClient) {
+      throw new Error(
+        'Canvas App backend ingress is unavailable; use app_backend_ingress_url from /server_info'
+      );
+    }
+    return this.appBackendClient;
+  }
+
   close(): void {
     this.client.close();
+    this.appBackendClient?.close();
   }
 }
