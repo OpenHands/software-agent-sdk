@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from starlette.routing import Match
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.docker_runtime.routers import (
@@ -22,10 +24,16 @@ from openhands.agent_server.docker_runtime.routers import (
     proxy_conversation,
 )
 from openhands.agent_server.event_router import event_read_router
-from openhands.agent_server.models import ConversationInfo, UpdateSecretsRequest
+from openhands.agent_server.models import (
+    ConversationInfo,
+    StoredConversation,
+    UpdateSecretsRequest,
+)
 from openhands.sdk import LLM, Agent
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.utils import utc_now
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -271,6 +279,62 @@ def test_archive_stops_runtime_and_unarchive_stays_cold(tmp_path, monkeypatch):
         ]
     )
     assert transitions == ["stop", "archive", "unarchive"]
+
+
+@pytest.mark.asyncio
+async def test_archive_keeps_metadata_written_by_stopping_runtime(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    registry.provisioning.create(conversation_id)
+    directory = registry.conversation_dir(conversation_id)
+    directory.mkdir(parents=True)
+    stored = StoredConversation(
+        id=conversation_id,
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        confirmation_policy=NeverConfirm(),
+    )
+    (directory / "meta.json").write_text(stored.model_dump_json())
+    (directory / "base_state.json").write_text(
+        ConversationState(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="test-model"), tools=[]),
+            workspace=stored.workspace,
+            confirmation_policy=stored.confirmation_policy,
+        ).model_dump_json()
+    )
+
+    async def inner_runtime_shutdown(_):
+        runtime_stored = stored.model_copy(update={"title": "Title set by runtime"})
+        (directory / "meta.json").write_text(runtime_stored.model_dump_json())
+
+    registry.stop = AsyncMock(side_effect=inner_runtime_shutdown)
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.include_router(docker_conversation_router, prefix="/api")
+    async with ConversationService(
+        conversations_dir=config.conversations_path
+    ) as service:
+        app.state.conversation_service = service
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/archive"
+            )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "Title set by runtime"
+    persisted = json.loads((directory / "meta.json").read_text())
+    assert persisted["title"] == "Title set by runtime"
+    assert persisted["archived_at"] is not None
 
 
 def test_archived_conversation_cannot_start_a_runtime(tmp_path, monkeypatch):

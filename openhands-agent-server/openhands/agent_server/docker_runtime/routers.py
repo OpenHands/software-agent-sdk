@@ -250,12 +250,15 @@ async def _set_archive_state(
     conversation_id: UUID, request: Request, *, archived: bool
 ) -> ConversationInfo:
     registry = get_registry(request)
+    conversation_service = get_conversation_service(request)
     if archived:
         # The inner service may still hold an older copy of meta.json and write it
         # during graceful shutdown. Stop it before persisting the archive marker
-        # so that stale runtime state cannot undo the transition.
+        # so that stale runtime state cannot undo the transition, then reload
+        # what it wrote so the marker does not overwrite its final metadata.
         await registry.stop(conversation_id)
-    conversation = await get_conversation_service(request).set_conversation_archived(
+        await conversation_service.refresh_persisted_conversation(conversation_id)
+    conversation = await conversation_service.set_conversation_archived(
         conversation_id, archived=archived
     )
     if conversation is None:

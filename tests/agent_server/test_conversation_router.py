@@ -338,7 +338,27 @@ def test_count_conversations_no_filter(client, mock_conversation_service):
         assert response.json() == 5
 
         # Verify service was called with no status filter
-        mock_conversation_service.count_conversations.assert_called_once_with(None)
+        mock_conversation_service.count_conversations.assert_called_once_with(
+            None, False
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_count_conversations_with_archived_filter(client, mock_conversation_service):
+    mock_conversation_service.count_conversations.return_value = 2
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get("/api/conversations/count", params={"archived": "true"})
+
+        assert response.status_code == 200
+        assert response.json() == 2
+        mock_conversation_service.count_conversations.assert_called_once_with(
+            None, True
+        )
     finally:
         client.app.dependency_overrides.clear()
 
@@ -364,7 +384,7 @@ def test_count_conversations_with_status_filter(client, mock_conversation_servic
 
         # Verify service was called with status filter
         mock_conversation_service.count_conversations.assert_called_once_with(
-            ConversationExecutionStatus.RUNNING
+            ConversationExecutionStatus.RUNNING, False
         )
     finally:
         client.app.dependency_overrides.clear()

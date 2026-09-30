@@ -1263,6 +1263,14 @@ class TestConversationServiceSearchConversations:
                 await conversation_service.search_conversations(archived=True)
             ).items
         ] == [conversation_id]
+        assert await conversation_service.count_conversations() == 0
+        assert await conversation_service.count_conversations(archived=True) == 1
+        assert (
+            await conversation_service.count_conversations(
+                ConversationExecutionStatus.IDLE, archived=True
+            )
+            == 1
+        )
 
         restored = await conversation_service.set_conversation_archived(
             conversation_id, archived=False
@@ -1274,6 +1282,46 @@ class TestConversationServiceSearchConversations:
             item.id
             for item in (await conversation_service.search_conversations()).items
         ] == [conversation_id]
+        assert await conversation_service.count_conversations() == 1
+        assert await conversation_service.count_conversations(archived=True) == 0
+
+    @pytest.mark.asyncio
+    async def test_archive_keeps_metadata_replaced_by_live_service(
+        self, conversation_service, sample_stored_conversation
+    ):
+        conversation_id = sample_stored_conversation.id
+        state = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        directory = conversation_service.conversations_dir / conversation_id.hex
+        directory.mkdir(parents=True)
+        (directory / "base_state.json").write_text(state.model_dump_json())
+        live_service = AsyncMock(spec=EventService)
+        live_service.stored = sample_stored_conversation
+        live_service.get_state.return_value = state
+        live_service.is_open.return_value = True
+        conversation_service._event_services[conversation_id] = live_service
+        await conversation_service._reconcile_active_records()
+        # e.g. switch_acp_model or credential scrubbing replace the live copy
+        # without syncing the catalog record.
+        live_service.stored = sample_stored_conversation.model_copy(
+            update={"title": "Live title"}
+        )
+
+        archived = await conversation_service.set_conversation_archived(
+            conversation_id, archived=True
+        )
+
+        assert archived is not None and archived.title == "Live title"
+        assert live_service.stored.title == "Live title"
+        assert live_service.stored.archived_at is not None
+        live_service.close.assert_awaited_once()
+        persisted = json.loads((directory / "meta.json").read_text())
+        assert persisted["title"] == "Live title"
 
     @pytest.mark.asyncio
     async def test_archived_conversation_is_still_deletable(

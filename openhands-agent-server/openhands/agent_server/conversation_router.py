@@ -157,10 +157,13 @@ async def count_conversations(
         ConversationExecutionStatus | None,
         Query(title="Optional filter by conversation execution status"),
     ] = None,
+    archived: Annotated[
+        bool, Query(title="Count archived rather than active conversations")
+    ] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
     """Count conversations matching the given filters"""
-    count = await conversation_service.count_conversations(status)
+    count = await conversation_service.count_conversations(status, archived)
     return count
 
 

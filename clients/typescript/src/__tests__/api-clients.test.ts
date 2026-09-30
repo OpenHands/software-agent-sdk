@@ -2369,7 +2369,7 @@ describe('Auxiliary API clients', () => {
 
     const client = new ConversationClient({ host: 'http://example.com' });
     await expect(
-      client.countConversations({ status: ConversationExecutionStatus.IDLE })
+      client.countConversations({ status: ConversationExecutionStatus.IDLE, archived: true })
     ).resolves.toBe(2);
     await expect(client.searchEvents('c1', { kind: 'MessageEvent', limit: 5 })).resolves.toEqual({
       items: [event],
@@ -2388,7 +2388,7 @@ describe('Auxiliary API clients', () => {
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
-      'http://example.com/api/conversations/count?status=idle',
+      'http://example.com/api/conversations/count?status=idle&archived=true',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(

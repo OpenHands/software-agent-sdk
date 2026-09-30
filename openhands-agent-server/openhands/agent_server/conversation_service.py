@@ -1420,26 +1420,31 @@ class ConversationService:
     async def count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None = None,
+        archived: bool = False,
     ) -> int:
-        return await self._count_conversations(execution_status=execution_status)
+        return await self._count_conversations(
+            execution_status=execution_status, archived=archived
+        )
 
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
+        archived: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         await self._reconcile_active_records()
 
-        if execution_status is None:
-            return len(self._conversation_records)
-
-        await self._refresh_execution_statuses()
+        if execution_status is not None:
+            await self._refresh_execution_statuses()
         return sum(
             1
             for record in self._conversation_records.values()
-            if record.execution_status == execution_status
+            if (record.stored.archived_at is not None) == archived
+            and (
+                execution_status is None or record.execution_status == execution_status
+            )
         )
 
     async def batch_get_conversations(
@@ -2094,20 +2099,28 @@ class ConversationService:
             if record is None:
                 return None
 
-            now = utc_now()
-            archived_at = (record.stored.archived_at or now) if archived else None
-            record.stored = record.stored.model_copy(
-                update={"archived_at": archived_at, "updated_at": now}
-            )
-            record.cached_info = None
-
             event_service = (
                 self._event_services.get(conversation_id)
                 if self._event_services is not None
                 else None
             )
-            if event_service is not None and event_service.is_open():
-                event_service.stored = record.stored
+            live_service = (
+                event_service
+                if event_service is not None and event_service.is_open()
+                else None
+            )
+            # A live service may have replaced its stored metadata without
+            # syncing the catalog record; it is authoritative while open.
+            current = live_service.stored if live_service is not None else record.stored
+            now = utc_now()
+            archived_at = (current.archived_at or now) if archived else None
+            record.stored = current.model_copy(
+                update={"archived_at": archived_at, "updated_at": now}
+            )
+            record.cached_info = None
+
+            if live_service is not None:
+                live_service.stored = record.stored
 
             metadata = record.stored.model_dump_json(
                 context={"cipher": self._cipher_for(conversation_id)}
@@ -2115,8 +2128,8 @@ class ConversationService:
             meta_file = self.conversations_dir / conversation_id.hex / "meta.json"
             await asyncio.to_thread(meta_file.write_text, metadata)
 
-            if archived and event_service is not None and event_service.is_open():
-                await event_service.close()
+            if archived and live_service is not None:
+                await live_service.close()
                 if self._event_services is not None:
                     self._event_services.pop(conversation_id, None)
 
