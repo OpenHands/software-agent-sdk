@@ -23,6 +23,7 @@ from openhands.agent_server.conversation_service import (
     ConversationService,
     _compose_conversation_info,
     _ConversationRecord,
+    _create_conversation_worktree,
     _get_worktree_start_point,
 )
 from openhands.agent_server.event_service import EventService
@@ -55,6 +56,36 @@ from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+
+
+@pytest.mark.parametrize("missing_worktree", ["sibling", "owned"])
+def test_worktree_creation_preserves_unmounted_sibling(tmp_path, missing_worktree):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    workspace = LocalWorkspace(working_dir=repo)
+    root = tmp_path / "worktrees"
+    sibling_id, conversation_id = uuid4(), uuid4()
+    sibling = _create_conversation_worktree(workspace, sibling_id, root)
+    assert sibling is not None
+    missing_root = sibling[2]
+    if missing_worktree == "owned":
+        owned = _create_conversation_worktree(workspace, conversation_id, root)
+        assert owned is not None
+        missing_root = owned[2]
+    hidden_root = tmp_path / "unmounted"
+    missing_root.rename(hidden_root)
+
+    created = _create_conversation_worktree(workspace, conversation_id, root)
+
+    assert created is not None
+    if missing_worktree == "sibling":
+        hidden_root.rename(missing_root)
+    assert run_git_command(["git", "branch", "--show-current"], sibling[2]) == (
+        f"openhands/{sibling_id}"
+    )
+    assert run_git_command(["git", "branch", "--show-current"], created[2]) == (
+        f"openhands/{conversation_id}"
+    )
 
 
 @pytest.fixture

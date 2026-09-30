@@ -305,13 +305,14 @@ class DockerConversationRegistry(ConversationRegistry):
             self.provisioning.runtime_dir(conversation_id), "worktrees"
         )
         worktree_root = worktrees_dir / str(conversation_id) / repo_root.name
-        if worktree_root.exists():
+        registered_worktrees = run_git_command(
+            ["git", "worktree", "list", "--porcelain", "-z"], repo_root
+        ).split("\0")
+        if f"worktree {worktree_root}" in registered_worktrees:
             run_git_command(
                 ["git", "worktree", "remove", "--force", str(worktree_root)],
                 repo_root,
             )
-        else:
-            run_git_command(["git", "worktree", "prune"], repo_root)
 
         branch = f"openhands/{conversation_id}"
         if run_git_command(["git", "branch", "--list", branch], repo_root):

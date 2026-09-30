@@ -286,7 +286,10 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
     assert not runtime_dir.exists()
 
 
-@pytest.mark.parametrize("head_state", ["expected", "switched", "detached"])
+@pytest.mark.parametrize(
+    "head_state",
+    ["expected", "switched", "detached", "unregistered", "missing-repository"],
+)
 def test_delete_unregisters_host_worktree_before_removing_runtime(
     tmp_path, monkeypatch, head_state
 ):
@@ -315,6 +318,11 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
     worktree_root = runtime_dir / "worktrees" / str(conversation_id) / repository.name
     worktree_root.parent.mkdir(parents=True)
     branch = f"openhands/{conversation_id}"
+    sibling_root = tmp_path / "sibling" / repository.name
+    run_git_command(
+        ["git", "worktree", "add", "-b", "sibling", str(sibling_root), "main"],
+        repository,
+    )
     run_git_command(
         ["git", "worktree", "add", "-b", branch, str(worktree_root), "main"],
         repository,
@@ -323,6 +331,13 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
         run_git_command(["git", "switch", "-c", "agent-changed-branch"], worktree_root)
     elif head_state == "detached":
         run_git_command(["git", "checkout", "--detach"], worktree_root)
+    elif head_state == "unregistered":
+        run_git_command(
+            ["git", "worktree", "remove", "--force", str(worktree_root)], repository
+        )
+        worktree_root.mkdir()
+    elif head_state == "missing-repository":
+        repository.rename(tmp_path / "moved-repository")
     registry.stop = AsyncMock()
 
     app = FastAPI()
@@ -333,13 +348,19 @@ def test_delete_unregisters_host_worktree_before_removing_runtime(
         response = client.delete(f"/api/conversations/{conversation_id}")
 
     assert response.status_code == 200
-    worktree_state = run_git_command(
-        ["git", "worktree", "list", "--porcelain"], repository
-    )
-    assert str(worktree_root) not in worktree_state
-    assert "prunable" not in worktree_state
-    assert run_git_command(["git", "branch", "--list", branch], repository) == ""
     assert not runtime_dir.exists()
+    assert not registry.provisioning.manifest_path(conversation_id).exists()
+    assert not conversation_dir.exists()
+    if head_state != "missing-repository":
+        worktree_state = run_git_command(
+            ["git", "worktree", "list", "--porcelain"], repository
+        )
+        assert str(worktree_root) not in worktree_state
+        assert "prunable" not in worktree_state
+        assert run_git_command(["git", "branch", "--list", branch], repository) == ""
+        assert run_git_command(["git", "branch", "--show-current"], sibling_root) == (
+            "sibling"
+        )
 
 
 def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):

@@ -281,7 +281,12 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     # partially deleted state.
     try:
         await registry.stop(conversation_id)
-        await asyncio.to_thread(registry.cleanup_worktree, conversation_id)
+        try:
+            await asyncio.to_thread(registry.cleanup_worktree, conversation_id)
+        except GitCommandError:
+            logger.exception(
+                "Could not clean up conversation worktree %s", conversation_id
+            )
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
