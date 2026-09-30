@@ -365,6 +365,37 @@ def main() -> int:
             "detail": broken.json().get("detail"),
             "containers_started": len(running_containers() - before),
         }
+
+        saved = client.post(
+            "/api/agent-profiles/broken-router",
+            json={**routed, "meta_profile_ref": "missing-router"},
+        )
+        dangling_meta: dict[str, Any] = {"save_status": saved.status_code}
+        if saved.status_code == 201:
+            router_id = next(
+                p["id"]
+                for p in client.get("/api/agent-profiles").json()["profiles"]
+                if p["name"] == "broken-router"
+            )
+            before = running_containers()
+            launched = client.post(
+                "/api/conversations",
+                json={
+                    "agent_profile_id": router_id,
+                    "workspace": {
+                        "kind": "LocalWorkspace",
+                        "working_dir": "/workspace",
+                    },
+                },
+            )
+            dangling_meta.update(
+                {
+                    "status": launched.status_code,
+                    "detail": launched.json().get("detail"),
+                    "containers_started": len(running_containers() - before),
+                }
+            )
+        rows["dangling meta_profile_ref through the Docker host"] = dangling_meta
     finally:
         for cid in conversation_ids:
             try:
@@ -409,6 +440,14 @@ def main() -> int:
         and isinstance(detail, dict)
         and detail.get("dangling_llm_profile_ref") == "gone"
         and broken_row["containers_started"] == 0
+    )
+    meta_row = rows["dangling meta_profile_ref through the Docker host"]
+    meta_detail = meta_row.get("detail") or {}
+    verdicts["dangling meta_profile_ref fails on the host, no container"] = (
+        meta_row.get("status") == 422
+        and isinstance(meta_detail, dict)
+        and meta_detail.get("dangling_meta_profile_ref") == "missing-router"
+        and meta_row.get("containers_started") == 0
     )
     verdicts["secret_refs scope secrets in the container"] = launch.get(
         "secrets_seen"
