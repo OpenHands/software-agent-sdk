@@ -1,0 +1,135 @@
+---
+name: Test bump failure surfacing (evidence)
+
+# Throwaway workflow that faithfully reproduces the Summary / Notify Slack /
+# gate logic from version-bump-prs.yml with one "Create PR" step forced to
+# fail, proving on a real runner that:
+#   - BUMP_OVERALL propagates from $GITHUB_ENV into the gate step's `if`,
+#   - the job goes red when a bump fails,
+#   - the Slack payload text is constructed correctly (printed to the log so
+#     no real Slack channel is spammed).
+# Safe to delete after the PR lands.
+
+on:
+    workflow_dispatch:
+        inputs:
+            force_failure:
+                description: Force one bump step to fail (true) or all succeed (false)
+                required: false
+                default: "true"
+
+jobs:
+    test-bump-failure:
+        runs-on: ubuntu-24.04
+        env:
+            SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+            VERSION: 9.9.9-test
+        steps:
+            - name: Stub Create PR for OpenHands-CLI repo (success)
+              id: cli_pr
+              continue-on-error: true
+              run: echo "stub success"
+
+            - name: Stub Create PR for automation repo (forced failure)
+              id: automation_pr
+              continue-on-error: true
+              run: |
+                  if [ "${{ inputs.force_failure }}" = "true" ]; then
+                    echo "intentionally failing to simulate a uv lock resolution error"
+                    exit 1
+                  fi
+                  echo "stub success"
+
+            - name: Stub Create PR for OpenHands repo (success)
+              id: openhands_pr
+              continue-on-error: true
+              run: echo "stub success"
+
+            - name: Stub Create PR for enterprise repo (success)
+              id: enterprise_pr
+              continue-on-error: true
+              run: echo "stub success"
+
+            - name: Summary
+              id: summary
+              env:
+                  VERSION: ${{ env.VERSION }}
+                  CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
+                  AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
+                  ENTERPRISE_OUTCOME: ${{ steps.enterprise_pr.outcome }}
+                  OPENHANDS_OUTCOME: ${{ steps.openhands_pr.outcome }}
+                  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              run: |
+                  echo "## Version Bump PRs" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "Results of bumping SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+
+                  FAILED_COUNT=0
+                  FAILED_REPOS=""
+                  SUCCESS_LINKS=""
+
+                  check() {
+                    local name="$1"
+                    local outcome="$2"
+                    local link="$3"
+                    if [ "$outcome" = "failure" ]; then
+                      echo "- ⚠️ **$name PR creation FAILED** — see the \"Create PR for $name repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                      FAILED_COUNT=$((FAILED_COUNT + 1))
+                      if [ -n "$FAILED_REPOS" ]; then FAILED_REPOS="$FAILED_REPOS, "; fi
+                      FAILED_REPOS="$FAILED_REPOS$name"
+                    else
+                      echo "- [$name]($link)" >> $GITHUB_STEP_SUMMARY
+                      if [ -n "$SUCCESS_LINKS" ]; then SUCCESS_LINKS="$SUCCESS_LINKS\n"; fi
+                      SUCCESS_LINKS="$SUCCESS_LINKS• <$link|$name>"
+                    fi
+                  }
+
+                  check "OpenHands-CLI" "$CLI_OUTCOME" "https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION"
+                  check "automation"    "$AUTOMATION_OUTCOME" "https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION"
+                  check "OpenHands"     "$OPENHANDS_OUTCOME" "https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION"
+                  check "enterprise"    "$ENTERPRISE_OUTCOME" "https://github.com/OpenHands/enterprise/pulls?q=is%3Apr+bump-sdk-$VERSION"
+
+                  TOTAL=4
+                  if [ "$FAILED_COUNT" -eq 0 ]; then
+                    OVERALL="success"
+                    SLACK_TEXT="🚀 *SDK v$VERSION published to PyPI!*\n\nVersion bump PRs created:\n$SUCCESS_LINKS\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION|View Release>"
+                  elif [ "$FAILED_COUNT" -eq "$TOTAL" ]; then
+                    OVERALL="failure"
+                    SLACK_TEXT="❌ *SDK v$VERSION published, but ALL version bump PRs FAILED*\n\nFailed: $FAILED_REPOS\n\nSee run: <$RUN_URL|workflow logs>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION|View Release>"
+                  else
+                    OVERALL="failure"
+                    SLACK_TEXT="⚠️ *SDK v$VERSION published, but $FAILED_COUNT/$TOTAL version bump PRs FAILED*\n\nFailed: $FAILED_REPOS\nCreated:\n$SUCCESS_LINKS\n\nSee run: <$RUN_URL|workflow logs>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION|View Release>"
+                  fi
+
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  if [ "$OVERALL" = "success" ]; then
+                    echo "✅ All bump PRs created." >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "❌ $FAILED_COUNT/$TOTAL bump PR(s) failed — this run will be marked failed." >> $GITHUB_STEP_SUMMARY
+                  fi
+
+                  echo "BUMP_OVERALL=$OVERALL" >> "$GITHUB_ENV"
+                  {
+                    echo "BUMP_SLACK_TEXT<<EOF"
+                    echo "$SLACK_TEXT"
+                    echo "EOF"
+                  } >> "$GITHUB_ENV"
+
+                  echo "===== EVIDENCE: BUMP_OVERALL=$OVERALL ====="
+                  echo "===== EVIDENCE: constructed Slack payload text ====="
+                  echo "$SLACK_TEXT"
+                  echo "===== END EVIDENCE ====="
+
+            - name: "Notify Slack (dry-run: payload printed only)"
+              if: env.SLACK_BOT_TOKEN != ''
+              run: |
+                  echo "Would post to Slack channel C08E1SYKEM9 the following payload text:"
+                  echo "${{ env.BUMP_SLACK_TEXT }}"
+                  echo "(Not posting to avoid spamming the release channel during evidence collection.)"
+
+            - name: Fail job if any bump PR failed
+              if: ${{ env.BUMP_OVERALL != 'success' }}
+              run: |
+                  echo "❌ One or more version bump PRs failed (see Summary step). Marking the run as failed."
+                  exit 1
