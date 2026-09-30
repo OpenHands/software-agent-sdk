@@ -102,7 +102,7 @@ def finalize(
         profile = None
 
     agent = _with_current_datetime(agent, launched_at)
-    if load_memory or (additions is not None and additions.load_memory):
+    if load_memory:
         agent = _with_load_memory(agent)
     agent = _apply_acp_skill_sourcing(agent, runtime.acp_skill_sourcing)
     appended = (additions.system_message_suffix_append or "") if additions else ""

@@ -213,10 +213,8 @@ async def test_the_host_forwards_its_memory_preference_and_no_llm_override(
     payload, launched, identity = await _forward(request, runtime_config)
 
     assert launched is not None and launched.llm_profile_ref == "fast"
-    assert payload["agent_launch_additions"] == {
-        "system_message_suffix_append": None,
-        "load_memory": True,
-    }
+    assert payload["agent_launch_additions"] == {"system_message_suffix_append": None}
+    assert payload["agent_settings"]["agent_context"]["load_memory"] is True
     received = StartConversationRequest.model_validate(payload)
     source = launch_source(received, _no_stores, identity.cipher)
     agent = finalize(

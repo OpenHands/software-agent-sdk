@@ -2214,7 +2214,7 @@ class ConversationService:
         event_service = EventService(
             stored=stored,
             conversations_dir=self.conversations_dir,
-            agent=agent,
+            agent=launched.agent if launched is not None else None,
             cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,

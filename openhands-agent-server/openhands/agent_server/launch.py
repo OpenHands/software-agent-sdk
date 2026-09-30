@@ -209,19 +209,26 @@ def forward_to_runtime(
     model = source.settings if isinstance(source, ResolvedLaunch) else source
     field = "agent_settings" if isinstance(source, ResolvedLaunch) else "agent"
     payload[field] = model.model_copy(
-        update=_materialized_context(model.agent_context)
+        update=_forwarded_context(model.agent_context, load_memory=load_memory)
     ).model_dump(mode="json", context={"cipher": cipher})
     additions = dict(payload.get("agent_launch_additions") or {})
     # Already applied by resolve; without a profile source it is invalid.
     additions.pop("llm_profile_ref", None)
-    if load_memory:
-        additions["load_memory"] = True
     payload["agent_launch_additions"] = additions or None
     return payload
 
 
-def _materialized_context(context: AgentContext | None) -> dict[str, Any]:
-    if context is None or not context.secrets:
+def _forwarded_context(
+    context: AgentContext | None, *, load_memory: bool
+) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    if context is not None and context.secrets:
+        updates["secrets"] = materialize_secrets(context.secrets)
+    if load_memory:
+        updates["load_memory"] = True
+    if not updates:
         return {}
-    secrets = materialize_secrets(context.secrets)
-    return {"agent_context": context.model_copy(update={"secrets": secrets})}
+    # A null context means "no prompt context", so a synthesized one carries no
+    # timestamp.
+    base = context or AgentContext(current_datetime=None)
+    return {"agent_context": base.model_copy(update=updates)}

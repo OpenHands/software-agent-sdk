@@ -129,15 +129,8 @@ def test_a_suppressed_timestamp_stays_suppressed(context):
     assert after is None or after.current_datetime is None
 
 
-@pytest.mark.parametrize(
-    ("load_memory", "additions"),
-    [(True, None), (False, AgentLaunchAdditions(load_memory=True))],
-    ids=["preference", "addition"],
-)
-def test_memory_is_loaded_from_the_preference_or_an_addition(load_memory, additions):
-    launched = finalize(
-        _agent(), LaunchRuntime(), load_memory=load_memory, additions=additions
-    )
+def test_memory_is_loaded_when_the_preference_is_on():
+    launched = finalize(_agent(), LaunchRuntime(), load_memory=True)
 
     context = launched.agent.agent_context
     assert context is not None

@@ -889,3 +889,15 @@ class TestProfileSecretScope:
 
         assert isinstance(launched.agent, Agent)
         assert list(launched.agent.mcp_config) == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_only_a_launched_agent_starts_a_new_conversation(tmp_path):
+    service = ConversationService(conversations_dir=tmp_path / "conversations")
+    service._event_services = {}
+    stored = StoredConversation(
+        id=uuid4(), workspace=LocalWorkspace(working_dir=str(tmp_path))
+    )
+
+    with pytest.raises(ValueError, match="without an agent"):
+        await service._start_event_service(stored, persisted_agent=_make_agent())

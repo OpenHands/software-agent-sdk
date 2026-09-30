@@ -88,13 +88,6 @@ class AgentLaunchAdditions(BaseModel):
             "`agent_profile_id` or `agent_profile`."
         ),
     )
-    load_memory: bool = Field(
-        default=False,
-        description=(
-            "Load persistent agent memory for this launch, in addition to the "
-            "server's own persistent-memory preference."
-        ),
-    )
 
 
 class ConversationConfig(BaseModel):
