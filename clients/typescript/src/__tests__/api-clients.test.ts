@@ -21,6 +21,7 @@ import {
   ConversationClient,
   DeviceFlowError,
   FileClient,
+  GitClient,
   HooksClient,
   isAgentServerVersionError,
   isOpenHandsCloudHost,
@@ -125,6 +126,7 @@ describe('Auxiliary API clients', () => {
       expect(client.server).toBeInstanceOf(ServerClient);
       expect(client.conversations).toBeInstanceOf(ConversationClient);
       expect(client.settings).toBeInstanceOf(SettingsClient);
+      expect(client.git).toBeInstanceOf(GitClient);
       expect(client.host).toBe('http://example.com');
 
       await client.request({ method: 'GET', path: '/health' });
@@ -2727,5 +2729,48 @@ describe('Auxiliary API clients', () => {
     expect(captured.options?.method).toBe('GET');
     expect(captured.url?.toString()).toBe('http://example.com/api/bash/bash_events/');
     expect(JSON.parse(captured.body ?? 'null')).toEqual(['e1', 'missing']);
+  });
+
+  it('GitClient searches provider repositories', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: '123',
+              full_name: 'OpenHands/software-agent-sdk',
+              git_provider: 'github',
+              is_public: true,
+              stargazers_count: 7,
+              pushed_at: '2026-09-29T12:00:00Z',
+              main_branch: 'main',
+            },
+          ],
+          next_page_id: '2',
+          missing_token: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new GitClient({ host: 'http://example.com', apiKey: 'secret' });
+    const result = await client.searchRepositories({
+      provider: 'github',
+      query: 'OpenHands',
+      limit: 30,
+      pageId: '1',
+    });
+
+    expect(result.items[0].full_name).toBe('OpenHands/software-agent-sdk');
+    expect(result.next_page_id).toBe('2');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/git/repositories/search?provider=github&query=OpenHands&limit=30&page_id=1',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-Session-API-Key': 'secret',
+        }),
+      })
+    );
   });
 });
