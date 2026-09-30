@@ -254,7 +254,9 @@ async def batch_get_conversations(
 # Write Methods
 
 
-@conversation_router.post("")
+@conversation_router.post(
+    "", responses={429: {"description": "Server conversation run capacity is full"}}
+)
 async def start_conversation(
     request: Annotated[
         StartConversationRequest, Body(examples=START_CONVERSATION_EXAMPLES)
@@ -340,6 +342,7 @@ async def delete_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def run_conversation(
@@ -371,6 +374,7 @@ async def run_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation run or goal loop is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def start_goal_in_conversation(
@@ -429,6 +433,7 @@ async def stop_goal_in_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation run or goal loop is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def resume_goal_in_conversation(
