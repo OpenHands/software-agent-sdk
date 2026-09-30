@@ -82,9 +82,7 @@ _DESCRIPTION = (
 class AskOracleTool(ToolDefinition[AskOracleAction, AskOracleObservation]):
     """Tool for consulting the Oracle (a saved LLM profile named "oracle")."""
 
-    catalog_description: ClassVar[str] = (
-        "Ask a stronger model for a second opinion on hard problems."
-    )
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

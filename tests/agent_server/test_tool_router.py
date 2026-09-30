@@ -68,7 +68,6 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
         "browser_tool_set",
         "glob",
         "grep",
-        "ask_oracle",
         "task_tool_set",
         "switch_llm",
     } <= selectable
@@ -88,6 +87,7 @@ def test_catalog_offers_the_stock_tools_a_profile_may_pick():
             "task",
             "workflow",
             "workflow_tool_set",
+            "ask_oracle",
             "planning_file_editor",
             "edit",
             "read_file",
