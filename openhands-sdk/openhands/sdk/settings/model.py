@@ -736,9 +736,6 @@ def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("agent_kind", "openhands") == "acp":
         migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
     else:
-        # Persisted `[]` predates `None` as the default.
-        if payload.get("tools") == []:
-            payload = {**payload, "tools": None}
         migrated = fold_retired_tool_switches(payload)
     migrated["schema_version"] = 7
     return migrated

@@ -125,6 +125,9 @@ def fold_retired_tool_switches(
     tools = folded.get("tools")
     if tools is not None and not isinstance(tools, list):
         return folded
+    # Persisted `[]` predates `None` as the default.
+    if not sparse and tools == []:
+        tools = folded["tools"] = None
     if tools is None and not sub_agents and switch_llm is not False:
         return folded
     # "The standard set plus/minus one tool" is not expressible, so pin it.
