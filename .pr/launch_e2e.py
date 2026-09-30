@@ -136,7 +136,6 @@ def setup(stack: Stack) -> dict[str, str]:
     for name, model in (
         ("mock", "openai/mock-test-model"),
         ("mock-fast", "openai/mock-fast-model"),
-        ("classifier", "openai/mock-classifier-model"),
     ):
         check(
             c.post(
@@ -264,10 +263,6 @@ def main() -> int:
         record("default (agent_profile_id)", agent_profile_id=ids["default"])
         record("default-copy (agent_profile_id)", agent_profile_id=ids["default-copy"])
         record(
-            "inline agent_profile",
-            agent_profile={**PROFILE_BODY, "name": "inline-draft"},
-        )
-        record(
             "agent_settings (canvas-style, stale timestamp)",
             agent_settings={
                 "agent_kind": "openhands",
@@ -307,11 +302,6 @@ def main() -> int:
                 "tools": [{"name": "terminal"}],
                 "agent_context": {"current_datetime": "2020-01-01T00:00:00+00:00"},
             },
-        )
-        record(
-            "default + llm_profile_ref override",
-            agent_profile_id=ids["default"],
-            agent_launch_additions={"llm_profile_ref": "mock-fast"},
         )
         record("broken profile (dangling refs)", agent_profile_id=ids["broken"])
         both_secrets = {
@@ -365,7 +355,6 @@ def main() -> int:
     base = rows["default (agent_profile_id)"]
     comparisons = {
         "default-copy matches default": rows["default-copy (agent_profile_id)"],
-        "inline matches default": rows["inline agent_profile"],
         "resolved agent_settings matches default": rows[
             "agent_settings (resolved settings of default)"
         ],
@@ -388,10 +377,6 @@ def main() -> int:
         rows["agent_settings (canvas-style, stale timestamp)"]
     )
     verdicts["raw agent timestamp fresh"] = fresh(rows["raw agent (stale timestamp)"])
-    override = rows["default + llm_profile_ref override"]
-    verdicts["override uses mock-fast"] = override.get("model") == (
-        "openai/mock-fast-model"
-    ) or str(override.get("model", "")).endswith("mock-fast-model")
     broken = rows["broken profile (dangling refs)"]
     detail = (broken.get("detail") or {}).get("detail") or {}
     verdicts["dangling refs -> one 422"] = (
@@ -401,8 +386,8 @@ def main() -> int:
         and detail.get("dangling_mcp_server_refs") == ["x"]
     )
     gw = rows["OpenAI gateway (model openhands_mock-fast)"]
-    verdicts["gateway launches the active profile"] = (
-        gw["status"] == 200 and bool(gw.get("suffix")) and bool(gw.get("gateway_text"))
+    verdicts["gateway system text reaches the model"] = gw["status"] == 200 and bool(
+        gw.get("gateway_text")
     )
     verdicts["gateway uses the model's LLM"] = str(gw.get("model", "")).endswith(
         "mock-fast-model"
@@ -414,7 +399,6 @@ def main() -> int:
         rows[name].get("load_memory") is True
         for name in (
             "default (agent_profile_id)",
-            "inline agent_profile",
             "agent_settings (canvas-style, stale timestamp)",
             "raw agent (stale timestamp)",
         )

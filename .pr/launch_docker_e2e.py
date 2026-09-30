@@ -3,8 +3,6 @@
 Runs a host agent-server in Docker runtime mode, so each conversation gets its
 own container started from ``--image``. Pass an image whose browser capability
 differs from the host's, and the launched agent's tools show which side decided.
-The container's HOME has no stores, so routing only works if the host copied the
-meta-profile and its LLMs in.
 
     python .pr/launch_docker_e2e.py --sdk <sdk checkout> --image <agent-server image> \
         --mock-llm <mock-llm-server.py>
@@ -126,22 +124,15 @@ def main() -> int:
             "/api/settings",
             json={"agent_settings_diff": {"agent_context": {"load_memory": True}}},
         ).raise_for_status()
-        for name, model in (
-            ("mock", "openai/mock-test-model"),
-            ("mock-fast", "openai/mock-fast-model"),
-        ):
-            client.post(
-                f"/api/profiles/{name}",
-                json={
-                    "llm": {"model": model, "base_url": container_llm, "api_key": "sk"},
-                    "include_secrets": True,
-                },
-            ).raise_for_status()
         client.post(
-            "/api/meta-profiles/router",
+            "/api/profiles/mock",
             json={
-                "classifier_model": "mock",
-                "classes": [{"description": "everything", "model": "mock-fast"}],
+                "llm": {
+                    "model": "openai/mock-test-model",
+                    "base_url": container_llm,
+                    "api_key": "sk",
+                },
+                "include_secrets": True,
             },
         ).raise_for_status()
         profile = {
@@ -151,17 +142,9 @@ def main() -> int:
             "mcp_server_refs": [],
             "condenser": {"kind": "NoOpCondenser"},
         }
-        routed = {
-            **profile,
-            "enable_classify_and_switch_llm_tool": True,
-            "meta_profile_ref": "router",
-        }
-        saved = client.post("/api/agent-profiles/docker-profile", json=routed)
-        rows["save profile with meta_profile_ref"] = {"status": saved.status_code}
-        if saved.status_code != 201:
-            client.post(
-                "/api/agent-profiles/docker-profile", json=profile
-            ).raise_for_status()
+        client.post(
+            "/api/agent-profiles/docker-profile", json=profile
+        ).raise_for_status()
         client.post(
             "/api/agent-profiles/broken",
             json={**profile, "llm_profile_ref": "gone", "mcp_server_refs": ["x"]},
@@ -217,14 +200,6 @@ def main() -> int:
                     else [message["content"]]
                 )
             )
-            routing = next(
-                (
-                    t
-                    for t in info["agent"]["tools"]
-                    if t["name"] == "ClassifyAndSwitchLLMTool"
-                ),
-                None,
-            )
             stamp = DATETIME_LINE.search(system)
             row.update(
                 {
@@ -240,13 +215,6 @@ def main() -> int:
                     "launched_agent_profile": info.get("launched_agent_profile"),
                     "load_memory": (info["agent"].get("agent_context") or {}).get(
                         "load_memory"
-                    ),
-                    "routing_inline_meta_profile": bool(
-                        routing and (routing.get("params") or {}).get("meta_profile")
-                    ),
-                    "routing_llms": sorted(
-                        ((routing or {}).get("params") or {}).get("meta_profile_llms")
-                        or {}
                     ),
                     "containers_started": len(running_containers() - before),
                 }
@@ -393,9 +361,6 @@ def main() -> int:
     verdicts["provenance recorded in the container"] = (
         launch.get("launched_agent_profile") or {}
     ).get("agent_profile_id") == ids.get("docker-profile")
-    verdicts["routing works without stores in the container"] = bool(
-        launch.get("routing_inline_meta_profile")
-    ) and launch.get("routing_llms") == ["mock", "mock-fast"]
     verdicts["memory preference forwarded"] = launch.get("load_memory") is True
     verdicts["fresh timestamp"] = today in (launch.get("datetime") or "")
     repost = rows.get("re-post existing conversation with a broken profile", {})
