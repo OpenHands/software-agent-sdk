@@ -53,6 +53,30 @@ def test_validate_text_file(tmp_path):
     editor.validate_file(text_file)
 
 
+@pytest.mark.parametrize("prefix", ["", "a", "ab"])
+def test_edit_utf8_text_across_binary_sample_boundary(tmp_path, prefix):
+    editor = FileEditor()
+    path = tmp_path / "report.md"
+    content = prefix + "更深一层的归属感。" * 200 + "\n待修改\n"
+    path.write_text(content, encoding="utf-8")
+
+    assert not editor(command="view", path=str(path)).is_error
+    result = editor(
+        command="str_replace", path=str(path), old_str="待修改", new_str="已修改"
+    )
+    assert not result.is_error
+    assert path.read_text(encoding="utf-8") == content.replace("待修改", "已修改")
+
+
+@pytest.mark.parametrize("suffix", [b"\x00", b"\x01" * 2000, b"\xff"])
+def test_reject_binary_after_utf8_prefix(tmp_path, suffix):
+    path = tmp_path / "binary.bin"
+    path.write_bytes(("更深一层的归属感。" * 200).encode("utf-8") + suffix)
+
+    with pytest.raises(FileValidationError):
+        FileEditor().validate_file(path)
+
+
 def test_validate_directory():
     """Test that directories are skipped in validation."""
     editor = FileEditor()
