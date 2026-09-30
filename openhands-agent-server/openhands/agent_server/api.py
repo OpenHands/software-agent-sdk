@@ -51,6 +51,7 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
+from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -559,6 +560,12 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
+
+    @api.exception_handler(ConversationRunLimitExceeded)
+    async def _run_limit_handler(
+        _request: Request, exc: ConversationRunLimitExceeded
+    ) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
 
     @api.exception_handler(CredentialBindingActivationRequired)
     async def _credential_binding_activation_required_handler(

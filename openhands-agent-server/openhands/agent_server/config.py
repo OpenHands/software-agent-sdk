@@ -328,8 +328,9 @@ class Config(BaseModel):
         ge=1,
         description=(
             "Maximum number of conversations that can execute agent steps "
-            "concurrently.  Controls the size of the dedicated thread pool "
-            "used for conversation.run() calls."
+            "concurrently, across native async runs and synchronous runs. "
+            "Creating a conversation also reserves capacity during initialization. "
+            "When full, create and run requests are rejected with HTTP 429."
         ),
     )
     secret_key: SecretStr | None = Field(
