@@ -388,7 +388,9 @@ async def test_terminal_status_implies_released_permit(tmp_path, monkeypatch):
             f"expected FINISHED in the tail, got {status.execution_status}"
         )
         # ...so it must not still be holding the only permit.
-        assert owner._run_semaphore._value == 1, (
+        semaphore = owner._run_semaphore
+        assert semaphore is not None
+        assert semaphore._value == 1, (
             "conversation reported terminal status while still holding its run "
             "permit; a caller that sized capacity to its workload would be "
             "refused with a spurious ConversationRunLimitExceeded"
