@@ -34,7 +34,7 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.conversation.message_request import SendMessageRequest
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
     ConversationObservabilitySpanName,
@@ -1168,7 +1168,11 @@ class ConversationSettings(BaseModel):
         # variant returns an ``Agent`` and the ACP variant returns an
         # ``ACPAgent``. Callers that want a narrowed type should access
         # ``self.agent_settings.create_agent()`` directly.
-        if "agent" not in payload and self.agent_settings is not None:
+        has_agent_source = any(
+            payload.get(name) is not None
+            for name in ("agent", "agent_settings", "agent_profile_id", "agent_profile")
+        )
+        if not has_agent_source and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
