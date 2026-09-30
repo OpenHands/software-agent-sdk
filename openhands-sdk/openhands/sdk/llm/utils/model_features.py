@@ -138,6 +138,12 @@ def _normalized_supported_openai_params(
     the case for ``openhands/`` and ``litellm_proxy/`` aliases -- the hint is
     used so param support reflects the provider that actually serves the
     request instead of silently defaulting to ``False`` (#5328 follow-up).
+
+    NOTE: The provider-scoped lookup broadens the whole param set (e.g. for
+    DeepSeek it also reports ``reasoning_effort``). Callers that only want to
+    recover ``prompt_cache_key`` must not feed the hinted set into unrelated
+    capabilities -- use ``_supports_prompt_cache_key_param`` instead of reading
+    this set directly. See ``get_features``.
     """
     normalized = _normalize_model_for_litellm(model)
     if not normalized:
@@ -153,6 +159,26 @@ def _normalized_supported_openai_params(
             custom_llm_provider=provider_hint,
         )
     return frozenset(params or ())
+
+
+def _supports_prompt_cache_key_param(
+    model: str | None, provider_hint: str | None
+) -> bool:
+    """Whether the serving provider accepts the ``prompt_cache_key`` param.
+
+    Resolves from the bare-name param set first; only when that is
+    unresolvable (proxied/aliased models) does it consult the provider-scoped
+    set. Scoping the hint to this single capability keeps the broader
+    provider-scoped param set from leaking into unrelated features such as
+    ``supports_reasoning_effort`` (#5332 review follow-up).
+    """
+    if "prompt_cache_key" in _normalized_supported_openai_params(model):
+        return True
+    if provider_hint is None:
+        return False
+    return "prompt_cache_key" in _normalized_supported_openai_params(
+        model, provider_hint
+    )
 
 
 REASONING_EFFORT_MODEL_OVERRIDES = {
@@ -412,7 +438,11 @@ def get_features(
 ) -> ModelFeatures:
     """Resolve model features from overrides, metadata, and fallbacks."""
     provider_hint = _real_litellm_provider(model_info)
-    supported_params = _normalized_supported_openai_params(model, provider_hint)
+    # Use the bare-name param set here so the provider hint (only needed to
+    # recover prompt_cache_key for proxied models) does not leak into
+    # reasoning_effort detection. prompt_cache_key is resolved separately via
+    # _supports_prompt_cache_key_param below (#5332 review follow-up).
+    supported_params = _normalized_supported_openai_params(model)
     supports_reasoning_effort = _resolved_bool(
         "supports_reasoning_effort",
         overrides=overrides,
@@ -441,7 +471,7 @@ def get_features(
             "supports_prompt_cache_key",
             overrides=overrides,
             metadata=model_info,
-            fallback="prompt_cache_key" in supported_params,
+            fallback=_supports_prompt_cache_key_param(model, provider_hint),
         ),
         supports_stop_words=_resolved_bool(
             "supports_stop_words",

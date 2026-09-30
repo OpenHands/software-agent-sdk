@@ -605,6 +605,26 @@ def test_prompt_cache_key_no_provider_hint_falls_back():
     assert get_features("claude-opus-5-5").supports_prompt_cache_key is False
 
 
+def test_provider_hint_does_not_leak_into_reasoning_effort():
+    """The provider hint must only move prompt_cache_key, not reasoning_effort.
+
+    Regression test for the #5332 review: the provider-scoped param lookup
+    broadens the whole set (for DeepSeek it also reports ``reasoning_effort``).
+    Threading it into the shared ``supported_params`` flipped
+    ``supports_reasoning_effort`` False -> True for ``deepseek-chat``, which made
+    ``select_chat_options`` emit ``reasoning_effort`` and strip sampling params.
+    Resolving prompt_cache_key separately keeps reasoning_effort on the
+    bare-name set, so only the intended capability moves.
+    """
+    features = get_features(
+        "deepseek-chat", model_info={"litellm_provider": "deepseek"}
+    )
+    # prompt_cache_key is recovered via the provider hint ...
+    assert features.supports_prompt_cache_key is True
+    # ... but reasoning_effort stays on the unhinted bare-name lookup.
+    assert features.supports_reasoning_effort is False
+
+
 @pytest.mark.parametrize(
     "model,expected_retention",
     [
