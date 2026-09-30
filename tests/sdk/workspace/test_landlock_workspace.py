@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,8 +13,10 @@ from openhands.sdk.workspace import (
     is_landlock_supported,
 )
 from openhands.sdk.workspace.landlock import (
+    _apply_landlock_and_group,
     get_handled_fs_access,
     get_read_only_fs_access,
+    is_unshare_user_supported,
 )
 
 
@@ -200,9 +203,9 @@ def test_sensitive_environment_redaction(
     ws = LandlockWorkspace(working_dir=tmp_path)
     cmd = (
         'python3 -c "import os; '
-        'print(\'SESSION:\', os.environ.get(\'SESSION_API_KEY\')); '
-        'print(\'SECRET:\', os.environ.get(\'OH_SECRET_KEY\')); '
-        'print(\'AGENT:\', os.environ.get(\'AI_AGENT\'))"'
+        "print('SESSION:', os.environ.get('SESSION_API_KEY')); "
+        "print('SECRET:', os.environ.get('OH_SECRET_KEY')); "
+        "print('AGENT:', os.environ.get('AI_AGENT'))\""
     )
     res = ws.execute_command(cmd)
 
@@ -267,4 +270,153 @@ def test_landlock_filesystem_containment(tmp_path: Path):
     finally:
         if outside_dir.exists():
             import shutil
+
             shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_workspace_factory_invalid_backend_rejected(tmp_path: Path):
+    """Workspace factory rejects unknown backend values with ValueError."""
+    with pytest.raises(
+        ValueError, match="Unknown workspace backend: 'invalid_backend'"
+    ):
+        Workspace(working_dir=tmp_path, backend="invalid_backend")
+
+    with pytest.raises(ValueError, match="Unknown workspace backend: 'docker'"):
+        Workspace(working_dir=tmp_path, backend="docker")
+
+
+def test_relative_working_dir_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Relative working_dir and allowlist paths resolved to absolute paths."""
+    monkeypatch.chdir(tmp_path)
+    rel_path = "subproject/workspace"
+    ws = LandlockWorkspace(
+        working_dir=rel_path,
+        read_only_paths=["extra_ro"],
+        read_write_paths=["extra_rw"],
+    )
+
+    expected_wd = str((tmp_path / rel_path).resolve())
+    expected_ro = str((tmp_path / "extra_ro").resolve())
+    expected_rw = str((tmp_path / "extra_rw").resolve())
+
+    assert ws.working_dir == expected_wd
+    assert expected_ro in ws.read_only_paths
+    assert expected_rw in ws.read_write_paths
+
+    res = ws.execute_command("pwd")
+    assert res.exit_code == 0
+    assert res.stdout.strip() == expected_wd
+
+
+def test_execute_command_cwd_validation_outside_workspace(tmp_path: Path):
+    """cwd pointing outside workspace root raises ValueError."""
+    ws = LandlockWorkspace(working_dir=tmp_path)
+    outside_dir = tmp_path.parent / "unauthorized_outside_dir"
+
+    with pytest.raises(ValueError, match="must be inside workspace root"):
+        ws.execute_command("pwd", cwd=outside_dir)
+
+    with pytest.raises(ValueError, match="must be inside workspace root"):
+        ws.execute_command("pwd", cwd="../outside")
+
+    # Valid relative subdirectories succeed
+    sub = tmp_path / "subdir"
+    sub.mkdir(parents=True, exist_ok=True)
+    res = ws.execute_command("pwd", cwd="subdir")
+    assert res.exit_code == 0
+    assert res.stdout.strip() == str(sub.resolve())
+
+
+def test_execute_command_setsid_timeout_bounded(tmp_path: Path):
+    """Commands spawning detached setsid processes complete within bounded timeout."""
+    ws = LandlockWorkspace(working_dir=tmp_path, enable_process_group=True)
+
+    start = time.monotonic()
+    # setsid grandchild holding pipes would previously hang execute_command
+    res = ws.execute_command("setsid sleep 15 & sleep 15", timeout=0.5)
+    elapsed = time.monotonic() - start
+
+    assert res.timeout_occurred is True
+    assert res.exit_code == -1
+    # Must terminate promptly (bounded within ~1.5s, far below 15s)
+    assert elapsed < 2.0
+
+
+@pytest.mark.skipif(
+    not is_landlock_supported(),
+    reason="Linux Landlock LSM is not supported on this host",
+)
+def test_landlock_dev_null_redirection(tmp_path: Path):
+    """Verify shell redirections to /dev/null, /dev/zero, and /dev/urandom succeed."""
+    ws = LandlockWorkspace(
+        working_dir=tmp_path,
+        enable_landlock=True,
+    )
+    assert ws.is_enforcing is True
+
+    # 1. /dev/null write redirection
+    res_null = ws.execute_command("echo 'suppressed output' > /dev/null")
+    assert res_null.exit_code == 0
+    assert res_null.stderr == ""
+
+    # 2. /dev/zero reading and writing to workspace
+    res_zero = ws.execute_command("head -c 32 /dev/zero > zeros.dat")
+    assert res_zero.exit_code == 0
+    assert (tmp_path / "zeros.dat").stat().st_size == 32
+
+    # 3. /dev/urandom reading
+    res_random = ws.execute_command("head -c 16 /dev/urandom > rand.dat")
+    assert res_random.exit_code == 0
+    assert (tmp_path / "rand.dat").stat().st_size == 16
+
+
+def test_is_unshare_user_supported_probing(monkeypatch: pytest.MonkeyPatch):
+    """is_unshare_user_supported identifies unprivileged userns availability."""
+    assert isinstance(is_unshare_user_supported(), bool)
+
+    # When unshare binary is missing
+    monkeypatch.setattr("shutil.which", lambda cmd: None)
+    assert is_unshare_user_supported() is False
+
+    # When unshare -Ur true fails
+    mock_run = MagicMock()
+    mock_run.returncode = 1
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/unshare")
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_run)
+    assert is_unshare_user_supported() is False
+
+
+def test_landlock_restrict_self_failure_raises_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Failure in landlock_restrict_self raises RuntimeError (fail-closed)."""
+    call_count = 0
+
+    def mock_syscall(nr, *args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # create_ruleset returns a valid fd
+            return 99
+        if nr == 446:  # SYS_landlock_restrict_self
+            return -1
+        return 0
+
+    mock_libc = MagicMock()
+    mock_libc.syscall.side_effect = mock_syscall
+    mock_libc.prctl.return_value = 0
+
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: mock_libc)
+    monkeypatch.setattr("ctypes.get_errno", lambda: 1)  # EPERM
+
+    with pytest.raises(
+        RuntimeError, match="landlock_restrict_self failed with errno 1"
+    ):
+        _apply_landlock_and_group(
+            read_only_paths=[],
+            read_write_paths=[str(tmp_path)],
+            abi_version=1,
+            enable_process_group=False,
+        )
