@@ -1,6 +1,6 @@
+import threading
 import time
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from functools import lru_cache
 from logging import getLogger
 from typing import Any
@@ -32,10 +32,6 @@ logger = getLogger(__name__)
 # gracefully instead of deadlocking.
 MODEL_INFO_DISCOVERY_TIMEOUT = 10.0
 
-_discovery_executor = ThreadPoolExecutor(
-    max_workers=4, thread_name_prefix="model-info-discovery"
-)
-
 
 def _run_with_deadline[T](
     func: Callable[..., T],
@@ -46,21 +42,38 @@ def _run_with_deadline[T](
     """Run a (possibly network-bound, non-cancellable) sync call with a deadline.
 
     Returns ``None`` if the call does not finish within ``timeout`` so that
-    model-info discovery never blocks the caller indefinitely. A timed-out
-    worker thread is abandoned (it cannot be cancelled) but is bounded by
-    litellm's own socket timeout and does not block the caller.
+    model-info discovery never blocks the caller indefinitely.
+
+    The call runs on a dedicated daemon thread. A timed-out probe cannot be
+    cancelled, but because the thread is a daemon it is never joined at
+    interpreter shutdown -- so an endpoint that is reachable-but-silent (which
+    only litellm's much larger socket timeout would bound) delays neither the
+    caller nor process exit. A fresh thread per call also means a stuck probe
+    cannot saturate a shared worker pool and starve later discovery.
     """
     if timeout is None:
         timeout = MODEL_INFO_DISCOVERY_TIMEOUT
-    future = _discovery_executor.submit(func, *args, **kwargs)
-    try:
-        return future.result(timeout=timeout)
-    except FutureTimeoutError:
+
+    result: list[T] = []
+
+    def _target() -> None:
+        try:
+            result.append(func(*args, **kwargs))
+        except Exception as e:
+            logger.debug("Model-info probe raised; ignoring: %s", e)
+
+    thread = threading.Thread(
+        target=_target, name="model-info-discovery", daemon=True
+    )
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
         logger.warning(
             "Timed out after %ss while fetching model info; continuing without it.",
             timeout,
         )
         return None
+    return result[0] if result else None
 
 
 def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
