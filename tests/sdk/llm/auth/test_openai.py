@@ -183,7 +183,11 @@ def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
         auth.create_llm(model="gpt-5.6-sol")
 
 
-def test_openai_subscription_auth_create_llm_success(tmp_path):
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"],
+)
+def test_openai_subscription_auth_create_llm_success(tmp_path, model):
     """Test create_llm creates LLM with correct configuration."""
     store = CredentialStore(credentials_dir=tmp_path)
     auth = OpenAISubscriptionAuth(credential_store=store)
@@ -197,9 +201,9 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     )
     store.save(creds)
 
-    llm = auth.create_llm(model="gpt-5.6-sol")
+    llm = auth.create_llm(model=model)
 
-    assert llm.model == "openai/gpt-5.6-sol"
+    assert llm.model == f"openai/{model}"
     assert llm.api_key is None
     assert llm._get_litellm_api_key_value() == "test_access_token"
     assert llm.auth_type == "subscription"
