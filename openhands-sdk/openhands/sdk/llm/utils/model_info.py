@@ -65,7 +65,13 @@ def _run_with_deadline[T](
     thread = threading.Thread(
         target=_target, name="model-info-discovery", daemon=True
     )
-    thread.start()
+    try:
+        thread.start()
+    except RuntimeError:
+        # Interpreter is shutting down and will not start new threads. Model
+        # info is optional, so skip discovery rather than probing inline (which
+        # could re-introduce the very hang this guard exists to bound).
+        return None
     thread.join(timeout)
     if thread.is_alive():
         logger.warning(
