@@ -24,3 +24,12 @@ materialize resolved_settings.system_prompt == PROMPT: True
   suffix present            : False
   block 1 starts with       : '<SOUL>\nYou are OpenHands agent, a helpful AI assistant that can intera'
 ```
+
+# Agent Canvas, end to end
+
+Full local Canvas stack (`npm run dev` from OpenHands/OpenHands#17843), with the agent-server built from this branch (`OH_AGENT_SERVER_LOCAL_PATH`) and the same recording mock LLM. A profile authored in the Canvas editor (`01-editor-custom-prompt.png`) was launched from the home chat. The conversation's **Agent Tools & Metadata → System Message** shows the profile text followed by the dynamic `<SKILLS>` block (`03-explorer-system-prompt.png`). A paired profile without a custom prompt shows the built-in `<SOUL>`/`<ROLE>` prompt (`04-plain-system-prompt.png`).
+
+```
+[explorer] LLM block 1 == PROMPT: true  | built-in <ROLE> sent: false | modal shows PROMPT: true
+[plain]    LLM block 1 == PROMPT: false | built-in <ROLE> sent: true  | modal shows built-in <SOUL>: true
+```
