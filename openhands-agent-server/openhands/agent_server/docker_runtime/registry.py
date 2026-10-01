@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import shutil
 import subprocess
 import time
 from contextlib import suppress
@@ -19,12 +18,13 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.docker_runtime.storage import DockerStorageAdapter
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
-from openhands.agent_server.utils import safe_rmtree
+from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
@@ -44,18 +44,11 @@ _PERSISTENCE_DIR = "/var/openhands/.openhands"
 _WORKSPACE_DIR = "/workspace"
 _SHARED_CACHE_DIR = "/var/openhands/shared-cache"
 _OWNER_LABEL = "ai.openhands.runtime-owner"
-# Rebuildable caches under $HOME: XDG tools (uv, pip, yarn, go) use .cache,
-# npm ignores XDG and uses .npm.
-_CACHE_DIRS = (".cache", ".npm")
 # XDG tools follow XDG_CACHE_HOME; npm has to be pointed in explicitly.
 _SHARED_CACHE_ENV = {
     "XDG_CACHE_HOME": _SHARED_CACHE_DIR,
     "npm_config_cache": f"{_SHARED_CACHE_DIR}/npm",
 }
-# Detached caches sit beside, not inside, the bind-mounted persistence dir.
-# Shed workspace dirs reuse it so the startup sweep reclaims them too.
-_PRUNED_CACHE_PREFIX = ".cache-pruned-"
-_DISK_BUDGET_INTERVAL = 300.0
 
 
 @dataclass(slots=True)
@@ -98,8 +91,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
-        self._disk_budget_task: asyncio.Task[None] | None = None
-        self._reclaims: set[asyncio.Task[None]] = set()
+        self.storage = Reclaimer(DockerStorageAdapter(self))
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service
@@ -139,11 +131,10 @@ class DockerConversationRegistry(ConversationRegistry):
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
-        self._reclaim(await asyncio.to_thread(self.detach_stopped_caches))
+        # After the cleanup: with no container left, every runtime is reclaimable.
+        await self.storage.start()
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
-        if self.config.conversation_runtime_disk_budget:
-            self._disk_budget_task = asyncio.create_task(self._disk_budget_loop())
 
     def add_execution_routes(self, router: APIRouter) -> None:
         from openhands.agent_server.docker_runtime.routers import (
@@ -302,22 +293,18 @@ class DockerConversationRegistry(ConversationRegistry):
             container = container or started
         if container is not None:
             await asyncio.to_thread(container.stop)
-        await self._prune_cache(conversation_id)
+        await self.storage.on_stop(conversation_id)
 
     async def shutdown(self) -> None:
-        for loop in (self._eviction_task, self._disk_budget_task):
-            if loop is not None:
-                loop.cancel()
-                with suppress(asyncio.CancelledError):
-                    await loop
-        self._eviction_task = self._disk_budget_task = None
+        if self._eviction_task is not None:
+            self._eviction_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._eviction_task
+            self._eviction_task = None
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
         # Last, so it also covers the stops above; the next start sweeps them.
-        reclaims = list(self._reclaims)
-        for task in reclaims:
-            task.cancel()
-        await asyncio.gather(*reclaims, return_exceptions=True)
+        await self.storage.shutdown()
 
     async def _evict_idle_runtimes_loop(self) -> None:
         ttl = self.config.conversation_idle_ttl_seconds
@@ -379,177 +366,7 @@ class DockerConversationRegistry(ConversationRegistry):
                     ttl_seconds,
                 )
                 await service.refresh_persisted_conversation(conversation_id)
-                await self._prune_cache(conversation_id)
-
-    def detach_stopped_caches(self) -> list[Path]:
-        """Detach every runtime's cache; only safe before any container starts."""
-        detached: list[Path] = []
-        for runtime_dir in self.provisioning.data_root.iterdir():
-            try:
-                conversation_id = UUID(hex=runtime_dir.name)
-            except ValueError:
-                continue
-            if runtime_dir.is_symlink() or not runtime_dir.is_dir():
-                continue
-            try:
-                detached.extend(runtime_dir.glob(f"{_PRUNED_CACHE_PREFIX}*"))
-                detached.extend(self._detach_caches(conversation_id))
-            except Exception:
-                logger.warning(
-                    "Failed to prune conversation runtime cache %s",
-                    conversation_id,
-                    exc_info=True,
-                )
-        return detached
-
-    async def _prune_cache(self, conversation_id: UUID) -> None:
-        """Drop the rebuildable cache of a runtime whose container is gone.
-
-        Nothing is running without a container, so a persisted RUNNING status
-        is stale here; live runs are protected by eviction skipping them.
-        """
-        async with self._lock:
-            # A resumed runtime may already mount the cache again; detaching
-            # is one rename, so it cannot race a start that follows it.
-            if self.get(conversation_id) or self.is_starting(conversation_id):
-                return
-            try:
-                detached = self._detach_caches(conversation_id)
-            except Exception:
-                logger.warning(
-                    "Failed to prune conversation runtime cache %s",
-                    conversation_id,
-                    exc_info=True,
-                )
-                return
-        self._reclaim(detached)
-
-    def _reclaim(self, paths: list[Path]) -> None:
-        """Delete detached caches without holding up a request or startup."""
-        if paths:
-            task = asyncio.create_task(self._delete(paths))
-            self._reclaims.add(task)
-            task.add_done_callback(self._reclaims.discard)
-
-    @staticmethod
-    async def _delete(paths: list[Path]) -> None:
-        for path in paths:
-            try:
-                await asyncio.to_thread(_remove, path)
-            except Exception:
-                logger.warning(
-                    "Failed to delete conversation runtime cache %s",
-                    path,
-                    exc_info=True,
-                )
-
-    def _detach_caches(self, conversation_id: UUID) -> list[Path]:
-        runtime_dir = self.provisioning.runtime_dir(conversation_id)
-        persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
-        detached: list[Path] = []
-        for name in _CACHE_DIRS:
-            target = runtime_dir / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
-            try:
-                (persistence_dir / name).rename(target)
-            except FileNotFoundError:
-                continue
-            detached.append(target)
-        return detached
-
-    async def _disk_budget_loop(self) -> None:
-        while True:
-            await asyncio.sleep(_DISK_BUDGET_INTERVAL)
-            try:
-                await self._enforce_disk_budget()
-            except Exception:
-                logger.exception("error_enforcing_docker_runtime_disk_budget")
-
-    async def _enforce_disk_budget(self) -> None:
-        """Shed rebuildable workspace dirs of stopped runtimes, oldest first."""
-        budget = self.config.conversation_runtime_disk_budget
-        data_root = self.provisioning.data_root
-        if not budget or _disk_usage(data_root) <= budget:
-            return
-        shed = 0
-        for conversation_id in await asyncio.to_thread(self._runtimes_oldest_first):
-            if self.get(conversation_id) or self.is_starting(conversation_id):
-                continue
-            try:
-                ignored = await asyncio.to_thread(self._ignored_dirs, conversation_id)
-            except Exception:
-                logger.warning(
-                    "Failed to list rebuildable files of runtime %s",
-                    conversation_id,
-                    exc_info=True,
-                )
-                continue
-            if not ignored:
-                continue
-            async with self._lock:
-                # Listing ran unlocked; a runtime resumed since keeps its files.
-                if self.get(conversation_id) or self.is_starting(conversation_id):
-                    continue
-                detached = self._detach_all(conversation_id, ignored)
-            await self._delete(detached)
-            shed += 1
-            if _disk_usage(data_root) <= budget:
-                break
-        logger.info(
-            "Runtime disk above %.0f%% budget: shed rebuildable files of %d "
-            "stopped runtimes, now at %.0f%%",
-            budget * 100,
-            shed,
-            _disk_usage(data_root) * 100,
-        )
-
-    def _runtimes_oldest_first(self) -> list[UUID]:
-        activity: list[tuple[float, UUID]] = []
-        for runtime_dir in self.provisioning.data_root.iterdir():
-            try:
-                conversation_id = UUID(hex=runtime_dir.name)
-            except ValueError:
-                continue
-            if runtime_dir.is_symlink() or not runtime_dir.is_dir():
-                continue
-            state = self.conversation_dir(conversation_id) / "base_state.json"
-            try:
-                last = state.stat().st_mtime
-            except OSError:
-                last = runtime_dir.stat().st_mtime
-            activity.append((last, conversation_id))
-        return [conversation_id for _, conversation_id in sorted(activity)]
-
-    def _ignored_dirs(self, conversation_id: UUID) -> list[Path]:
-        """Gitignored dirs of a workspace this registry provisioned itself."""
-        identity = self.provisioning.load_optional(conversation_id)
-        if identity is None or identity.workspace_path.is_symlink():
-            return []
-        workspace = identity.workspace_path.resolve()
-        # A caller-supplied workspace is someone's checkout, not ours to prune.
-        runtime_dir = self.provisioning.runtime_dir(conversation_id).resolve()
-        if not workspace.is_relative_to(runtime_dir):
-            return []
-        repos = [workspace, *(git.parent for git in workspace.glob("*/.git"))]
-        return [
-            path
-            for repo in repos
-            if (repo / ".git").exists()
-            for path in _git_ignored_dirs(repo)
-            if path.parent.resolve().is_relative_to(workspace)
-        ]
-
-    def _detach_all(self, conversation_id: UUID, paths: list[Path]) -> list[Path]:
-        runtime_dir = self.provisioning.runtime_dir(conversation_id)
-        detached: list[Path] = []
-        for path in paths:
-            target = runtime_dir / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
-            try:
-                path.rename(target)
-            except OSError:
-                logger.warning("Failed to shed %s", path, exc_info=True)
-                continue
-            detached.append(target)
-        return detached
+                await self.storage.on_stop(conversation_id)
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
@@ -703,58 +520,3 @@ def _validate_shared_cache_dir(path: Path | None) -> Path | None:
             "and not a symlink"
         )
     return path.resolve()
-
-
-def _disk_usage(path: Path) -> float:
-    usage = shutil.disk_usage(path)
-    return usage.used / (usage.used + usage.free)
-
-
-def _git_ignored_dirs(repo: Path) -> list[Path]:
-    result = subprocess.run(
-        [
-            "git",
-            "--no-optional-locks",
-            # The repo's own config is agent-writable; fsmonitor would run it.
-            "-c",
-            "core.fsmonitor=false",
-            "-C",
-            str(repo),
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-        ],
-        env=sanitized_env(),
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    if result.returncode != 0:
-        return []
-    candidates = sorted(
-        path
-        for entry in result.stdout.split("\0")
-        if entry.endswith("/")
-        and (path := repo / entry.rstrip("/")).is_dir()
-        and not path.is_symlink()
-        # An ignored checkout is someone's work, not build output.
-        and not (path / ".git").exists()
-    )
-    # A `dir/**/*` pattern lists dir/ and each of its subdirs; shedding the
-    # parent already takes the rest.
-    kept: list[Path] = []
-    for path in candidates:
-        if not any(path.is_relative_to(parent) for parent in kept):
-            kept.append(path)
-    return kept
-
-
-def _remove(path: Path) -> None:
-    if path.is_symlink():
-        path.unlink(missing_ok=True)
-    else:
-        safe_rmtree(path, "conversation runtime cache")

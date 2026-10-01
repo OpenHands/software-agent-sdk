@@ -15,12 +15,12 @@ from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.docker_runtime import registry as registry_module
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
 )
 from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.storage import trash as trash_module
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -459,8 +459,9 @@ def cache_dir(
     return runtime.provisioning.runtime_dir(conversation_id) / "persistence" / name
 
 
-def pruned_leftovers(runtime: DockerConversationRegistry) -> list[Path]:
-    return list(runtime.provisioning.data_root.glob("*/.cache-pruned-*"))
+def in_trash(runtime: DockerConversationRegistry) -> list[Path]:
+    trash = runtime.storage.trash.dir
+    return list(trash.iterdir()) if trash.exists() else []
 
 
 def assert_kept(kept: dict[Path, bytes]) -> None:
@@ -468,7 +469,7 @@ def assert_kept(kept: dict[Path, bytes]) -> None:
 
 
 async def reclaimed(runtime: DockerConversationRegistry) -> None:
-    await asyncio.gather(*runtime._reclaims)
+    await runtime.storage.trash.drain()
 
 
 @pytest.fixture
@@ -483,7 +484,7 @@ def stopped_containers(monkeypatch) -> list[str]:
 @pytest.fixture
 def slow_remove(monkeypatch) -> Iterator[SimpleNamespace]:
     """Hold every cache deletion until ``release`` is set."""
-    real_remove = registry_module._remove
+    real_remove = trash_module._remove
     gate = SimpleNamespace(
         started=threading.Event(), release=threading.Event(), removed=threading.Event()
     )
@@ -494,7 +495,7 @@ def slow_remove(monkeypatch) -> Iterator[SimpleNamespace]:
         real_remove(path)
         gate.removed.set()
 
-    monkeypatch.setattr(registry_module, "_remove", remove)
+    monkeypatch.setattr(trash_module, "_remove", remove)
     yield gate
     gate.release.set()
 
@@ -518,7 +519,7 @@ async def test_idle_eviction_prunes_cache_and_keeps_conversation_state(
     assert stopped_containers == [f"container-{conversation_id}"]
     assert not cache_dir(runtime, conversation_id).exists()
     assert_kept(kept)
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
 
 
 @pytest.mark.asyncio
@@ -562,7 +563,7 @@ async def test_explicit_stop_prunes_cache(
     assert stopped_containers == [f"container-{conversation_id}"]
     assert not cache_dir(runtime, conversation_id).exists()
     assert_kept(kept)
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
 
 
 @pytest.mark.asyncio
@@ -577,16 +578,18 @@ async def test_stop_prunes_npm_cache_too(tmp_path, monkeypatch, stopped_containe
     assert not cache_dir(runtime, conversation_id).exists()
     assert not cache_dir(runtime, conversation_id, ".npm").exists()
     assert_kept(kept)
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
 
 
-def test_startup_prunes_npm_cache_too(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_startup_prunes_npm_cache_too(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime, npm=True)
 
-    detached = runtime.detach_stopped_caches()
+    await runtime.storage.start()
+    await reclaimed(runtime)
 
-    assert len(detached) == 2
+    assert not cache_dir(runtime, conversation_id).exists()
     assert not cache_dir(runtime, conversation_id, ".npm").exists()
     assert_kept(kept)
 
@@ -603,10 +606,10 @@ async def test_stop_returns_before_cache_deletion_finishes(
 
     # Detached from the mount already, but not yet deleted.
     assert not cache_dir(runtime, conversation_id).exists()
-    assert len(pruned_leftovers(runtime)) == 1
+    assert len(in_trash(runtime)) == 1
     slow_remove.release.set()
     await reclaimed(runtime)
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
 
 
 @pytest.mark.asyncio
@@ -632,9 +635,22 @@ async def test_prune_skips_runtime_that_restarted_after_stop(tmp_path, monkeypat
     conversation_id, _ = seed_runtime(runtime)
     runtime._containers[conversation_id] = container(conversation_id)
 
-    await runtime._prune_cache(conversation_id)
+    await runtime.storage.on_stop(conversation_id)
     await reclaimed(runtime)
 
+    assert cache_dir(runtime, conversation_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_prune_skips_runtime_being_deleted(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id, _ = seed_runtime(runtime)
+    assert await runtime.begin_delete(conversation_id)
+
+    await runtime.storage.on_stop(conversation_id)
+    await reclaimed(runtime)
+
+    # The DELETE route owns this runtime's files now.
     assert cache_dir(runtime, conversation_id).is_dir()
 
 
@@ -643,13 +659,13 @@ async def test_prune_is_idempotent_when_cache_is_absent(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime)
 
-    await runtime._prune_cache(conversation_id)
-    await runtime._prune_cache(conversation_id)
+    await runtime.storage.on_stop(conversation_id)
+    await runtime.storage.on_stop(conversation_id)
     await reclaimed(runtime)
 
     assert not cache_dir(runtime, conversation_id).exists()
     assert_kept(kept)
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
 
 
 @pytest.mark.asyncio
@@ -665,12 +681,12 @@ async def test_prune_unlinks_symlinked_cache_without_following_it(
     shutil.rmtree(cache)
     cache.symlink_to(outside, target_is_directory=True)
 
-    await runtime._prune_cache(conversation_id)
+    await runtime.storage.on_stop(conversation_id)
     await reclaimed(runtime)
 
     assert not cache.is_symlink() and not cache.exists()
     assert (outside / "precious").read_text() == "keep"
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
 
 
 @pytest.mark.asyncio
@@ -686,7 +702,7 @@ async def test_startup_prunes_every_runtime_cache(tmp_path, monkeypatch):
             ConversationExecutionStatus.RUNNING,
         )
     ]
-    # A crash between detaching and deleting leaves a detached cache behind.
+    # What builds before the storage module set aside and never deleted.
     leftover = runtime.provisioning.runtime_dir(seeded[0][0]) / ".cache-pruned-x"
     (leftover / "uv").mkdir(parents=True)
     unrelated = runtime.provisioning.data_root / "not-a-conversation" / ".cache"
@@ -700,10 +716,12 @@ async def test_startup_prunes_every_runtime_cache(tmp_path, monkeypatch):
         assert not cache_dir(runtime, conversation_id).exists()
         assert_kept(kept)
     assert unrelated.is_dir()
-    assert pruned_leftovers(runtime) == []
+    assert not leftover.exists()
+    assert in_trash(runtime) == []
 
     # A second pass, with the caches already gone, changes nothing.
-    assert runtime.detach_stopped_caches() == []
+    await runtime.storage.start()
+    await reclaimed(runtime)
     for _, kept in seeded:
         assert_kept(kept)
 
@@ -719,10 +737,10 @@ async def test_startup_does_not_wait_for_cache_deletion(
     await runtime.start()
 
     assert not cache_dir(runtime, conversation_id).exists()
-    assert len(pruned_leftovers(runtime)) == 1
+    assert len(in_trash(runtime)) == 1
     slow_remove.release.set()
     await reclaimed(runtime)
-    assert pruned_leftovers(runtime) == []
+    assert in_trash(runtime) == []
     await runtime.shutdown()
 
 
@@ -739,21 +757,22 @@ async def test_shutdown_abandons_deletions_and_next_start_sweeps_them(
     await asyncio.to_thread(slow_remove.started.wait, 5)
     await runtime.shutdown()
 
-    assert runtime._reclaims == set()
+    assert runtime.storage.trash._emptying is None
     slow_remove.release.set()
     # The in-flight deletion finishes; the queued one was abandoned.
     assert await asyncio.to_thread(slow_remove.removed.wait, 5)
-    assert len(pruned_leftovers(runtime)) == 1
+    assert len(in_trash(runtime)) == 1
 
     restarted = registry(tmp_path, monkeypatch)
     monkeypatch.setattr(restarted, "cleanup_stale_containers", lambda: None)
     await restarted.start()
     await reclaimed(restarted)
     await restarted.shutdown()
-    assert pruned_leftovers(restarted) == []
+    assert in_trash(restarted) == []
 
 
-def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     broken_id, _ = seed_runtime(runtime)
     healthy_id, _ = seed_runtime(runtime)
@@ -761,18 +780,20 @@ def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypatch):
     shutil.move(persistence, tmp_path / "moved-persistence")
     persistence.symlink_to(tmp_path / "moved-persistence", target_is_directory=True)
 
-    detached = runtime.detach_stopped_caches()
+    await runtime.storage.start()
+    await reclaimed(runtime)
 
     assert (tmp_path / "moved-persistence" / ".cache").is_dir()
     assert not cache_dir(runtime, healthy_id).exists()
-    assert detached == pruned_leftovers(runtime)
-    assert len(detached) == 1
+    assert in_trash(runtime) == []
 
 
-def test_resume_after_prune_mounts_a_fresh_cache_location(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_resume_after_prune_mounts_a_fresh_cache_location(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime)
-    runtime.detach_stopped_caches()
+    await runtime.storage.start()
+    await reclaimed(runtime)
     commands = capture_docker_run(runtime, monkeypatch)
 
     runtime._build_container(conversation_id)
