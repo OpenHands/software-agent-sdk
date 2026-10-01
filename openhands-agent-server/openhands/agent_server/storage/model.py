@@ -7,8 +7,11 @@ from uuid import UUID
 class Tier(IntEnum):
     """What may be dropped from a stopped runtime; each tier includes the lower."""
 
+    # Package caches in the sandbox home ($HOME/.cache, $HOME/.npm).
     CACHES = 1
+    # Git-ignored dirs in the workspace (node_modules, .venv, build output).
     DEPENDENCIES = 2
+    # The whole runtime; the conversation's history and identity are kept.
     RUNTIME = 3
 
 
