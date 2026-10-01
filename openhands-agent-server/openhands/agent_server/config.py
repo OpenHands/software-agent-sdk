@@ -215,6 +215,25 @@ class TelemetrySpec(BaseModel):
     )
 
 
+class ConversationStorageConfig(BaseModel):
+    """Policies for disk the server stores per conversation."""
+
+    disk_budget: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description=(
+            "Fraction of the conversation-storage filesystem that may be in use "
+            "before stopped conversations shed the gitignored directories of "
+            "their workspaces (node_modules, .venv, build output), least "
+            "recently active first. Tracked files, untracked work, ignored "
+            "files and nested checkouts are kept; a resumed conversation "
+            "reinstalls what was shed. Only workspaces the server created are "
+            "touched. Unset (the default) disables it."
+        ),
+    )
+
+
 class Config(BaseModel):
     """
     Immutable configuration for a server running in local mode.
@@ -384,18 +403,12 @@ class Config(BaseModel):
             "prunable cache per conversation."
         ),
     )
-    conversation_runtime_disk_budget: float | None = Field(
-        default=None,
-        gt=0,
-        lt=1,
+    conversation_storage: ConversationStorageConfig = Field(
+        default_factory=ConversationStorageConfig,
         description=(
-            "Fraction of the runtime-data filesystem that may be in use before "
-            "stopped Docker conversations shed the gitignored directories of "
-            "their workspaces (node_modules, .venv, build output), least "
-            "recently active first. Tracked files, untracked work and ignored "
-            "files are kept; a resumed conversation reinstalls what was shed. "
-            "Only workspaces provisioned inside runtime-data are touched. Unset "
-            "(the default) disables it."
+            "When the server reclaims disk it stores per conversation. Package "
+            "caches of a stopped runtime are always dropped; everything here "
+            "is off by default."
         ),
     )
     conversation_runtime_retention_days: float | None = Field(
