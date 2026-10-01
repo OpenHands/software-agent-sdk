@@ -7,6 +7,7 @@ from uuid import UUID
 class Tier(IntEnum):
     """What may be dropped from a stopped runtime; each tier includes the lower."""
 
+    # Package caches in the sandbox home ($HOME/.cache, $HOME/.npm).
     CACHES = 1
 
 

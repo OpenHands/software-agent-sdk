@@ -21,7 +21,9 @@ class StorageAdapter(Protocol):
         """Where the runtimes live; the trash goes here, on the same filesystem."""
         ...
 
-    def runtime(self, conversation_id: UUID) -> StoredRuntime | None: ...
+    def runtime(self, conversation_id: UUID) -> StoredRuntime | None:
+        """The conversation's stored runtime, or None if it has none here."""
+        ...
 
     def runtimes(self) -> list[StoredRuntime]:
         """Every stored runtime, least recently active first."""
@@ -33,6 +35,12 @@ class StorageAdapter(Protocol):
 
 
 class Reclaimer:
+    """Frees what a runtime mode stores per conversation, by tier.
+
+    Files are only moved into the trash, and only while the adapter holds the
+    runtime idle; the trash deletes them in the background.
+    """
+
     def __init__(self, adapter: StorageAdapter) -> None:
         self.adapter = adapter
         self.trash = Trash(adapter.root)
