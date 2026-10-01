@@ -8,6 +8,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+TestType = Literal["integration", "behavior", "condenser"]
+
+
 def json_serializer(obj):
     """JSON serializer for objects not serializable by default json code"""
     if isinstance(obj, datetime):
@@ -50,7 +53,7 @@ class TestInstanceResult(BaseModel):
 
     instance_id: str
     test_result: TestResultData
-    test_type: Literal["integration", "behavior", "condenser"]
+    test_type: TestType
     required: bool  # True for integration tests, False for behavior/condenser tests
     cost: float = 0.0
     token_usage: TokenUsageData | None = None
