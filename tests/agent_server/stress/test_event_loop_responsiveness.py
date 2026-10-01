@@ -10,6 +10,7 @@ Why this exists:
 Loads exercised:
     - Long bash command (sleep + final marker) — exercises bash_service.
     - Busy conversation listing on a seeded store — exercises persistence.
+    - Active conversation runs with controlled fsync latency — exercises durability.
 
 Loads NOT exercised here (covered by their own suites):
     - Slow webhook (test_slow_webhook.py).
@@ -18,6 +19,7 @@ Loads NOT exercised here (covered by their own suites):
 """
 
 import asyncio
+import os
 import statistics
 import time
 from uuid import UUID
@@ -201,13 +203,17 @@ async def test_health_responsive_under_active_conversation_runs(
     conversation_service: ConversationService,
     client,
     tmp_path,
+    monkeypatch,
 ):
     """/health must stay responsive while running conversations persist events.
 
     Regression coverage for #5402: durable persistence (fsync per event
     append, length-marker advance, and base-state save) must not execute on
     the event-loop thread. If it does, N concurrent runs serialize on it and
-    /health p95 blows the budget.
+    /health p95 blows the budget. Scheduled-arrival latency includes time
+    spent waiting for a blocked event loop, which an in-process request timer
+    alone would miss. Controlled fsync latency makes the regression observable
+    even on a fast local filesystem; the health budgets are unchanged.
     """
     workspace = str(tmp_path / "ws")
     (tmp_path / "ws").mkdir()
@@ -228,35 +234,58 @@ async def test_health_responsive_under_active_conversation_runs(
         ]
     )
     conv_ids = [info.id for info in started]
+    original_fsync = os.fsync
+    fsync_calls = 0
 
-    # Fire all runs (fire-and-forget), then interleave /health sampling with
-    # terminal polling so samples land across the whole append window — a
-    # tight burst before the LLM latency elapses would pass under no load.
-    for conv_id in conv_ids:
-        resp = await client.post(f"/api/conversations/{conv_id.hex}/run")
-        assert resp.status_code == 200, resp.text
+    def slow_fsync(fd):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        time.sleep(0.02)
+        original_fsync(fd)
 
+    monkeypatch.setattr(os, "fsync", slow_fsync)
     latencies: list[float] = []
-    pending = set(conv_ids)
-    deadline = time.monotonic() + 60.0
-    while pending and time.monotonic() < deadline:
-        for _ in range(5):
-            t0 = time.monotonic()
+    stop = asyncio.Event()
+    ready = asyncio.Event()
+
+    async def sample_health():
+        scheduled = time.monotonic() + 0.01
+        ready.set()
+        while not stop.is_set():
+            await asyncio.sleep(max(0, scheduled - time.monotonic()))
             h_resp = await client.get("/health")
-            latencies.append(time.monotonic() - t0)
+            latencies.append(time.monotonic() - scheduled)
             assert h_resp.status_code == 200
-        for conv_id in list(pending):
-            resp = await client.get(f"/api/conversations/{conv_id.hex}")
+            scheduled += 0.01
+
+    probe = asyncio.create_task(sample_health())
+    try:
+        # Arm the independent probe before admitting any run. It must observe
+        # stalls during request admission as well as during event appends.
+        await ready.wait()
+        for conv_id in conv_ids:
+            resp = await client.post(f"/api/conversations/{conv_id.hex}/run")
             assert resp.status_code == 200, resp.text
-            status = ConversationExecutionStatus(resp.json()["execution_status"])
-            if status in _TERMINAL:
-                assert status == ConversationExecutionStatus.FINISHED, (
-                    f"conversation {conv_id} ended in {status}; "
-                    "the health samples above may not cover a real run."
-                )
-                pending.discard(conv_id)
-        await asyncio.sleep(0.05)
-    assert not pending, f"conversations did not reach terminal: {pending}"
+        pending = set(conv_ids)
+        deadline = time.monotonic() + 60.0
+        while pending and time.monotonic() < deadline:
+            for conv_id in list(pending):
+                resp = await client.get(f"/api/conversations/{conv_id.hex}")
+                assert resp.status_code == 200, resp.text
+                status = ConversationExecutionStatus(resp.json()["execution_status"])
+                if status in _TERMINAL:
+                    assert status == ConversationExecutionStatus.FINISHED, (
+                        f"conversation {conv_id} ended in {status}; "
+                        "the health samples may not cover a real run."
+                    )
+                    pending.discard(conv_id)
+            await asyncio.sleep(0.01)
+        assert not pending, f"conversations did not reach terminal: {pending}"
+    finally:
+        stop.set()
+        await probe
+    assert len(latencies) >= EVENT_LOOP_RESPONSIVENESS.health_samples
+    assert fsync_calls > 0, "no persistence fsync was exercised"
 
     # Every conversation produced persisted events — the load was real.
     persist_root = tmp_path / "persist"
@@ -269,4 +298,3 @@ async def test_health_responsive_under_active_conversation_runs(
 
     quantiles = statistics.quantiles(latencies, n=100)
     _assert_within_budget("active_conversation_runs", quantiles[94], quantiles[98])
-

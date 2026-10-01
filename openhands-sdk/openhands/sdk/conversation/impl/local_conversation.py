@@ -5,7 +5,7 @@ import copy
 import json
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import Any, Final, TypeGuard, cast
 
@@ -53,7 +53,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
-from openhands.sdk.io import FileStore, LocalFileStore
+from openhands.sdk.io import DurabilityError, FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.call_context import LLMCallContext, llm_call_context_scope
@@ -126,6 +126,34 @@ _RUNTIME_MCP_TIMEOUT_SECS = 30
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
 
 ASK_AGENT_LLM_USAGE_ID: Final[str] = "ask-agent-llm"
+
+
+async def _run_thread_to_completion(fn: Callable[[], None]) -> None:
+    """Settle thread-owned work before propagating task cancellation.
+
+    Cancelling to_thread's await cannot stop its thread. Initialization may
+    still persist state, and flushing may still own accepted fsync work, so
+    neither may outlive its run boundary. Repeated cancellation is deferred
+    until completion without blocking the event loop.
+    """
+    task = asyncio.create_task(asyncio.to_thread(fn))
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            if task.cancelled():
+                raise
+            cancellation = error
+        except Exception:
+            if cancellation is None:
+                raise
+            logger.exception("Thread-owned work failed during cancellation")
+            raise cancellation
+        else:
+            if cancellation is not None:
+                raise cancellation
+            return
 
 
 def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
@@ -1909,9 +1937,17 @@ class LocalConversation(BaseConversation):
         - Creates and executes actions immediately
 
         Can be paused between steps
+
+        On return, deferred persistence has been flushed. State updates may
+        become visible before this boundary; observing a terminal status alone
+        is not a durability acknowledgment.
         """
         with llm_call_context_scope(self._llm_call_context):
-            self._run()
+            try:
+                self._run()
+            finally:
+                self._cancel_token = None
+                self._flush_durability_at_run_end()
 
     def _run(self) -> None:
         """Implement :meth:`run` inside the active LLM context scope."""
@@ -2085,11 +2121,6 @@ class LocalConversation(BaseConversation):
                     self._state.events, _run_start_event_count
                 ),
             ) from e
-        finally:
-            self._cancel_token = None
-            # Group-commit boundary: events acknowledged during this run must
-            # be durable before the run's terminal status is observed.
-            self._flush_durability_at_run_end()
 
     def _flush_durability_at_run_end(self) -> None:
         """Flush deferred durability at a run boundary.
@@ -2125,9 +2156,31 @@ class LocalConversation(BaseConversation):
         ``CancelledError`` any ``ActionEvent`` without a matching
         observation is patched with a synthetic ``AgentErrorEvent`` so
         the LLM conversation history stays consistent.
+
+        As with :meth:`run`, return is a durability boundary, not the first
+        visibility of a terminal state. Cancellation waits for thread-owned
+        initialization and flushing to settle; these operations cannot be
+        safely abandoned while they may still write persistent state.
         """
         with llm_call_context_scope(self._llm_call_context):
-            await self._arun()
+            try:
+                await self._arun()
+            finally:
+                # A cancelled token stays visible to interrupted tool threads.
+                if (
+                    self._cancel_token is not None
+                    and not self._cancel_token.is_cancelled
+                ):
+                    self._cancel_token = None
+                self._arun_task = None
+                handling_error = sys.exc_info()[0] is not None
+                try:
+                    await _run_thread_to_completion(self._state.flush)
+                except Exception:
+                    if handling_error:
+                        logger.exception("Durability flush failed at end of arun")
+                    else:
+                        raise
 
     async def _arun(self) -> None:
         """Implement :meth:`arun` inside the active LLM context scope."""
@@ -2140,7 +2193,7 @@ class LocalConversation(BaseConversation):
         # inline freezes the loop so the lookup can never be served — a
         # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
         # _ensure_agent_ready is thread-safe and already runs off-loop in run().
-        await asyncio.to_thread(self._ensure_agent_ready)
+        await _run_thread_to_completion(self._ensure_agent_ready)
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -2624,25 +2677,6 @@ class LocalConversation(BaseConversation):
                     self._state.events, _run_start_event_count
                 ),
             ) from e
-        finally:
-            # A cancelled token must stay observable: interrupted tool calls run
-            # in worker threads that can outlive arun() and still poll it. A
-            # fresh token is created on the next run().
-            if self._cancel_token is not None and not self._cancel_token.is_cancelled:
-                self._cancel_token = None
-            self._arun_task = None
-            # Group-commit boundary: events acknowledged during this run must
-            # be durable before the terminal status published after arun()
-            # returns is observed. Off-load the (normally trivial) queue drain
-            # so a slow disk cannot stall the shared event loop here either.
-            handling_error = sys.exc_info()[0] is not None
-            try:
-                await asyncio.to_thread(self._state.flush)
-            except Exception:
-                if handling_error:
-                    logger.exception("Durability flush failed at end of arun")
-                else:
-                    raise
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -2889,10 +2923,17 @@ class LocalConversation(BaseConversation):
             durability_error = e
         if isinstance(agent_error, CredentialBindingError):
             raise agent_error
-        if durability_error is not None:
+        if durability_error is not None and not isinstance(
+            durability_error, DurabilityError
+        ):
             raise durability_error
+        # A DurabilityError reports a drained, stopped writer's sticky failure.
+        # Resources are already closed: do not retain this conversation through
+        # atexit or retry cleanup indefinitely after reporting that failure.
         self._cleanup_complete = True
         atexit.unregister(self.close)
+        if durability_error is not None:
+            raise durability_error
 
     @observe(
         name="conversation.ask_agent",

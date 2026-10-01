@@ -41,11 +41,12 @@ class LocalFileStore(FileStore):
                 runs on a per-store background DurabilityWriter instead of the
                 calling thread (group commit). The write + atomic rename still
                 happen synchronously, so content is immediately visible to
-                readers and survives process exit; power-loss durability is
-                established when the queued fsync completes. Call ``flush()``
-                at acknowledgment boundaries (end of a run) and ``close()`` on
-                shutdown. When False, every write fsyncs inline and is fully
-                durable on return (previous behavior).
+                readers and survives process exit. Queued fsync preserves the
+                existing file-fsync guarantees, not directory durability.
+                Call ``flush()`` at acknowledgment boundaries (end of a run)
+                and ``close()`` on
+                shutdown. When False, text writes fsync inline (previous
+                behavior). Neither mode adds fsync to binary writes.
 
         Note:
             The cache assumes exclusive access to files. External modifications
@@ -60,15 +61,7 @@ class LocalFileStore(FileStore):
         self._deferred_durability = deferred_durability
         self._durability: DurabilityWriter | None = None
         self._durability_lock = threading.Lock()
-
-    def _durability_writer(self) -> DurabilityWriter:
-        """Lazily create the per-store writer (read-only stores stay threadless)."""
-        with self._durability_lock:
-            if self._durability is None:
-                self._durability = DurabilityWriter(
-                    name=f"fs-durability-{id(self):x}"
-                )
-            return self._durability
+        self._closed = False
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -86,37 +79,49 @@ class LocalFileStore(FileStore):
         return full
 
     def write(self, path: str, contents: str | bytes) -> None:
-        full_path = self.get_full_path(path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        if isinstance(contents, str):
-            if self._deferred_durability:
-                writer = self._durability_writer()
-                # Fail-fast *before* the write becomes visible on disk, so a
-                # durability failure never surfaces after the mutation.
+        # Keep admission, mutation and durability submission in one lifecycle
+        # critical section. Close cannot seal a write between rename and enqueue.
+        with self._durability_lock:
+            if self._closed:
+                raise RuntimeError("LocalFileStore is closed")
+            full_path = self.get_full_path(path)
+            writer = None
+            if isinstance(contents, str) and self._deferred_durability:
+                if self._durability is None:
+                    self._durability = DurabilityWriter(
+                        name=f"fs-durability-{id(self):x}"
+                    )
+                writer = self._durability
                 writer.raise_if_failed()
-                atomic_write_text(
-                    Path(full_path), contents, defer_fsync=writer.submit_fsync
-                )
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            if isinstance(contents, str):
+                if writer is not None:
+                    atomic_write_text(
+                        Path(full_path), contents, defer_fsync=writer.submit_fsync
+                    )
+                else:
+                    atomic_write_text(Path(full_path), contents)
+                self.cache[full_path] = contents
             else:
-                atomic_write_text(Path(full_path), contents)
-            self.cache[full_path] = contents
-        else:
-            with open(full_path, "wb") as f:
-                f.write(contents)
-            # Don't cache binary content - LocalFileStore is meant for JSON data
-            # If binary data is written and then read, it will error on read
+                with open(full_path, "wb") as f:
+                    f.write(contents)
+                # Don't cache binary content - LocalFileStore is meant for JSON data
+                # If binary data is written and then read, it will error on read
 
     def flush(self) -> None:
         """Drain queued fsync work; re-raise the first durability failure."""
-        writer = self._durability
+        with self._durability_lock:
+            writer = self._durability
         if writer is not None:
             writer.flush()
 
     def close(self) -> None:
-        """Flush, then shut down the background durability writer."""
+        """Reject new writes and drain admitted writes; reads remain available."""
         with self._durability_lock:
+            self._closed = True
             writer = self._durability
-            self._durability = None
+            # Retain the writer so all close callers wait for its completion
+            # and observe the same sticky durability failure.
         if writer is not None:
             writer.close()
 

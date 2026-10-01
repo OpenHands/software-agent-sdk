@@ -458,15 +458,20 @@ class ConversationState(OpenHandsModel):
         of them. Re-raises the first durability failure, if any, so it
         propagates to the caller instead of being swallowed.
         """
-        fs = getattr(self, "_fs", None)
-        if fs is not None:
-            fs.flush()
+        try:
+            fs = self._fs
+        except AttributeError:
+            # A directly constructed state may not have a store yet.
+            return
+        fs.flush()
 
     def close(self) -> None:
         """Flush deferred durability and release the store's background writer."""
-        fs = getattr(self, "_fs", None)
-        if fs is not None:
-            fs.close()
+        try:
+            fs = self._fs
+        except AttributeError:
+            return
+        fs.close()
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod

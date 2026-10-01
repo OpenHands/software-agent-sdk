@@ -11,14 +11,16 @@ cheap page-cache operations that make the data immediately visible to
 readers and survive process exit — and moves only the fsync to a
 single-threaded, FIFO worker. Because the worker is strictly ordered, a
 length-marker fsync never completes before the fsync of the event file it
-acknowledges, so after an OS crash a durable marker can never claim more
-events than are actually durable. The worker keeps draining after a
-failure so later files still get their fsync attempt.
+acknowledges. This preserves file-fsync ordering, not power-loss recovery:
+directory entries still follow the existing atomic-write implementation's
+filesystem guarantees. The worker keeps draining after a failure so later
+files still get their fsync attempt.
 
 Acknowledgment boundaries: callers use :meth:`DurabilityWriter.flush` (at
 the end of a run) and :meth:`DurabilityWriter.close` (on store close) to
-guarantee acknowledged writes are durable before a conversation is
-reported terminal. Failures are sticky: the first worker exception is
+drain acknowledged writes before the run returns or the store closes.
+Intermediate state/event visibility is not a durability acknowledgment.
+Failures are sticky: the first worker exception is
 recorded and re-raised by ``raise_if_failed``/``flush``/``close`` so
 durability errors propagate to callers instead of being swallowed.
 """
@@ -79,10 +81,9 @@ class DurabilityWriter:
             # Daemon so a leaked writer never blocks interpreter exit. Clean
             # exits still get durability: page-cache writes survive process
             # exit, and flush()/close() drain the queue before then.
-            self._thread = threading.Thread(
-                target=self._worker, name=self._name, daemon=True
-            )
-            self._thread.start()
+            thread = threading.Thread(target=self._worker, name=self._name, daemon=True)
+            thread.start()
+            self._thread = thread
 
     def _worker(self) -> None:
         while True:
@@ -125,7 +126,9 @@ class DurabilityWriter:
             if self._closed:
                 raise RuntimeError("DurabilityWriter is closed")
             self._ensure_thread_locked()
-        self._queue.put(fn)
+            # Admission and enqueue must be indivisible with respect to close:
+            # an accepted task can never land behind the shutdown sentinel.
+            self._queue.put(fn)
 
     def submit_fsync(self, path: Path) -> None:
         """Queue an fsync for ``path`` (already written + renamed)."""
@@ -140,19 +143,23 @@ class DurabilityWriter:
             raise DurabilityError("Deferred durability failed") from error
 
     def close(self) -> None:
-        """Flush, then stop the worker thread. Idempotent."""
+        """Seal admission, drain accepted work, then stop the worker.
+
+        Concurrent callers wait for the same worker, and repeated calls still
+        report a recorded failure. Calling from a submitted task is unsupported
+        because the worker cannot wait for its own completion.
+        """
         with self._lock:
-            if self._closed:
-                return
             thread = self._thread
-        try:
-            self.flush()
-        finally:
-            with self._lock:
+            if thread is threading.current_thread():
+                raise RuntimeError("DurabilityWriter cannot close from its worker")
+            if not self._closed:
                 self._closed = True
-            if thread is not None:
-                self._queue.put(None)
-                thread.join()
+                if thread is not None:
+                    self._queue.put(None)
+        if thread is not None:
+            thread.join()
+        self.flush()
 
     @property
     def failed(self) -> bool:
