@@ -416,6 +416,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             FileNotFoundError: If ``profile_name`` does not exist.
             httpx.HTTPStatusError: If the API request fails.
             RuntimeError: If the workspace host is not set.
+            ValueError: If no profile is active and the agent settings are for
+                an ACP agent, which has no LLM.
 
         Example:
             >>> with DockerWorkspace(...) as workspace:
@@ -423,6 +425,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
 
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
@@ -433,6 +436,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             if resolved_profile_name in (None, ""):
                 settings_response = self._fetch_settings_response()
                 agent_settings = settings_response.get_agent_settings()
+                if not isinstance(agent_settings, OpenHandsAgentSettings):
+                    raise ValueError(
+                        "No LLM profile is active and the agent settings are for "
+                        "an ACP agent, which has no LLM; pass profile_name."
+                    )
                 if not llm_kwargs:
                     return agent_settings.llm
                 llm_data = agent_settings.llm.model_dump(
