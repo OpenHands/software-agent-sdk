@@ -1,5 +1,6 @@
 import os
 import shutil
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
+from openhands.sdk.io.durability import DurabilityWriter
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.utils.path import to_posix_path
@@ -26,6 +28,8 @@ class LocalFileStore(FileStore):
         root: str,
         cache_limit_size: int = 500,
         cache_memory_size: int = 20 * 1024 * 1024,
+        *,
+        deferred_durability: bool = True,
     ) -> None:
         """Initialize a LocalFileStore with caching.
 
@@ -33,6 +37,15 @@ class LocalFileStore(FileStore):
             root: Root directory for file storage.
             cache_limit_size: Maximum number of cached entries (default: 500).
             cache_memory_size: Maximum cache memory in bytes (default: 20MB).
+            deferred_durability: When True (default), the fsync of each write
+                runs on a per-store background DurabilityWriter instead of the
+                calling thread (group commit). The write + atomic rename still
+                happen synchronously, so content is immediately visible to
+                readers and survives process exit; power-loss durability is
+                established when the queued fsync completes. Call ``flush()``
+                at acknowledgment boundaries (end of a run) and ``close()`` on
+                shutdown. When False, every write fsyncs inline and is fully
+                durable on return (previous behavior).
 
         Note:
             The cache assumes exclusive access to files. External modifications
@@ -44,6 +57,18 @@ class LocalFileStore(FileStore):
         self.root = root
         os.makedirs(self.root, exist_ok=True)
         self.cache = MemoryLRUCache(cache_memory_size, cache_limit_size)
+        self._deferred_durability = deferred_durability
+        self._durability: DurabilityWriter | None = None
+        self._durability_lock = threading.Lock()
+
+    def _durability_writer(self) -> DurabilityWriter:
+        """Lazily create the per-store writer (read-only stores stay threadless)."""
+        with self._durability_lock:
+            if self._durability is None:
+                self._durability = DurabilityWriter(
+                    name=f"fs-durability-{id(self):x}"
+                )
+            return self._durability
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -64,13 +89,36 @@ class LocalFileStore(FileStore):
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         if isinstance(contents, str):
-            atomic_write_text(Path(full_path), contents)
+            if self._deferred_durability:
+                writer = self._durability_writer()
+                # Fail-fast *before* the write becomes visible on disk, so a
+                # durability failure never surfaces after the mutation.
+                writer.raise_if_failed()
+                atomic_write_text(
+                    Path(full_path), contents, defer_fsync=writer.submit_fsync
+                )
+            else:
+                atomic_write_text(Path(full_path), contents)
             self.cache[full_path] = contents
         else:
             with open(full_path, "wb") as f:
                 f.write(contents)
             # Don't cache binary content - LocalFileStore is meant for JSON data
             # If binary data is written and then read, it will error on read
+
+    def flush(self) -> None:
+        """Drain queued fsync work; re-raise the first durability failure."""
+        writer = self._durability
+        if writer is not None:
+            writer.flush()
+
+    def close(self) -> None:
+        """Flush, then shut down the background durability writer."""
+        with self._durability_lock:
+            writer = self._durability
+            self._durability = None
+        if writer is not None:
+            writer.close()
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)

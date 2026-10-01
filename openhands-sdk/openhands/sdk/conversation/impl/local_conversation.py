@@ -3,6 +3,7 @@ import atexit
 import contextlib
 import copy
 import json
+import sys
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
@@ -2086,6 +2087,25 @@ class LocalConversation(BaseConversation):
             ) from e
         finally:
             self._cancel_token = None
+            # Group-commit boundary: events acknowledged during this run must
+            # be durable before the run's terminal status is observed.
+            self._flush_durability_at_run_end()
+
+    def _flush_durability_at_run_end(self) -> None:
+        """Flush deferred durability at a run boundary.
+
+        Propagates a durability failure when the run is otherwise completing
+        normally; logs instead of raising when the run is already unwinding
+        with an exception, so the original failure is not masked.
+        """
+        handling_error = sys.exc_info()[0] is not None
+        try:
+            self._state.flush()
+        except Exception:
+            if handling_error:
+                logger.exception("Durability flush failed at end of run")
+            else:
+                raise
 
     @observe(name="conversation.arun")
     async def arun(self) -> None:
@@ -2611,6 +2631,18 @@ class LocalConversation(BaseConversation):
             if self._cancel_token is not None and not self._cancel_token.is_cancelled:
                 self._cancel_token = None
             self._arun_task = None
+            # Group-commit boundary: events acknowledged during this run must
+            # be durable before the terminal status published after arun()
+            # returns is observed. Off-load the (normally trivial) queue drain
+            # so a slow disk cannot stall the shared event loop here either.
+            handling_error = sys.exc_info()[0] is not None
+            try:
+                await asyncio.to_thread(self._state.flush)
+            except Exception:
+                if handling_error:
+                    logger.exception("Durability flush failed at end of arun")
+                else:
+                    raise
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -2845,8 +2877,20 @@ class LocalConversation(BaseConversation):
                             logger.warning(
                                 f"Error closing executor for tool '{tool.name}': {e}"
                             )
+        # Durability boundary: acknowledged events must be durable once the
+        # conversation is closed, and the store's background durability writer
+        # must not linger. A durability failure is propagated to the caller
+        # (unless a CredentialBindingError takes precedence), not swallowed.
+        durability_error: Exception | None = None
+        try:
+            self._state.close()
+        except Exception as e:
+            logger.warning(f"Error closing conversation state persistence: {e}")
+            durability_error = e
         if isinstance(agent_error, CredentialBindingError):
             raise agent_error
+        if durability_error is not None:
+            raise durability_error
         self._cleanup_complete = True
         atexit.unregister(self.close)
 

@@ -28,9 +28,24 @@ from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import Agent
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
 from tests.agent_server.stress.budgets import EVENT_LOOP_RESPONSIVENESS
-from tests.agent_server.stress.scripts import placeholder_llm
+from tests.agent_server.stress.scripts import (
+    SlowTestLLM,
+    placeholder_llm,
+    start_conversation_with_test_llm,
+    text_message,
+)
+
+
+_TERMINAL = frozenset(
+    {
+        ConversationExecutionStatus.FINISHED,
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    }
+)
 
 
 pytestmark = pytest.mark.stress
@@ -180,3 +195,78 @@ async def test_health_responsive_under_busy_listing(
     finally:
         stop.set()
         await bg_task
+
+
+async def test_health_responsive_under_active_conversation_runs(
+    conversation_service: ConversationService,
+    client,
+    tmp_path,
+):
+    """/health must stay responsive while running conversations persist events.
+
+    Regression coverage for #5402: durable persistence (fsync per event
+    append, length-marker advance, and base-state save) must not execute on
+    the event-loop thread. If it does, N concurrent runs serialize on it and
+    /health p95 blows the budget.
+    """
+    workspace = str(tmp_path / "ws")
+    (tmp_path / "ws").mkdir()
+    n = 8
+
+    started = await asyncio.gather(
+        *[
+            start_conversation_with_test_llm(
+                conversation_service,
+                parent_llm=SlowTestLLM.from_messages(
+                    [text_message("done")], latency_s=0.3
+                ),
+                workspace_dir=workspace,
+                usage_id=f"health-canary-{i}",
+                initial_text="hello",
+            )
+            for i in range(n)
+        ]
+    )
+    conv_ids = [info.id for info in started]
+
+    # Fire all runs (fire-and-forget), then interleave /health sampling with
+    # terminal polling so samples land across the whole append window — a
+    # tight burst before the LLM latency elapses would pass under no load.
+    for conv_id in conv_ids:
+        resp = await client.post(f"/api/conversations/{conv_id.hex}/run")
+        assert resp.status_code == 200, resp.text
+
+    latencies: list[float] = []
+    pending = set(conv_ids)
+    deadline = time.monotonic() + 60.0
+    while pending and time.monotonic() < deadline:
+        for _ in range(5):
+            t0 = time.monotonic()
+            h_resp = await client.get("/health")
+            latencies.append(time.monotonic() - t0)
+            assert h_resp.status_code == 200
+        for conv_id in list(pending):
+            resp = await client.get(f"/api/conversations/{conv_id.hex}")
+            assert resp.status_code == 200, resp.text
+            status = ConversationExecutionStatus(resp.json()["execution_status"])
+            if status in _TERMINAL:
+                assert status == ConversationExecutionStatus.FINISHED, (
+                    f"conversation {conv_id} ended in {status}; "
+                    "the health samples above may not cover a real run."
+                )
+                pending.discard(conv_id)
+        await asyncio.sleep(0.05)
+    assert not pending, f"conversations did not reach terminal: {pending}"
+
+    # Every conversation produced persisted events — the load was real.
+    persist_root = tmp_path / "persist"
+    for conv_id in conv_ids:
+        event_files = list((persist_root / conv_id.hex / "events").glob("event-*.json"))
+        assert len(event_files) >= 2, (
+            f"conversation {conv_id} persisted {len(event_files)} event files; "
+            "the health budget was measured without persistence load."
+        )
+
+    quantiles = statistics.quantiles(latencies, n=100)
+    _assert_within_budget("active_conversation_runs", quantiles[94], quantiles[98])
+
