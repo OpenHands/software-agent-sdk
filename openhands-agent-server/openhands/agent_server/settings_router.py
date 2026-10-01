@@ -18,11 +18,13 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_provider_connections_store,
     get_secrets_store,
     get_settings_store,
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
+from openhands.sdk.llm.llm_profile_store import strip_connection_owned_fields
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
@@ -109,6 +111,53 @@ def _validate_secret_name(name: str) -> None:
         )
 
 
+def _with_fresh_provider_connection(
+    request: Request, settings: PersistedSettings
+) -> PersistedSettings:
+    """Re-apply the referenced provider connection to ``agent_settings.llm``.
+
+    The persisted snapshot in ``settings.json`` was resolved at profile
+    activation time; a later PATCH to the connection leaves it stale and would
+    surface as an opaque LiteLLM error on the next conversation
+    (OpenHands/OpenHands#17803). Resolving on read makes GET /api/settings a
+    single source of truth without rewriting the file.
+
+    No-op when ``llm.provider_connection_id`` is unset or when the referenced
+    connection has been deleted (deletion is already blocked while referenced,
+    so this only fires under manual on-disk edits) — the pre-existing snapshot
+    is returned unchanged in each case.
+
+    Store-read failures (corrupt JSON, cipher/decrypt errors, disk I/O) are
+    intentionally allowed to propagate: silently serving the stale snapshot in
+    that case would defeat the whole point of resolving on read and re-open
+    OpenHands/OpenHands#17803 with a warning log instead of a wrong-config
+    error. GET /api/settings should surface a 500 so the real problem gets
+    fixed, rather than hand back credentials that disagree with the store.
+    """
+    llm = settings.agent_settings.llm
+    connection_id = llm.provider_connection_id
+    if not connection_id:
+        return settings
+
+    config = get_config(request)
+    cipher = get_cipher(request)
+    connection = get_provider_connections_store(config).get(
+        connection_id, cipher=cipher
+    )
+    if connection is None:
+        return settings
+
+    from pydantic import SecretStr
+
+    updates: dict = {"base_url": connection.base_url}
+    api_key = connection.api_key_value()
+    if api_key is not None:
+        updates["api_key"] = SecretStr(api_key)
+    fresh_llm = llm.model_copy(update=updates)
+    fresh_agent_settings = settings.agent_settings.model_copy(update={"llm": fresh_llm})
+    return settings.model_copy(update={"agent_settings": fresh_agent_settings})
+
+
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
 async def get_settings(request: Request) -> SettingsResponse:
     """Get current settings.
@@ -158,6 +207,13 @@ async def get_settings(request: Request) -> SettingsResponse:
         logger.warning("Settings accessed with PLAINTEXT secrets", extra=log_extra)
     else:
         logger.info("Settings accessed", extra=log_extra)
+
+    # Re-resolve the LLM against its provider connection before serialising.
+    # ``settings.agent_settings.llm`` is a snapshot taken at profile-activation
+    # time; a later connection edit leaves it stale (OpenHands/OpenHands#17803).
+    # Resolving on read makes the response always reflect the current connection
+    # without touching the persisted snapshot on disk.
+    settings = _with_fresh_provider_connection(request, settings)
 
     context = build_expose_context(expose_mode, config.cipher)
     with translate_missing_cipher():
@@ -263,14 +319,49 @@ def _resolve_active_profile_llm(
             detail=f"Profile '{profile_name}' not found",
         )
 
+    # Persist pointer-only when a connection is linked — GET re-resolves.
+    # See OpenHands/OpenHands#17803.
+    llm_for_settings = strip_connection_owned_fields(llm)
     return cast(
         SettingsUpdatePayload,
         {
             **update_data,
             "agent_settings_diff": {
                 **(agent_diff if isinstance(agent_diff, dict) else {}),
-                "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
+                "llm": llm_for_settings.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
             },
+        },
+    )
+
+
+def _strip_connection_owned_fields_in_diff(
+    update_data: SettingsUpdatePayload,
+) -> SettingsUpdatePayload:
+    """Enforce the pointer-only invariant on incoming ``agent_settings_diff.llm``.
+
+    The frontend often echoes an LLM object it received from ``GET /api/settings``
+    (which is resolved) straight back into a PATCH. Without this hook, the round
+    trip would re-persist the resolved snapshot next to ``provider_connection_id``
+    and reintroduce the very drift #17803 removed.
+    """
+    agent_diff = update_data.get("agent_settings_diff")
+    if not isinstance(agent_diff, dict):
+        return update_data
+    llm_diff = agent_diff.get("llm")
+    if not isinstance(llm_diff, dict):
+        return update_data
+    if not llm_diff.get("provider_connection_id"):
+        return update_data
+    if llm_diff.get("api_key") is None and llm_diff.get("base_url") is None:
+        return update_data
+    cleaned_llm = {**llm_diff, "api_key": None, "base_url": None}
+    return cast(
+        SettingsUpdatePayload,
+        {
+            **update_data,
+            "agent_settings_diff": {**agent_diff, "llm": cleaned_llm},
         },
     )
 
@@ -281,6 +372,7 @@ def _apply_settings_update(
     before_update: Callable[[PersistedSettings], None] | None = None,
 ) -> SettingsResponse:
     update_data = _resolve_active_profile_llm(request, update_data)
+    update_data = _strip_connection_owned_fields_in_diff(update_data)
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:

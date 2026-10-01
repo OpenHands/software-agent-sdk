@@ -52,6 +52,20 @@ def _api_key_present(llm: LLM) -> bool:
     return bool(value.strip()) and value != REDACTED_SECRET_VALUE
 
 
+def strip_connection_owned_fields(llm: LLM) -> LLM:
+    """Clear ``api_key`` / ``base_url`` on an LLM that references a connection.
+
+    A snapshot that keeps both the pointer (``provider_connection_id``) and the
+    resolved values would drift the moment the connection is edited. Persisting
+    the pointer only removes that ambiguity — the resolver fills in fresh
+    values at read time. No-op when no connection is referenced (inline-key
+    profiles are unaffected). See OpenHands/OpenHands#17803.
+    """
+    if llm.provider_connection_id:
+        return llm.model_copy(update={"api_key": None, "base_url": None})
+    return llm
+
+
 @runtime_checkable
 class LLMProfileLoader(Protocol):
     """Minimal load-only contract consumed by ``resolve_agent_profile``.
@@ -225,8 +239,7 @@ class LLMProfileStore:
             # inline credentials — the connection is the single source of truth,
             # so clear any api_key / base_url before persisting to avoid a stale
             # copy that could later disagree with the connection.
-            if llm.provider_connection_id:
-                llm = llm.model_copy(update={"api_key": None, "base_url": None})
+            llm = strip_connection_owned_fields(llm)
 
             context: dict[str, Any] = {}
             if include_secrets:
