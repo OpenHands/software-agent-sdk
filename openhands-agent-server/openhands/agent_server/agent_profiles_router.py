@@ -39,8 +39,10 @@ from openhands.sdk.llm.llm_profile_store import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
+    ACPAgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
+    OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
     safe_validation_error_detail,
@@ -244,18 +246,29 @@ def _seed_default_profile(
         logger.info(f"Seeded default agent profile '{profile.name}' (id={profile_id})")
 
 
-def active_agent_profile_id(config: Config, cipher: Cipher | None) -> str | None:
-    """Return the active Agent Profile id, seeding ``default`` on first use."""
+def active_agent_profile(
+    config: Config, cipher: Cipher | None
+) -> OpenHandsAgentProfile | ACPAgentProfile | None:
+    """Return the active Agent Profile, seeding ``default`` on first use."""
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
+    store = get_agent_profile_store()
     if settings.active_agent_profile_id is None:
-        store = get_agent_profile_store()
         with store_errors():
             existing = store.list()
         if not existing:
             _seed_default_profile(store, config, settings, cipher)
             settings = settings_store.load() or settings
-    return settings.active_agent_profile_id
+    if settings.active_agent_profile_id is None:
+        return None
+    with store_errors():
+        name = store.name_for_id(settings.active_agent_profile_id)
+        if name is None:
+            return None
+        try:
+            return store.load(name)
+        except FileNotFoundError:
+            return None
 
 
 def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:

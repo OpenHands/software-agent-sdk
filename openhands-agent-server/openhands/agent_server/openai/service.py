@@ -10,11 +10,11 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 
-from openhands.agent_server.agent_profiles_router import active_agent_profile_id
+from openhands.agent_server.agent_profiles_router import active_agent_profile
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.launch import LaunchFailure, launch_http_exception
+from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionChoice,
     OpenAIChatCompletionChunk,
@@ -51,12 +51,9 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.launch import (
-    AgentLaunchError,
-    LaunchStoreError,
-    UnresolvedProfileReferences,
-)
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.llm.message import ImageContent, TextContent
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -95,6 +92,23 @@ def _profile_name_from_model(model: str) -> str:
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Unknown OpenHands model '{model}'. Use GET /v1/models.",
     )
+
+
+def _require_llm_profile(profile_name: str, config: Config) -> None:
+    try:
+        get_llm_profile_store().load(profile_name, cipher=config.cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{profile_name}' not found",
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Profile store is busy. Please retry.",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 def _content_to_sdk_parts(
@@ -250,9 +264,19 @@ def _create_conversation_request(
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
     llm_profile = _profile_name_from_model(model)
+    _require_llm_profile(llm_profile, config)
+    profile = active_agent_profile(config, config.cipher)
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active agent profile. Activate one to use this endpoint.",
+        )
     try:
         additions = AgentLaunchAdditions(
-            llm_profile_ref=llm_profile,
+            # An ACP server runs its own model.
+            llm_profile_ref=(
+                llm_profile if isinstance(profile, OpenHandsAgentProfile) else None
+            ),
             system_message_suffix_append=system_text or None,
         )
     except ValidationError:
@@ -261,15 +285,9 @@ def _create_conversation_request(
             detail="System instructions are too long",
         ) from None
     settings = get_settings_store(config).load() or PersistedSettings()
-    profile_id = active_agent_profile_id(config, config.cipher)
-    if profile_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="No active agent profile. Activate one to use this endpoint.",
-        )
     return settings.conversation_settings.create_request(
         StartConversationRequest,
-        agent_profile_id=profile_id,
+        agent_profile_id=profile.id,
         agent_launch_additions=additions,
         workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,
@@ -512,23 +530,6 @@ async def list_openai_models() -> OpenAIModelListResponse:
     return OpenAIModelListResponse(data=data)
 
 
-def _launch_http_error(
-    exc: LaunchFailure, start_request: StartConversationRequest
-) -> HTTPException:
-    additions = start_request.agent_launch_additions
-    requested = additions.llm_profile_ref if additions else None
-    if (
-        isinstance(exc, UnresolvedProfileReferences)
-        and exc.llm_profile_ref is not None
-        and exc.llm_profile_ref == requested
-    ):
-        return HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Profile '{requested}' not found",
-        )
-    return launch_http_exception(exc)
-
-
 async def _run_agent(
     *,
     start_request: StartConversationRequest,
@@ -559,7 +560,7 @@ async def _run_agent(
                 start_request
             )
         except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
-            raise _launch_http_error(exc, start_request) from exc
+            raise launch_http_exception(exc) from exc
         conversation_id = conversation_info.id
         event_service = await conversation_service.get_event_service(
             conversation_info.id

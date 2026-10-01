@@ -28,10 +28,28 @@ an inline profile with a `mock-fast` override and forwards only `agent_settings`
 
 The branch passes 13/13 with and without chromium in the container.
 
+## OpenAI gateway with an ACP active profile: `.pr/gateway_acp_e2e.py`
+
+Global settings and the active Agent Profile both run the canvas mock ACP
+server (`mock-acp-server.py`), and the request's model names a saved LLM profile.
+
+| Check | #5406 | this branch before the fix (`a2507336`) | this branch |
+|---|---|---|---|
+| `/v1/chat/completions` answers through the ACP agent | PASS | FAIL (422: `llm_profile_ref` applies only to an OpenHands profile) | PASS |
+| an unknown model is a 404 | PASS | FAIL (422) | PASS |
+
+After merging #5408 into this branch, `.pr/launch_e2e.py` still passes 12/12.
+
 ## Unit suites
+
+After merging #5408 into both:
 
 | Suite | #5406 | branch |
 |---|---|---|
-| `tests/sdk` | 6656 passed, 1 failed (`test_truncate`) | 6659 passed, same 1 failed |
-| `tests/agent_server` | 2327 passed, 7 failed (`canvas_extensions`, macOS) | 2333 passed, same 7 failed |
-| `tests/cross` + `tests/workspace` | 698 passed | 697 passed. The gateway live test failed under xdist because the tmux socket path exceeded the macOS limit ("File name too long"); the file passes serially with a short `TMUX_TMPDIR` (21 passed). |
+| `tests/sdk` | 6660 passed, 1 failed (`test_truncate`) | 6663 passed, same 1 failed |
+| `tests/agent_server` | 2327 passed, 7 failed (`canvas_extensions`, macOS) | 2337 passed, same 7 failed |
+| `tests/cross` + `tests/workspace` | 697 passed | 697 passed |
+
+On both, the gateway live test failed under xdist because the tmux socket path
+exceeded the macOS limit ("File name too long"). The file passes serially with a
+short `TMUX_TMPDIR` (21 passed).
