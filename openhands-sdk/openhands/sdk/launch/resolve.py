@@ -10,6 +10,7 @@ from openhands.sdk.launch.errors import (
     LaunchStoreError,
     UnresolvedProfileReferences,
 )
+from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
@@ -39,6 +40,10 @@ class AgentProfileLoader(Protocol):
     def load(self, name: str) -> OpenHandsAgentProfile | ACPAgentProfile: ...
 
 
+class MetaProfileLoader(Protocol):
+    def load(self, name: str) -> MetaProfile: ...
+
+
 @dataclass(frozen=True, kw_only=True)
 class LaunchStores:
     """The stores a launch reads, as seen by the process that holds them."""
@@ -47,6 +52,8 @@ class LaunchStores:
     mcp_config: Mapping[str, MCPServer]
     skills: Callable[[], Sequence[Skill]]
     agent_profiles: AgentProfileLoader | None = None
+    meta_profiles: MetaProfileLoader | None = None
+    llm_profile_names: Callable[[], Sequence[str]] | None = None
     cipher: Cipher | None = None
 
 
@@ -133,10 +140,15 @@ def _resolve_openhands(
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
     llm_ref = llm_profile_ref or profile.llm_profile_ref
     llm = _load_llm(stores, llm_ref)
-    if llm is None or dangling_mcp:
+    meta_profile, meta_llms, dangling_meta, dangling_meta_llms = _load_meta_profile(
+        profile, stores
+    )
+    if llm is None or dangling_mcp or dangling_meta or dangling_meta_llms:
         raise UnresolvedProfileReferences(
             llm_profile_ref=llm_ref if llm is None else None,
             mcp_server_refs=dangling_mcp,
+            meta_profile_ref=dangling_meta,
+            meta_profile_llm_refs=dangling_meta_llms,
         )
     try:
         return _build_openhands_settings(
@@ -146,6 +158,8 @@ def _resolve_openhands(
             llm.model_copy(update={"stream": True}),
             mcp_config,
             _apply_disabled_skills(catalog, profile.disabled_skills),
+            meta_profile=meta_profile,
+            meta_profile_llms=meta_llms,
         )
     except ValueError as exc:
         raise AgentLaunchError(str(exc)) from exc
@@ -191,3 +205,44 @@ def _load_llm(stores: LaunchStores, name: str) -> LLM | None:
         raise LaunchStoreError("LLM profile store is busy", retryable=True) from exc
     except (OSError, ValueError) as exc:
         raise LaunchStoreError(f"Could not load LLM profile {name!r}: {exc}") from exc
+
+
+def _load_meta_profile(
+    profile: OpenHandsAgentProfile, stores: LaunchStores
+) -> tuple[MetaProfile | None, dict[str, LLM], str | None, list[str]]:
+    name = profile.meta_profile_ref
+    if not profile.enable_classify_and_switch_llm_tool or name is None:
+        return None, {}, None, []
+    if stores.meta_profiles is None:
+        return None, {}, name, []
+    try:
+        meta = stores.meta_profiles.load(name)
+    except FileNotFoundError:
+        return None, {}, name, []
+    except TimeoutError as exc:
+        raise LaunchStoreError("Meta-profile store is busy", retryable=True) from exc
+    except (OSError, ValueError) as exc:
+        raise LaunchStoreError(f"Could not load meta-profile {name!r}: {exc}") from exc
+
+    llms: dict[str, LLM] = {}
+    dangling: list[str] = []
+    refs = [meta.classifier_model, *(cls.model for cls in meta.classes)]
+    for ref in dict.fromkeys(refs):
+        llm = _load_llm(stores, ref)
+        if llm is None:
+            dangling.append(ref)
+        else:
+            llms[ref] = llm
+    if meta.prompt_template is not None and stores.llm_profile_names is not None:
+        # Direct routing may pick any saved LLM profile, so an unreadable one
+        # that the meta-profile does not name is skipped rather than fatal.
+        for ref in stores.llm_profile_names():
+            if ref in llms:
+                continue
+            try:
+                llm = _load_llm(stores, ref)
+            except LaunchStoreError:
+                continue
+            if llm is not None:
+                llms[ref] = llm
+    return meta, llms, None, dangling

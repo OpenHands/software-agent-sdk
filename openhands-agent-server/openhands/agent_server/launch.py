@@ -34,6 +34,10 @@ from openhands.sdk.launch import (
     ResolvedLaunch,
     resolve,
 )
+from openhands.sdk.llm.meta_profile_store import (
+    MetaProfileStore,
+    default_meta_profile_dir,
+)
 from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.model import (
@@ -52,11 +56,14 @@ _SECRETS_ADAPTER: TypeAdapter[dict[str, SecretSource]] = TypeAdapter(
 def server_launch_stores(
     settings: PersistedSettings, cipher: Cipher | None
 ) -> LaunchStores:
+    llm_store = get_llm_profile_store()
     return LaunchStores(
-        llm_profiles=get_llm_profile_store(),
+        llm_profiles=llm_store,
+        llm_profile_names=lambda: [n.removesuffix(".json") for n in llm_store.list()],
         mcp_config=settings.agent_settings.mcp_config,
         skills=discover_profile_skills,
         agent_profiles=get_agent_profile_store(),
+        meta_profiles=MetaProfileStore(base_dir=default_meta_profile_dir()),
         cipher=cipher,
     )
 
