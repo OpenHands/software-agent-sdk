@@ -1,13 +1,13 @@
-from __future__ import annotations
-
 import json
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.storage import StoredRuntime
 
 
@@ -17,16 +17,15 @@ if TYPE_CHECKING:
     )
 
 
-# Where builds before the storage module set caches aside.
-_LEGACY_PRUNED_PREFIX = ".cache-pruned-"
-
-
+@dataclass(frozen=True, slots=True)
 class DockerStorageAdapter:
     """``runtime-data/<id>/``: the sandbox home and, usually, its workspace."""
 
-    def __init__(self, registry: DockerConversationRegistry) -> None:
-        self.registry = registry
-        self.provisioning = registry.provisioning
+    registry: "DockerConversationRegistry"
+
+    @property
+    def provisioning(self) -> RuntimeProvisioningStore:
+        return self.registry.provisioning
 
     @property
     def root(self) -> Path:
@@ -68,18 +67,22 @@ class DockerStorageAdapter:
         return (workspace,)
 
     def runtimes(self) -> list[StoredRuntime]:
-        runtimes: list[StoredRuntime] = []
-        for runtime_dir in self.root.iterdir():
-            try:
-                conversation_id = UUID(hex=runtime_dir.name)
-            except ValueError:
-                continue
-            if runtime := self.runtime(conversation_id):
-                runtimes.append(runtime)
+        runtimes = [
+            runtime
+            for runtime_dir in self.root.iterdir()
+            if (conversation_id := _parse_id(runtime_dir.name))
+            and (runtime := self.runtime(conversation_id))
+        ]
         return sorted(runtimes, key=lambda runtime: runtime.last_active)
 
     @asynccontextmanager
     async def idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
+        """Hold the registry lock; True if no container runs or starts for the
+        runtime and it is not being deleted.
+
+        Nothing can start a container until the block exits, so files moved
+        inside it are not in use.
+        """
         registry = self.registry
         async with registry._lock:
             yield not (
@@ -99,8 +102,8 @@ class DockerStorageAdapter:
         if self.registry._service is not None:
             await self.registry._service.refresh_persisted_conversation(conversation_id)
 
-    def leftovers(self) -> list[Path]:
-        return [
-            *self.root.glob(f"{_LEGACY_PRUNED_PREFIX}*"),
-            *self.root.glob(f"*/{_LEGACY_PRUNED_PREFIX}*"),
-        ]
+
+def _parse_id(name: str) -> UUID | None:
+    with suppress(ValueError):
+        return UUID(hex=name)
+    return None

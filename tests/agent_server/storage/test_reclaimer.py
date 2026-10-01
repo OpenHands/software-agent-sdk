@@ -15,7 +15,6 @@ class FakeAdapter:
         self.root = root
         self.homes: dict[UUID, Path] = {}
         self.busy: set[UUID] = set()
-        self.stale: list[Path] = []
 
     def add(self, *, busy: bool = False) -> tuple[UUID, Path]:
         conversation_id = uuid4()
@@ -38,9 +37,6 @@ class FakeAdapter:
     @asynccontextmanager
     async def idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
         yield conversation_id not in self.busy
-
-    def leftovers(self) -> list[Path]:
-        return self.stale
 
     def retire(self, conversation_id: UUID) -> list[Path]:
         return []
@@ -76,19 +72,15 @@ async def test_busy_runtime_is_left_alone(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_start_reclaims_every_idle_runtime_and_old_leftovers(tmp_path):
+async def test_start_reclaims_every_idle_runtime(tmp_path):
     adapter = FakeAdapter(tmp_path)
     homes = [adapter.add()[1] for _ in range(3)]
-    stale = tmp_path / "old-build-leftover"
-    stale.mkdir()
-    adapter.stale = [stale]
     reclaimer = Reclaimer(adapter)
 
     await reclaimer.start()
     await reclaimer.trash.drain()
 
     assert not any((home / ".cache").exists() for home in homes)
-    assert not stale.exists()
     assert list(reclaimer.trash.dir.iterdir()) == []
 
 
