@@ -522,23 +522,30 @@ def _run_tool_call(
     return MCPToolCallResult(is_error=bool(result.isError), text=text)
 
 
+def _response_body_snippet(response: httpx.Response, limit: int = 300) -> str:
+    try:
+        return response.text.strip()[:limit]
+    except Exception:
+        return ""
+
+
 def _http_error_detail(exc: BaseException) -> str | None:
     """Summarize an HTTP failure carried by a probe exception, if any.
 
     Servers can reject MCP requests with a plain HTTP error (e.g.
     GitLab's 403 when MCP is not enabled). The exception name alone
-    hides the status, sending users to debug auth instead of
-    permissions, so surface the status plus a short hint. The response
-    body is not available here: by the time the client raises, its
-    stream is already closed.
+    hides the cause, so surface the status plus the response body when
+    it is still readable, otherwise a short hint.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        response: Any = getattr(current, "response", None)
-        status_code: Any = getattr(response, "status_code", None)
-        if isinstance(status_code, int):
+        if isinstance(current, httpx.HTTPStatusError):
+            status_code = current.response.status_code
+            body = _response_body_snippet(current.response)
+            if body:
+                return f"HTTP {status_code} from MCP server: {body}"
             hint = {
                 401: "authentication required - check credentials or re-run OAuth",
                 403: "request refused - check the server-side permission settings",
