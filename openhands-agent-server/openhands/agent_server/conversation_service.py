@@ -26,6 +26,7 @@ from openhands.agent_server.event_service import (
     RunSlot,
     _without_agent_context_secret,
 )
+from openhands.agent_server.local_storage import remove_conversation_worktree
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -1198,6 +1199,15 @@ class ConversationService:
                     self._lifecycle_condition.notify_all()
 
     @asynccontextmanager
+    async def conversation_unloaded(self, conversation_id: UUID):
+        """Hold the conversation still; True if it is not loaded, so nothing runs."""
+        async with self._conversation_lifecycle(conversation_id):
+            yield (
+                self._event_services is not None
+                and conversation_id not in self._event_services
+            )
+
+    @asynccontextmanager
     async def _exclusive_lifecycle(self):
         async with self._lifecycle_lock:
             try:
@@ -2002,6 +2012,11 @@ class ConversationService:
             safe_rmtree(
                 event_service.conversation_dir,
                 f"conversation directory for {conversation_id}",
+            )
+            await asyncio.to_thread(
+                remove_conversation_worktree,
+                self.conversation_worktree_root,
+                conversation_id,
             )
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
