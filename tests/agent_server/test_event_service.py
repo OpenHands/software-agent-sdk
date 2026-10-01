@@ -16,7 +16,7 @@ import pytest_asyncio
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, RunSlot
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -1070,6 +1070,124 @@ class TestEventServiceSendMessage:
 
         conversation.interrupt.assert_not_called()
         assert event_service._rerun_requested is False
+
+    @pytest.mark.asyncio
+    async def test_acp_supersede_holds_capacity_across_interrupt(
+        self, event_service, tmp_path
+    ):
+        """The ACP supersede restart must keep the permit its predecessor held.
+
+        ``send_message(run=True)`` interrupts the in-flight ACP prompt, which
+        makes that run yield its permit on the way out, and only then starts the
+        replacement run. If the replacement had to acquire a fresh permit it
+        could be refused (429) after the conversation's working run was already
+        killed -- dropping the user's request with no retryable signal. Holding
+        the session permit across the whole supersede window makes the restart
+        capacity-safe even when the server is at its limit.
+        """
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        # The server is at capacity: one slot, held by the run being superseded.
+        event_service._run_semaphore = asyncio.Semaphore(1)
+        owner = await RunSlot.acquire(event_service._run_semaphore)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.create_task(asyncio.Event().wait())
+
+        async def interrupt_and_yield(*, internal_acp_rerun=False):
+            # Model the outgoing run yielding its own handle as the interrupt
+            # drains it; the session permit survives via the pin.
+            run_task = event_service._run_task
+            if run_task is not None:
+                run_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await run_task
+            event_service._run_task = None
+            conversation.state.execution_status = ConversationExecutionStatus.IDLE
+            # With the predecessor's handle gone, a fresh acquire would have
+            # succeeded pre-fix -- and a competing caller could have taken it,
+            # making the restart below fail with 429.
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    event_service._run_semaphore.acquire(), timeout=0.25
+                )
+            capacity_held_at_interrupt.set()
+
+        event_service.interrupt = interrupt_and_yield
+        replacement_started = asyncio.Event()
+        capacity_held_at_interrupt = asyncio.Event()
+
+        async def finishing_astep(
+            self,  # noqa: ARG001
+            conv: LocalConversation,
+            on_event,  # noqa: ARG001
+            on_token=None,  # noqa: ARG001
+            prompt_message=None,  # noqa: ARG001
+        ) -> None:
+            replacement_started.set()
+            conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        with (
+            patch.object(ACPAgent, "init_state", autospec=True),
+            patch.object(ACPAgent, "astep", new=finishing_astep),
+        ):
+            # Must not raise ConversationRunLimitExceeded: the restart reuses the
+            # session permit its predecessor held instead of acquiring a new one.
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+
+            assert event_service._run_task is not None
+            await asyncio.wait_for(event_service._run_task, timeout=5)
+
+        assert replacement_started.is_set()
+        # Capacity stayed held across the whole supersede window, and the session
+        # permit is returned to the shared pool once the chain settles.
+        assert capacity_held_at_interrupt.is_set()
+        assert event_service._run_session_pins == 0
+        assert event_service._run_session_slot is None
+        await asyncio.wait_for(event_service._run_semaphore.acquire(), timeout=5)
+        event_service._run_semaphore.release()
+
+    @pytest.mark.asyncio
+    async def test_acp_supersede_pin_released_when_interrupt_raises(
+        self, event_service, tmp_path
+    ):
+        """The supersede pin must be released even when the interrupt raises."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service._run_semaphore = asyncio.Semaphore(1)
+        event_service.interrupt = AsyncMock(side_effect=RuntimeError("teardown"))
+
+        with pytest.raises(RuntimeError, match="teardown"):
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+        assert event_service._run_session_pins == 0
 
     @pytest.mark.asyncio
     async def test_acp_supersede_mark_rechecks_current_prompt(

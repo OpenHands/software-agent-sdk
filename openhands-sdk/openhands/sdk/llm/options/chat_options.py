@@ -3,8 +3,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.llm.call_context import (
+    apply_llm_call_context,
+    resolve_llm_call_context,
+)
 from openhands.sdk.llm.options.common import (
-    apply_call_context,
     apply_defaults_if_absent,
     apply_extra_body,
     apply_extra_headers,
@@ -12,7 +15,7 @@ from openhands.sdk.llm.options.common import (
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.llm.llm import LLMCallContext
+    from openhands.sdk.llm.call_context import LLMCallContext
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +114,11 @@ def select_chat_options(
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
     out = apply_extra_body(out, llm)
-    out = apply_call_context(out, llm, call_context)
+    context = resolve_llm_call_context(call_context)
+    apply_llm_call_context(
+        out,
+        context,
+        supports_prompt_cache_key=model_features.supports_prompt_cache_key,
+    )
 
     return out

@@ -5,9 +5,10 @@ from typing import Any
 import pytest
 from litellm import get_optional_params
 
-from openhands.sdk.llm import LLM
-from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm import LLM, LLMCallContext
+from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.options.chat_options import select_chat_options
+from openhands.sdk.llm.utils import model_features
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 
 
@@ -27,7 +28,6 @@ class DummyLLM:
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
-    _call_context: LLMCallContext = field(default_factory=LLMCallContext)
     openrouter_site_url: str = ""
     openrouter_app_name: str = ""
     model_fields_set: set[str] = field(default_factory=set)
@@ -132,12 +132,43 @@ def test_kimi_k3_uses_reasoning_effort_and_strips_temp_top_p():
         "litellm_proxy/deepseek-v4.1-flash",
     ],
 )
-def test_deepseek_v4_proxy_aliases_send_reasoning_effort_without_metadata(model):
+def test_deepseek_v4_proxy_aliases_send_reasoning_effort_without_metadata(
+    model, monkeypatch
+):
+    # The native provider advertises more capabilities than the proxy alias.
+    # Resolving reasoning support must not enable those unrelated features.
+    monkeypatch.setattr(
+        model_features,
+        "get_supported_openai_params",
+        lambda model, custom_llm_provider: (
+            ["reasoning_effort", "prompt_cache_key"]
+            if model.startswith("deepseek/")
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        model_features,
+        "litellm_supports_vision",
+        lambda model: model.startswith("deepseek/"),
+    )
+    model_features._normalized_supported_openai_params.cache_clear()
+    model_features._model_supports_vision.cache_clear()
     llm = DummyLLM(model=model, reasoning_effort="low", model_info=None)
 
-    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    try:
+        out = select_chat_options(
+            llm,
+            user_kwargs={},
+            has_tools=True,
+            call_context=LLMCallContext(prompt_cache_key="conv-abc"),
+        )
 
-    assert out["reasoning_effort"] == "low"
+        assert out["reasoning_effort"] == "low"
+        assert "prompt_cache_key" not in out
+        assert llm._model_features().supports_vision is False
+    finally:
+        model_features._normalized_supported_openai_params.cache_clear()
+        model_features._model_supports_vision.cache_clear()
 
 
 def test_openai_reasoning_override_allows_reasoning_effort_through_litellm():
@@ -401,9 +432,13 @@ def test_extended_thinking_budget_clamped_below_max_tokens():
 def test_chat_options_forwards_prompt_cache_key_when_set():
     """Regression test for #2904."""
     llm = LLM(model="gpt-4o")
-    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
-        select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
+        select_chat_options(
+            llm,
+            user_kwargs={},
+            has_tools=True,
+            call_context=LLMCallContext(prompt_cache_key="conv-abc123"),
+        ).get("prompt_cache_key")
         == "conv-abc123"
     )
 
@@ -425,8 +460,8 @@ def test_chat_options_omits_prompt_cache_key_for_unsupported_provider():
     """
     for model in ("claude-opus-4-5-20251101", "gemini/gemini-2.5-pro"):
         llm = DummyLLM(model=model)
-        llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
-        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+        with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
+            out = select_chat_options(llm, user_kwargs={}, has_tools=True)
         assert "prompt_cache_key" not in out, model
 
 
@@ -437,11 +472,9 @@ def test_chat_options_forwards_prompt_cache_key_when_override_enabled():
         model="prod/my-openai-alias",
         capability_overrides={"supports_prompt_cache_key": True},
     )
-    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
-    assert (
-        select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
-        == "conv-abc123"
-    )
+    with llm_call_context_scope(LLMCallContext(prompt_cache_key="conv-abc123")):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    assert out.get("prompt_cache_key") == "conv-abc123"
 
 
 def test_chat_options_injects_openrouter_headers_via_extra_headers():
