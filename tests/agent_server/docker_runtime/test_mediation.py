@@ -23,6 +23,7 @@ from openhands.agent_server.persistence import (
 from openhands.sdk import LLM, Agent, Message, TextContent
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnection
 from openhands.sdk.profiles import OpenHandsAgentProfile
@@ -352,8 +353,13 @@ async def test_runtime_auto_title_uses_the_staged_profile_for_an_acp_style_agent
         title_llm_profile="title-aux",
     )
     service.cipher = identity.cipher
+
+    def get_llm_call_context() -> LLMCallContext:
+        return LLMCallContext().for_conversation(str(identity.conversation_id))
+
     service._conversation = SimpleNamespace(
-        agent=SimpleNamespace(llm=LLM(model="acp-managed", usage_id="acp-managed"))
+        agent=SimpleNamespace(llm=LLM(model="acp-managed", usage_id="acp-managed")),
+        get_llm_call_context=get_llm_call_context,
     )
     calls: list[tuple[str, str | None]] = []
 
