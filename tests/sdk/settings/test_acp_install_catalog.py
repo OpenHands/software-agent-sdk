@@ -1,8 +1,9 @@
-"""Tests for the dependency-free ACP npm installation catalog."""
+"""Tests for the dependency-free ACP installation catalog."""
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 
@@ -14,11 +15,18 @@ from openhands.sdk.settings.acp_install_catalog import (
     CODEX_ACP_VERSION,
     DEFAULT_PREINSTALLED_ACP_PROVIDERS,
     GEMINI_CLI_VERSION,
+    HERMES_COMMIT,
+    HERMES_REF,
+    HERMES_REPO_URL,
     PI_ACP_VERSION,
     PI_CODING_AGENT_VERSION,
+    ACPGitCheckoutInstallSpec,
+    ACPGitPin,
     ACPInstallSpec,
     ACPPackagePin,
     _main,
+    is_git_checkout_spec,
+    is_npm_spec,
     render_docker_install_plan,
 )
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
@@ -96,6 +104,7 @@ class TestPiInstallSpec:
 
     def test_pins_both_the_adapter_and_the_engine(self):
         spec = ACP_INSTALL_CATALOG["pi"]
+        assert is_npm_spec(spec)
         assert [(p.name, p.version) for p in spec.packages] == [
             ("pi-acp", PI_ACP_VERSION),
             ("@earendil-works/pi-coding-agent", PI_CODING_AGENT_VERSION),
@@ -108,6 +117,7 @@ class TestPiInstallSpec:
         `agentInfo.version` the server reports — which is the adapter's. A
         reorder would silently compare against the engine's version instead."""
         spec = ACP_INSTALL_CATALOG["pi"]
+        assert is_npm_spec(spec)
         assert spec.packages[0].name == spec.binary_name == "pi-acp"
 
     def test_install_plan_installs_both_but_wraps_only_the_adapter(self):
@@ -122,16 +132,149 @@ class TestPiInstallSpec:
         assert wrapper_bins == ["pi-acp"]
 
 
+class TestACPGitCheckoutInstallSpec:
+    def _spec(self, **overrides) -> ACPGitCheckoutInstallSpec:
+        return ACPGitCheckoutInstallSpec(
+            key="proj",
+            source=ACPGitPin(
+                url="https://example.test/org/proj",
+                ref="v1.2.3",
+                commit="a" * 40,
+            ),
+            binary_name="proj-acp",
+            **overrides,
+        )
+
+    def test_launch_command_is_the_bare_console_script(self):
+        """It has to be: the checkout lives under a per-installation directory
+        the registry cannot know at import time, so the venv reaches the
+        subprocess through PATH rather than through the command."""
+        assert self._spec().launch_command() == ("proj-acp",)
+
+    def test_trailing_args_follow_the_console_script(self):
+        assert self._spec(trailing_args=("acp",)).launch_command() == (
+            "proj-acp",
+            "acp",
+        )
+
+    def test_clone_is_shallow_and_single_branch_at_the_pinned_ref(self):
+        assert self._spec().clone_command("/dest") == (
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+            "v1.2.3",
+            "https://example.test/org/proj",
+            "/dest",
+        )
+
+    def test_sync_is_frozen_and_passes_each_extra(self):
+        assert self._spec(extras=("acp", "browser")).sync_command() == (
+            "uv",
+            "sync",
+            "--frozen",
+            "--extra",
+            "acp",
+            "--extra",
+            "browser",
+        )
+
+    def test_sync_without_extras_takes_no_extra_flags(self):
+        assert self._spec().sync_command() == ("uv", "sync", "--frozen")
+
+    def test_resolved_commit_is_read_off_the_finished_tree(self):
+        """Local, so confirming the source identity costs nothing over the
+        network — the clone already fetched whatever the ref pointed at."""
+        assert self._spec().resolved_commit_command() == (
+            "git",
+            "rev-parse",
+            "HEAD",
+        )
+
+    def test_tracked_status_is_blind_to_untracked_files(self):
+        """An editable install leaves its own artefacts in the tree, so only a
+        change to the reviewed content may fail the check."""
+        assert self._spec().tracked_status_command() == (
+            "git",
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        )
+
+    def test_pin_identity_covers_the_commit_not_just_the_ref(self):
+        """The pin string keys the on-disk cache, so a tree installed under a
+        moved tag must not be reusable as the reviewed one."""
+        pin = self._spec().source
+        assert pin.pinned == f"https://example.test/org/proj@v1.2.3@{'a' * 40}"
+
+
+class TestHermesInstallSpec:
+    """Hermes is the one provider installed from a git checkout, not npm."""
+
+    def test_is_pinned_to_a_git_ref_on_the_upstream_repository(self):
+        spec = ACP_INSTALL_CATALOG["hermes"]
+        assert isinstance(spec, ACPGitCheckoutInstallSpec)
+        assert (
+            spec.source.url
+            == HERMES_REPO_URL
+            == "https://github.com/NousResearch/hermes-agent"
+        )
+        assert spec.source.ref == HERMES_REF
+        # The ref is how the source is fetched; the commit is which source.
+        assert spec.source.commit == HERMES_COMMIT
+        assert re.fullmatch(r"[0-9a-f]{40}", spec.source.commit), (
+            "the pin must be a full commit SHA, not a ref or an abbreviation"
+        )
+        assert spec.clone_command("/dest")[:6] == (
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+        )
+
+    def test_installs_the_acp_extra(self):
+        """``agent-client-protocol`` lives in an ``acp`` extra, so a default
+        sync yields a CLI whose own ``--check`` fails on ``No module named
+        'acp'``."""
+        spec = ACP_INSTALL_CATALOG["hermes"]
+        assert is_git_checkout_spec(spec)
+        assert spec.extras == ("acp",)
+
+    def test_records_the_version_the_pinned_ref_reports(self):
+        """The CalVer tag and the project version are separate namespaces, so
+        the ref alone cannot be compared against a running server."""
+        spec = ACP_INSTALL_CATALOG["hermes"]
+        assert is_git_checkout_spec(spec)
+        assert spec.reported_version == "0.21.0"
+        assert spec.reported_version != spec.source.ref
+
+    def test_is_not_npm_installable(self):
+        assert not is_npm_spec(ACP_INSTALL_CATALOG["hermes"])
+
+    def test_is_kept_out_of_the_default_image(self):
+        """The whole reason Hermes is registered as a uvx provider: it must add
+        nothing to the published agent-server images."""
+        assert "hermes" not in DEFAULT_PREINSTALLED_ACP_PROVIDERS
+
+    def test_cannot_be_preinstalled_via_install_acp_providers(self):
+        with pytest.raises(ValueError, match="not npm-installable"):
+            render_docker_install_plan(["hermes"])
+
+
 class TestACPInstallCatalogMatchesACPProviders:
     """ACP_PROVIDERS derives default_command/binary_name from this catalog;
-    verify the two stay in lockstep for every npm-installable provider."""
+    verify the two stay in lockstep for every registered provider."""
 
-    def test_catalog_keys_match_registered_npm_providers(self):
+    def test_catalog_keys_match_registered_providers(self):
         assert set(ACP_INSTALL_CATALOG) == set(ACP_PROVIDERS)
 
     def test_default_commands_are_derived_from_catalog(self):
         for key, info in ACP_PROVIDERS.items():
-            assert info.default_command == ACP_INSTALL_CATALOG[key].npx_command()
+            assert info.default_command == ACP_INSTALL_CATALOG[key].launch_command()
 
     def test_binary_names_are_derived_from_catalog(self):
         for key, info in ACP_PROVIDERS.items():
@@ -184,6 +327,13 @@ class TestRenderDockerInstallPlan:
         assert "codex" in message
         assert "gemini-cli" in message
 
+    def test_unknown_key_does_not_suggest_a_non_npm_provider(self):
+        """The suggestion list is what a user may put in INSTALL_ACP_PROVIDERS,
+        so offering a key the very next line rejects would be a dead end."""
+        with pytest.raises(ValueError) as exc_info:
+            render_docker_install_plan(["bogus"])
+        assert "hermes" not in str(exc_info.value)
+
     def test_dedupes_shared_packages_preserving_first_seen_order(self):
         shared = ACPPackagePin("@acme/shared-engine", "9.9.9")
         catalog = {
@@ -225,6 +375,11 @@ class TestACPInstallCatalogCLI:
         assert code == 1
         err = capsys.readouterr().err
         assert "bogus" in err
+
+    def test_non_npm_provider_fails_clearly(self, capsys):
+        code = _main(["hermes"])
+        assert code == 1
+        assert "not npm-installable" in capsys.readouterr().err
 
     def test_runs_standalone_with_no_dependencies(self):
         """Regression guard for the Dockerfile's `python3 <file> ...`

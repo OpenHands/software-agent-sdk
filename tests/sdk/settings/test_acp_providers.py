@@ -8,8 +8,10 @@ from typing import get_args
 import pytest
 
 from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
     PI_ACP_VERSION,
     PI_CODING_AGENT_VERSION,
+    is_npm_spec,
 )
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -38,9 +40,20 @@ class TestACPProviderInfo:
         for info in ACP_PROVIDERS.values():
             assert isinstance(info, ACPProviderInfo)
 
-    def test_default_commands_prefer_offline_cache(self):
-        for info in ACP_PROVIDERS.values():
-            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+    def test_default_commands_reuse_an_installed_provider(self):
+        """No provider may refetch itself on every start.
+
+        ``npx`` has to be told so with ``--prefer-offline``; a git-checkout
+        provider is installed once and launched by console script, so what
+        matters there is that the command carries no fetch at all.
+        """
+        for key, info in ACP_PROVIDERS.items():
+            spec = ACP_INSTALL_CATALOG[key]
+            if is_npm_spec(spec):
+                assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+            else:
+                assert info.default_command == spec.launch_command()
+                assert info.default_command[0] == spec.binary_name
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -412,6 +425,10 @@ _UNCURATED_MODEL_PROVIDERS = {
     # offers whatever alias the user named. A static list would be wrong, not
     # merely incomplete, for anyone not on an account login.
     "kimi-code",
+    # Hermes ids are ``<hermes-provider>:<model>`` and it only lists providers
+    # it can currently authenticate, so the offered set is a property of the
+    # configured credential rather than of the plan tier.
+    "hermes",
 }
 
 
