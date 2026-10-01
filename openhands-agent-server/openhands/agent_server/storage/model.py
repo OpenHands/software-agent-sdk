@@ -8,6 +8,7 @@ class Tier(IntEnum):
     """What may be dropped from a stopped runtime; each tier includes the lower."""
 
     CACHES = 1
+    DEPENDENCIES = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,3 +19,5 @@ class StoredRuntime:
     last_active: float
     # The sandbox's own $HOME, if it has one apart from the host's.
     home: Path | None = None
+    # Workspaces the server created; never a caller-supplied checkout.
+    workspaces: tuple[Path, ...] = ()

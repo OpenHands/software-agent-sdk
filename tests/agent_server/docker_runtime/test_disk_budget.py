@@ -7,12 +7,12 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.docker_runtime import registry as registry_module
+from openhands.agent_server.config import Config, ConversationStorageConfig
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
 )
+from openhands.agent_server.storage import reclaimer as reclaimer_module, selectors
 
 
 def registry(tmp_path, monkeypatch) -> DockerConversationRegistry:
@@ -22,7 +22,7 @@ def registry(tmp_path, monkeypatch) -> DockerConversationRegistry:
             conversations_path=tmp_path / "conversations",
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
-            conversation_runtime_disk_budget=0.8,
+            conversation_storage=ConversationStorageConfig(disk_budget=0.8),
         )
     )
 
@@ -77,7 +77,7 @@ def usage(monkeypatch) -> Iterator[list[float]]:
     def read(_path: Path) -> float:
         return readings.pop(0) if len(readings) > 1 else readings[0]
 
-    monkeypatch.setattr(registry_module, "_disk_usage", read)
+    monkeypatch.setattr(reclaimer_module, "disk_usage", read)
     yield readings
 
 
@@ -88,7 +88,7 @@ async def test_under_budget_sheds_nothing(tmp_path, monkeypatch, usage):
     shed, _ = make_repo(workspace)
     usage.append(0.5)
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert all(path.is_dir() for path in shed)
 
@@ -105,12 +105,12 @@ async def test_over_budget_sheds_oldest_stopped_runtime_first(
     # Over budget, then back under once the oldest runtime is shed.
     usage.extend([0.95, 0.7])
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert not any(path.exists() for path in old_shed)
     assert all(path.is_file() for path in old_kept)
     assert all(path.is_dir() for path in new_shed)
-    assert list(runtime.provisioning.data_root.glob("*/.cache-pruned-*")) == []
+    assert list(runtime.storage.trash.dir.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -123,7 +123,7 @@ async def test_live_runtime_keeps_its_files(tmp_path, monkeypatch, usage):
     )
     usage.append(0.95)
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert all(path.is_dir() for path in shed)
 
@@ -135,7 +135,7 @@ async def test_caller_supplied_workspace_is_never_touched(tmp_path, monkeypatch,
     shed, _ = make_repo(workspace)
     usage.append(0.95)
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert all(path.is_dir() for path in shed)
 
@@ -154,7 +154,7 @@ async def test_nested_checkouts_are_shed_but_ignored_repos_kept(
     (workspace / ".gitignore").write_text("vendor-clone/\n")
     usage.append(0.95)
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert not any(path.exists() for path in nested_shed)
     assert all(path.is_file() for path in nested_kept)
@@ -175,8 +175,8 @@ async def test_nested_ignore_matches_shed_only_the_top_dir(
         (workspace / "public" / "locales" / lang / "t.json").write_text("{}")
     usage.append(0.95)
 
-    assert registry_module._git_ignored_dirs(workspace) == [workspace / "public"]
-    await runtime._enforce_disk_budget()
+    assert selectors.git_ignored_dirs(workspace) == [workspace / "public"]
+    await runtime.storage.run_pass()
 
     assert not (workspace / "public").exists()
     assert (workspace / "main.py").is_file()
@@ -197,7 +197,7 @@ async def test_repo_config_cannot_run_commands_on_the_host(
     git(workspace, "config", "core.fsmonitor", str(hook))
     usage.append(0.95)
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert not marker.exists()
 
@@ -210,21 +210,21 @@ async def test_non_git_workspace_is_skipped(tmp_path, monkeypatch, usage):
     deps.mkdir(parents=True)
     usage.append(0.95)
 
-    await runtime._enforce_disk_budget()
+    await runtime.storage.run_pass()
 
     assert deps.is_dir()
 
 
 @pytest.mark.asyncio
 async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch):
-    monkeypatch.setattr(registry_module, "_DISK_BUDGET_INTERVAL", 3600)
+    monkeypatch.setattr(reclaimer_module, "MAINTENANCE_INTERVAL", 3600)
     runtime = registry(tmp_path, monkeypatch)
     monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
 
     await runtime.start()
-    assert runtime._disk_budget_task is not None
+    assert runtime.storage._maintenance is not None
     await runtime.shutdown()
-    assert runtime._disk_budget_task is None
+    assert runtime.storage._maintenance is None
 
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     unset = DockerConversationRegistry(
@@ -235,5 +235,30 @@ async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(unset, "cleanup_stale_containers", lambda: None)
     await unset.start()
-    assert unset._disk_budget_task is None
+    assert unset.storage._maintenance is None
     await unset.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ignored_dir_holding_a_clone_is_kept(tmp_path, monkeypatch, usage):
+    runtime = registry(tmp_path, monkeypatch)
+    _, workspace = provision(runtime, age=1)
+    shed, _ = make_repo(workspace)
+    (workspace / ".gitignore").write_text("node_modules/\n.venv/\nvendor/\n")
+    # A clone two levels down in an ignored dir is not build output.
+    clone = workspace / "vendor" / "libs" / "upstream"
+    make_repo(clone)
+    usage.append(0.95)
+
+    await runtime.storage.run_pass()
+
+    assert not any(path.exists() for path in shed)
+    assert (clone / "main.py").is_file()
+
+
+def test_storage_budget_is_read_from_nested_env(monkeypatch):
+    from openhands.agent_server.config import load_config
+
+    monkeypatch.setenv("OH_CONVERSATION_STORAGE_DISK_BUDGET", "0.8")
+
+    assert load_config().conversation_storage.disk_budget == 0.8

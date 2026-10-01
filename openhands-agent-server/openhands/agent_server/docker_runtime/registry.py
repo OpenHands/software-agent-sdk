@@ -91,7 +91,9 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
-        self.storage = Reclaimer(DockerStorageAdapter(self))
+        self.storage = Reclaimer(
+            DockerStorageAdapter(self), config.conversation_storage
+        )
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service

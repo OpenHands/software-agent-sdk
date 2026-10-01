@@ -43,7 +43,27 @@ class DockerStorageAdapter:
             home = self.provisioning.direct_child(runtime_dir, "persistence")
         except ValueError:
             home = None
-        return StoredRuntime(conversation_id, last_active, home=home)
+        return StoredRuntime(
+            conversation_id,
+            last_active,
+            home=home,
+            workspaces=self._owned_workspaces(conversation_id, runtime_dir),
+        )
+
+    def _owned_workspaces(
+        self, conversation_id: UUID, runtime_dir: Path
+    ) -> tuple[Path, ...]:
+        try:
+            identity = self.provisioning.load_optional(conversation_id)
+        except Exception:
+            return ()
+        if identity is None or identity.workspace_path.is_symlink():
+            return ()
+        workspace = identity.workspace_path.resolve()
+        # A caller-supplied workspace is someone's checkout, not ours to prune.
+        if not workspace.is_relative_to(runtime_dir.resolve()):
+            return ()
+        return (workspace,)
 
     def runtimes(self) -> list[StoredRuntime]:
         runtimes: list[StoredRuntime] = []
