@@ -194,7 +194,7 @@ async def test_local_registry_runs_storage_maintenance(tmp_path, monkeypatch):
     registry.configure_service(service(tmp_path))
 
     await registry.start()
-    assert registry.reclaimer is not None
-    assert registry.reclaimer._maintenance is not None
+    assert registry.worktree_reclaimer is not None
+    assert registry.worktree_reclaimer._maintenance is not None
     await registry.shutdown()
-    assert registry.reclaimer._maintenance is None
+    assert registry.worktree_reclaimer._maintenance is None
