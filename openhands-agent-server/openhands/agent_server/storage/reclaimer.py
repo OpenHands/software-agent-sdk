@@ -14,6 +14,7 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Seconds between passes that apply the disk budget and retention.
 MAINTENANCE_INTERVAL: Final[float] = 300.0
 
 
@@ -25,7 +26,9 @@ class StorageAdapter(Protocol):
         """Where the runtimes live; the trash goes here, on the same filesystem."""
         ...
 
-    def runtime(self, conversation_id: UUID) -> StoredRuntime | None: ...
+    def runtime(self, conversation_id: UUID) -> StoredRuntime | None:
+        """The conversation's stored runtime, or None if it has none here."""
+        ...
 
     def runtimes(self) -> list[StoredRuntime]:
         """Every stored runtime, least recently active first."""
@@ -37,6 +40,12 @@ class StorageAdapter(Protocol):
 
 
 class Reclaimer:
+    """Frees what a runtime mode stores per conversation, by tier.
+
+    Files are only moved into the trash, and only while the adapter holds the
+    runtime idle; the trash deletes them in the background.
+    """
+
     def __init__(
         self,
         adapter: StorageAdapter,

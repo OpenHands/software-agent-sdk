@@ -1,3 +1,5 @@
+"""What each tier may drop: paths a stopped runtime can rebuild."""
+
 import os
 import subprocess
 from pathlib import Path
