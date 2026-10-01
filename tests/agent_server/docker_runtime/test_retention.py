@@ -62,7 +62,7 @@ async def test_inactive_runtime_is_retired_and_history_kept(tmp_path, monkeypatc
         SecretStr("llm-key")
     )
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not runtime.provisioning.runtime_dir(conversation_id).exists()
     assert not workspace.exists()
@@ -74,7 +74,7 @@ async def test_inactive_runtime_is_retired_and_history_kept(tmp_path, monkeypatc
     info = runtime.runtime_info(conversation_id)
     assert info.runtime_status == ConversationRuntimeStatus.MISSING
     assert info.can_resume is False
-    assert list(runtime.storage.trash.dir.iterdir()) == []
+    assert list(runtime.reclaimer.trash.dir.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_recent_runtime_is_kept(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, workspace = provision(runtime, days_inactive=6)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert (workspace / "main.py").is_file()
     assert runtime.runtime_info(conversation_id).can_resume is True
@@ -96,7 +96,7 @@ async def test_live_runtime_is_kept_however_old(tmp_path, monkeypatch):
         host="http://127.0.0.1", api_key="k", container_id="c"
     )
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert (workspace / "main.py").is_file()
     assert not runtime.is_retired(conversation_id)
@@ -109,7 +109,7 @@ async def test_caller_supplied_workspace_survives_retirement(tmp_path, monkeypat
     checkout.mkdir()
     conversation_id, workspace = provision(runtime, days_inactive=8, workspace=checkout)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert runtime.is_retired(conversation_id)
     assert (checkout / "main.py").is_file()
@@ -119,7 +119,7 @@ async def test_caller_supplied_workspace_survives_retirement(tmp_path, monkeypat
 async def test_retired_runtime_cannot_be_resumed(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, _ = provision(runtime, days_inactive=8)
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     def no_docker(_conversation_id):
         pytest.fail("a retired runtime must not start a container")
@@ -142,7 +142,7 @@ async def test_interrupted_retirement_is_finished_by_the_next_pass(
     # A crash after the marker, before the runtime dir was moved.
     runtime.retired_marker(conversation_id).touch()
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not runtime.provisioning.runtime_dir(conversation_id).exists()
 
@@ -155,7 +155,7 @@ async def test_retirement_leaves_the_manifest_untouched(tmp_path, monkeypatch):
     manifest = runtime.provisioning.manifest_path(conversation_id)
     before = manifest.read_bytes()
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert runtime.is_retired(conversation_id)
     assert manifest.read_bytes() == before
@@ -176,6 +176,6 @@ async def test_retention_loop_runs_only_when_configured(tmp_path, monkeypatch):
         runtime = registry(tmp_path / str(days), monkeypatch, days=days)
         monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
         await runtime.start()
-        assert (runtime.storage._maintenance is not None) is expected
+        assert (runtime.reclaimer._maintenance is not None) is expected
         await runtime.shutdown()
-        assert runtime.storage._maintenance is None
+        assert runtime.reclaimer._maintenance is None
