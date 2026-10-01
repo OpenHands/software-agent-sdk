@@ -24,7 +24,7 @@ class ConversationRegistry:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.worktree_storage: Reclaimer | None = None
+        self.reclaimer: Reclaimer | None = None
 
     def configure_service(self, service: ConversationService) -> None:
         """Connect runtime-specific persistence to the shared catalog."""
@@ -35,7 +35,7 @@ class ConversationRegistry:
             self.config.conversation_worktree_root,
             self.config.conversations_path,
         )
-        self.worktree_storage = Reclaimer(adapter, self.config.conversation_storage)
+        self.reclaimer = Reclaimer(adapter, self.config.conversation_storage)
 
     def runtime_info(self, _conversation_id: UUID) -> ConversationRuntimeInfo:
         """Describe whether a catalog conversation has an executable runtime."""
@@ -51,13 +51,13 @@ class ConversationRegistry:
 
     async def start(self) -> None:
         """Start resources owned by this registry."""
-        if self.worktree_storage is not None:
-            await self.worktree_storage.start()
+        if self.reclaimer is not None:
+            await self.reclaimer.start()
 
     async def shutdown(self) -> None:
         """Stop resources owned by this registry."""
-        if self.worktree_storage is not None:
-            await self.worktree_storage.shutdown()
+        if self.reclaimer is not None:
+            await self.reclaimer.shutdown()
 
     def add_execution_routes(self, router: APIRouter) -> None:
         from openhands.agent_server.event_router import event_router

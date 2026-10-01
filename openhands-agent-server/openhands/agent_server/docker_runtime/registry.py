@@ -95,7 +95,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
-        self.storage = Reclaimer(
+        self.reclaimer = Reclaimer(
             DockerStorageAdapter(self), config.conversation_storage
         )
 
@@ -146,7 +146,7 @@ class DockerConversationRegistry(ConversationRegistry):
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
         # After the cleanup: with no container left, every runtime is reclaimable.
-        await self.storage.start()
+        await self.reclaimer.start()
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
@@ -309,7 +309,7 @@ class DockerConversationRegistry(ConversationRegistry):
             container = container or started
         if container is not None:
             await asyncio.to_thread(container.stop)
-        await self.storage.on_stop(conversation_id)
+        await self.reclaimer.on_stop(conversation_id)
 
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
@@ -320,7 +320,7 @@ class DockerConversationRegistry(ConversationRegistry):
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
         # Last, so it also covers the stops above; the next start sweeps them.
-        await self.storage.shutdown()
+        await self.reclaimer.shutdown()
 
     async def _evict_idle_runtimes_loop(self) -> None:
         ttl = self.config.conversation_idle_ttl_seconds
@@ -382,7 +382,7 @@ class DockerConversationRegistry(ConversationRegistry):
                     ttl_seconds,
                 )
                 await service.refresh_persisted_conversation(conversation_id)
-                await self.storage.on_stop(conversation_id)
+                await self.reclaimer.on_stop(conversation_id)
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
