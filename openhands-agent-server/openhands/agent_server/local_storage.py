@@ -1,9 +1,8 @@
 """Storage of host-local conversations: their git worktrees."""
 
-from __future__ import annotations
-
 import subprocess
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
 class LocalWorktreeAdapter:
     """``<conversation_worktree_root>/<id>/<repo>``: one worktree per conversation.
 
@@ -28,20 +28,14 @@ class LocalWorktreeAdapter:
     unmerged agent commits, so only the checkout is ever removed.
     """
 
-    def __init__(
-        self,
-        service: ConversationService,
-        worktree_root: Path,
-        conversations_dir: Path,
-    ) -> None:
-        # The service is only needed to tell whether a conversation is loaded.
-        self.service = service
-        self._root = worktree_root.resolve()
-        self.conversations_dir = conversations_dir
+    # Only needed to tell whether a conversation is loaded.
+    service: "ConversationService"
+    worktree_root: Path
+    conversations_dir: Path
 
     @property
     def root(self) -> Path:
-        return self._root
+        return self.worktree_root.resolve()
 
     def runtime(self, conversation_id: UUID) -> StoredRuntime | None:
         conversation_dir = self.root / str(conversation_id)
@@ -62,21 +56,20 @@ class LocalWorktreeAdapter:
     def runtimes(self) -> list[StoredRuntime]:
         if not self.root.is_dir():
             return []
-        runtimes: list[StoredRuntime] = []
-        for conversation_dir in self.root.iterdir():
-            try:
-                conversation_id = UUID(conversation_dir.name)
-            except ValueError:
-                continue
-            if runtime := self.runtime(conversation_id):
-                runtimes.append(runtime)
+        runtimes = [
+            runtime
+            for conversation_dir in self.root.iterdir()
+            if (conversation_id := _parse_id(conversation_dir.name))
+            and (runtime := self.runtime(conversation_id))
+        ]
         return sorted(runtimes, key=lambda runtime: runtime.last_active)
 
     def idle(self, conversation_id: UUID) -> AbstractAsyncContextManager[bool]:
-        return self.service.conversation_unloaded(conversation_id)
+        """True if the conversation is not loaded, so nothing runs in it.
 
-    def leftovers(self) -> list[Path]:
-        return []
+        Holds the conversation's lifecycle lock, which loading it also takes.
+        """
+        return self.service.conversation_unloaded(conversation_id)
 
     def retire(self, conversation_id: UUID) -> list[Path]:  # noqa: ARG002 (protocol)
         # Not supported yet: a resumed local conversation would find no
@@ -102,6 +95,13 @@ def remove_conversation_worktree(root: Path, conversation_id: UUID) -> None:
     # Drops git's record of the missing worktree; the branch is untouched.
     for repo in repos:
         _git(repo, "worktree", "prune")
+
+
+def _parse_id(name: str) -> UUID | None:
+    # Worktree dirs are named str(uuid), with dashes.
+    with suppress(ValueError):
+        return UUID(name)
+    return None
 
 
 def _worktrees(conversation_dir: Path) -> list[Path]:

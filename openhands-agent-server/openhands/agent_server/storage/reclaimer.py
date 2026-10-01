@@ -3,7 +3,7 @@ import shutil
 import time
 from contextlib import AbstractAsyncContextManager, suppress
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 from uuid import UUID
 
 from openhands.agent_server.config import ConversationStorageConfig
@@ -15,7 +15,7 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAINTENANCE_INTERVAL = 300.0
+MAINTENANCE_INTERVAL: Final[float] = 300.0
 
 
 class StorageAdapter(Protocol):
@@ -34,10 +34,6 @@ class StorageAdapter(Protocol):
 
     def idle(self, conversation_id: UUID) -> AbstractAsyncContextManager[bool]:
         """Hold the runtime still; True if nothing runs or starts in it."""
-        ...
-
-    def leftovers(self) -> list[Path]:
-        """Paths an earlier version set aside for deletion and never removed."""
         ...
 
     def retire(self, conversation_id: UUID) -> list[Path]:
@@ -61,8 +57,6 @@ class Reclaimer:
 
     async def start(self) -> None:
         """Only safe before any runtime starts: every one is reclaimed."""
-        for path in await asyncio.to_thread(self.adapter.leftovers):
-            self.trash.discard(path)
         for runtime in await asyncio.to_thread(self.adapter.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()

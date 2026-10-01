@@ -10,7 +10,7 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from urllib.error import URLError
 from urllib.request import urlopen
 from uuid import UUID, uuid4
@@ -39,13 +39,13 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_CONVERSATIONS_DIR = "/var/openhands/conversations"
-_PERSISTENCE_DIR = "/var/openhands/.openhands"
-_WORKSPACE_DIR = "/workspace"
-_SHARED_CACHE_DIR = "/var/openhands/shared-cache"
-_OWNER_LABEL = "ai.openhands.runtime-owner"
+_CONVERSATIONS_DIR: Final[str] = "/var/openhands/conversations"
+_PERSISTENCE_DIR: Final[str] = "/var/openhands/.openhands"
+_WORKSPACE_DIR: Final[str] = "/workspace"
+_SHARED_CACHE_DIR: Final[str] = "/var/openhands/shared-cache"
+_OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
 # XDG tools follow XDG_CACHE_HOME; npm has to be pointed in explicitly.
-_SHARED_CACHE_ENV = {
+_SHARED_CACHE_ENV: Final[dict[str, str]] = {
     "XDG_CACHE_HOME": _SHARED_CACHE_DIR,
     "npm_config_cache": f"{_SHARED_CACHE_DIR}/npm",
 }
