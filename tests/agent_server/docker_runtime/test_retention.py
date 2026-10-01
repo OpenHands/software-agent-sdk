@@ -121,6 +121,11 @@ async def test_retired_runtime_cannot_be_resumed(tmp_path, monkeypatch):
     conversation_id, _ = provision(runtime, days_inactive=8)
     await runtime.storage.run_pass()
 
+    def no_docker(_conversation_id):
+        pytest.fail("a retired runtime must not start a container")
+
+    # Without this, a regression would start a real container and leak it.
+    monkeypatch.setattr(runtime, "_build_container", no_docker)
     with pytest.raises(RuntimeRetiredError):
         await runtime.get_or_create(conversation_id)
     with pytest.raises(HTTPException) as raised:
