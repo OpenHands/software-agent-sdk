@@ -39,7 +39,7 @@ repos:
             pass_filenames: true
             always_run: false
           - id: check-forbidden-dynamic-attributes
-            name: Forbid getattr and setattr in SDK
+            name: Forbid dynamic attribute access in SDK
             entry: uv run python scripts/check_forbidden_dynamic_attributes.py
             language: system
             files: ^openhands-sdk/.*\.py$

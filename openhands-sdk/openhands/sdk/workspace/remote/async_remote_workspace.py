@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 from urllib.request import urlopen
 
 import httpx
@@ -15,6 +16,25 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     """Async Remote Workspace Implementation."""
 
     _client: httpx.AsyncClient | None = PrivateAttr(default=None)
+
+    async def __aenter__(self) -> Self:
+        """Enter a workspace whose HTTP pool is closed on context exit."""
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the client without releasing the server's runtime."""
+        await self.reset_client()
+
+    async def get_server_info(self) -> dict[str, Any]:
+        """Return server metadata, matching RemoteWorkspace.get_server_info."""
+        response = await self.client.get("/server_info")
+        response.raise_for_status()
+        return response.json()
 
     async def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
@@ -54,6 +74,29 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         except StopIteration as e:
             return e.value
 
+    async def start_command(
+        self,
+        command: str,
+        cwd: str | Path | None = None,
+        timeout: float = 30,
+    ) -> str:
+        """Start a command and return its ID without waiting for completion."""
+        return await self._execute(self._start_command_generator(command, cwd, timeout))
+
+    async def get_command_output(
+        self, command_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """Read the latest output; a missing exit code means it is still running."""
+        return await self._execute(self._get_command_output_generator(command_id))
+
+    async def get_runtime_session_key(self) -> str:
+        """Get the scoped worker credential for this conversation runtime."""
+        return await self._execute(self._runtime_lifecycle_generator(release=False))
+
+    async def release_runtime(self) -> None:
+        """Release execution resources while retaining conversation history."""
+        await self._execute(self._runtime_lifecycle_generator(release=True))
+
     async def execute_command(
         self,
         command: str,
@@ -79,7 +122,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
 
     async def file_upload(
         self,
-        source_path: str | Path,
+        source_path: str | Path | bytes,
         destination_path: str | Path,
     ) -> FileOperationResult:
         """Upload a file to the remote system.
@@ -87,7 +130,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         Reads the local file and sends it to the remote system via HTTP API.
 
         Args:
-            source_path: Path to the local source file
+            source_path: Local file path or in-memory bytes
             destination_path: Path where the file should be uploaded on remote system
 
         Returns:
