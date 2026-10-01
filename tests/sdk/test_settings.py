@@ -1,8 +1,10 @@
 import json
 import shutil
+import warnings
 from typing import Any
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import StartConversationRequest
@@ -20,7 +22,7 @@ from openhands.sdk import (
     export_agent_settings_schema,
     validate_agent_settings,
 )
-from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.acp_agent import ACP_SENTINEL_USAGE_ID, ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
@@ -170,7 +172,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
 
     section_keys = [section.key for section in schema.sections]
     assert "acp" in section_keys
-    assert "llm" in section_keys  # kept for cost/pricing attribution
+    assert "llm" not in section_keys
 
     sections = {s.key: s for s in schema.sections}
     acp_fields = {f.key: f for f in sections["acp"].fields}
@@ -405,8 +407,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     command_field = next(f for f in acp_section.fields if f.key == "acp_command")
     assert command_field.prominence is SettingProminence.MINOR
 
-    # ACP variant also has an LLM section (for cost/pricing attribution).
-    assert ("llm", "acp") in by_keyvariant
+    assert ("llm", "acp") not in by_keyvariant
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +553,40 @@ def test_validate_agent_settings_migrates_v5_modify_params() -> None:
     assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.llm.model == "gpt-4o"
     assert "modify_params" not in settings.llm.model_dump()
+
+
+@pytest.fixture
+def acp_llm_deprecated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "openhands.sdk.utils.deprecation._current_version", lambda: "1.51.0"
+    )
+
+
+@pytest.mark.usefixtures("acp_llm_deprecated")
+def test_validate_agent_settings_migrates_v6_acp_llm_without_warning() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecatedWarning)
+        settings = validate_agent_settings(
+            {
+                "schema_version": 6,
+                "agent_kind": "acp",
+                "acp_model": "claude-opus-4-7",
+                "llm": {"model": "gpt-5.6", "api_key": "sk-stored"},
+            }
+        )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert "llm" not in settings.model_fields_set
+
+
+def test_validate_agent_settings_migrates_v6_keeps_openhands_llm() -> None:
+    settings = validate_agent_settings(
+        {"schema_version": 6, "agent_kind": "openhands", "llm": {"model": "gpt-4o"}}
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.llm.model == "gpt-4o"
 
 
 def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
@@ -1748,6 +1783,39 @@ def test_acp_create_agent_ignores_credentials_without_context() -> None:
     agent = settings.create_agent()
 
     assert agent.agent_context is None
+
+
+@pytest.mark.parametrize(
+    ("acp_model", "expected_model"),
+    [(None, "acp-managed"), ("claude-opus-4-7", "claude-opus-4-7")],
+)
+def test_acp_create_agent_keeps_acp_managed_llm(
+    acp_model: str | None, expected_model: str
+) -> None:
+    agent = ACPAgentSettings(acp_model=acp_model).create_agent()
+
+    assert agent.llm.usage_id == ACP_SENTINEL_USAGE_ID
+    assert agent.llm.model == expected_model
+
+
+@pytest.mark.usefixtures("acp_llm_deprecated")
+def test_acp_settings_llm_warns_and_is_ignored() -> None:
+    with pytest.warns(DeprecatedWarning, match="ACPAgentSettings.llm"):
+        settings = ACPAgentSettings(
+            llm=LLM(model="gpt-5.6", api_key=SecretStr("sk-explicit"))
+        )
+
+    assert settings.create_agent().llm.usage_id == ACP_SENTINEL_USAGE_ID
+    assert "llm" not in settings.model_dump()
+    dumped = settings.model_dump_json(context={"expose_secrets": "plaintext"})
+    assert "sk-explicit" not in dumped
+
+
+@pytest.mark.usefixtures("acp_llm_deprecated")
+def test_acp_settings_without_llm_do_not_warn() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecatedWarning)
+        ACPAgentSettings(acp_model="sonnet").create_agent()
 
 
 def test_acp_create_agent_passes_caller_context_through() -> None:

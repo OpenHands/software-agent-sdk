@@ -30,6 +30,7 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -54,6 +55,7 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret,
@@ -471,7 +473,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 6
+AGENT_SETTINGS_SCHEMA_VERSION = 7
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -486,9 +488,8 @@ class AgentSettingsBase(BaseModel):
     - :meth:`create_agent` — canonical construction path; concrete subclasses
       must override this.
 
-    The ``llm`` field is intentionally *not* hoisted here — its semantics
-    differ between variants (execution config vs. attribution identity) and
-    the metadata overrides would make a shared field awkward.
+    The ``llm`` field is intentionally *not* hoisted here: only
+    :class:`OpenHandsAgentSettings` calls an LLM.
 
     Use :data:`AgentSettingsConfig` as the type for fields that may hold
     either the :class:`OpenHandsAgentSettings` or :class:`ACPAgentSettings`
@@ -702,6 +703,15 @@ def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
         llm.pop("modify_params", None)
         migrated["llm"] = llm
     migrated["schema_version"] = 6
+    return migrated
+
+
+def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop the deprecated ``llm`` from ACP settings."""
+    migrated = dict(payload)
+    if migrated.get("agent_kind") == "acp":
+        migrated.pop("llm", None)
+    migrated["schema_version"] = 7
     return migrated
 
 
@@ -1001,6 +1011,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
     5: _migrate_agent_settings_v5_to_v6,
+    6: _migrate_agent_settings_v6_to_v7,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1555,10 +1566,9 @@ class ACPAgentSettings(AgentSettingsBase):
     tools, MCP, and (primary) LLM calls; those fields from
     :class:`OpenHandsAgentSettings` do not apply here.
 
-    ``ACPAgent`` uses the :attr:`llm` field purely for cost/token attribution,
-    never for LLM requests; :attr:`acp_model` is the model identity. Any
-    credentials set on it (``llm.api_key`` / ``llm.base_url``) are ignored —
-    provider credentials ride the conversation secrets channel
+    :attr:`acp_model` is the model identity. The created ``ACPAgent`` keeps its
+    own metrics LLM, so title generation can tell it is never callable.
+    Provider credentials ride the conversation secrets channel
     (``request.secrets`` / ``agent_context.secrets`` → ``state.secret_registry``)
     keyed by the provider's env var name (:attr:`api_key_env_var`).
     """
@@ -1758,23 +1768,15 @@ class ACPAgentSettings(AgentSettingsBase):
     )
     llm: LLM = Field(
         default_factory=_default_llm_settings,
+        exclude=True,
         description=(
-            "DEPRECATED (removed in 1.33.0): LLM identity used for cost/token "
-            "attribution. The ACP subprocess makes its own model calls; "
-            "``acp_model`` is the model identity. Credentials set here "
-            "(``api_key`` / ``base_url``) are ignored — route provider "
-            "credentials through the conversation secrets channel "
-            "(agent_context.secrets / StartConversationRequest.secrets, which "
-            "route through state.secret_registry), keyed by the provider's "
-            "env var name."
+            "Deprecated since v1.51.0 and scheduled for removal in v1.56.0. "
+            "Ignored and not serialized: the ACP subprocess makes its own model "
+            "calls and ``acp_model`` is the model identity. Route provider "
+            "credentials through the conversation secrets channel, keyed by the "
+            "provider's env var name."
         ),
-        json_schema_extra={
-            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
-                key="llm",
-                label="LLM (for metrics)",
-                variant="acp",
-            ).model_dump()
-        },
+        deprecated="ACPAgentSettings.llm is ignored; remove this argument.",
     )
     agent_context: AgentContext | None = Field(
         default=None,
@@ -1790,6 +1792,19 @@ class ACPAgentSettings(AgentSettingsBase):
             "provider's env var name."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_deprecated_llm(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and "llm" in data:
+            warn_deprecated(
+                "ACPAgentSettings.llm",
+                deprecated_in="1.51.0",
+                removed_in="1.56.0",
+                details="It is ignored; remove this argument.",
+                stacklevel=4,
+            )
+        return data
 
     @property
     def provider_info(self) -> ACPProviderInfo | None:
@@ -1919,22 +1934,17 @@ class ACPAgentSettings(AgentSettingsBase):
         which maps :attr:`acp_server` to a default when no explicit
         :attr:`acp_command` is set.
 
-        Credentials on :attr:`llm` (``api_key`` / ``base_url``) are ignored:
-        provider credentials ride the conversation secrets channel
+        :attr:`llm` is not read: the agent keeps its default ``acp-managed``
+        metrics LLM, relabelled with :attr:`acp_model` when set. Provider
+        credentials ride the conversation secrets channel
         (``agent_context.secrets`` / ``StartConversationRequest.secrets``,
         which route through ``state.secret_registry``) keyed by the
-        provider's env var name (:attr:`api_key_env_var`), exactly like the
-        regular agent's credentials, and reach the subprocess from the
-        registry.
+        provider's env var name (:attr:`api_key_env_var`), and reach the
+        subprocess from the registry.
         """
         from openhands.sdk.agent import ACPAgent
 
-        # Credentials on ``llm`` (api_key / base_url) are intentionally not read:
-        # provider credentials ride the conversation secrets channel keyed by the
-        # provider's env var name (#3632). ``llm`` is kept only for cost/token
-        # attribution; ``acp_model`` is the model identity.
         return ACPAgent(
-            llm=self.llm,
             acp_command=self.resolve_acp_command(),
             # Carry the authoritative provider key onto the agent: acp_command
             # alone does not reliably reverse-map to a provider, so consumers

@@ -52,6 +52,7 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -3163,6 +3164,9 @@ class TestAutoTitle:
     _GENERATE_TITLE_PATH = (
         "openhands.agent_server.conversation_service.generate_title_from_message"
     )
+    _TITLE_WITH_LLM_PATH = (
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    )
 
     def _make_service(
         self,
@@ -3437,6 +3441,42 @@ class TestAutoTitle:
 
         assert service.stored.title == "Fix the login bug"
         service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_llm_for_settings_built_acp_agent(self):
+        service = self._make_service()
+        acp_agent = ACPAgentSettings(acp_model="claude-opus-4-7").create_agent()
+        service._conversation.agent.llm = acp_agent.llm
+
+        with patch(self._TITLE_WITH_LLM_PATH) as mock_llm_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        mock_llm_title.assert_not_called()
+        assert service.stored.title == "Fix the login bug"
+
+    @pytest.mark.asyncio
+    async def test_autotitle_uses_title_profile_for_settings_built_acp_agent(self):
+        service = self._make_service(title_llm_profile="cheap-model")
+        service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
+        profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
+            patch(
+                self._TITLE_WITH_LLM_PATH, return_value="Profile Title"
+            ) as mock_llm_title,
+        ):
+            MockStore.return_value.load.return_value = profile_llm
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert mock_llm_title.call_args.args[1] is profile_llm
+        assert service.stored.title == "Profile Title"
 
     @pytest.mark.asyncio
     async def test_autotitle_integration_routes_through_profile_store(

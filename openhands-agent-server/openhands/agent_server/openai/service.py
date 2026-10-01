@@ -117,7 +117,11 @@ def _with_profile_llm_and_system_text(
     llm: LLM,
     system_text: str,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
-    updated = agent_settings.model_copy(update={"llm": llm})
+    updated = (
+        agent_settings.model_copy(update={"llm": llm})
+        if isinstance(agent_settings, OpenHandsAgentSettings)
+        else agent_settings
+    )
     if not system_text:
         return updated
 
