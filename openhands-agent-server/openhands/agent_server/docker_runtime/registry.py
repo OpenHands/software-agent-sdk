@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
-from openhands.agent_server.docker_runtime.storage import DockerStorageAdapter
+from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
@@ -91,7 +91,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
-        self.reclaimer = Reclaimer(DockerStorageAdapter(self))
+        self.reclaimer = Reclaimer(DockerRuntimeStorage(self))
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service

@@ -13,7 +13,7 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
-class StorageAdapter(Protocol):
+class ReclaimableStorage(Protocol):
     """How one runtime mode stores conversations on this host."""
 
     @property
@@ -37,17 +37,17 @@ class StorageAdapter(Protocol):
 class Reclaimer:
     """Frees what a runtime mode stores per conversation, by tier.
 
-    Files are only moved into the trash, and only while the adapter holds the
+    Files are only moved into the trash, and only while the storage holds the
     runtime idle; the trash deletes them in the background.
     """
 
-    def __init__(self, adapter: StorageAdapter) -> None:
-        self.adapter = adapter
-        self.trash = Trash(adapter.root)
+    def __init__(self, storage: ReclaimableStorage) -> None:
+        self.storage = storage
+        self.trash = Trash(storage.root)
 
     async def start(self) -> None:
         """Only safe before any runtime starts: every one is reclaimed."""
-        for runtime in await asyncio.to_thread(self.adapter.runtimes):
+        for runtime in await asyncio.to_thread(self.storage.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()
 
@@ -55,7 +55,7 @@ class Reclaimer:
         await self.trash.close()
 
     async def on_stop(self, conversation_id: UUID) -> None:
-        runtime = await asyncio.to_thread(self.adapter.runtime, conversation_id)
+        runtime = await asyncio.to_thread(self.storage.runtime, conversation_id)
         if runtime is not None and await self.reclaim(runtime, Tier.CACHES):
             self.trash.empty_soon()
 
@@ -64,7 +64,7 @@ class Reclaimer:
         paths = await asyncio.to_thread(_select, runtime, tier)
         if not paths:
             return False
-        async with self.adapter.idle(runtime.id) as idle:
+        async with self.storage.idle(runtime.id) as idle:
             if not idle:
                 return False
             # Only renames here: the lock is held for microseconds.
