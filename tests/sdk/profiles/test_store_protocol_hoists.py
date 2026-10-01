@@ -255,6 +255,16 @@ def test_build_seed_profile_openhands_branch():
     fallback = build_seed_profile(settings, active_llm_profile=None)
     assert isinstance(fallback, OpenHandsAgentProfile)
     assert fallback.llm_profile_ref == SEED_PROFILE_NAME
+    assert fallback.system_prompt is None
+
+
+def test_build_seed_profile_copies_system_prompt():
+    settings = validate_agent_settings(
+        {"agent_kind": "openhands", "system_prompt": "You triage issues."}
+    )
+    profile = build_seed_profile(settings, active_llm_profile="my-llm")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.system_prompt == "You triage issues."
 
 
 def test_build_seed_profile_disables_nothing_even_with_inline_global_skills():

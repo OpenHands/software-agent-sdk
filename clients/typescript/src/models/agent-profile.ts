@@ -59,6 +59,8 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   llm_profile_ref: string;
   agent: string;
   skills: unknown[];
+  /** Replaces the built-in static system prompt; needs `profile_system_prompt_v1`. */
+  system_prompt?: string | null;
   system_message_suffix: string | null;
   condenser: unknown;
   verification: ProfileVerificationSettings;

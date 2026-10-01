@@ -173,6 +173,46 @@ def test_openhands_profile_tools_selection_is_passed_through(
     assert settings.create_agent().tools == []
 
 
+def test_openhands_profile_system_prompt_replaces_static_prompt_only(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="explorer",
+        llm_profile_ref="default",
+        system_prompt="You are a read-only code explorer.",
+        system_message_suffix="Cite file paths.",
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.system_prompt == "You are a read-only code explorer."
+    agent = settings.create_agent()
+    assert agent.static_system_message == "You are a read-only code explorer."
+    assert "Cite file paths." in (agent.dynamic_context or "")
+
+
+def test_openhands_profile_without_system_prompt_keeps_builtin_prompt(
+    llm_store: LLMProfileStore,
+) -> None:
+    settings = resolve_agent_profile(
+        OpenHandsAgentProfile(name="plain", llm_profile_ref="default"),
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.system_prompt is None
+    agent = settings.create_agent()
+    assert agent.system_prompt is None
+    assert "<ROLE>" in agent.static_system_message
+
+
 def test_openhands_copies_verification(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:

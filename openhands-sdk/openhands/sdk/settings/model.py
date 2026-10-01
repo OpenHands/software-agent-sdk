@@ -476,6 +476,14 @@ _RequestT = TypeVar("_RequestT")
 AGENT_SETTINGS_SCHEMA_VERSION = 7
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
+SYSTEM_PROMPT_MAX_LENGTH = 65536
+SYSTEM_PROMPT_DESCRIPTION = (
+    "Inline system prompt that replaces OpenHands' built-in static system "
+    "prompt verbatim. Per-conversation dynamic context (repository context, "
+    "skills, system_message_suffix, secret names, current datetime) is still "
+    "appended. None keeps the built-in prompt."
+)
+
 
 class AgentSettingsBase(BaseModel):
     """Shared base for all agent-settings variants.
@@ -1399,6 +1407,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    system_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=SYSTEM_PROMPT_MAX_LENGTH,
+        description=SYSTEM_PROMPT_DESCRIPTION,
+    )
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
@@ -1496,6 +1510,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             mcp_config=self.mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
+            system_prompt=self.system_prompt,
             condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,

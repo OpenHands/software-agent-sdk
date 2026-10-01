@@ -24,6 +24,8 @@ from pydantic import (
 )
 
 from openhands.sdk.settings.model import (
+    SYSTEM_PROMPT_DESCRIPTION,
+    SYSTEM_PROMPT_MAX_LENGTH,
     ACPServerKind,
     CondenserSettingsConfig,
     CriticMode,
@@ -174,6 +176,12 @@ class OpenHandsAgentProfile(AgentProfileBase):
         ),
     )
 
+    system_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=SYSTEM_PROMPT_MAX_LENGTH,
+        description=SYSTEM_PROMPT_DESCRIPTION,
+    )
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
