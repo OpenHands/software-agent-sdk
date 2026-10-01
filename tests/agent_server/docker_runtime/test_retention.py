@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config, ConversationStorageConfig
+from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime import routers
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
@@ -29,7 +29,7 @@ def registry(
             conversations_path=tmp_path / "conversations",
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
-            conversation_storage=ConversationStorageConfig(retention_days=days),
+            conversation_storage_retention_days=days,
         )
     )
 
@@ -167,7 +167,7 @@ def test_retention_days_is_read_from_nested_env(monkeypatch):
 
     monkeypatch.setenv("OH_CONVERSATION_STORAGE_RETENTION_DAYS", "7")
 
-    assert load_config().conversation_storage.retention_days == 7
+    assert load_config().conversation_storage_retention_days == 7
 
 
 @pytest.mark.asyncio
