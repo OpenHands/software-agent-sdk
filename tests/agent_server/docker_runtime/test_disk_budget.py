@@ -88,7 +88,7 @@ async def test_under_budget_sheds_nothing(tmp_path, monkeypatch, usage):
     shed, _ = make_repo(workspace)
     usage.append(0.5)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert all(path.is_dir() for path in shed)
 
@@ -105,12 +105,12 @@ async def test_over_budget_sheds_oldest_stopped_runtime_first(
     # Over budget, then back under once the oldest runtime is shed.
     usage.extend([0.95, 0.7])
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not any(path.exists() for path in old_shed)
     assert all(path.is_file() for path in old_kept)
     assert all(path.is_dir() for path in new_shed)
-    assert list(runtime.storage.trash.dir.iterdir()) == []
+    assert list(runtime.reclaimer.trash.dir.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -123,7 +123,7 @@ async def test_live_runtime_keeps_its_files(tmp_path, monkeypatch, usage):
     )
     usage.append(0.95)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert all(path.is_dir() for path in shed)
 
@@ -135,7 +135,7 @@ async def test_caller_supplied_workspace_is_never_touched(tmp_path, monkeypatch,
     shed, _ = make_repo(workspace)
     usage.append(0.95)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert all(path.is_dir() for path in shed)
 
@@ -154,7 +154,7 @@ async def test_nested_checkouts_are_shed_but_ignored_repos_kept(
     (workspace / ".gitignore").write_text("vendor-clone/\n")
     usage.append(0.95)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not any(path.exists() for path in nested_shed)
     assert all(path.is_file() for path in nested_kept)
@@ -176,7 +176,7 @@ async def test_nested_ignore_matches_shed_only_the_top_dir(
     usage.append(0.95)
 
     assert selectors.git_ignored_dirs(workspace) == [workspace / "public"]
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not (workspace / "public").exists()
     assert (workspace / "main.py").is_file()
@@ -197,7 +197,7 @@ async def test_repo_config_cannot_run_commands_on_the_host(
     git(workspace, "config", "core.fsmonitor", str(hook))
     usage.append(0.95)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not marker.exists()
 
@@ -210,7 +210,7 @@ async def test_non_git_workspace_is_skipped(tmp_path, monkeypatch, usage):
     deps.mkdir(parents=True)
     usage.append(0.95)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert deps.is_dir()
 
@@ -222,9 +222,9 @@ async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch)
     monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
 
     await runtime.start()
-    assert runtime.storage._maintenance is not None
+    assert runtime.reclaimer._maintenance is not None
     await runtime.shutdown()
-    assert runtime.storage._maintenance is None
+    assert runtime.reclaimer._maintenance is None
 
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     unset = DockerConversationRegistry(
@@ -235,7 +235,7 @@ async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(unset, "cleanup_stale_containers", lambda: None)
     await unset.start()
-    assert unset.storage._maintenance is None
+    assert unset.reclaimer._maintenance is None
     await unset.shutdown()
 
 
@@ -250,7 +250,7 @@ async def test_ignored_dir_holding_a_clone_is_kept(tmp_path, monkeypatch, usage)
     make_repo(clone)
     usage.append(0.95)
 
-    await runtime.storage.run_pass()
+    await runtime.reclaimer.run_pass()
 
     assert not any(path.exists() for path in shed)
     assert (clone / "main.py").is_file()
