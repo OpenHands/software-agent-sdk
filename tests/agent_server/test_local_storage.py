@@ -52,7 +52,7 @@ def service(tmp_path: Path) -> ConversationService:
     return svc
 
 
-def local_adapter(svc: ConversationService) -> LocalWorktreeStorage:
+def worktree_storage(svc: ConversationService) -> LocalWorktreeStorage:
     return LocalWorktreeStorage(
         svc, svc.conversation_worktree_root, svc.conversations_dir
     )
@@ -139,7 +139,7 @@ async def test_disk_budget_sheds_dependencies_of_unloaded_worktrees(tmp_path, us
     svc = service(tmp_path)
     conversation_id, worktree = add_worktree(svc, repo)
     reclaimer = Reclaimer(
-        local_adapter(svc), ConversationStorageConfig(disk_budget=0.8)
+        worktree_storage(svc), ConversationStorageConfig(disk_budget=0.8)
     )
     usage.extend([0.95, 0.5])
 
@@ -159,7 +159,7 @@ async def test_loaded_conversation_keeps_its_worktree(tmp_path, usage):
     assert svc._event_services is not None
     svc._event_services[conversation_id] = cast(EventService, AsyncMock())
     reclaimer = Reclaimer(
-        local_adapter(svc), ConversationStorageConfig(disk_budget=0.8)
+        worktree_storage(svc), ConversationStorageConfig(disk_budget=0.8)
     )
     usage.append(0.95)
 
@@ -171,7 +171,7 @@ async def test_loaded_conversation_keeps_its_worktree(tmp_path, usage):
 @pytest.mark.asyncio
 async def test_missing_worktree_root_is_fine(tmp_path, usage):
     reclaimer = Reclaimer(
-        local_adapter(service(tmp_path)),
+        worktree_storage(service(tmp_path)),
         ConversationStorageConfig(disk_budget=0.8),
     )
     usage.append(0.95)
