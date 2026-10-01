@@ -378,6 +378,7 @@ class DockerConversationRegistry(ConversationRegistry):
                     conversation_id,
                     ttl_seconds,
                 )
+                await service.refresh_persisted_conversation(conversation_id)
                 await self._prune_cache(conversation_id)
 
     def detach_stopped_caches(self) -> list[Path]:
