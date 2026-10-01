@@ -42,6 +42,12 @@ class FakeAdapter:
     def leftovers(self) -> list[Path]:
         return self.stale
 
+    def retire(self, conversation_id: UUID) -> list[Path]:
+        return []
+
+    async def on_retired(self, conversation_id: UUID) -> None:
+        pass
+
 
 @pytest.mark.asyncio
 async def test_on_stop_drops_caches_and_keeps_the_rest(tmp_path):

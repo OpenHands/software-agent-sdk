@@ -232,6 +232,18 @@ class ConversationStorageConfig(BaseModel):
             "touched. Unset (the default) disables it."
         ),
     )
+    retention_days: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Days a stopped conversation may stay inactive before its runtime "
+            "(sandbox home and workspace) is deleted. Its history and "
+            "encryption identity are kept, so it stays readable but can no "
+            "longer be resumed. A workspace the server did not create is never "
+            "deleted. Unset (the default) keeps runtimes until the "
+            "conversation is deleted."
+        ),
+    )
 
 
 class Config(BaseModel):
@@ -409,18 +421,6 @@ class Config(BaseModel):
             "When the server reclaims disk it stores per conversation. Package "
             "caches of a stopped runtime are always dropped; everything here "
             "is off by default."
-        ),
-    )
-    conversation_runtime_retention_days: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Days a stopped Docker conversation may stay inactive before its "
-            "runtime (sandbox home and workspace under runtime-data) is "
-            "deleted. Its history and encryption identity are kept, so it stays "
-            "readable but can no longer be resumed. A workspace outside "
-            "runtime-data is never deleted. Unset (the default) keeps runtimes "
-            "until the conversation is deleted."
         ),
     )
 

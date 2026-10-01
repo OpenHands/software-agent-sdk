@@ -9,6 +9,7 @@ class Tier(IntEnum):
 
     CACHES = 1
     DEPENDENCIES = 2
+    RUNTIME = 3
 
 
 @dataclass(frozen=True, slots=True)

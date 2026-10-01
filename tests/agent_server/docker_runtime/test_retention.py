@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, ConversationStorageConfig
 from openhands.agent_server.docker_runtime import routers
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
@@ -29,7 +29,7 @@ def registry(
             conversations_path=tmp_path / "conversations",
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
-            conversation_runtime_retention_days=days,
+            conversation_storage=ConversationStorageConfig(retention_days=days),
         )
     )
 
@@ -62,7 +62,7 @@ async def test_inactive_runtime_is_retired_and_history_kept(tmp_path, monkeypatc
         SecretStr("llm-key")
     )
 
-    await runtime._enforce_retention()
+    await runtime.storage.run_pass()
 
     assert not runtime.provisioning.runtime_dir(conversation_id).exists()
     assert not workspace.exists()
@@ -74,7 +74,7 @@ async def test_inactive_runtime_is_retired_and_history_kept(tmp_path, monkeypatc
     info = runtime.runtime_info(conversation_id)
     assert info.runtime_status == ConversationRuntimeStatus.MISSING
     assert info.can_resume is False
-    assert list(runtime.provisioning.data_root.glob(".cache-pruned-*")) == []
+    assert list(runtime.storage.trash.dir.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_recent_runtime_is_kept(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, workspace = provision(runtime, days_inactive=6)
 
-    await runtime._enforce_retention()
+    await runtime.storage.run_pass()
 
     assert (workspace / "main.py").is_file()
     assert runtime.runtime_info(conversation_id).can_resume is True
@@ -96,7 +96,7 @@ async def test_live_runtime_is_kept_however_old(tmp_path, monkeypatch):
         host="http://127.0.0.1", api_key="k", container_id="c"
     )
 
-    await runtime._enforce_retention()
+    await runtime.storage.run_pass()
 
     assert (workspace / "main.py").is_file()
     assert not runtime.is_retired(conversation_id)
@@ -109,7 +109,7 @@ async def test_caller_supplied_workspace_survives_retirement(tmp_path, monkeypat
     checkout.mkdir()
     conversation_id, workspace = provision(runtime, days_inactive=8, workspace=checkout)
 
-    await runtime._enforce_retention()
+    await runtime.storage.run_pass()
 
     assert runtime.is_retired(conversation_id)
     assert (checkout / "main.py").is_file()
@@ -119,7 +119,7 @@ async def test_caller_supplied_workspace_survives_retirement(tmp_path, monkeypat
 async def test_retired_runtime_cannot_be_resumed(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, _ = provision(runtime, days_inactive=8)
-    await runtime._enforce_retention()
+    await runtime.storage.run_pass()
 
     with pytest.raises(RuntimeRetiredError):
         await runtime.get_or_create(conversation_id)
@@ -137,17 +137,32 @@ async def test_interrupted_retirement_is_finished_by_the_next_pass(
     # A crash after the marker, before the runtime dir was moved.
     runtime.retired_marker(conversation_id).touch()
 
-    await runtime._enforce_retention()
+    await runtime.storage.run_pass()
 
     assert not runtime.provisioning.runtime_dir(conversation_id).exists()
 
 
-def test_startup_sweep_deletes_runtimes_retired_before_a_crash(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_retirement_leaves_the_manifest_untouched(tmp_path, monkeypatch):
+    # Older builds forbid unknown manifest fields; a rollback must still load it.
     runtime = registry(tmp_path, monkeypatch)
-    leftover = runtime.provisioning.data_root / ".cache-pruned-x"
-    (leftover / "workspace").mkdir(parents=True)
+    conversation_id, _ = provision(runtime, days_inactive=8)
+    manifest = runtime.provisioning.manifest_path(conversation_id)
+    before = manifest.read_bytes()
 
-    assert leftover in runtime.detach_stopped_caches()
+    await runtime.storage.run_pass()
+
+    assert runtime.is_retired(conversation_id)
+    assert manifest.read_bytes() == before
+    assert runtime.provisioning.load(conversation_id).conversation_id == conversation_id
+
+
+def test_retention_days_is_read_from_nested_env(monkeypatch):
+    from openhands.agent_server.config import load_config
+
+    monkeypatch.setenv("OH_CONVERSATION_STORAGE_RETENTION_DAYS", "7")
+
+    assert load_config().conversation_storage.retention_days == 7
 
 
 @pytest.mark.asyncio
@@ -156,6 +171,6 @@ async def test_retention_loop_runs_only_when_configured(tmp_path, monkeypatch):
         runtime = registry(tmp_path / str(days), monkeypatch, days=days)
         monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
         await runtime.start()
-        assert (runtime._retention_task is not None) is expected
+        assert (runtime.storage._maintenance is not None) is expected
         await runtime.shutdown()
-        assert runtime._retention_task is None
+        assert runtime.storage._maintenance is None
