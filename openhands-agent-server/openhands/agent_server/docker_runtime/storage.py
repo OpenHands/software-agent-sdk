@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class DockerStorageAdapter:
+class DockerRuntimeStorage:
     """``runtime-data/<id>/``: the sandbox home and, usually, its workspace."""
 
     registry: "DockerConversationRegistry"

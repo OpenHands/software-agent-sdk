@@ -1,4 +1,4 @@
-"""The reclaimer against a minimal adapter: nothing here knows about Docker."""
+"""The reclaimer against a minimal storage: nothing here knows about Docker."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -10,7 +10,7 @@ import pytest
 from openhands.agent_server.storage import Reclaimer, StoredRuntime
 
 
-class FakeAdapter:
+class FakeStorage:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.homes: dict[UUID, Path] = {}
@@ -47,9 +47,9 @@ class FakeAdapter:
 
 @pytest.mark.asyncio
 async def test_on_stop_drops_caches_and_keeps_the_rest(tmp_path):
-    adapter = FakeAdapter(tmp_path)
-    conversation_id, home = adapter.add()
-    reclaimer = Reclaimer(adapter)
+    storage = FakeStorage(tmp_path)
+    conversation_id, home = storage.add()
+    reclaimer = Reclaimer(storage)
 
     await reclaimer.on_stop(conversation_id)
     await reclaimer.trash.drain()
@@ -60,9 +60,9 @@ async def test_on_stop_drops_caches_and_keeps_the_rest(tmp_path):
 
 @pytest.mark.asyncio
 async def test_busy_runtime_is_left_alone(tmp_path):
-    adapter = FakeAdapter(tmp_path)
-    conversation_id, home = adapter.add(busy=True)
-    reclaimer = Reclaimer(adapter)
+    storage = FakeStorage(tmp_path)
+    conversation_id, home = storage.add(busy=True)
+    reclaimer = Reclaimer(storage)
 
     await reclaimer.on_stop(conversation_id)
     await reclaimer.start()
@@ -73,9 +73,9 @@ async def test_busy_runtime_is_left_alone(tmp_path):
 
 @pytest.mark.asyncio
 async def test_start_reclaims_every_idle_runtime(tmp_path):
-    adapter = FakeAdapter(tmp_path)
-    homes = [adapter.add()[1] for _ in range(3)]
-    reclaimer = Reclaimer(adapter)
+    storage = FakeStorage(tmp_path)
+    homes = [storage.add()[1] for _ in range(3)]
+    reclaimer = Reclaimer(storage)
 
     await reclaimer.start()
     await reclaimer.trash.drain()
@@ -86,7 +86,7 @@ async def test_start_reclaims_every_idle_runtime(tmp_path):
 
 @pytest.mark.asyncio
 async def test_unknown_runtime_is_a_no_op(tmp_path):
-    reclaimer = Reclaimer(FakeAdapter(tmp_path))
+    reclaimer = Reclaimer(FakeStorage(tmp_path))
 
     await reclaimer.on_stop(uuid4())
 

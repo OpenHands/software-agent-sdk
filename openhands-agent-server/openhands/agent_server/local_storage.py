@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class LocalWorktreeAdapter:
+class LocalWorktreeStorage:
     """``<conversation_worktree_root>/<id>/<repo>``: one worktree per conversation.
 
     The worktree's branch lives in the user's repository and may hold

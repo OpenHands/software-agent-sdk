@@ -28,14 +28,14 @@ class ConversationRegistry:
 
     def configure_service(self, service: ConversationService) -> None:
         """Connect runtime-specific persistence to the shared catalog."""
-        from openhands.agent_server.local_storage import LocalWorktreeAdapter
+        from openhands.agent_server.local_storage import LocalWorktreeStorage
 
-        adapter = LocalWorktreeAdapter(
+        storage = LocalWorktreeStorage(
             service,
             self.config.conversation_worktree_root,
             self.config.conversations_path,
         )
-        self.worktree_reclaimer = Reclaimer(adapter, self.config.conversation_storage)
+        self.worktree_reclaimer = Reclaimer(storage, self.config.conversation_storage)
 
     def runtime_info(self, _conversation_id: UUID) -> ConversationRuntimeInfo:
         """Describe whether a catalog conversation has an executable runtime."""

@@ -11,7 +11,7 @@ from openhands.agent_server.config import Config, ConversationStorageConfig
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.local_storage import LocalWorktreeAdapter
+from openhands.agent_server.local_storage import LocalWorktreeStorage
 from openhands.agent_server.models import StartConversationRequest
 from openhands.agent_server.storage import Reclaimer, reclaimer as reclaimer_module
 from openhands.sdk import LLM, Agent
@@ -52,8 +52,8 @@ def service(tmp_path: Path) -> ConversationService:
     return svc
 
 
-def local_adapter(svc: ConversationService) -> LocalWorktreeAdapter:
-    return LocalWorktreeAdapter(
+def local_adapter(svc: ConversationService) -> LocalWorktreeStorage:
+    return LocalWorktreeStorage(
         svc, svc.conversation_worktree_root, svc.conversations_dir
     )
 
