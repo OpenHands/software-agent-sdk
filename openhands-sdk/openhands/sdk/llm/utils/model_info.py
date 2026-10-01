@@ -10,7 +10,10 @@ from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
-from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+from openhands.sdk.llm.utils.openhands_provider import (
+    is_openhands_proxy_base_url,
+    litellm_call_kwargs,
+)
 
 
 logger = getLogger(__name__)
@@ -94,9 +97,20 @@ def _get_model_info_from_litellm_proxy(
 ):
     logger.debug(f"Get model_info_from_litellm_proxy:{cache_key}")
     try:
-        headers = {}
         if isinstance(secret_api_key, SecretStr):
             secret_api_key = secret_api_key.get_secret_value()
+        if not secret_api_key and is_openhands_proxy_base_url(base_url):
+            # The managed OpenHands proxy requires authentication: a
+            # credential-free request can only 401, so skip it and fall
+            # through to the static LiteLLM metadata below (#4098).
+            # Custom/private proxies may intentionally serve model info
+            # without auth, so they are still queried.
+            logger.debug(
+                "Skipping model info lookup against the managed OpenHands "
+                "proxy without credentials."
+            )
+            return None
+        headers = {}
         if secret_api_key:
             headers["Authorization"] = f"Bearer {secret_api_key}"
 
