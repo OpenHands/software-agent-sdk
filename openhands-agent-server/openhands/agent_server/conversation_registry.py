@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.models import (
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
+)
 
 
 if TYPE_CHECKING:
@@ -21,6 +26,18 @@ class ConversationRegistry:
 
     def configure_service(self, service: ConversationService) -> None:
         """Connect runtime-specific persistence to the shared catalog."""
+
+    def runtime_info(self, _conversation_id: UUID) -> ConversationRuntimeInfo:
+        """Describe whether a catalog conversation has an executable runtime."""
+        return ConversationRuntimeInfo(
+            runtime_status=ConversationRuntimeStatus.AVAILABLE,
+            can_resume=True,
+        )
+
+    @property
+    def serves_persisted_event_reads(self) -> bool:
+        """Whether read-only event routes should use shared persisted storage."""
+        return False
 
     async def start(self) -> None:
         """Start resources owned by this registry."""

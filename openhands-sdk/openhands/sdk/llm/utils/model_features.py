@@ -53,6 +53,7 @@ class ModelFeatures:
     supports_sampling_params: bool | None
     supports_extended_thinking: bool
     supports_prompt_cache: bool
+    supports_prompt_cache_key: bool
     supports_stop_words: bool
     supports_responses_api: bool
     force_string_serializer: bool
@@ -94,9 +95,56 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
     return normalized
 
 
+# Provider labels that describe the SDK/proxy routing layer rather than the
+# upstream that actually serves the request. LiteLLM returns the full OpenAI
+# param set for these (including ``prompt_cache_key`` for Anthropic models),
+# so they must never be used as the ``custom_llm_provider`` hint for param
+# resolution -- doing so re-introduces the 400 UnsupportedParamsError from #5325.
+_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({"litellm_proxy", "openhands"})
+
+
+def _real_litellm_provider(
+    model_info: Mapping[str, Any] | None,
+) -> str | None:
+    """Return the upstream provider that serves the request, if known.
+
+    For ``openhands/`` and ``litellm_proxy/`` aliases the model is routed
+    through a proxy, so the bare model name is unresolvable by LiteLLM and
+    ``get_supported_openai_params`` returns ``None``. The proxy's model info
+    carries the real upstream provider (e.g. ``deepseek``, ``anthropic``) in
+    ``litellm_provider``; threading it into the lookup restores correct param
+    detection. Passthrough labels (``litellm_proxy``/``openhands``) are
+    discarded because LiteLLM over-reports support for them.
+    """
+    if model_info is None:
+        return None
+    provider = model_info.get("litellm_provider")
+    if not isinstance(provider, str):
+        return None
+    provider = provider.strip().lower()
+    if not provider or provider in _PASSTHROUGH_PROVIDERS:
+        return None
+    return provider
+
+
 @cache
-def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
-    """Return LiteLLM-supported OpenAI params for a normalized model name."""
+def _normalized_supported_openai_params(
+    model: str | None, provider_hint: str | None = None
+) -> frozenset[str]:
+    """Return LiteLLM-supported OpenAI params for a normalized model name.
+
+    ``provider_hint`` is the real upstream provider for proxied/aliased models
+    (see ``_real_litellm_provider``). When the bare name is unresolvable --
+    the case for ``openhands/`` and ``litellm_proxy/`` aliases -- the hint is
+    used so param support reflects the provider that actually serves the
+    request instead of silently defaulting to ``False`` (#5328 follow-up).
+
+    NOTE: The provider-scoped lookup broadens the whole param set (e.g. for
+    DeepSeek it also reports ``reasoning_effort``). Callers that only want to
+    recover ``prompt_cache_key`` must not feed the hinted set into unrelated
+    capabilities -- use ``_supports_prompt_cache_key_param`` instead of reading
+    this set directly. See ``get_features``.
+    """
     normalized = _normalize_model_for_litellm(model)
     if not normalized:
         return frozenset()
@@ -105,7 +153,32 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
         model=normalized,
         custom_llm_provider=None,
     )
+    if not params and provider_hint:
+        params = get_supported_openai_params(
+            model=normalized,
+            custom_llm_provider=provider_hint,
+        )
     return frozenset(params or ())
+
+
+def _supports_prompt_cache_key_param(
+    model: str | None, provider_hint: str | None
+) -> bool:
+    """Whether the serving provider accepts the ``prompt_cache_key`` param.
+
+    Resolves from the bare-name param set first; only when that is
+    unresolvable (proxied/aliased models) does it consult the provider-scoped
+    set. Scoping the hint to this single capability keeps the broader
+    provider-scoped param set from leaking into unrelated features such as
+    ``supports_reasoning_effort`` (#5332 review follow-up).
+    """
+    if "prompt_cache_key" in _normalized_supported_openai_params(model):
+        return True
+    if provider_hint is None:
+        return False
+    return "prompt_cache_key" in _normalized_supported_openai_params(
+        model, provider_hint
+    )
 
 
 REASONING_EFFORT_MODEL_OVERRIDES = {
@@ -188,9 +261,15 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
 ]
 
 # Models that should use the OpenAI Responses API path by default
+# NOTE: model_matches uses case-insensitive substring matching, so a bare family
+# token like "gpt-5" / "gpt-6" covers all variants (mini, sol, luna, astra, ...).
 RESPONSES_API_MODELS: list[str] = [
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
+    # OpenAI GPT-6 family (gpt-6-sol, gpt-6-luna, gpt-6-astra, ...). These reject
+    # function tools + reasoning_effort on /v1/chat/completions; /v1/responses
+    # supports both. See saas-deploy #1144.
+    "gpt-6",
     # OpenAI Codex (uses Responses API)
     "codex-mini-latest",
 ]
@@ -221,6 +300,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-reasoner",
     "deepseek/deepseek-v4-pro",  # Dual-mode (Thinking/Non-Thinking)
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
+    "deepseek/deepseek-v4.1-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
 
 # Match token -> canonical LiteLLM ID for vision metadata overrides.
@@ -357,6 +437,11 @@ def get_features(
     overrides: Mapping[str, Any] | None = None,
 ) -> ModelFeatures:
     """Resolve model features from overrides, metadata, and fallbacks."""
+    provider_hint = _real_litellm_provider(model_info)
+    # Use the bare-name param set here so the provider hint (only needed to
+    # recover prompt_cache_key for proxied models) does not leak into
+    # reasoning_effort detection. prompt_cache_key is resolved separately via
+    # _supports_prompt_cache_key_param below (#5332 review follow-up).
     supported_params = _normalized_supported_openai_params(model)
     supports_reasoning_effort = _resolved_bool(
         "supports_reasoning_effort",
@@ -381,6 +466,12 @@ def get_features(
         supports_extended_thinking=thinking_mode == "manual",
         supports_prompt_cache=_supports_explicit_prompt_cache(
             model, model_info, overrides
+        ),
+        supports_prompt_cache_key=_resolved_bool(
+            "supports_prompt_cache_key",
+            overrides=overrides,
+            metadata=model_info,
+            fallback=_supports_prompt_cache_key_param(model, provider_hint),
         ),
         supports_stop_words=_resolved_bool(
             "supports_stop_words",

@@ -51,6 +51,19 @@ def test_runtime_identity_cache_refreshes_after_manifest_update(tmp_path, monkey
     assert refreshed.api_key.get_secret_value() == "rotated-key"
 
 
+def test_optional_load_distinguishes_missing_from_invalid_identity(
+    tmp_path, monkeypatch
+):
+    store = RuntimeProvisioningStore(config(tmp_path, monkeypatch))
+    conversation_id = uuid4()
+
+    assert store.load_optional(conversation_id) is None
+
+    store.manifest_path(conversation_id).write_text("not-json")
+    with pytest.raises(ValueError):
+        store.load_optional(conversation_id)
+
+
 def test_existing_local_conversation_is_not_reinterpreted(tmp_path, monkeypatch):
     runtime_config = config(tmp_path, monkeypatch)
     store = RuntimeProvisioningStore(runtime_config)
@@ -75,6 +88,16 @@ def test_runtime_keeps_the_selected_workspace(tmp_path, monkeypatch):
     assert store.create(conversation_id, workspace).workspace_path == workspace
     with pytest.raises(ValueError, match="cannot change workspaces"):
         store.create(conversation_id, other)
+
+
+def test_runtime_creates_a_missing_selected_workspace(tmp_path, monkeypatch):
+    store = RuntimeProvisioningStore(config(tmp_path, monkeypatch))
+    workspace = tmp_path / "new" / "conversation-workspace"
+
+    identity = store.create(uuid4(), workspace)
+
+    assert identity.workspace_path == workspace
+    assert workspace.is_dir()
 
 
 def test_runtime_mount_rejects_symlink(tmp_path, monkeypatch):

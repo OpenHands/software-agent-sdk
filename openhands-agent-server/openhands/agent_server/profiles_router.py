@@ -40,6 +40,7 @@ from openhands.sdk.profiles import (
     delete_llm_profile,
     rename_llm_profile,
 )
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.utils.redact import redact_text_secrets
 
 
@@ -307,9 +308,13 @@ async def validate_profile(
 
     messages = [
         Message(
+            role="system",
+            content=[TextContent(text="Reply with one token.")],
+        ),
+        Message(
             role="user",
             content=[TextContent(text="ping")],
-        )
+        ),
     ]
 
     try:
@@ -458,7 +463,8 @@ async def activate_profile(
 
     This endpoint:
     1. Loads the named profile's LLM configuration
-    2. Applies it to the current agent settings (updates ``agent_settings.llm``)
+    2. Applies it to the current OpenHands agent settings (updates
+       ``agent_settings.llm``); ACP settings have no LLM to update
     3. Records the profile name as the active profile for frontend tracking
 
     Returns 404 if the profile does not exist.
@@ -487,11 +493,15 @@ async def activate_profile(
         )
 
     settings_store = get_settings_store(config)
+    llm_applied = False
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
-        settings.agent_settings = settings.agent_settings.model_copy(
-            update={"llm": llm}
-        )
+        nonlocal llm_applied
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            settings.agent_settings = settings.agent_settings.model_copy(
+                update={"llm": llm}
+            )
+            llm_applied = True
         settings.active_profile = name
         return settings
 
@@ -510,6 +520,10 @@ async def activate_profile(
     logger.info(f"Activated profile '{name}'")
     return ActivateProfileResponse(
         name=name,
-        message=f"Profile '{name}' activated and applied to current settings",
-        llm_applied=True,
+        message=(
+            f"Profile '{name}' activated and applied to current settings"
+            if llm_applied
+            else f"Profile '{name}' activated"
+        ),
+        llm_applied=llm_applied,
     )

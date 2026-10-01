@@ -77,10 +77,14 @@ class RuntimeProvisioningStore:
             raise ValueError("Runtime mount must not follow a symlink")
         return resolved
 
-    def load(self, conversation_id: UUID) -> RuntimeIdentity:
+    def load_optional(self, conversation_id: UUID) -> RuntimeIdentity | None:
+        """Load an identity, returning ``None`` only when it does not exist."""
         path = self.manifest_path(conversation_id)
         try:
             manifest_stat = path.lstat()
+        except FileNotFoundError:
+            self._identities.pop(conversation_id, None)
+            return None
         except OSError:
             self._identities.pop(conversation_id, None)
             raise ValueError("Conversation runtime identity is unavailable") from None
@@ -101,6 +105,12 @@ class RuntimeProvisioningStore:
         if identity.conversation_id != conversation_id:
             raise ValueError("Runtime identity does not match conversation")
         self._identities[conversation_id] = (signature, identity)
+        return identity
+
+    def load(self, conversation_id: UUID) -> RuntimeIdentity:
+        identity = self.load_optional(conversation_id)
+        if identity is None:
+            raise ValueError("Conversation runtime identity is unavailable")
         return identity
 
     def create(
@@ -133,6 +143,14 @@ class RuntimeProvisioningStore:
             else:
                 if not workspace_path.is_absolute():
                     raise ValueError("Conversation workspace must be absolute")
+                if workspace_path.is_symlink():
+                    raise ValueError("Conversation workspace must be a real directory")
+                try:
+                    workspace_path.mkdir(parents=True, mode=0o700, exist_ok=True)
+                except OSError as exc:
+                    raise ValueError(
+                        "Conversation workspace must be a real directory"
+                    ) from exc
                 if workspace_path.is_symlink() or not workspace_path.is_dir():
                     raise ValueError("Conversation workspace must be a real directory")
                 workspace_path = workspace_path.resolve()

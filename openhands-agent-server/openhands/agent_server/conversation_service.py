@@ -23,6 +23,7 @@ from openhands.agent_server.conversation_lease import (
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
+    RunSlot,
     _without_agent_context_secret,
 )
 from openhands.agent_server.models import (
@@ -70,10 +71,12 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.observability import OPERATION_METADATA_KEY, observe
 from openhands.sdk.tool import BROWSER_TOOL_NAME, Tool, is_tool_usable
 from openhands.sdk.tool.client_tool import register_client_tools
+from openhands.sdk.tool.registry import get_tool_module_qualnames
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -538,6 +541,7 @@ def _compose_conversation_info(
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
+        tool_module_qualnames=dict(stored.tool_module_qualnames),
         launched_agent_profile=stored.launched_agent_profile,
     )
 
@@ -704,7 +708,6 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
-    sync_external_catalog: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -724,6 +727,7 @@ class ConversationService:
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
         default_factory=dict, init=False
     )
@@ -1108,34 +1112,31 @@ class ConversationService:
             record.cached_info = None
             record.state_signature = signature
 
-    async def _reconcile_active_records(
-        self, conversation_id: UUID | None = None
-    ) -> None:
-        """Discover externally persisted records and injected live services."""
+    async def refresh_persisted_conversation(self, conversation_id: UUID) -> None:
+        """Refresh one catalog record changed by an external runtime."""
         event_services = self._event_services
         if event_services is None:
             raise ValueError("inactive_service")
-        if self.sync_external_catalog:
-            disk_records = await asyncio.to_thread(
-                self._load_catalog_sync, conversation_id
-            )
-            stale_ids = (
-                {conversation_id}
-                if conversation_id is not None
-                else set(self._conversation_records)
-            ) - set(disk_records)
-            for record_id in stale_ids:
-                event_service = event_services.get(record_id)
-                if event_service is None or not event_service.is_open():
-                    self._conversation_records.pop(record_id, None)
-            for record_id, record in disk_records.items():
-                event_service = event_services.get(record_id)
-                if event_service is not None and event_service.is_open():
-                    continue
-                existing = self._conversation_records.setdefault(record_id, record)
-                if existing.stored != record.stored:
-                    existing.stored = record.stored
-                    existing.cached_info = None
+        disk_records = await asyncio.to_thread(self._load_catalog_sync, conversation_id)
+        if conversation_id not in disk_records:
+            event_service = event_services.get(conversation_id)
+            if event_service is None or not event_service.is_open():
+                self._conversation_records.pop(conversation_id, None)
+            return
+        record = disk_records[conversation_id]
+        event_service = event_services.get(conversation_id)
+        if event_service is not None and event_service.is_open():
+            return
+        existing = self._conversation_records.setdefault(conversation_id, record)
+        if existing.stored != record.stored:
+            existing.stored = record.stored
+            existing.cached_info = None
+
+    async def _reconcile_active_records(self) -> None:
+        """Add injected live services to the in-memory catalog."""
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
         for conversation_id, event_service in event_services.items():
             if conversation_id in self._conversation_records:
                 continue
@@ -1270,8 +1271,6 @@ class ConversationService:
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        if self.sync_external_catalog:
-            await self._reconcile_active_records(conversation_id)
         record = self._conversation_records.get(conversation_id)
         if record is None:
             event_service = self._event_services.get(conversation_id)
@@ -1627,6 +1626,15 @@ class ConversationService:
                 )
             return conversation_info, False
 
+        with await RunSlot.acquire(self._run_semaphore) as run_slot:
+            return await self._create_conversation(request, conversation_id, run_slot)
+
+    async def _create_conversation(
+        self,
+        request: StartConversationRequest,
+        conversation_id: UUID,
+        run_slot: RunSlot,
+    ) -> tuple[ConversationInfo, bool]:
         # The link is immutable after creation, so cycles beyond self-parent are
         # impossible; allowing reparenting would require a real ancestor walk.
         if request.parent_conversation_id is not None:
@@ -1781,6 +1789,21 @@ class ConversationService:
                     conversation_id,
                 )
 
+        # The server may resolve built-in tools that the creating client does not
+        # import, as happens when a lightweight orchestrator starts a runtime
+        # conversation. Persist those server-resolved modules so another client
+        # can attach and deserialize the resulting tool events.
+        registered_tool_modules = get_tool_module_qualnames()
+        tool_module_qualnames = dict(request.tool_module_qualnames)
+        for tool in request.agent.tools:
+            module_qualname = registered_tool_modules.get(tool.name)
+            if module_qualname is not None:
+                tool_module_qualnames.setdefault(tool.name, module_qualname)
+        if tool_module_qualnames != request.tool_module_qualnames:
+            request = request.model_copy(
+                update={"tool_module_qualnames": tool_module_qualnames}
+            )
+
         # Register client-defined tools (JSON specs, no Python code). The
         # ClientTool *class* is registered statelessly; each tool's schema
         # travels with the conversation via the returned Tool.params, so
@@ -1880,7 +1903,8 @@ class ConversationService:
             message = Message(
                 role=initial_message.role, content=initial_message.content
             )
-            await event_service.send_message(message, True)
+            await event_service.send_message(message, False)
+            await event_service.run(run_slot=run_slot)
 
         state = await event_service.get_state()
         conversation_info = _compose_conversation_info(event_service.stored, state)
@@ -2041,6 +2065,17 @@ class ConversationService:
     async def get_event_service(self, conversation_id: UUID) -> EventService | None:
         return await self._get_or_load_event_service(conversation_id)
 
+    async def get_persisted_event_service(
+        self, conversation_id: UUID
+    ) -> EventService | None:
+        """Open append-only event history without acquiring a runtime lease."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        record = self._conversation_records.get(conversation_id)
+        if record is None:
+            return None
+        return EventService.for_persisted_events(record.stored, self.conversations_dir)
+
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
     ) -> str | None:
@@ -2200,6 +2235,7 @@ class ConversationService:
             max_workers=self.max_concurrent_runs,
             thread_name_prefix="conversation-run",
         )
+        self._run_semaphore = asyncio.Semaphore(self.max_concurrent_runs)
         self._event_services = {}
         self._conversation_records = await asyncio.to_thread(self._load_catalog_sync)
 
@@ -2426,7 +2462,6 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
-            sync_external_catalog=False,
         )
 
     async def _start_event_service(
@@ -2450,7 +2485,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             agent=agent,
-            cipher=self.cipher,
+            cipher=self._cipher_for(stored.id),
             mcp_tool_provider=self.mcp_tool_provider,
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
@@ -2460,6 +2495,7 @@ class ConversationService:
         # _renew_all_leases_loop task on ConversationService.
         event_service._external_lease_renewal = True
         event_service._run_executor = self._run_executor
+        event_service._run_semaphore = self._run_semaphore
 
         try:
             await event_service.start()
@@ -2641,15 +2677,20 @@ class _EventSubscriber(Subscriber):
     metadata={OPERATION_METADATA_KEY: "title_generation"},
 )
 def _generate_title_traced(
-    # Unused, but must stay first and positional: ``observe`` re-attaches the
+    # Must stay first and positional: ``observe`` re-attaches the
     # root span it carries, and this runs on a context-less executor thread.
-    conversation: LocalConversation | None,  # noqa: ARG001
+    conversation: LocalConversation | None,
     message: str,
     llm: LLM | None,
     max_length: int,
     on_error: Callable[[Exception], None] | None = None,
 ) -> str:
-    return generate_title_from_message(message, llm, max_length, on_error=on_error)
+    call_context = (
+        conversation.get_llm_call_context() if conversation else LLMCallContext()
+    )
+    return generate_title_from_message(
+        message, llm, max_length, call_context=call_context, on_error=on_error
+    )
 
 
 @dataclass

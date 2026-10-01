@@ -7,7 +7,7 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -16,10 +16,15 @@ from fastmcp.mcp_config import MCPConfig
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
-from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
+from openhands.sdk.utils.path import (
+    get_user_persistence_dir,
+    resolves_within,
+    to_posix_path,
+)
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.skills.skill import Skill, SkillResources
 
 # Type alias for secret lookup functions
@@ -215,6 +220,32 @@ def expand_mcp_variables(
     if not isinstance(expanded_config, dict):
         raise TypeError("expanded MCP config must be a dictionary")
     return expanded_config
+
+
+def expand_mcp_servers(
+    servers: Mapping[str, MCPServer],
+    get_secret: SecretLookup | None = None,
+) -> dict[str, MCPServer]:
+    """Expand ``${VAR}`` placeholders in MCP servers, applying defaults.
+
+    Servers with ``literal_values`` are returned untouched: they come from an
+    Agent Plugins package, whose loader has already expanded the only two
+    placeholders the standard allows, and §9.2 forbids expanding anything else
+    -- a package must not be able to pull a secret into its own subprocess.
+    """
+    # Imported lazily: openhands.sdk.mcp imports this module.
+    from openhands.sdk.mcp.config import coerce_mcp_config, dump_mcp_config
+
+    expandable = {name: s for name, s in servers.items() if not s.literal_values}
+    if not expandable:
+        return dict(servers)
+    expanded = expand_mcp_variables(
+        {"mcpServers": dump_mcp_config(expandable)},
+        {},
+        get_secret=get_secret,
+        expand_defaults=True,
+    )
+    return {**servers, **coerce_mcp_config(expanded["mcpServers"])}
 
 
 def load_mcp_config(
@@ -438,11 +469,13 @@ def find_nested_third_party_files(
     return sorted(results, key=lambda pair: pair[1].as_posix())
 
 
-def find_skill_md_directories(skill_dir: Path) -> list[Path]:
+def find_skill_md_directories(skill_dir: Path, root: Path | None = None) -> list[Path]:
     """Find AgentSkills-style directories containing SKILL.md files.
 
     Args:
         skill_dir: Path to the skills directory.
+        root: If given, directories and SKILL.md files that resolve outside it
+            are skipped, and an escaping directory is never listed.
 
     Returns:
         List of paths to SKILL.md files.
@@ -451,15 +484,20 @@ def find_skill_md_directories(skill_dir: Path) -> list[Path]:
     if not skill_dir.exists():
         return results
     for subdir in sorted(skill_dir.iterdir()):
+        if root is not None and not resolves_within(subdir, root):
+            continue
         if subdir.is_dir():
             skill_md = find_skill_md(subdir)
-            if skill_md:
+            if skill_md and (root is None or resolves_within(skill_md, root)):
                 results.append(skill_md)
     return results
 
 
 def find_regular_md_files(
-    skill_dir: Path, exclude_dirs: set[Path], recursive: bool = True
+    skill_dir: Path,
+    exclude_dirs: set[Path],
+    recursive: bool = True,
+    root: Path | None = None,
 ) -> list[Path]:
     """Find regular .md skill files, excluding SKILL.md and files in excluded dirs.
 
@@ -468,6 +506,7 @@ def find_regular_md_files(
         exclude_dirs: Set of directories to exclude (e.g., SKILL.md directories).
         recursive: If False, only scan the immediate children of skill_dir,
             where every .md file except a README is a skill.
+        root: If given, files that resolve outside it are skipped.
 
     Returns:
         List of paths to regular .md skill files.
@@ -479,14 +518,17 @@ def find_regular_md_files(
         return [
             f
             for f in sorted(skill_dir.glob("*.md"))
-            if f.is_file() and f.name.lower() != "readme.md"
+            if f.is_file()
+            and f.name.lower() != "readme.md"
+            and (root is None or resolves_within(f, root))
         ]
     for f in sorted(skill_dir.rglob("*.md")):
         is_readme = f.name == "README.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
         if not is_readme and not is_skill_md and not is_in_excluded_dir:
-            files.append(f)
+            if root is None or resolves_within(f, root):
+                files.append(f)
     return files
 
 
@@ -497,6 +539,7 @@ def load_and_categorize(
     knowledge_skills: dict[str, Skill],
     agent_skills: dict[str, Skill],
     strict: bool = True,
+    root: Path | None = None,
 ) -> None:
     """Load a skill and categorize it.
 
@@ -509,11 +552,17 @@ def load_and_categorize(
         knowledge_skills: Dictionary for skills with triggers (progressive).
         agent_skills: Dictionary for AgentSkills standard SKILL.md files.
         strict: If True, enforce strict AgentSkills name validation.
+        root: If given, a skill-level ``.mcp.json`` that resolves outside it is
+            not loaded.
     """
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import Skill
 
-    skill = Skill.load(path, skill_base_dir, strict=strict)
+    skip_mcp = False
+    if root is not None:
+        mcp_json = find_mcp_config(path.parent)
+        skip_mcp = mcp_json is not None and not resolves_within(mcp_json, root)
+    skill = Skill.load(path, skill_base_dir, strict=strict, skip_mcp=skip_mcp)
 
     # AgentSkills (SKILL.md directories) are a separate category from OpenHands skills.
     # They follow the AgentSkills standard and should be handled differently.

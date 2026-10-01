@@ -35,7 +35,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, AgentBase, Message
+from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -52,6 +52,7 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -117,6 +118,30 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
         assert reloaded.agent.llm.model == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_server_resolved_tool_modules_are_persisted(tmp_path):
+    """A lightweight creator need not import the runtime's tool modules."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+
+    meta = json.loads((conversations_dir / info.id.hex / "meta.json").read_text())
+    assert meta["tool_module_qualnames"]["terminal"] == (
+        "openhands.tools.terminal.definition"
+    )
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
@@ -3144,6 +3169,9 @@ class TestAutoTitle:
     _GENERATE_TITLE_PATH = (
         "openhands.agent_server.conversation_service.generate_title_from_message"
     )
+    _TITLE_WITH_LLM_PATH = (
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    )
 
     def _make_service(
         self,
@@ -3420,6 +3448,42 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_autotitle_skips_llm_for_settings_built_acp_agent(self):
+        service = self._make_service()
+        acp_agent = ACPAgentSettings(acp_model="claude-opus-4-7").create_agent()
+        service._conversation.agent.llm = acp_agent.llm
+
+        with patch(self._TITLE_WITH_LLM_PATH) as mock_llm_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        mock_llm_title.assert_not_called()
+        assert service.stored.title == "Fix the login bug"
+
+    @pytest.mark.asyncio
+    async def test_autotitle_uses_title_profile_for_settings_built_acp_agent(self):
+        service = self._make_service(title_llm_profile="cheap-model")
+        service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
+        profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
+            patch(
+                self._TITLE_WITH_LLM_PATH, return_value="Profile Title"
+            ) as mock_llm_title,
+        ):
+            MockStore.return_value.load.return_value = profile_llm
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert mock_llm_title.call_args.args[1] is profile_llm
+        assert service.stored.title == "Profile Title"
+
+    @pytest.mark.asyncio
     async def test_autotitle_integration_routes_through_profile_store(
         self, tmp_path, monkeypatch, request
     ):
@@ -3634,13 +3698,11 @@ class TestACPActivityHeartbeatWiring:
 
 
 @pytest.mark.asyncio
-async def test_external_catalog_sync_discovers_conversation_added_after_startup(
+async def test_refresh_persisted_conversation_adds_and_removes_record(
     tmp_path, sample_stored_conversation
 ):
     conversations_dir = tmp_path / "conversations"
-    async with ConversationService(
-        conversations_dir=conversations_dir, sync_external_catalog=True
-    ) as service:
+    async with ConversationService(conversations_dir=conversations_dir) as service:
         assert (await service.search_conversations()).items == []
 
         conversation_dir = conversations_dir / sample_stored_conversation.id.hex
@@ -3656,9 +3718,11 @@ async def test_external_catalog_sync_discovers_conversation_added_after_startup(
         )
         (conversation_dir / "base_state.json").write_text(state.model_dump_json())
 
+        await service.refresh_persisted_conversation(sample_stored_conversation.id)
         info = await service.get_conversation(sample_stored_conversation.id)
         page = await service.search_conversations()
         (conversation_dir / "meta.json").unlink()
+        await service.refresh_persisted_conversation(sample_stored_conversation.id)
         removed = await service.get_conversation(sample_stored_conversation.id)
 
     assert info is not None
@@ -4201,14 +4265,12 @@ async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_external_catalog_refreshes_metadata_without_state_change(
+async def test_refresh_persisted_conversation_updates_metadata_without_state_change(
     persisted_conversation,
 ):
     conversations_dir, conversation_id = persisted_conversation
     directory = conversations_dir / conversation_id.hex
-    async with ConversationService(
-        conversations_dir=conversations_dir, sync_external_catalog=True
-    ) as service:
+    async with ConversationService(conversations_dir=conversations_dir) as service:
         initial = await service.search_conversations()
         assert initial.items[0].title is None
         state_before = (directory / "base_state.json").read_bytes()
@@ -4216,6 +4278,7 @@ async def test_external_catalog_refreshes_metadata_without_state_change(
         metadata["title"] = "Generated externally"
         (directory / "meta.json").write_text(json.dumps(metadata))
 
+        await service.refresh_persisted_conversation(conversation_id)
         info = await service.get_conversation(conversation_id)
         assert info is not None
         assert info.title == "Generated externally"
@@ -4224,11 +4287,11 @@ async def test_external_catalog_refreshes_metadata_without_state_change(
 
 
 @pytest.mark.asyncio
-async def test_external_catalog_preserves_live_metadata(persisted_conversation):
+async def test_refresh_persisted_conversation_preserves_live_metadata(
+    persisted_conversation,
+):
     conversations_dir, conversation_id = persisted_conversation
-    async with ConversationService(
-        conversations_dir=conversations_dir, sync_external_catalog=True
-    ) as service:
+    async with ConversationService(conversations_dir=conversations_dir) as service:
         runtime = await service.get_event_service(conversation_id)
         assert runtime is not None
         runtime.stored = runtime.stored.model_copy(update={"title": "Live title"})
@@ -4237,6 +4300,7 @@ async def test_external_catalog_preserves_live_metadata(persisted_conversation):
         metadata["title"] = "Stale disk title"
         metadata_path.write_text(json.dumps(metadata))
 
+        await service.refresh_persisted_conversation(conversation_id)
         info = await service.get_conversation(conversation_id)
         assert info is not None
         assert info.title == "Live title"
@@ -4245,7 +4309,9 @@ async def test_external_catalog_preserves_live_metadata(persisted_conversation):
 
 
 @pytest.mark.asyncio
-async def test_external_lookup_only_decrypts_requested_record(persisted_conversation):
+async def test_refresh_persisted_conversation_only_decrypts_requested_record(
+    persisted_conversation,
+):
     conversations_dir, conversation_id = persisted_conversation
     reads = []
 
@@ -4255,7 +4321,6 @@ async def test_external_lookup_only_decrypts_requested_record(persisted_conversa
 
     async with ConversationService(
         conversations_dir=conversations_dir,
-        sync_external_catalog=True,
         runtime_cipher_resolver=cipher_for,
     ) as service:
         unrelated = uuid4()
@@ -4265,5 +4330,11 @@ async def test_external_lookup_only_decrypts_requested_record(persisted_conversa
             (conversations_dir / conversation_id.hex / "meta.json").read_bytes()
         )
         reads.clear()
+        assert (await service.search_conversations()).items
+        assert reads == [conversation_id]
+
+        reads.clear()
+        await service.refresh_persisted_conversation(conversation_id)
+        assert reads == [conversation_id]
         assert await service.get_conversation(conversation_id) is not None
-        assert unrelated not in reads
+        assert reads == [conversation_id]
