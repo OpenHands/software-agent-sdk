@@ -20,6 +20,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import sanitized_env
 from openhands.sdk.utils.redact import redact_text_secrets
 from openhands.sdk.workspace.base import BaseWorkspace
+from openhands.sdk.workspace.local import LocalWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -304,7 +305,7 @@ def _apply_landlock_and_group(
             pass
 
 
-class LandlockWorkspace(BaseWorkspace):
+class LandlockWorkspace(LocalWorkspace):
     """Containerless, daemon-less sandboxed workspace leveraging Linux Landlock LSM.
 
     Provides sub-4ms cold start execution with filesystem access control bounded
@@ -453,11 +454,6 @@ class LandlockWorkspace(BaseWorkspace):
             if os.path.exists(resolved_ep) and resolved_ep not in paths:
                 paths.append(resolved_ep)
         return paths
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Exit the workspace context and send the completion callback."""
-        self._send_completion_callback(exc_type, exc_val)
-        super().__exit__(exc_type, exc_val, exc_tb)
 
     def execute_command(
         self,
@@ -647,8 +643,8 @@ class LandlockWorkspace(BaseWorkspace):
                 timeout_occurred=True,
             )
 
-        stdout_thread.join(timeout=timeout)
-        stderr_thread.join(timeout=timeout)
+        stdout_thread.join(timeout=min(timeout, 1.0))
+        stderr_thread.join(timeout=min(timeout, 1.0))
         if proc.stdout:
             try:
                 proc.stdout.close()

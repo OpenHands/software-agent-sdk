@@ -420,3 +420,31 @@ def test_landlock_restrict_self_failure_raises_runtime_error(
             abi_version=1,
             enable_process_group=False,
         )
+
+
+def test_landlock_workspace_isinstance_local_workspace(tmp_path: Path):
+    """LandlockWorkspace inherits from LocalWorkspace for seamless Conversation integration."""
+    ws = LandlockWorkspace(working_dir=tmp_path)
+    assert isinstance(ws, LocalWorkspace)
+    assert isinstance(ws, BaseWorkspace)
+
+    ws_factory = Workspace(working_dir=tmp_path, backend="landlock")
+    assert isinstance(ws_factory, LocalWorkspace)
+    assert isinstance(ws_factory, LandlockWorkspace)
+
+
+def test_conversation_accepts_landlock_workspace(tmp_path: Path):
+    """Conversation factory and LocalConversation accept LandlockWorkspace without assertion error."""
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.conversation import Conversation
+    from openhands.sdk.llm import LLM
+    from pydantic import SecretStr
+
+    llm = LLM(model="gpt-5.5", api_key=SecretStr("mock-key"))
+    agent = Agent(llm=llm, tools=[])
+    ws = Workspace(working_dir=tmp_path, backend="landlock")
+
+    conv = Conversation(agent=agent, workspace=ws)
+    assert conv.workspace is ws
+    assert isinstance(conv.workspace, LocalWorkspace)
+
