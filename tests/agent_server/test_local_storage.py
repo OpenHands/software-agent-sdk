@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config, ConversationStorageConfig
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
@@ -138,9 +138,7 @@ async def test_disk_budget_sheds_dependencies_of_unloaded_worktrees(tmp_path, us
     repo = make_repo(tmp_path / "repo")
     svc = service(tmp_path)
     conversation_id, worktree = add_worktree(svc, repo)
-    reclaimer = Reclaimer(
-        worktree_storage(svc), ConversationStorageConfig(disk_budget=0.8)
-    )
+    reclaimer = Reclaimer(worktree_storage(svc), disk_budget=0.8)
     usage.extend([0.95, 0.5])
 
     await reclaimer.run_pass()
@@ -158,9 +156,7 @@ async def test_loaded_conversation_keeps_its_worktree(tmp_path, usage):
     conversation_id, worktree = add_worktree(svc, repo)
     assert svc._event_services is not None
     svc._event_services[conversation_id] = cast(EventService, AsyncMock())
-    reclaimer = Reclaimer(
-        worktree_storage(svc), ConversationStorageConfig(disk_budget=0.8)
-    )
+    reclaimer = Reclaimer(worktree_storage(svc), disk_budget=0.8)
     usage.append(0.95)
 
     await reclaimer.run_pass()
@@ -172,7 +168,7 @@ async def test_loaded_conversation_keeps_its_worktree(tmp_path, usage):
 async def test_missing_worktree_root_is_fine(tmp_path, usage):
     reclaimer = Reclaimer(
         worktree_storage(service(tmp_path)),
-        ConversationStorageConfig(disk_budget=0.8),
+        disk_budget=0.8,
     )
     usage.append(0.95)
 
@@ -188,7 +184,7 @@ async def test_local_registry_runs_storage_maintenance(tmp_path, monkeypatch):
         Config(
             conversations_path=tmp_path / "conversations",
             secret_key=SecretStr("k"),
-            conversation_storage=ConversationStorageConfig(disk_budget=0.8),
+            conversation_storage_disk_budget=0.8,
         )
     )
     registry.configure_service(service(tmp_path))

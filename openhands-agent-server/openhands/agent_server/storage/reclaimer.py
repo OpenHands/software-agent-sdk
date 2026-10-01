@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Final, Protocol
 from uuid import UUID
 
-from openhands.agent_server.config import ConversationStorageConfig
 from openhands.agent_server.storage.model import StoredRuntime, Tier
 from openhands.agent_server.storage.selectors import caches, ignored_dirs
 from openhands.agent_server.storage.trash import Trash
@@ -56,10 +55,13 @@ class Reclaimer:
     def __init__(
         self,
         storage: ReclaimableStorage,
-        config: ConversationStorageConfig | None = None,
+        *,
+        disk_budget: float | None = None,
+        retention_days: float | None = None,
     ) -> None:
         self.storage = storage
-        self.config = config or ConversationStorageConfig()
+        self.disk_budget = disk_budget
+        self.retention_days = retention_days
         self.trash = Trash(storage.root)
         self._maintenance: asyncio.Task[None] | None = None
         self._over_budget_warned = False
@@ -69,7 +71,7 @@ class Reclaimer:
         for runtime in await asyncio.to_thread(self.storage.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()
-        if self.config.disk_budget or self.config.retention_days:
+        if self.disk_budget or self.retention_days:
             self._maintenance = asyncio.create_task(self._maintenance_loop())
 
     async def shutdown(self) -> None:
@@ -114,7 +116,7 @@ class Reclaimer:
 
     async def _enforce_retention(self) -> int:
         """Retire runtimes inactive for longer than the retention period."""
-        days = self.config.retention_days
+        days = self.retention_days
         if not days:
             return 0
         cutoff = time.time() - days * 86400
@@ -130,7 +132,7 @@ class Reclaimer:
 
     async def _enforce_disk_budget(self) -> int:
         """Shed dependencies of stopped runtimes, oldest first, until under budget."""
-        budget = self.config.disk_budget
+        budget = self.disk_budget
         root = self.storage.root
         if not budget or disk_usage(root) <= budget:
             self._over_budget_warned = False

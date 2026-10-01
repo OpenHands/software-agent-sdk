@@ -35,7 +35,10 @@ class ConversationRegistry:
             self.config.conversation_worktree_root,
             self.config.conversations_path,
         )
-        self.worktree_reclaimer = Reclaimer(storage, self.config.conversation_storage)
+        # No retention: a resumed local conversation would find no workspace.
+        self.worktree_reclaimer = Reclaimer(
+            storage, disk_budget=self.config.conversation_storage_disk_budget
+        )
 
     def runtime_info(self, _conversation_id: UUID) -> ConversationRuntimeInfo:
         """Describe whether a catalog conversation has an executable runtime."""

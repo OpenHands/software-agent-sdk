@@ -215,37 +215,6 @@ class TelemetrySpec(BaseModel):
     )
 
 
-class ConversationStorageConfig(BaseModel):
-    """Policies for disk the server stores per conversation."""
-
-    disk_budget: float | None = Field(
-        default=None,
-        gt=0,
-        lt=1,
-        description=(
-            "Fraction of the conversation-storage filesystem that may be in use "
-            "before stopped conversations shed the gitignored directories of "
-            "their workspaces (node_modules, .venv, build output), least "
-            "recently active first. Tracked files, untracked work, ignored "
-            "files and nested checkouts are kept; a resumed conversation "
-            "reinstalls what was shed. Only workspaces the server created are "
-            "touched. Unset (the default) disables it."
-        ),
-    )
-    retention_days: float | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Days a stopped conversation may stay inactive before its runtime "
-            "(sandbox home and workspace) is deleted. Its history and "
-            "encryption identity are kept, so it stays readable but can no "
-            "longer be resumed. A workspace the server did not create is never "
-            "deleted. Unset (the default) keeps runtimes until the "
-            "conversation is deleted."
-        ),
-    )
-
-
 class Config(BaseModel):
     """
     Immutable configuration for a server running in local mode.
@@ -401,26 +370,30 @@ class Config(BaseModel):
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)
     conversation_container_startup_timeout: float = Field(default=120, gt=0)
-    conversation_shared_cache_dir: Path | None = Field(
+    conversation_storage_disk_budget: float | None = Field(
         default=None,
+        gt=0,
+        lt=1,
         description=(
-            "Host directory bind-mounted into every Docker conversation "
-            "container as its package cache (XDG_CACHE_HOME, which uv, pip and "
-            "yarn follow, plus npm_config_cache for npm), so conversations reuse "
-            "downloaded packages instead of each filling a private cache. Must "
-            "be an existing absolute directory, not a symlink, writable by the "
-            "agent-server's user. Every conversation can read and write it, "
-            "which weakens the isolation between them: use it only in "
-            "single-tenant deployments. Unset (the default) keeps one private, "
-            "prunable cache per conversation."
+            "Fraction of the conversation-storage filesystem that may be in use "
+            "before stopped conversations shed the gitignored directories of "
+            "their workspaces (node_modules, .venv, build output), least "
+            "recently active first. Tracked files, untracked work, ignored "
+            "files and nested checkouts are kept; a resumed conversation "
+            "reinstalls what was shed. Only workspaces the server created are "
+            "touched. Unset (the default) disables it."
         ),
     )
-    conversation_storage: ConversationStorageConfig = Field(
-        default_factory=ConversationStorageConfig,
+    conversation_storage_retention_days: float | None = Field(
+        default=None,
+        gt=0,
         description=(
-            "When the server reclaims disk it stores per conversation. Package "
-            "caches of a stopped runtime are always dropped; everything here "
-            "is off by default."
+            "Days a stopped conversation may stay inactive before its runtime "
+            "(sandbox home and workspace) is deleted. Its history and "
+            "encryption identity are kept, so it stays readable but can no "
+            "longer be resumed. A workspace the server did not create is never "
+            "deleted. Unset (the default) keeps runtimes until the "
+            "conversation is deleted."
         ),
     )
 
