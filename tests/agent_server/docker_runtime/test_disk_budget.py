@@ -162,6 +162,28 @@ async def test_nested_checkouts_are_shed_but_ignored_repos_kept(
 
 
 @pytest.mark.asyncio
+async def test_nested_ignore_matches_shed_only_the_top_dir(
+    tmp_path, monkeypatch, usage, caplog
+):
+    runtime = registry(tmp_path, monkeypatch)
+    _, workspace = provision(runtime, age=1)
+    make_repo(workspace)
+    # git lists public/, public/locales/ and every language dir for this.
+    (workspace / ".gitignore").write_text("public/locales/**/*\n")
+    for lang in ("ar", "de"):
+        (workspace / "public" / "locales" / lang).mkdir(parents=True)
+        (workspace / "public" / "locales" / lang / "t.json").write_text("{}")
+    usage.append(0.95)
+
+    assert registry_module._git_ignored_dirs(workspace) == [workspace / "public"]
+    await runtime._enforce_disk_budget()
+
+    assert not (workspace / "public").exists()
+    assert (workspace / "main.py").is_file()
+    assert "Failed to shed" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_repo_config_cannot_run_commands_on_the_host(
     tmp_path, monkeypatch, usage
 ):

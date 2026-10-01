@@ -735,7 +735,7 @@ def _git_ignored_dirs(repo: Path) -> list[Path]:
     )
     if result.returncode != 0:
         return []
-    return [
+    candidates = sorted(
         path
         for entry in result.stdout.split("\0")
         if entry.endswith("/")
@@ -743,7 +743,14 @@ def _git_ignored_dirs(repo: Path) -> list[Path]:
         and not path.is_symlink()
         # An ignored checkout is someone's work, not build output.
         and not (path / ".git").exists()
-    ]
+    )
+    # A `dir/**/*` pattern lists dir/ and each of its subdirs; shedding the
+    # parent already takes the rest.
+    kept: list[Path] = []
+    for path in candidates:
+        if not any(path.is_relative_to(parent) for parent in kept):
+            kept.append(path)
+    return kept
 
 
 def _remove(path: Path) -> None:
