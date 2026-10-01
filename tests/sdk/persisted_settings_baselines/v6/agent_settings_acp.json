@@ -1,0 +1,17 @@
+{
+  "__expected__": {
+    "schema_version": 7,
+    "agent_kind": "acp",
+    "acp_server": "claude-code",
+    "acp_model": "fixture-v6-acp-model"
+  },
+  "schema_version": 6,
+  "agent_kind": "acp",
+  "acp_server": "claude-code",
+  "acp_model": "fixture-v6-acp-model",
+  "llm": {
+    "model": "fixture-v6-acp-llm",
+    "api_key": "fixture-v6-acp-key",
+    "base_url": "https://fixture-v6-acp.invalid"
+  }
+}
