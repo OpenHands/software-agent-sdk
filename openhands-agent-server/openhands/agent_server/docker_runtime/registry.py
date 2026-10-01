@@ -56,6 +56,11 @@ _SHARED_CACHE_ENV = {
 # Shed workspace dirs reuse it so the startup sweep reclaims them too.
 _PRUNED_CACHE_PREFIX = ".cache-pruned-"
 _DISK_BUDGET_INTERVAL = 300.0
+_RETENTION_INTERVAL = 3600.0
+
+
+class RuntimeRetiredError(RuntimeError):
+    """The runtime was deleted by retention; the conversation is read-only."""
 
 
 @dataclass(slots=True)
@@ -99,6 +104,7 @@ class DockerConversationRegistry(ConversationRegistry):
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
         self._disk_budget_task: asyncio.Task[None] | None = None
+        self._retention_task: asyncio.Task[None] | None = None
         self._reclaims: set[asyncio.Task[None]] = set()
 
     def configure_service(self, service: ConversationService) -> None:
@@ -115,9 +121,16 @@ class DockerConversationRegistry(ConversationRegistry):
         identity = self.provisioning.load_optional(conversation_id)
         return identity.cipher if identity is not None else self.provisioning.cipher
 
+    def retired_marker(self, conversation_id: UUID) -> Path:
+        # Beside the manifest, which retention keeps: it holds the key to the history.
+        return self.provisioning.control_root / f"{conversation_id.hex}.retired"
+
+    def is_retired(self, conversation_id: UUID) -> bool:
+        return self.retired_marker(conversation_id).exists()
+
     def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
         identity = self.provisioning.load_optional(conversation_id)
-        if identity is None:
+        if identity is None or self.is_retired(conversation_id):
             return ConversationRuntimeInfo(
                 runtime_status=ConversationRuntimeStatus.MISSING,
                 can_resume=False,
@@ -144,6 +157,8 @@ class DockerConversationRegistry(ConversationRegistry):
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
         if self.config.conversation_runtime_disk_budget:
             self._disk_budget_task = asyncio.create_task(self._disk_budget_loop())
+        if self.config.conversation_runtime_retention_days:
+            self._retention_task = asyncio.create_task(self._retention_loop())
 
     def add_execution_routes(self, router: APIRouter) -> None:
         from openhands.agent_server.docker_runtime.routers import (
@@ -234,6 +249,8 @@ class DockerConversationRegistry(ConversationRegistry):
         async with self._lock:
             if conversation_id in self._deleting:
                 raise RuntimeError("Conversation is being deleted")
+            if self.is_retired(conversation_id):
+                raise RuntimeRetiredError("Conversation runtime was retired")
             self._last_access[conversation_id] = time.monotonic()
             container = self._containers.get(conversation_id)
 
@@ -305,12 +322,12 @@ class DockerConversationRegistry(ConversationRegistry):
         await self._prune_cache(conversation_id)
 
     async def shutdown(self) -> None:
-        for loop in (self._eviction_task, self._disk_budget_task):
+        for loop in (self._eviction_task, self._disk_budget_task, self._retention_task):
             if loop is not None:
                 loop.cancel()
                 with suppress(asyncio.CancelledError):
                     await loop
-        self._eviction_task = self._disk_budget_task = None
+        self._eviction_task = self._disk_budget_task = self._retention_task = None
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
         # Last, so it also covers the stops above; the next start sweeps them.
@@ -383,7 +400,8 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def detach_stopped_caches(self) -> list[Path]:
         """Detach every runtime's cache; only safe before any container starts."""
-        detached: list[Path] = []
+        # Retired runtimes are moved aside at the top level, not inside a runtime.
+        detached = list(self.provisioning.data_root.glob(f"{_PRUNED_CACHE_PREFIX}*"))
         for runtime_dir in self.provisioning.data_root.iterdir():
             try:
                 conversation_id = UUID(hex=runtime_dir.name)
@@ -502,7 +520,63 @@ class DockerConversationRegistry(ConversationRegistry):
             _disk_usage(data_root) * 100,
         )
 
+    async def _retention_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_RETENTION_INTERVAL)
+            try:
+                await self._enforce_retention()
+            except Exception:
+                logger.exception("error_enforcing_docker_runtime_retention")
+
+    async def _enforce_retention(self) -> None:
+        """Delete the runtimes of conversations inactive for too long."""
+        days = self.config.conversation_runtime_retention_days
+        if not days:
+            return
+        cutoff = time.time() - days * 86400
+        retired = 0
+        for last, conversation_id in await asyncio.to_thread(self._runtime_activity):
+            if last > cutoff:
+                break
+            async with self._lock:
+                if (
+                    self.get(conversation_id)
+                    or self.is_starting(conversation_id)
+                    or conversation_id in self._deleting
+                ):
+                    continue
+                try:
+                    detached = self._retire(conversation_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to retire conversation runtime %s",
+                        conversation_id,
+                        exc_info=True,
+                    )
+                    continue
+            await self._delete([detached])
+            if self._service is not None:
+                await self._service.refresh_persisted_conversation(conversation_id)
+            retired += 1
+        if retired:
+            logger.info(
+                "Retired %d conversation runtimes inactive for more than %g days",
+                retired,
+                days,
+            )
+
+    def _retire(self, conversation_id: UUID) -> Path:
+        # Marker first: if the rename never happens, the next pass retries it.
+        self.retired_marker(conversation_id).touch()
+        detached = self.provisioning.data_root / f"{_PRUNED_CACHE_PREFIX}{uuid4().hex}"
+        self.provisioning.runtime_dir(conversation_id).rename(detached)
+        return detached
+
     def _runtimes_oldest_first(self) -> list[UUID]:
+        return [conversation_id for _, conversation_id in self._runtime_activity()]
+
+    def _runtime_activity(self) -> list[tuple[float, UUID]]:
+        """(last activity, id) of every runtime on disk, oldest first."""
         activity: list[tuple[float, UUID]] = []
         for runtime_dir in self.provisioning.data_root.iterdir():
             try:
@@ -517,7 +591,7 @@ class DockerConversationRegistry(ConversationRegistry):
             except OSError:
                 last = runtime_dir.stat().st_mtime
             activity.append((last, conversation_id))
-        return [conversation_id for _, conversation_id in sorted(activity)]
+        return sorted(activity)
 
     def _ignored_dirs(self, conversation_id: UUID) -> list[Path]:
         """Gitignored dirs of a workspace this registry provisioned itself."""

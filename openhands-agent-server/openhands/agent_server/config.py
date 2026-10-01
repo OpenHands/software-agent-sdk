@@ -398,6 +398,18 @@ class Config(BaseModel):
             "(the default) disables it."
         ),
     )
+    conversation_runtime_retention_days: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Days a stopped Docker conversation may stay inactive before its "
+            "runtime (sandbox home and workspace under runtime-data) is "
+            "deleted. Its history and encryption identity are kept, so it stays "
+            "readable but can no longer be resumed. A workspace outside "
+            "runtime-data is never deleted. Unset (the default) keeps runtimes "
+            "until the conversation is deleted."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
