@@ -460,7 +460,7 @@ def cache_dir(
 
 
 def in_trash(runtime: DockerConversationRegistry) -> list[Path]:
-    trash = runtime.storage.trash.dir
+    trash = runtime.reclaimer.trash.dir
     return list(trash.iterdir()) if trash.exists() else []
 
 
@@ -469,7 +469,7 @@ def assert_kept(kept: dict[Path, bytes]) -> None:
 
 
 async def reclaimed(runtime: DockerConversationRegistry) -> None:
-    await runtime.storage.trash.drain()
+    await runtime.reclaimer.trash.drain()
 
 
 @pytest.fixture
@@ -586,7 +586,7 @@ async def test_startup_prunes_npm_cache_too(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime, npm=True)
 
-    await runtime.storage.start()
+    await runtime.reclaimer.start()
     await reclaimed(runtime)
 
     assert not cache_dir(runtime, conversation_id).exists()
@@ -635,7 +635,7 @@ async def test_prune_skips_runtime_that_restarted_after_stop(tmp_path, monkeypat
     conversation_id, _ = seed_runtime(runtime)
     runtime._containers[conversation_id] = container(conversation_id)
 
-    await runtime.storage.on_stop(conversation_id)
+    await runtime.reclaimer.on_stop(conversation_id)
     await reclaimed(runtime)
 
     assert cache_dir(runtime, conversation_id).is_dir()
@@ -647,7 +647,7 @@ async def test_prune_skips_runtime_being_deleted(tmp_path, monkeypatch):
     conversation_id, _ = seed_runtime(runtime)
     assert await runtime.begin_delete(conversation_id)
 
-    await runtime.storage.on_stop(conversation_id)
+    await runtime.reclaimer.on_stop(conversation_id)
     await reclaimed(runtime)
 
     # The DELETE route owns this runtime's files now.
@@ -659,8 +659,8 @@ async def test_prune_is_idempotent_when_cache_is_absent(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime)
 
-    await runtime.storage.on_stop(conversation_id)
-    await runtime.storage.on_stop(conversation_id)
+    await runtime.reclaimer.on_stop(conversation_id)
+    await runtime.reclaimer.on_stop(conversation_id)
     await reclaimed(runtime)
 
     assert not cache_dir(runtime, conversation_id).exists()
@@ -681,7 +681,7 @@ async def test_prune_unlinks_symlinked_cache_without_following_it(
     shutil.rmtree(cache)
     cache.symlink_to(outside, target_is_directory=True)
 
-    await runtime.storage.on_stop(conversation_id)
+    await runtime.reclaimer.on_stop(conversation_id)
     await reclaimed(runtime)
 
     assert not cache.is_symlink() and not cache.exists()
@@ -716,7 +716,7 @@ async def test_startup_prunes_every_runtime_cache(tmp_path, monkeypatch):
     assert in_trash(runtime) == []
 
     # A second pass, with the caches already gone, changes nothing.
-    await runtime.storage.start()
+    await runtime.reclaimer.start()
     await reclaimed(runtime)
     for _, kept in seeded:
         assert_kept(kept)
@@ -753,7 +753,7 @@ async def test_shutdown_abandons_deletions_and_next_start_sweeps_them(
     await asyncio.to_thread(slow_remove.started.wait, 5)
     await runtime.shutdown()
 
-    assert runtime.storage.trash._emptying is None
+    assert runtime.reclaimer.trash._emptying is None
     slow_remove.release.set()
     # The in-flight deletion finishes; the queued one was abandoned.
     assert await asyncio.to_thread(slow_remove.removed.wait, 5)
@@ -776,7 +776,7 @@ async def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypat
     shutil.move(persistence, tmp_path / "moved-persistence")
     persistence.symlink_to(tmp_path / "moved-persistence", target_is_directory=True)
 
-    await runtime.storage.start()
+    await runtime.reclaimer.start()
     await reclaimed(runtime)
 
     assert (tmp_path / "moved-persistence" / ".cache").is_dir()
@@ -788,7 +788,7 @@ async def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypat
 async def test_resume_after_prune_mounts_a_fresh_cache_location(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime)
-    await runtime.storage.start()
+    await runtime.reclaimer.start()
     await reclaimed(runtime)
     commands = capture_docker_run(runtime, monkeypatch)
 
