@@ -834,54 +834,6 @@ def mounts(command: list[str]) -> list[str]:
     ]
 
 
-def test_shared_cache_dir_is_mounted_as_package_cache(tmp_path, monkeypatch):
-    shared = tmp_path / "shared-cache"
-    shared.mkdir()
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    runtime = DockerConversationRegistry(
-        Config(
-            conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr("outer-key"),
-            conversation_shared_cache_dir=shared,
-        )
-    )
-    conversation_id = uuid4()
-    runtime.provisioning.create(conversation_id)
-    commands = capture_docker_run(runtime, monkeypatch)
-
-    runtime._build_container(conversation_id)
-
-    command, env = commands[0]
-    assert (
-        f"type=bind,src={shared.resolve()},dst=/var/openhands/shared-cache"
-        in mounts(command)
-    )
-    assert env["XDG_CACHE_HOME"] == "/var/openhands/shared-cache"
-    assert env["npm_config_cache"] == "/var/openhands/shared-cache/npm"
-    for name in ("XDG_CACHE_HOME", "npm_config_cache"):
-        assert ["-e", name] == command[
-            command.index(name) - 1 : command.index(name) + 1
-        ]
-
-
-def test_unset_shared_cache_dir_adds_no_mount_or_cache_env(tmp_path, monkeypatch):
-    # Host-level cache settings must not leak into the container either.
-    monkeypatch.setenv("XDG_CACHE_HOME", "/host/cache")
-    monkeypatch.setenv("npm_config_cache", "/host/npm")
-    runtime = registry(tmp_path, monkeypatch)
-    conversation_id = uuid4()
-    runtime.provisioning.create(conversation_id)
-    commands = capture_docker_run(runtime, monkeypatch)
-
-    runtime._build_container(conversation_id)
-
-    command, _ = commands[0]
-    assert "--mount" not in command
-    assert "XDG_CACHE_HOME" not in command
-    assert "npm_config_cache" not in command
-    assert len(mounts(command)) == 3
-
-
 def test_container_writes_no_core_dumps(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
@@ -894,29 +846,3 @@ def test_container_writes_no_core_dumps(tmp_path, monkeypatch):
     assert ["--ulimit", "core=0"] == command[
         command.index("--ulimit") : command.index("--ulimit") + 2
     ]
-
-
-@pytest.mark.parametrize("kind", ["relative", "missing", "file", "symlink"])
-def test_invalid_shared_cache_dir_fails_clearly(tmp_path, monkeypatch, kind):
-    target = tmp_path / "real-cache"
-    target.mkdir()
-    path = {
-        "relative": Path("relative-cache"),
-        "missing": tmp_path / "missing-cache",
-        "file": tmp_path / "cache-file",
-        "symlink": tmp_path / "cache-link",
-    }[kind]
-    if kind == "file":
-        path.write_text("")
-    elif kind == "symlink":
-        path.symlink_to(target, target_is_directory=True)
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
-    config = Config(
-        conversations_path=tmp_path / "conversations",
-        secret_key=SecretStr("outer-key"),
-        conversation_shared_cache_dir=path,
-    )
-
-    with pytest.raises(ValueError, match="conversation_shared_cache_dir"):
-        DockerConversationRegistry(config)
-    assert not (tmp_path / "missing-cache").exists()

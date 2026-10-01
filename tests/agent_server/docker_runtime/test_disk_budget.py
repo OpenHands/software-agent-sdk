@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config, ConversationStorageConfig
+from openhands.agent_server.config import Config
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
@@ -22,7 +22,7 @@ def registry(tmp_path, monkeypatch) -> DockerConversationRegistry:
             conversations_path=tmp_path / "conversations",
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
-            conversation_storage=ConversationStorageConfig(disk_budget=0.8),
+            conversation_storage_disk_budget=0.8,
         )
     )
 
@@ -261,4 +261,4 @@ def test_storage_budget_is_read_from_nested_env(monkeypatch):
 
     monkeypatch.setenv("OH_CONVERSATION_STORAGE_DISK_BUDGET", "0.8")
 
-    assert load_config().conversation_storage.disk_budget == 0.8
+    assert load_config().conversation_storage_disk_budget == 0.8
