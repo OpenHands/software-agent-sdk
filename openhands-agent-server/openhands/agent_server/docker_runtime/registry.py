@@ -42,13 +42,7 @@ logger = get_logger(__name__)
 _CONVERSATIONS_DIR: Final[str] = "/var/openhands/conversations"
 _PERSISTENCE_DIR: Final[str] = "/var/openhands/.openhands"
 _WORKSPACE_DIR: Final[str] = "/workspace"
-_SHARED_CACHE_DIR: Final[str] = "/var/openhands/shared-cache"
 _OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
-# XDG tools follow XDG_CACHE_HOME; npm has to be pointed in explicitly.
-_SHARED_CACHE_ENV: Final[dict[str, str]] = {
-    "XDG_CACHE_HOME": _SHARED_CACHE_DIR,
-    "npm_config_cache": f"{_SHARED_CACHE_DIR}/npm",
-}
 
 
 @dataclass(slots=True)
@@ -80,9 +74,6 @@ class DockerConversationRegistry(ConversationRegistry):
         )
         self.owner = hashlib.sha256(paths.encode()).hexdigest()[:24]
         self.provisioning = RuntimeProvisioningStore(config)
-        self.shared_cache_dir = _validate_shared_cache_dir(
-            config.conversation_shared_cache_dir
-        )
         self._containers: dict[UUID, ConversationContainer] = {}
         self._starts: dict[UUID, asyncio.Task[ConversationContainer]] = {}
         self._deleting: set[UUID] = set()
@@ -415,17 +406,6 @@ class DockerConversationRegistry(ConversationRegistry):
             (workspace_dir, _WORKSPACE_DIR),
         ):
             flags.extend(("-v", f"{host}:{target}"))
-        if self.shared_cache_dir is not None:
-            env.update(_SHARED_CACHE_ENV)
-            for name in _SHARED_CACHE_ENV:
-                flags.extend(("-e", name))
-            # Unlike -v, --mount fails on a missing source instead of creating it.
-            flags.extend(
-                (
-                    "--mount",
-                    f"type=bind,src={self.shared_cache_dir},dst={_SHARED_CACHE_DIR}",
-                )
-            )
         if self.config.conversation_container_memory:
             flags.extend(("--memory", self.config.conversation_container_memory))
         if self.config.conversation_container_cpus is not None:
@@ -509,14 +489,3 @@ class DockerConversationRegistry(ConversationRegistry):
                 raise RuntimeError("Conversation container stopped during startup")
             time.sleep(1)
         raise RuntimeError("Conversation container failed to become healthy in time")
-
-
-def _validate_shared_cache_dir(path: Path | None) -> Path | None:
-    if path is None:
-        return None
-    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
-        raise ValueError(
-            "conversation_shared_cache_dir must be an existing absolute directory "
-            "and not a symlink"
-        )
-    return path.resolve()
