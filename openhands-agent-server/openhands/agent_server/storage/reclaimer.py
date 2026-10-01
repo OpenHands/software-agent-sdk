@@ -94,7 +94,8 @@ class Reclaimer:
         logger.info(
             "Conversation storage: freed %.1f GB (retired %d runtimes, shed "
             "dependencies of %d), %s at %.0f%%",
-            (_free_bytes(self.storage.root) - free_before) / 1e9,
+            # Other writes on the filesystem can outweigh a small reclaim.
+            max(0, _free_bytes(self.storage.root) - free_before) / 1e9,
             retired,
             shed,
             self.storage.root,
