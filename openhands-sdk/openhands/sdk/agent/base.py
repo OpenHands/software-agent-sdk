@@ -56,6 +56,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Agent payloads serialized before selection provenance was introduced always
+# included the then-default built-ins, even when the caller omitted the field.
+_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES = ("FinishTool", "ThinkTool")
+
 
 # -- SOUL.md loader -------------------------------------------------------
 # SOUL.md is the agent's identity file, ``SOUL.md`` under the user persistence
@@ -310,6 +314,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     _tools_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _initialized: bool = PrivateAttr(default=False)
     _include_default_tools_explicit: bool | None = PrivateAttr(default=None)
+
+    @classmethod
+    def _prepare_legacy_serialized_input(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Mark markerless serialized default lists as implicit selections."""
+        if (
+            cls._supports_conditional_default_tool_attachment
+            and "kind" in data
+            and "_include_default_tools_explicit" not in data
+            and data.get("include_default_tools")
+            == list(_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES)
+        ):
+            data = data.copy()
+            data["_include_default_tools_explicit"] = False
+        return data
 
     @model_validator(mode="wrap")
     @classmethod

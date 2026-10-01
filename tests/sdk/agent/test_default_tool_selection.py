@@ -4,6 +4,7 @@ import pytest
 
 from openhands.sdk import LLM, Agent, AgentContext, OpenHandsAgentSettings
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
@@ -98,6 +99,24 @@ def test_omitted_default_tool_selection_keeps_conditional_auto_attachment(
     agent = _make_agent()
     if round_trip:
         agent = Agent.model_validate_json(agent.model_dump_json())
+
+    assert _initialize(agent, tmp_path) == {
+        "finish",
+        "think",
+        "invoke_skill",
+        VISION_INSPECT_TOOL_NAME,
+    }
+
+
+def test_markerless_legacy_default_selection_keeps_conditional_auto_attachment(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_vision_profile(monkeypatch)
+    payload = _make_agent().model_dump()
+    payload.pop("_include_default_tools_explicit")
+
+    agent = AgentBase.model_validate(payload)
 
     assert _initialize(agent, tmp_path) == {
         "finish",

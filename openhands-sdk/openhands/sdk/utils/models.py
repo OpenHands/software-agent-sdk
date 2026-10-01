@@ -211,6 +211,9 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     ) -> Self:
         if isinstance(data, cls):
             return data
+        prepare_legacy_input = getattr(cls, "_prepare_legacy_serialized_input", None)
+        if isinstance(data, dict) and prepare_legacy_input is not None:
+            data = prepare_legacy_input(data)
         if not _is_abstract(cls):
             has_kind_alias_field = any(
                 field_name != "kind" and field_info.alias == "kind"
