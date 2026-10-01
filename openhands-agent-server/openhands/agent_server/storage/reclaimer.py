@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 MAINTENANCE_INTERVAL: Final[float] = 300.0
 
 
-class StorageAdapter(Protocol):
+class ReclaimableStorage(Protocol):
     """How one runtime mode stores conversations on this host."""
 
     @property
@@ -42,24 +42,24 @@ class StorageAdapter(Protocol):
 class Reclaimer:
     """Frees what a runtime mode stores per conversation, by tier.
 
-    Files are only moved into the trash, and only while the adapter holds the
+    Files are only moved into the trash, and only while the storage holds the
     runtime idle; the trash deletes them in the background.
     """
 
     def __init__(
         self,
-        adapter: StorageAdapter,
+        storage: ReclaimableStorage,
         config: ConversationStorageConfig | None = None,
     ) -> None:
-        self.adapter = adapter
+        self.storage = storage
         self.config = config or ConversationStorageConfig()
-        self.trash = Trash(adapter.root)
+        self.trash = Trash(storage.root)
         self._maintenance: asyncio.Task[None] | None = None
         self._over_budget_warned = False
 
     async def start(self) -> None:
         """Only safe before any runtime starts: every one is reclaimed."""
-        for runtime in await asyncio.to_thread(self.adapter.runtimes):
+        for runtime in await asyncio.to_thread(self.storage.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()
         if self.config.disk_budget:
@@ -75,7 +75,7 @@ class Reclaimer:
 
     async def run_pass(self) -> None:
         """Apply the configured policies once; log only if something was freed."""
-        free_before = _free_bytes(self.adapter.root)
+        free_before = _free_bytes(self.storage.root)
         shed = await self._enforce_disk_budget()
         if not shed:
             return
@@ -83,14 +83,14 @@ class Reclaimer:
         logger.info(
             "Conversation storage: freed %.1f GB (dependencies of %d stopped "
             "runtimes), %s at %.0f%%",
-            (_free_bytes(self.adapter.root) - free_before) / 1e9,
+            (_free_bytes(self.storage.root) - free_before) / 1e9,
             shed,
-            self.adapter.root,
-            disk_usage(self.adapter.root) * 100,
+            self.storage.root,
+            disk_usage(self.storage.root) * 100,
         )
 
     async def on_stop(self, conversation_id: UUID) -> None:
-        runtime = await asyncio.to_thread(self.adapter.runtime, conversation_id)
+        runtime = await asyncio.to_thread(self.storage.runtime, conversation_id)
         if runtime is not None and await self.reclaim(runtime, Tier.CACHES):
             self.trash.empty_soon()
 
@@ -105,12 +105,12 @@ class Reclaimer:
     async def _enforce_disk_budget(self) -> int:
         """Shed dependencies of stopped runtimes, oldest first, until under budget."""
         budget = self.config.disk_budget
-        root = self.adapter.root
+        root = self.storage.root
         if not budget or disk_usage(root) <= budget:
             self._over_budget_warned = False
             return 0
         shed = 0
-        for runtime in await asyncio.to_thread(self.adapter.runtimes):
+        for runtime in await asyncio.to_thread(self.storage.runtimes):
             if not await self.reclaim(runtime, Tier.DEPENDENCIES):
                 continue
             shed += 1
@@ -134,7 +134,7 @@ class Reclaimer:
         paths = await asyncio.to_thread(_select, runtime, tier)
         if not paths:
             return False
-        async with self.adapter.idle(runtime.id) as idle:
+        async with self.storage.idle(runtime.id) as idle:
             if not idle:
                 return False
             # Only renames here: the lock is held for microseconds.
