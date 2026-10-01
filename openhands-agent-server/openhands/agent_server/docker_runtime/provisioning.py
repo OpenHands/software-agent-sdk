@@ -9,7 +9,7 @@ from pathlib import Path
 from stat import S_ISREG
 from uuid import UUID
 
-from filelock import FileLock
+from filelock import BaseFileLock, FileLock
 from pydantic import BaseModel, ConfigDict, SecretStr, field_serializer, field_validator
 
 from openhands.agent_server.config import Config
@@ -67,6 +67,14 @@ class RuntimeProvisioningStore:
     def runtime_dir(self, conversation_id: UUID) -> Path:
         return self.direct_child(self.data_root, conversation_id.hex)
 
+    def persistence_dir(self, conversation_id: UUID) -> Path:
+        """The runtime's private persistence root, bind-mounted into its container."""
+        return self.direct_child(self.runtime_dir(conversation_id), "persistence")
+
+    def lock(self, conversation_id: UUID) -> BaseFileLock:
+        """Serialize writers of one runtime's identity and staged state."""
+        return FileLock(str(self.manifest_path(conversation_id)) + ".lock")
+
     @staticmethod
     def direct_child(root: Path, name: str) -> Path:
         if root.is_symlink():
@@ -117,7 +125,7 @@ class RuntimeProvisioningStore:
         self, conversation_id: UUID, workspace_path: Path | None = None
     ) -> RuntimeIdentity:
         path = self.manifest_path(conversation_id)
-        with FileLock(str(path) + ".lock"):
+        with self.lock(conversation_id):
             if path.exists():
                 identity = self.load(conversation_id)
                 if (
@@ -164,7 +172,7 @@ class RuntimeProvisioningStore:
             return identity
 
     def save(self, identity: RuntimeIdentity) -> None:
-        with FileLock(str(self.manifest_path(identity.conversation_id)) + ".lock"):
+        with self.lock(identity.conversation_id):
             self._save(identity)
 
     def _save(self, identity: RuntimeIdentity) -> None:
