@@ -35,7 +35,8 @@ class TaskItem(BaseModel):
         default_factory=lambda: str(uuid4()),
         description=(
             "A stable identifier for the task. Preserve it when updating an "
-            "existing task; omit it only when creating a new task."
+            "existing task; omit it only when creating a new task. A task "
+            "without an ID is treated as a new identity."
         ),
     )
     title: str = Field(..., description="A brief title for the task.")
@@ -59,7 +60,7 @@ class TaskTrackerAction(Action):
         description=(
             "The full task list. Required parameter of `plan` command. When "
             "updating tasks, preserve the IDs returned by `view`; omit IDs only "
-            "for new tasks."
+            "for new tasks. Tasks without IDs are treated as new identities."
         ),
     )
 
@@ -184,7 +185,7 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
     ) -> TaskTrackerObservation:
         """Execute the task tracker action."""
         if action.command == "plan":
-            self._task_list = self._reconcile_task_ids(action.task_list)
+            self._task_list = action.task_list
             # Save to file if save_dir is provided
             if self.save_dir:
                 self._save_tasks()
@@ -219,31 +220,6 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
                 command=action.command,
                 task_list=[],
             )
-
-    def _reconcile_task_ids(self, task_list: list[TaskItem]) -> list[TaskItem]:
-        """Preserve IDs for unambiguous updates to the full task list."""
-        existing_by_title: dict[str, list[TaskItem]] = {}
-        for task in self._task_list:
-            existing_by_title.setdefault(task.title, []).append(task)
-
-        incoming_title_counts: dict[str, int] = {}
-        for task in task_list:
-            incoming_title_counts[task.title] = (
-                incoming_title_counts.get(task.title, 0) + 1
-            )
-
-        reconciled_tasks = []
-        for task in task_list:
-            candidates = existing_by_title.get(task.title, [])
-            if (
-                "id" not in task.model_fields_set
-                and incoming_title_counts[task.title] == 1
-                and len(candidates) == 1
-            ):
-                task = task.model_copy(update={"id": candidates[0].id})
-            reconciled_tasks.append(task)
-
-        return reconciled_tasks
 
     def _format_task_list(self, task_list: list[TaskItem]) -> str:
         """Format the task list for display."""
