@@ -1,0 +1,15 @@
+{
+  "__expected__": {
+    "schema_version": 7,
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v6-llm"
+  },
+  "schema_version": 6,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v6-llm"
+  },
+  "agent_context": {
+    "current_datetime": "2024-03-15T14:30:00Z"
+  }
+}
