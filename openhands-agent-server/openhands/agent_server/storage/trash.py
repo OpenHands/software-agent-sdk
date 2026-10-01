@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -66,10 +67,9 @@ class Trash:
                     logger.warning("Failed to delete %s", entry, exc_info=True)
 
     def _entries(self) -> list[Path]:
-        try:
+        with suppress(FileNotFoundError):
             return list(self.dir.iterdir())
-        except FileNotFoundError:
-            return []
+        return []
 
 
 def _remove(path: Path) -> None:
