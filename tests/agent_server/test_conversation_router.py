@@ -2578,6 +2578,7 @@ def test_switch_conversation_llm_resolves_provider_connection(
             forwarded = mock_conversation.switch_llm.call_args.args[0]
             assert isinstance(forwarded, LLM)
             assert forwarded.provider_connection_id == "or-conn"
+            assert isinstance(forwarded.api_key, SecretStr)
             assert forwarded.api_key.get_secret_value() == "or-secret"
         finally:
             store_module._llm_profile_store = old_store

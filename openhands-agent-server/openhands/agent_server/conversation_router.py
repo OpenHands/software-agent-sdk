@@ -551,10 +551,7 @@ async def switch_conversation_profile(
 
 @conversation_router.post(
     "/{conversation_id}/switch_llm",
-    responses={
-        404: {"description": "Conversation not found"},
-        422: {"description": "Referenced provider connection is missing"},
-    },
+    responses={404: {"description": "Conversation not found"}},
 )
 async def switch_conversation_llm(
     request: Request,
