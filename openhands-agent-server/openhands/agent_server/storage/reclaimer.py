@@ -31,10 +31,6 @@ class StorageAdapter(Protocol):
         """Hold the runtime still; True if nothing runs or starts in it."""
         ...
 
-    def leftovers(self) -> list[Path]:
-        """Paths an earlier version set aside for deletion and never removed."""
-        ...
-
 
 class Reclaimer:
     def __init__(self, adapter: StorageAdapter) -> None:
@@ -43,8 +39,6 @@ class Reclaimer:
 
     async def start(self) -> None:
         """Only safe before any runtime starts: every one is reclaimed."""
-        for path in await asyncio.to_thread(self.adapter.leftovers):
-            self.trash.discard(path)
         for runtime in await asyncio.to_thread(self.adapter.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()

@@ -702,9 +702,6 @@ async def test_startup_prunes_every_runtime_cache(tmp_path, monkeypatch):
             ConversationExecutionStatus.RUNNING,
         )
     ]
-    # What builds before the storage module set aside and never deleted.
-    leftover = runtime.provisioning.runtime_dir(seeded[0][0]) / ".cache-pruned-x"
-    (leftover / "uv").mkdir(parents=True)
     unrelated = runtime.provisioning.data_root / "not-a-conversation" / ".cache"
     unrelated.mkdir(parents=True)
 
@@ -716,7 +713,6 @@ async def test_startup_prunes_every_runtime_cache(tmp_path, monkeypatch):
         assert not cache_dir(runtime, conversation_id).exists()
         assert_kept(kept)
     assert unrelated.is_dir()
-    assert not leftover.exists()
     assert in_trash(runtime) == []
 
     # A second pass, with the caches already gone, changes nothing.
