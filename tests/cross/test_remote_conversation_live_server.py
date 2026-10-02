@@ -186,6 +186,38 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_profile_preflight_budget_error_over_http(
+    authenticated_server_env, budget_exhausted_provider
+):
+    provider_url, provider_requests, provider_api_key = budget_exhausted_provider
+    with httpx.Client(
+        base_url=authenticated_server_env["host"],
+        headers={"X-Session-API-Key": authenticated_server_env["api_key"]},
+    ) as client:
+        response = client.post(
+            "/api/profiles/over-budget/validate",
+            json={
+                "llm": {
+                    "model": "litellm_proxy/gpt-4o",
+                    "api_key": provider_api_key,
+                    "base_url": provider_url,
+                    "num_retries": 5,
+                    "retry_min_wait": 0,
+                    "retry_max_wait": 0,
+                }
+            },
+            timeout=10,
+        )
+
+    response.raise_for_status()
+    result = response.json()
+    assert result["valid"] is False
+    assert result["error"]["type"] == "LLMRateLimitError"
+    assert "Budget has been exceeded" in result["error"]["message"]
+    assert provider_api_key not in response.text
+    assert len(provider_requests) == 1
+
+
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     agent = Agent(
         llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
