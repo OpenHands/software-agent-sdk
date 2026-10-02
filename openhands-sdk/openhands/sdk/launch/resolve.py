@@ -182,8 +182,10 @@ def _load_llm(stores: LaunchStores, name: str) -> LLM | None:
 
     try:
         return stores.llm_profiles.load(name, cipher=stores.cipher)
-    except (FileNotFoundError, ProviderConnectionNotFound):
+    except FileNotFoundError:
         return None
+    except ProviderConnectionNotFound as exc:
+        raise AgentLaunchError(f"LLM profile {name!r}: {exc}") from exc
     except TimeoutError as exc:
         raise LaunchStoreError("LLM profile store is busy", retryable=True) from exc
     except (OSError, ValueError) as exc:
@@ -217,14 +219,20 @@ def _load_meta_profile(
         else:
             llms[ref] = llm
     if meta.prompt_template is not None and stores.llm_profile_names is not None:
+        try:
+            names = stores.llm_profile_names()
+        except TimeoutError as exc:
+            raise LaunchStoreError("LLM profile store is busy", retryable=True) from exc
+        except OSError as exc:
+            raise LaunchStoreError(f"Could not list LLM profiles: {exc}") from exc
         # Direct routing may pick any saved LLM profile, so an unreadable one
         # that the meta-profile does not name is skipped rather than fatal.
-        for ref in stores.llm_profile_names():
+        for ref in names:
             if ref in llms:
                 continue
             try:
                 llm = _load_llm(stores, ref)
-            except LaunchStoreError:
+            except (AgentLaunchError, LaunchStoreError):
                 continue
             if llm is not None:
                 llms[ref] = llm

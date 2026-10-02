@@ -27,9 +27,11 @@ from openhands.sdk.conversation.request import (
     StartConversationRequest,
 )
 from openhands.sdk.launch import LaunchRuntime, LaunchStores, ResolvedLaunch, finalize
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -122,6 +124,37 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
     source = context.secrets["CONTEXT_SECRET"]
     assert isinstance(source, StaticSecret)
     assert source.get_value() == "context-value"
+
+
+@pytest.mark.asyncio
+async def test_every_encrypted_field_reaches_the_container_decryptable(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch)
+    helper = AgentDefinition(
+        name="helper",
+        mcp_config={
+            "srv": MCPServer(command="echo", env={"TOKEN": SecretStr("mcp-token")})
+        },
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
+        agent_definitions=[helper],
+        secrets_encrypted=True,
+    )
+    body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
+    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+
+    payload, _ = await _prepare_forward(body, registry, existing=False)
+    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
+    received = StartConversationRequest.model_validate(
+        payload(identity.cipher), context={"cipher": identity.cipher}
+    )
+
+    servers = received.agent_definitions[0].mcp_config
+    assert servers is not None and servers["srv"].env is not None
+    assert servers["srv"].env["TOKEN"].get_secret_value() == "mcp-token"
 
 
 @pytest.mark.asyncio

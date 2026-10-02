@@ -10,12 +10,13 @@ from openhands.sdk.launch.finalize import (
     _settings_for_runtime,
     finalize,
 )
-from openhands.sdk.launch.resolve import LaunchStores, resolve
+from openhands.sdk.launch.resolve import LaunchStores, _load_llm, _load_skills, resolve
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
     _acp_credential_channels,
     _api_key_set,
+    _apply_disabled_skills,
     _compute_mcp_filter,
     _unusable_tools,
 )
@@ -72,12 +73,12 @@ def preview_launch(
         launched = finalize(resolved, runtime, load_memory=load_memory)
     except UnresolvedProfileReferences as exc:
         diagnostics.errors.extend(exc.problems)
-        diagnostics.llm_profile_resolved = (
-            isinstance(profile, OpenHandsAgentProfile) and exc.llm_profile_ref is None
-        )
         diagnostics.dangling_mcp_server_refs = exc.mcp_server_refs
         diagnostics.dangling_meta_profile_ref = exc.meta_profile_ref
         diagnostics.dangling_meta_profile_llm_refs = exc.meta_profile_llm_refs
+        if isinstance(profile, OpenHandsAgentProfile) and exc.llm_profile_ref is None:
+            diagnostics.llm_profile_resolved = True
+            _report_llm_key_and_skills(diagnostics, profile, stores)
         return diagnostics
     except (AgentLaunchError, LaunchStoreError) as exc:
         diagnostics.errors.append(f"Failed to build agent settings: {exc}")
@@ -91,6 +92,24 @@ def preview_launch(
     diagnostics.resolved_skills = [s.name for s in context.skills] if context else []
     if diagnostics.errors:
         return diagnostics
-    diagnostics.resolved_settings = settings.model_dump(mode="json")
+    diagnostics.resolved_settings = settings.model_copy(
+        update={"agent_context": context}
+    ).model_dump(mode="json")
     diagnostics.valid = True
     return diagnostics
+
+
+def _report_llm_key_and_skills(
+    diagnostics: AgentProfileDiagnostics,
+    profile: OpenHandsAgentProfile,
+    stores: LaunchStores,
+) -> None:
+    try:
+        llm = _load_llm(stores, profile.llm_profile_ref)
+        catalog = _load_skills(stores)
+    except (AgentLaunchError, LaunchStoreError):
+        return
+    diagnostics.llm_api_key_set = llm is not None and _api_key_set(llm)
+    diagnostics.resolved_skills = [
+        skill.name for skill in _apply_disabled_skills(catalog, profile.disabled_skills)
+    ]

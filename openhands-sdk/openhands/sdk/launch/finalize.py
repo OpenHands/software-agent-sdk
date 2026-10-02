@@ -11,6 +11,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import AgentLaunchAdditions
+from openhands.sdk.launch.errors import AgentLaunchError
 from openhands.sdk.launch.resolve import ResolvedLaunch
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
@@ -77,7 +78,10 @@ def finalize(
     """
     if isinstance(source, ResolvedLaunch):
         settings = _settings_for_runtime(source.settings, runtime)
-        agent: AgentBase = settings.create_agent()
+        try:
+            agent: AgentBase = settings.create_agent()
+        except (TypeError, ValueError) as exc:
+            raise AgentLaunchError(str(exc)) from exc
         profile = source.profile
     else:
         agent = source
@@ -113,27 +117,38 @@ def _with_current_datetime(agent: AgentBase, launched_at: datetime | None) -> Ag
     context = agent.agent_context
     if context is None or context.current_datetime is None:
         return agent
-    now = launched_at or _now_in_timezone_of(context.current_datetime)
+    now = _now_in_timezone_of(context.current_datetime)
+    if now is None:
+        return agent
     return agent.model_copy(
-        update={"agent_context": context.model_copy(update={"current_datetime": now})}
+        update={
+            "agent_context": context.model_copy(
+                update={"current_datetime": launched_at or now}
+            )
+        }
     )
 
 
-def _now_in_timezone_of(value: datetime | str) -> datetime:
+def _now_in_timezone_of(value: datetime | str) -> datetime | None:
+    """Now, in ``value``'s timezone; None when ``value`` is pre-formatted text."""
     if isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
-            return datetime.now().astimezone()
+            return None
     if value.tzinfo is None:
         return datetime.now().astimezone()
     return datetime.now(value.tzinfo)
 
 
-def _with_load_memory(agent: AgentBase) -> AgentBase:
+def _context_of(agent: AgentBase) -> AgentContext:
     # A null agent_context means "no prompt context"; ACP relies on that to keep
     # a timestamp out of its prompt, so a synthesized context carries none.
-    context = agent.agent_context or AgentContext(current_datetime=None)
+    return agent.agent_context or AgentContext(current_datetime=None)
+
+
+def _with_load_memory(agent: AgentBase) -> AgentBase:
+    context = _context_of(agent)
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"load_memory": True})}
     )
@@ -167,7 +182,7 @@ def _apply_acp_skill_sourcing(
 
 
 def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
-    context = agent.agent_context or AgentContext()
+    context = _context_of(agent)
     existing = (context.system_message_suffix or "").strip()
     suffix = f"{existing}\n\n{addition}" if existing else addition
     return agent.model_copy(

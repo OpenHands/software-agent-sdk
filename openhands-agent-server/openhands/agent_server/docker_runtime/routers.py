@@ -144,9 +144,12 @@ async def start_conversation(
     registry = get_registry(request)
     # Only a conversation the container already created is left alone on
     # failure; a manifest from a failed earlier start is retried like a new one.
-    existing = (
-        registry.conversation_dir(conversation_id).joinpath("meta.json").is_file()
-    )
+    try:
+        existing = (
+            registry.conversation_dir(conversation_id).joinpath("meta.json").is_file()
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     try:
         payload, launched = await _prepare_forward(body, registry, existing=existing)
         identity = registry.provisioning.create(conversation_id, host_workspace)
@@ -159,7 +162,7 @@ async def start_conversation(
                 f"{container.host}/api/conversations",
                 params={"include_skills": include_skills},
                 headers={"X-Session-API-Key": container.api_key},
-                json=payload(identity.cipher),
+                json=await asyncio.to_thread(payload, identity.cipher),
             )
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
         raise launch_http_exception(exc) from exc
@@ -198,7 +201,10 @@ async def _prepare_forward(
     its container returns the conversation as it is.
     """
     config = registry.config
-    start = StartConversationRequest.model_validate(body)
+    start = StartConversationRequest.model_validate(
+        body,
+        context={"cipher": config.cipher} if body.get("secrets_encrypted") else None,
+    )
     try:
         settings = await asyncio.to_thread(get_settings_store(config).load)
     except (OSError, PermissionError):
