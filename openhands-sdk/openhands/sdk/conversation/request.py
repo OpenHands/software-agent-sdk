@@ -296,7 +296,6 @@ class StartConversationRequest(ConversationConfig):
 
     agent_settings: dict[str, Any] | None = Field(
         default=None,
-        exclude=True,
         description=(
             "Reference-free agent settings, validated with the AgentSettingsBase "
             "`agent_kind` discriminator. The server builds the agent from them "
@@ -356,6 +355,8 @@ class StartConversationRequest(ConversationConfig):
                 )
             except TypeError as exc:
                 raise ValueError(str(exc)) from exc
+        if payload.get("agent") is not None:
+            payload["agent_settings"] = None
         if payload.get("agent") is None and payload.get("agent_settings") is not None:
             try:
                 validate_agent_settings(payload["agent_settings"])

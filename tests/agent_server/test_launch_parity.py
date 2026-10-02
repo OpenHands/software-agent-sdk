@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.launch import (
+    container_browser_enabled,
     forward_to_runtime,
     launch_source,
     server_launch_stores,
@@ -27,10 +28,13 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk import LLM
 from openhands.sdk.conversation.request import StartConversationRequest
-from openhands.sdk.launch import LaunchRuntime, finalize, preview_launch, resolve
+from openhands.sdk.launch import finalize, preview_launch, resolve
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
-from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.settings.model import (
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.skills import Skill
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -104,6 +108,15 @@ def _launch(client: TestClient, workspace: str, **source: Any) -> dict[str, Any]
     return response.json()
 
 
+def _tool_view(agent: dict[str, Any]) -> tuple[list[str], list[str]]:
+    return [tool["name"] for tool in agent["tools"]], agent["include_default_tools"]
+
+
+def _preview_tool_view(preview_settings: dict[str, Any]) -> tuple[list[str], list[str]]:
+    agent = validate_agent_settings(preview_settings).create_agent()
+    return _tool_view(agent.model_dump(mode="json"))
+
+
 def _agent_view(agent: dict[str, Any]) -> dict[str, Any]:
     context = agent["agent_context"]
     return {
@@ -132,13 +145,12 @@ def test_materialize_matches_a_stored_profile_launch(server, tmp_path, browser):
 
     agent = launched["agent"]
     assert preview["valid"] is True
-    assert preview["pending"] == []
-    assert preview["resolved_tools"] == [tool["name"] for tool in agent["tools"]]
-    assert ("browser_tool_set" in preview["resolved_tools"]) is browser
+    settings = preview["resolved_settings"]
+    assert _preview_tool_view(settings) == _tool_view(agent)
+    assert ("browser_tool_set" in _tool_view(agent)[0]) is browser
     assert preview["resolved_skills"] == [
         skill["name"] for skill in agent["agent_context"]["skills"]
     ]
-    settings = preview["resolved_settings"]
     assert settings["llm"]["model"] == agent["llm"]["model"]
     assert sorted(settings["mcp_config"]) == sorted(agent["mcp_config"])
     assert (
@@ -187,9 +199,17 @@ def test_inline_stored_and_agent_settings_sources_launch_the_same_agent(
     assert from_settings["launched_agent_profile"] is None
 
 
-def test_a_docker_host_preview_matches_what_the_container_launches(server, tmp_path):
+@pytest.mark.parametrize("image_has_browser", [True, False])
+def test_a_docker_host_preview_matches_what_the_container_launches(
+    server, tmp_path, image_has_browser
+):
     profile = _save(_profile("named"))
-    host = server.app.state.config.model_copy(update={"conversation_runtime": "docker"})
+    host = server.app.state.config.model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": image_has_browser,
+        }
+    )
     settings = get_settings_store(host).load()
     assert settings is not None
     stores = server_launch_stores(settings, host.cipher)
@@ -208,16 +228,22 @@ def test_a_docker_host_preview_matches_what_the_container_launches(server, tmp_p
         load_memory=False,
     )
     received = StartConversationRequest.model_validate(payload)
-    container = LaunchRuntime(
-        browser_available=True, acp_skill_sourcing="openhands_managed"
+    container = host.model_copy(
+        update={
+            "conversation_runtime": "local",
+            "acp_skill_sourcing": "openhands_managed",
+            "enable_browser": container_browser_enabled(host),
+        }
     )
-    agent = finalize(
-        launch_source(received, lambda: stores, container_cipher), container
-    ).agent
+    with patch("openhands.agent_server.launch.is_tool_usable", return_value=True):
+        agent = finalize(
+            launch_source(received, lambda: stores, container_cipher),
+            target_launch_runtime(container),
+        ).agent
 
-    assert preview.pending == ["browser_tool_set"]
-    assert [*preview.resolved_tools, *preview.pending] == [
-        tool.name for tool in agent.tools
-    ]
+    assert preview.resolved_settings is not None
+    launched_tools = _tool_view(agent.model_dump(mode="json"))
+    assert _preview_tool_view(preview.resolved_settings) == launched_tools
+    assert ("browser_tool_set" in launched_tools[0]) is image_has_browser
     assert agent.agent_context is not None
     assert preview.resolved_skills == [s.name for s in agent.agent_context.skills]

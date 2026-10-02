@@ -21,6 +21,8 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
+    field_validator,
+    model_validator,
 )
 
 from openhands.sdk.settings.model import (
@@ -31,9 +33,16 @@ from openhands.sdk.settings.model import (
     VerificationSettings,
 )
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    drop_retired_tool_switches,
+    fold_deprecated_tool_switches,
+    fold_retired_tool_switches,
+    merge_duplicate_tools,
+    reject_builtin_params,
+)
 
 
-AGENT_PROFILE_SCHEMA_VERSION = 2
+AGENT_PROFILE_SCHEMA_VERSION = 3
 
 
 class ProfileVerificationSettings(BaseModel):
@@ -162,9 +171,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default="CodeActAgent",
         description="Agent class to build.",
     )
-    # Same tri-state as the resolved settings' ``tools``: passed through
-    # verbatim by the resolver, so ``create_agent`` is the single defaulting
-    # point (#3978). Secret-free by construction (``Tool`` is name + params).
+    # Secret-free by construction (name + params).
     tools: list[Tool] | None = Field(
         default=None,
         description=(
@@ -174,6 +181,18 @@ class OpenHandsAgentProfile(AgentProfileBase):
         ),
     )
 
+    persona: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=65536,
+        description=(
+            "Persona text that replaces OpenHands' built-in persona and "
+            "coding-workflow guidance. Capability and policy guidance (memory, "
+            "security policy, risk assessment, browser, external services, process "
+            "management, model-specific notes) and the dynamic context are still "
+            "included. None keeps the built-in persona."
+        ),
+    )
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
@@ -197,18 +216,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
     verification: ProfileVerificationSettings = Field(
         default_factory=ProfileVerificationSettings,
         description="Critic/verification policy (secret-free; no critic_api_key).",
-    )
-    enable_sub_agents: bool = Field(
-        default=False,
-        description="Enable sub-agent delegation via TaskToolSet.",
-    )
-    enable_switch_llm_tool: bool = Field(
-        default=True,
-        description=(
-            "Enable the built-in switch_llm tool for switching between saved "
-            "LLM profiles. Defaults True to match the global agent settings "
-            "default (AgentSettingsConfig.enable_switch_llm_tool)."
-        ),
     )
     enable_classify_and_switch_llm_tool: bool = Field(
         default=False,
@@ -236,6 +243,23 @@ class OpenHandsAgentProfile(AgentProfileBase):
             "step. 1 = sequential (default)."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_retired_tool_switches(cls, data: Any) -> Any:
+        # A profile is launched by a serving layer, which drops a browser the
+        # runtime can't run.
+        return fold_deprecated_tool_switches(
+            data, owner="OpenHandsAgentProfile", enable_browser=True
+        )
+
+    @field_validator("tools")
+    @classmethod
+    def _canonicalize_tools(cls, tools: list[Tool] | None) -> list[Tool] | None:
+        if tools is None:
+            return None
+        reject_builtin_params(tools)
+        return merge_duplicate_tools(tools)
 
 
 class ACPAgentProfile(AgentProfileBase):
@@ -398,8 +422,19 @@ def _migrate_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    if payload.get("agent_kind", "openhands") == "openhands":
+        migrated = fold_retired_tool_switches(payload)
+    else:
+        migrated = drop_retired_tool_switches(payload)
+    migrated["schema_version"] = 3
+    return migrated
+
+
 _AGENT_PROFILE_MIGRATIONS: dict[int, PersistedProfileMigrator] = {
     1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
 }
 
 

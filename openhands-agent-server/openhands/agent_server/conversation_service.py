@@ -512,6 +512,7 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
+    enable_browser: bool = True
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1542,16 +1543,20 @@ class ConversationService:
             if request.worktree
             else None
         )
-        launched = finalize(
-            source,
-            live_launch_runtime(self.acp_skill_sourcing),
-            additions=request.agent_launch_additions,
-            extra_suffixes=[worktree.guidance] if worktree else (),
-            client_tools=client_tools,
-            load_memory=load_memory,
-            managed_secrets=(
-                [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
-            ),
+        launched = await asyncio.to_thread(
+            lambda: finalize(
+                source,
+                live_launch_runtime(
+                    self.acp_skill_sourcing, enable_browser=self.enable_browser
+                ),
+                additions=request.agent_launch_additions,
+                extra_suffixes=[worktree.guidance] if worktree else (),
+                client_tools=client_tools,
+                load_memory=load_memory,
+                managed_secrets=(
+                    [CODEX_AUTH_SECRET_NAME] if managed_codex_credential else ()
+                ),
+            )
         )
         workspace = (
             _create_conversation_worktree(worktree)
@@ -1597,6 +1602,7 @@ class ConversationService:
             context={"expose_secrets": True},
             exclude={
                 "agent",
+                "agent_settings",
                 "agent_profile_id",
                 "agent_profile",
                 "agent_launch_additions",
@@ -1901,8 +1907,7 @@ class ConversationService:
         # to re-register its tools after a server restart.
         # Note: the agent is NOT stored in meta.json (StoredConversation) — the
         # fork's agent is already persisted to the fork's base_state.json by
-        # ``source_conversation.fork`` above. It is passed to
-        # ``_start_event_service`` via ``agent=`` for the new-conversation path.
+        # ``source_conversation.fork`` above.
         fork_overrides: dict[str, Any] = {
             "id": fork_conv_id,
             "workspace": fork_workspace,
@@ -2190,6 +2195,7 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            enable_browser=config.enable_browser,
         )
 
     async def _start_event_service(

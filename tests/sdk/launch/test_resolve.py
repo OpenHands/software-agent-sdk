@@ -11,6 +11,7 @@ from openhands.sdk.launch import (
     resolve,
 )
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileClass
+from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import ACPAgentProfile, OpenHandsAgentProfile
 from openhands.sdk.profiles.resolver import ProfileNotFound
@@ -203,6 +204,64 @@ def test_direct_routing_copies_every_saved_llm():
     )
 
     assert set(settings.meta_profile_llms) == {"default", "classifier", "other"}
+
+
+class _OrphanedLLMs(fakes.LLMProfiles):
+    def load(self, name, *, cipher=None):
+        if name == "orphaned":
+            raise ProviderConnectionNotFound("Provider connection 'gone' not found")
+        return super().load(name, cipher=cipher)
+
+
+def _direct_routing_stores(llm_profiles, names) -> LaunchStores:
+    meta = MetaProfile(
+        classifier_model="classifier",
+        prompt_template="Pick a model for {{ instance_text }}",
+    )
+    return LaunchStores(
+        llm_profiles=llm_profiles,
+        llm_profile_names=names,
+        mcp_config={},
+        skills=lambda: [],
+        meta_profiles=fakes.MetaProfiles({"router": meta}),
+    )
+
+
+def test_an_llm_profile_whose_provider_connection_is_gone_says_so():
+    stores = LaunchStores(
+        llm_profiles=_OrphanedLLMs({}), mcp_config={}, skills=lambda: []
+    )
+    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="orphaned")
+
+    with pytest.raises(AgentLaunchError, match="Provider connection 'gone'"):
+        resolve(profile, stores)
+
+
+def test_direct_routing_skips_a_saved_llm_it_cannot_load():
+    llms = _OrphanedLLMs({"default": fakes.llm(), "classifier": fakes.llm()})
+    stores = _direct_routing_stores(llms, lambda: ["default", "classifier", "orphaned"])
+    profile = _profile(
+        enable_classify_and_switch_llm_tool=True, meta_profile_ref="router"
+    )
+
+    settings = _openhands(resolve(profile, stores))
+
+    assert set(settings.meta_profile_llms) == {"default", "classifier"}
+
+
+def test_a_busy_store_listing_the_llm_profiles_is_retryable():
+    def busy() -> list[str]:
+        raise TimeoutError("locked")
+
+    llms = fakes.LLMProfiles({"default": fakes.llm(), "classifier": fakes.llm()})
+    profile = _profile(
+        enable_classify_and_switch_llm_tool=True, meta_profile_ref="router"
+    )
+
+    with pytest.raises(LaunchStoreError) as exc_info:
+        resolve(profile, _direct_routing_stores(llms, busy))
+
+    assert exc_info.value.retryable is True
 
 
 def test_a_disabled_routing_tool_ignores_its_meta_profile_ref():

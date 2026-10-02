@@ -8,6 +8,7 @@ from openhands.sdk import LLM, Agent, AgentContext
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.request import AgentLaunchAdditions
 from openhands.sdk.launch import (
+    AgentLaunchError,
     LaunchedAgent,
     LaunchRuntime,
     ResolvedLaunch,
@@ -57,23 +58,21 @@ def test_unset_tools_get_the_default_set_with_browser_when_usable(browser, expec
     launched = finalize(_settings(), LaunchRuntime(browser_available=browser))
 
     assert _tool_names(launched) == expected
-    assert launched.pending == ()
+    assert isinstance(launched.agent, Agent)
+    assert "SwitchLLMTool" in launched.agent.include_default_tools
 
 
-def test_an_unknown_runtime_leaves_the_browser_to_the_launch():
-    launched = finalize(_settings(), LaunchRuntime(browser_available=None))
-
-    assert "browser_tool_set" not in _tool_names(launched)
-    assert launched.pending == ("browser_tool_set",)
-
-
-def test_an_explicit_tool_list_is_used_as_given():
+@pytest.mark.parametrize(
+    ("browser", "expected"),
+    [(True, ["terminal", "browser_tool_set"]), (False, ["terminal"])],
+)
+def test_an_explicit_tool_list_keeps_the_browser_only_when_usable(browser, expected):
     launched = finalize(
-        _settings(tools=[Tool(name="terminal")]),
-        LaunchRuntime(browser_available=True),
+        _settings(tools=[Tool(name="terminal"), Tool(name="browser_tool_set")]),
+        LaunchRuntime(browser_available=browser),
     )
 
-    assert _tool_names(launched) == ["terminal"]
+    assert _tool_names(launched) == expected
 
 
 def test_an_acp_agent_never_gets_the_browser():
@@ -129,6 +128,20 @@ def test_a_suppressed_timestamp_stays_suppressed(context):
     assert after is None or after.current_datetime is None
 
 
+def test_a_pre_formatted_timestamp_is_kept():
+    stamp = "Friday, 15 March 2024 (simulated)"
+
+    launched = finalize(
+        _agent(AgentContext(current_datetime=stamp)),
+        LaunchRuntime(),
+        launched_at=LAUNCHED_AT,
+    )
+
+    context = launched.agent.agent_context
+    assert context is not None
+    assert context.current_datetime == stamp
+
+
 def test_memory_is_loaded_when_the_preference_is_on():
     launched = finalize(_agent(), LaunchRuntime(), load_memory=True)
 
@@ -152,6 +165,25 @@ def test_suffix_additions_are_appended_in_order():
     context = launched.agent.agent_context
     assert context is not None
     assert context.system_message_suffix == "PROFILE\n\nRUNTIME\n\nWORKTREE"
+
+
+def test_a_context_synthesized_for_a_suffix_carries_no_timestamp():
+    launched = finalize(_agent(), LaunchRuntime(), extra_suffixes=["WORKTREE"])
+
+    context = launched.agent.agent_context
+    assert context is not None
+    assert context.system_message_suffix == "WORKTREE"
+    assert context.current_datetime is None
+
+
+def test_settings_that_cannot_build_an_agent_are_a_launch_error(monkeypatch):
+    def fail(self):
+        raise ValueError("OpenAI subscription login is required")
+
+    monkeypatch.setattr(OpenHandsAgentSettings, "create_agent", fail)
+
+    with pytest.raises(AgentLaunchError, match="subscription login"):
+        finalize(_settings(), LaunchRuntime())
 
 
 def test_native_sourcing_strips_managed_skills_from_an_acp_agent():

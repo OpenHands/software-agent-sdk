@@ -366,6 +366,20 @@ class TestProfileLaunch:
         assert launched.agent.llm.stream is True
         assert stored_llm.stream is False
 
+    @pytest.mark.asyncio
+    async def test_the_profile_persona_reaches_the_launched_agent(self, tmp_path):
+        persona = "You only answer questions about this repository."
+        profile = _make_openhands_profile(persona=persona)
+
+        _, launched = await _start(
+            tmp_path, _profile_request(tmp_path, profile), stores=fakes.stores(profile)
+        )
+
+        assert isinstance(launched.agent, Agent)
+        assert launched.agent.persona == persona
+        assert launched.agent.static_system_message.startswith(persona)
+        assert "<SECURITY>" in launched.agent.static_system_message
+
     @pytest.mark.parametrize(
         ("browser", "expected"),
         [

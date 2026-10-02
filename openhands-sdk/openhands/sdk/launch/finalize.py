@@ -11,10 +11,11 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import AgentLaunchAdditions
+from openhands.sdk.launch.errors import AgentLaunchError
 from openhands.sdk.launch.resolve import ResolvedLaunch
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
-from openhands.sdk.settings.model import OpenHandsAgentSettings
-from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, default_tool_specs
+from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.tool.defaults import launch_tool_specs
 from openhands.sdk.tool.spec import Tool
 
 
@@ -26,12 +27,8 @@ class LaunchRuntime(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    browser_available: bool | None = Field(
-        default=False,
-        description=(
-            "Whether the browser tool set can run. null: not known until the "
-            "runtime starts, so a preview leaves the decision to the launch."
-        ),
+    browser_available: bool = Field(
+        default=False, description="Whether the browser tool set can run."
     )
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
@@ -51,7 +48,6 @@ class LaunchedAgent:
 
     agent: AgentBase
     profile: LaunchedAgentProfile | None
-    pending: tuple[str, ...] = ()
     _token: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -75,28 +71,18 @@ def finalize(
 ) -> LaunchedAgent:
     """Build the launch agent for ``source`` in the process that will run it.
 
-    Owns every launch-time field: the default tool set (with browser when the
+    Owns every launch-time field: the tool set (with browser only when the
     runtime can run it), ``current_datetime``, ``load_memory``, ACP skill
     sourcing, suffix additions, client tools and credentials the runtime
-    manages itself. ``pending`` names runtime-dependent parts left undecided
-    because ``runtime`` does not know them yet.
+    manages itself.
     """
-    pending: list[str] = []
     if isinstance(source, ResolvedLaunch):
-        settings = source.settings
+        settings = _settings_for_runtime(source.settings, runtime)
+        try:
+            agent: AgentBase = settings.create_agent()
+        except (TypeError, ValueError) as exc:
+            raise AgentLaunchError(str(exc)) from exc
         profile = source.profile
-        if isinstance(settings, OpenHandsAgentSettings) and settings.tools is None:
-            if runtime.browser_available is None:
-                pending.append(BROWSER_TOOL_NAME)
-            settings = settings.model_copy(
-                update={
-                    "tools": default_tool_specs(
-                        enable_sub_agents=settings.enable_sub_agents,
-                        enable_browser=bool(runtime.browser_available),
-                    )
-                }
-            )
-        agent: AgentBase = settings.create_agent()
     else:
         agent = source
         profile = None
@@ -113,36 +99,56 @@ def finalize(
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:
         agent = _with_client_tools(agent, client_tools)
-    return LaunchedAgent(
-        agent=agent, profile=profile, pending=tuple(pending), _token=_FINALIZE_TOKEN
+    return LaunchedAgent(agent=agent, profile=profile, _token=_FINALIZE_TOKEN)
+
+
+def _settings_for_runtime(
+    settings: OpenHandsAgentSettings | ACPAgentSettings, runtime: LaunchRuntime
+) -> OpenHandsAgentSettings | ACPAgentSettings:
+    if not isinstance(settings, OpenHandsAgentSettings):
+        return settings
+    tools = launch_tool_specs(
+        settings.tools, browser_available=runtime.browser_available
     )
+    return settings.model_copy(update={"tools": tools})
 
 
 def _with_current_datetime(agent: AgentBase, launched_at: datetime | None) -> AgentBase:
     context = agent.agent_context
     if context is None or context.current_datetime is None:
         return agent
-    now = launched_at or _now_in_timezone_of(context.current_datetime)
+    now = _now_in_timezone_of(context.current_datetime)
+    if now is None:
+        return agent
     return agent.model_copy(
-        update={"agent_context": context.model_copy(update={"current_datetime": now})}
+        update={
+            "agent_context": context.model_copy(
+                update={"current_datetime": launched_at or now}
+            )
+        }
     )
 
 
-def _now_in_timezone_of(value: datetime | str) -> datetime:
+def _now_in_timezone_of(value: datetime | str) -> datetime | None:
+    """Now, in ``value``'s timezone; None when ``value`` is pre-formatted text."""
     if isinstance(value, str):
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
-            return datetime.now().astimezone()
+            return None
     if value.tzinfo is None:
         return datetime.now().astimezone()
     return datetime.now(value.tzinfo)
 
 
-def _with_load_memory(agent: AgentBase) -> AgentBase:
+def _context_of(agent: AgentBase) -> AgentContext:
     # A null agent_context means "no prompt context"; ACP relies on that to keep
     # a timestamp out of its prompt, so a synthesized context carries none.
-    context = agent.agent_context or AgentContext(current_datetime=None)
+    return agent.agent_context or AgentContext(current_datetime=None)
+
+
+def _with_load_memory(agent: AgentBase) -> AgentBase:
+    context = _context_of(agent)
     return agent.model_copy(
         update={"agent_context": context.model_copy(update={"load_memory": True})}
     )
@@ -176,7 +182,7 @@ def _apply_acp_skill_sourcing(
 
 
 def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
-    context = agent.agent_context or AgentContext()
+    context = _context_of(agent)
     existing = (context.system_message_suffix or "").strip()
     suffix = f"{existing}\n\n{addition}" if existing else addition
     return agent.model_copy(
