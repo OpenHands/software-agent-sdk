@@ -195,6 +195,53 @@ def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
     assert [tool.name for tool in settings.tools or []] == expected
 
 
+@pytest.mark.parametrize(
+    ("mcp_server_refs", "scoped_mcp"), [(None, False), ([], True), (["fetch"], True)]
+)
+def test_openhands_profile_delegation_is_scoped_to_the_profile(
+    llm_store: LLMProfileStore,
+    mcp_config: dict[str, MCPServer],
+    mcp_server_refs: list[str] | None,
+    scoped_mcp: bool,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="delegating",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal"), Tool(name="task_tool_set")],
+        mcp_server_refs=mcp_server_refs,
+    )
+
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config=mcp_config, available_skills=None
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    scope = {"tools": True, "mcp_servers": scoped_mcp}
+    assert settings.tools == [
+        Tool(name="terminal"),
+        Tool(name="task_tool_set", params={"sub_agent_scope": scope}),
+    ]
+    assert settings.create_agent().tools == settings.tools
+    assert profile.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
+
+
+def test_openhands_default_tools_are_not_scoped(llm_store: LLMProfileStore) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", mcp_server_refs=[]
+    )
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=False,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert all(not tool.params for tool in settings.tools or [])
+
+
 def test_resolve_without_browser_availability_keeps_unset_tools_unset(
     llm_store: LLMProfileStore,
 ) -> None:
