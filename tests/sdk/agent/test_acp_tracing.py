@@ -309,6 +309,7 @@ async def test_a_call_that_starts_terminal_closes_at_that_notification(exported)
     from openhands.sdk.agent.acp_agent import _OpenHandsACPBridge
 
     start = MagicMock(spec=ToolCallStart)
+    start.field_meta = None
     start.tool_call_id = "tc-terminal"
     start.title = "git status"
     start.kind = "execute"

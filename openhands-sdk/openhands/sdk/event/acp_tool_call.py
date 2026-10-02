@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.event.base import Event
@@ -63,6 +64,14 @@ class ACPToolCallEvent(Event):
     raw_output: Any | None = None
     content: list[Any] | None = None
     is_error: bool = False
+    parent_tool_call_id: str | None = Field(
+        default=None,
+        description=(
+            "``tool_call_id`` of the tool call that spawned the subagent making "
+            "this call. None when the ACP server reports no parent, as for the "
+            "main agent's own calls."
+        ),
+    )
 
     @property
     def is_patch_edit(self) -> bool:
