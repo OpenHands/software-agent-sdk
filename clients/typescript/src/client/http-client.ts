@@ -26,6 +26,14 @@ export interface RequestOptions {
    * origins.
    */
   credentials?: RequestCredentials;
+  /**
+   * Caller-owned cancellation signal, combined with the client timeout so a
+   * request aborts on whichever fires first. Pass the lifecycle signal of the
+   * component that owns the request (e.g. a React mount/`AbortController`) so
+   * teardown or a retry cancels the in-flight call instead of leaving it to
+   * resolve into a stale consumer.
+   */
+  signal?: AbortSignal;
 }
 
 export interface HttpResponse<T = unknown> {
@@ -101,7 +109,10 @@ export class HttpClient {
     const requestInit: RequestInit = {
       method: options.method,
       headers,
-      signal: AbortSignal.timeout(options.timeout || this.timeout),
+      signal: combineAbortSignals(
+        options.signal,
+        AbortSignal.timeout(options.timeout || this.timeout)
+      ),
     };
 
     if (options.credentials) {
@@ -164,7 +175,12 @@ export class HttpClient {
       }
 
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
+        if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+          // A caller-owned signal that already fired means the request was
+          // cancelled by its owner, not that the client timeout elapsed.
+          if (options.signal?.aborted) {
+            throw error;
+          }
           throw new Error(`Request timeout after ${options.timeout || this.timeout}ms`, {
             cause: error,
           });
@@ -366,4 +382,19 @@ export class HttpClient {
   close(): void {
     // No cleanup needed for fetch-based client
   }
+}
+
+/**
+ * Combine a caller-owned signal with the client timeout signal so the request
+ * aborts on whichever fires first. Returns the timeout signal unchanged when no
+ * caller signal is supplied, keeping the single-signal behavior identical.
+ */
+function combineAbortSignals(
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal
+): AbortSignal {
+  if (!callerSignal) {
+    return timeoutSignal;
+  }
+  return AbortSignal.any([callerSignal, timeoutSignal]);
 }
