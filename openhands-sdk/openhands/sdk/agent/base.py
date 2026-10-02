@@ -212,17 +212,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "instructions that govern default agent behaviour."
         ),
     )
-    persona: str | None = Field(
-        default=None,
-        description=(
-            "Persona text that replaces OpenHands' built-in persona and "
-            "coding-workflow sections of the system prompt. Capability and policy "
-            "sections (memory, security policy, risk assessment, browser, external "
-            "services, process management, model-specific guidance) and the dynamic "
-            "context still apply. Ignored when `system_prompt` is set; a custom "
-            "template receives it as the `persona` kwarg."
-        ),
-    )
     system_prompt_filename: str = Field(
         default="system_prompt.j2",
         description=(
@@ -386,8 +375,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # Load SOUL.md identity if not already provided
         if "soul_content" not in template_kwargs:
             template_kwargs["soul_content"] = _load_soul_md()
-        if self.persona is not None:
-            template_kwargs["persona"] = self.persona
 
         template_kwargs.setdefault(
             "enable_browser",

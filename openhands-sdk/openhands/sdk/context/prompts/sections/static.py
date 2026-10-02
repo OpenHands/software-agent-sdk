@@ -100,11 +100,10 @@ class RoleSection(_StaticTextSection):
 </ROLE>"""
 
 
-class PersonaSection:
+class PersonaSection(_StaticTextSection):
     """The agent's own persona, standing in for the persona sections it replaces."""
 
     name = "persona"
-    cache_tier = CacheTier.STATIC
 
     def guard(self, ctx: PromptContext) -> bool:
         return ctx.persona is not None

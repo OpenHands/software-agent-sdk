@@ -10,11 +10,16 @@ repo/skills/suffix/secrets/datetime are preset-independent -- so a planning agen
 with an ``agent_context`` still gets its dynamic block.
 """
 
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
 from openhands.sdk.context.prompts.registry import PromptRegistry
-from openhands.sdk.context.prompts.section import PromptContext, PromptSection
+from openhands.sdk.context.prompts.section import (
+    CacheTier,
+    PromptContext,
+    PromptSection,
+)
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
     CustomSecretsSection,
@@ -57,19 +62,23 @@ class PromptPreset(StrEnum):
     PLANNING = "planning"
 
 
+@dataclass(frozen=True, slots=True)
 class _ReplacedByPersona:
     """A persona-layer section: dropped when the agent supplies its own persona."""
 
-    def __init__(self, section: PromptSection) -> None:
-        self._section = section
-        self.name = section.name
-        self.cache_tier = section.cache_tier
+    section: PromptSection
+    name: str = field(init=False)
+    cache_tier: CacheTier = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", self.section.name)
+        object.__setattr__(self, "cache_tier", self.section.cache_tier)
 
     def guard(self, ctx: PromptContext) -> bool:
-        return ctx.persona is None and self._section.guard(ctx)
+        return ctx.persona is None and self.section.guard(ctx)
 
     def render(self, ctx: PromptContext) -> str | None:
-        return self._section.render(ctx)
+        return self.section.render(ctx)
 
 
 _DEFAULT_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (

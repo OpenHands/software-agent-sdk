@@ -102,7 +102,7 @@ class PromptContext(BaseModel):
     @property
     def persona(self) -> str | None:
         value = self.template_kwargs.get("persona")
-        return value if isinstance(value, str) and value else None
+        return value if isinstance(value, str) and value.strip() else None
 
 
 @runtime_checkable
@@ -123,8 +123,11 @@ class PromptSection(Protocol):
     dedup/override; ``cache_tier`` selects the static or dynamic block.
     """
 
-    name: str
-    cache_tier: CacheTier
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def cache_tier(self) -> CacheTier: ...
 
     def guard(self, ctx: PromptContext) -> bool:
         """Return ``True`` if this section applies to ``ctx``."""
