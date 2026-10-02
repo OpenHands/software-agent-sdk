@@ -1,26 +1,30 @@
 {
   "__expected__": {
     "agent_kind": "openhands",
-    "llm.model": "openhands/gpt-5.5",
+    "llm.model": "fixture-v8-llm",
     "tools": [
       {
-        "name": "TerminalTool",
+        "name": "terminal",
         "params": {}
       },
       {
-        "name": "switch_llm",
+        "name": "task_tool_set",
         "params": {}
       }
     ]
   },
-  "schema_version": 4,
+  "schema_version": 8,
   "agent_kind": "openhands",
   "llm": {
-    "model": "openhands/gpt-5.5"
+    "model": "fixture-v8-llm"
   },
   "tools": [
     {
-      "name": "TerminalTool",
+      "name": "terminal",
+      "params": {}
+    },
+    {
+      "name": "task_tool_set",
       "params": {}
     }
   ]

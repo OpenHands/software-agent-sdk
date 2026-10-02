@@ -8,6 +8,7 @@
  */
 
 import type { ACPProviderKey } from './acp';
+import type { MCPJsonValue } from './api';
 
 // ── Shared supporting types ──────────────────────────────────────────────────
 
@@ -26,6 +27,12 @@ export interface ProfileVerificationSettings {
   max_refinement_iterations: number;
   critic_server_url: string | null;
   critic_model_name: string | null;
+}
+
+/** A tool selected by name, with optional `create()` params. */
+export interface ProfileToolSpec {
+  name: string;
+  params?: Record<string, MCPJsonValue>;
 }
 
 // ── Profile variants ─────────────────────────────────────────────────────────
@@ -62,7 +69,8 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   system_message_suffix: string | null;
   condenser: unknown;
   verification: ProfileVerificationSettings;
-  enable_sub_agents: boolean;
+  /** Tools to launch with; `null` = the server's standard set. */
+  tools: ProfileToolSpec[] | null;
   tool_concurrency_limit: number;
 }
 
@@ -137,6 +145,9 @@ export interface AgentProfileDiagnostics {
   mcp_server_refs: string[] | null;
   resolved_mcp_servers: string[];
   dangling_mcp_server_refs: string[];
+
+  /** Selected tools the runtime cannot run. */
+  unusable_tools?: string[];
 
   // ACP provider credential channels (ACP variant only).
   acp_api_key_secret_name: string | null;
