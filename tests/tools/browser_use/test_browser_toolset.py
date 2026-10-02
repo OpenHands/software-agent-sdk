@@ -23,10 +23,12 @@ from openhands.tools.browser_use.impl import BrowserToolExecutor
 def _reset_shared_executor():
     """Reset the shared executor singleton before and after each test."""
     BrowserToolSet._shared_executor = None
+    BrowserToolSet._mcp_import_ok = None
     yield
     if BrowserToolSet._shared_executor is not None:
         BrowserToolSet._shared_executor.close()
     BrowserToolSet._shared_executor = None
+    BrowserToolSet._mcp_import_ok = None
 
 
 @pytest.fixture(autouse=True)

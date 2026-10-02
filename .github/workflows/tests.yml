@@ -24,6 +24,7 @@ jobs:
                   # Allowed top-level directories under tests/
                   # Each must have a corresponding CI job or workflow that runs them.
                   #   tests.yml:             sdk, tools, workspace, agent_server, cross
+                  #   tests.yml:             browser-unlocked-resolve-check (no test dir)
                   #   run-examples.yml:      examples
                   #   integration-runner.yml: integration
                   #   (data-only):           fixtures
@@ -249,6 +250,39 @@ jobs:
                   name: coverage-tools
                   path: coverage-tools.dat
                   if-no-files-found: warn
+
+    # Catch the #5152 class of drift: an unlocked resolve must not produce a
+    # browser-use version that is incompatible with the mcp version that
+    # fastmcp resolves to. Runs without uv.lock so it exercises real PyPI.
+    browser-unlocked-resolve-check:
+        name: Browser unlocked-resolve guard (#5152)
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 10
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            - name: Detect browser-use / fastmcp dependency changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-tools/pyproject.toml
+                      openhands-sdk/pyproject.toml
+                      openhands-agent-server/pyproject.toml
+                      .github/scripts/check_unlocked_browser_deps.py
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: false
+                  python-version: '3.12'
+
+            - name: Check unlocked browser-use + mcp resolve
+              if: steps.changed.outputs.any_changed == 'true'
+              run: python .github/scripts/check_unlocked_browser_deps.py
 
     windows-tests:
         runs-on: windows-latest
