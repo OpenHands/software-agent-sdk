@@ -113,50 +113,67 @@ class LLMConvertibleEvent(Event, ABC):
         lists rather than mutating the events' own messages.
         """
         from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.utils.supercompress import supercompress_query
 
         messages = []
         i = 0
 
-        while i < len(events):
-            event = events[i]
+        with supercompress_query(_latest_user_text(events)):
+            while i < len(events):
+                event = events[i]
 
-            if isinstance(event, ActionEvent):
-                # Collect all ActionEvents from same LLM response
-                # This happens when function calling happens
-                batch_events: list[ActionEvent] = [event]
-                response_id = event.llm_response_id
+                if isinstance(event, ActionEvent):
+                    # Collect all ActionEvents from same LLM response
+                    # This happens when function calling happens
+                    batch_events: list[ActionEvent] = [event]
+                    response_id = event.llm_response_id
 
-                # Look ahead for related events
-                j = i + 1
-                while j < len(events) and isinstance(events[j], ActionEvent):
-                    event = events[j]
-                    assert isinstance(event, ActionEvent)  # for type checker
-                    if event.llm_response_id != response_id:
-                        break
-                    batch_events.append(event)
-                    j += 1
+                    # Look ahead for related events
+                    j = i + 1
+                    while j < len(events) and isinstance(events[j], ActionEvent):
+                        event = events[j]
+                        assert isinstance(event, ActionEvent)  # for type checker
+                        if event.llm_response_id != response_id:
+                            break
+                        batch_events.append(event)
+                        j += 1
 
-                # Create combined message for the response
-                msg = _combine_action_events(batch_events)
-                if messages and _can_merge_user_messages(messages[-1], msg):
-                    messages[-1].content = list(messages[-1].content) + list(
-                        msg.content
-                    )
+                    # Create combined message for the response
+                    msg = _combine_action_events(batch_events)
+                    if messages and _can_merge_user_messages(messages[-1], msg):
+                        messages[-1].content = list(messages[-1].content) + list(
+                            msg.content
+                        )
+                    else:
+                        messages.append(msg)
+                    i = j
                 else:
-                    messages.append(msg)
-                i = j
-            else:
-                # Regular event - direct conversion
-                msg = event.to_llm_message()
-                if messages and _can_merge_user_messages(messages[-1], msg):
-                    messages[-1].content = list(messages[-1].content) + list(
-                        msg.content
-                    )
-                else:
-                    messages.append(msg)
-                i += 1
+                    # Regular event - direct conversion
+                    msg = event.to_llm_message()
+                    if messages and _can_merge_user_messages(messages[-1], msg):
+                        messages[-1].content = list(messages[-1].content) + list(
+                            msg.content
+                        )
+                    else:
+                        messages.append(msg)
+                    i += 1
 
-        return messages
+            return messages
+
+
+def _latest_user_text(events: list["LLMConvertibleEvent"]) -> str | None:
+    """Text of the latest user message. Tool output is scored against this."""
+    from openhands.sdk.event.llm_convertible import MessageEvent
+    from openhands.sdk.llm import content_to_str
+
+    latest: str | None = None
+    for event in events:
+        if not isinstance(event, MessageEvent) or event.source != "user":
+            continue
+        text = "\n".join(content_to_str(event.llm_message.content)).strip()
+        if text:
+            latest = text
+    return latest
 
 
 def _is_plain_user_message(message: Message) -> bool:
