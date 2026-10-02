@@ -298,9 +298,16 @@ class Message(BaseModel):
         - Assistant tool call turn: role == "assistant" and self.tool_calls
         - Tool result turn: role == "tool" and self.tool_call_id (with name)
         """
+        # The string serializer emits text only, so it would silently discard
+        # images. When the model can accept them, keep the list format for
+        # messages carrying image content even if string serialization is forced.
+        preserve_images = vision_enabled and self.contains_image
+
         if not force_string_serializer and (
             cache_enabled or vision_enabled or function_calling_enabled
         ):
+            message_dict = self._list_serializer(vision_enabled=vision_enabled)
+        elif preserve_images:
             message_dict = self._list_serializer(vision_enabled=vision_enabled)
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
