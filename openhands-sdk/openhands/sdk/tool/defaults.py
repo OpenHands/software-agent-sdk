@@ -12,11 +12,16 @@ lockstep with these names.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter
 
 from openhands.sdk.tool.spec import Tool
+from openhands.sdk.utils.deprecation import warn_deprecated
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool.tool import ToolDefinition
 
 
 DEFAULT_EXEC_TOOL_NAMES: tuple[str, ...] = (
@@ -60,29 +65,50 @@ def launch_tool_specs(
     return [tool for tool in resolved if tool.name != BROWSER_TOOL_NAME]
 
 
+def effective_builtin_class(name: str) -> "type[ToolDefinition] | None":
+    """Return the built-in ``name`` resolves to, unless another tool holds it."""
+    from openhands.sdk.tool.builtins import builtin_tool_class
+    from openhands.sdk.tool.registry import registered_tool_class
+
+    builtin = builtin_tool_class(name)
+    if builtin is None or registered_tool_class(name) not in (None, builtin):
+        return None
+    return builtin
+
+
 def canonical_tool_name(name: str) -> str:
     """Return the tool name a spec resolves to, collapsing built-in class names."""
-    from openhands.sdk.tool.builtins import builtin_tool_class
+    builtin = effective_builtin_class(name)
+    if builtin is None or effective_builtin_class(builtin.name) is not builtin:
+        return name
+    return builtin.name
 
-    tool_class = builtin_tool_class(name)
-    return tool_class.name if tool_class is not None else name
+
+def selects_tool(tools: Sequence[Tool], name: str) -> bool:
+    return any(canonical_tool_name(tool.name) == name for tool in tools)
+
+
+def merge_duplicate_tools(tools: Sequence[Tool]) -> list[Tool]:
+    """Collapse specs that name the same tool, keeping the first one with params."""
+    by_name: dict[str, Tool] = {}
+    for tool in tools:
+        name = canonical_tool_name(tool.name)
+        kept = by_name.get(name)
+        if kept is None or (tool.params and not kept.params):
+            by_name[name] = Tool(name=name, params=tool.params)
+    return list(by_name.values())
 
 
 def reject_builtin_params(tools: Sequence[Tool]) -> None:
     """Raise if a built-in that takes no parameters is given some."""
-    from openhands.sdk.tool.builtins import (
-        BUILT_IN_TOOLS_WITH_PARAMS,
-        builtin_tool_class,
-    )
-    from openhands.sdk.tool.registry import registered_tool_class
+    from openhands.sdk.tool.builtins import BUILT_IN_TOOLS_WITH_PARAMS
 
     for tool in tools:
-        tool_class = builtin_tool_class(tool.name)
+        tool_class = effective_builtin_class(tool.name)
         if (
             set(tool.params) - {"response_schema"}
             and tool_class is not None
             and tool_class.__name__ not in BUILT_IN_TOOLS_WITH_PARAMS
-            and registered_tool_class(tool.name) in (None, tool_class)
         ):
             raise ValueError(f"Tool {tool.name!r} does not accept parameters")
 
@@ -115,8 +141,32 @@ RETIRED_TOOL_SWITCHES = ("enable_sub_agents", "enable_switch_llm_tool")
 _BOOL_ADAPTER = TypeAdapter(bool)
 
 
+def drop_retired_tool_switches(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
+
+
+def fold_deprecated_tool_switches(
+    data: Any, *, owner: str, enable_browser: bool
+) -> Any:
+    """Fold deprecated switch input into ``tools`` and warn."""
+    if not isinstance(data, Mapping) or not any(
+        key in data for key in RETIRED_TOOL_SWITCHES
+    ):
+        return data
+    warn_deprecated(
+        f"{owner}.enable_sub_agents and {owner}.enable_switch_llm_tool",
+        deprecated_in="1.51.0",
+        removed_in="1.56.0",
+        details="Select task_tool_set and switch_llm in `tools` instead.",
+    )
+    return fold_retired_tool_switches(data, sparse=True, enable_browser=enable_browser)
+
+
 def fold_retired_tool_switches(
-    payload: Mapping[str, Any], *, sparse: bool = False
+    payload: Mapping[str, Any],
+    *,
+    sparse: bool = False,
+    enable_browser: bool = True,
 ) -> dict[str, Any]:
     """Fold the retired switches into ``tools``; ``sparse`` skips absent ones."""
     folded = dict(payload)
@@ -132,7 +182,7 @@ def fold_retired_tool_switches(
         return folded
     # "The standard set plus/minus one tool" is not expressible, so pin it.
     if tools is None:
-        entries = _preset_specs(enable_browser=True)
+        entries = _preset_specs(enable_browser=enable_browser)
         if sub_agents:
             entries.append(Tool(name=SUB_AGENT_TOOL_NAME))
         if switch_llm is None:
@@ -149,10 +199,9 @@ def fold_retired_tool_switches(
 
 
 def _toggle(entries: list[Tool], name: str, enabled: bool) -> list[Tool]:
-    selected = [canonical_tool_name(e.name) == name for e in entries]
     if not enabled:
-        return [e for e, is_selected in zip(entries, selected) if not is_selected]
-    if not any(selected):
+        return [e for e in entries if canonical_tool_name(e.name) != name]
+    if not selects_tool(entries, name):
         return [*entries, Tool(name=name)]
     return entries
 

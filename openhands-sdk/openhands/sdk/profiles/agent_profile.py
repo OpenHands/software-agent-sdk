@@ -34,12 +34,12 @@ from openhands.sdk.settings.model import (
 )
 from openhands.sdk.tool import Tool
 from openhands.sdk.tool.defaults import (
-    RETIRED_TOOL_SWITCHES,
-    canonical_tool_name,
+    drop_retired_tool_switches,
+    fold_deprecated_tool_switches,
     fold_retired_tool_switches,
+    merge_duplicate_tools,
     reject_builtin_params,
 )
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 3
@@ -217,18 +217,11 @@ class OpenHandsAgentProfile(AgentProfileBase):
     @model_validator(mode="before")
     @classmethod
     def _fold_retired_tool_switches(cls, data: Any) -> Any:
-        if not isinstance(data, Mapping) or not any(
-            key in data for key in RETIRED_TOOL_SWITCHES
-        ):
-            return data
-        warn_deprecated(
-            "OpenHandsAgentProfile.enable_sub_agents and "
-            "OpenHandsAgentProfile.enable_switch_llm_tool",
-            deprecated_in="1.51.0",
-            removed_in="1.56.0",
-            details="Select task_tool_set and switch_llm in `tools` instead.",
+        # A profile is launched by a serving layer, which drops a browser the
+        # runtime can't run.
+        return fold_deprecated_tool_switches(
+            data, owner="OpenHandsAgentProfile", enable_browser=True
         )
-        return fold_retired_tool_switches(data, sparse=True)
 
     @field_validator("tools")
     @classmethod
@@ -236,13 +229,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
         if tools is None:
             return None
         reject_builtin_params(tools)
-        by_name: dict[str, Tool] = {}
-        for tool in tools:
-            name = canonical_tool_name(tool.name)
-            kept = by_name.get(name)
-            if kept is None or (tool.params and not kept.params):
-                by_name[name] = Tool(name=name, params=tool.params)
-        return list(by_name.values())
+        return merge_duplicate_tools(tools)
 
 
 class ACPAgentProfile(AgentProfileBase):
@@ -395,7 +382,7 @@ def _migrate_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("agent_kind", "openhands") == "openhands":
         migrated = fold_retired_tool_switches(payload)
     else:
-        migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
+        migrated = drop_retired_tool_switches(payload)
     migrated["schema_version"] = 3
     return migrated
 

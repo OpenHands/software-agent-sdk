@@ -55,21 +55,18 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
-from openhands.sdk.tool.builtins import (
-    BUILT_IN_TOOLS,
-    ClassifyAndSwitchLLMTool,
-    builtin_tool_class,
-)
+from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, ClassifyAndSwitchLLMTool
 from openhands.sdk.tool.defaults import (
-    RETIRED_TOOL_SWITCHES,
     SUB_AGENT_TOOL_NAME,
     SWITCH_LLM_TOOL_NAME,
-    canonical_tool_name,
+    drop_retired_tool_switches,
+    effective_builtin_class,
+    fold_deprecated_tool_switches,
     fold_retired_tool_switches,
+    merge_duplicate_tools,
     resolve_tool_specs,
+    selects_tool,
 )
-from openhands.sdk.tool.registry import registered_tool_class
-from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
@@ -735,14 +732,10 @@ def _warn_retired_tool_switches() -> None:
     )
 
 
-def _selects(tools: Sequence[Tool], name: str) -> bool:
-    return any(canonical_tool_name(tool.name) == name for tool in tools)
-
-
 def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
     """Fold the retired tool switches into ``tools``."""
     if payload.get("agent_kind", "openhands") == "acp":
-        migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
+        migrated = drop_retired_tool_switches(payload)
     else:
         migrated = fold_retired_tool_switches(payload)
     migrated["schema_version"] = 8
@@ -752,13 +745,8 @@ def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
 def _migrate_agent_settings_v7_to_v8_request(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Advance a request to v8 without the retired switches' persisted defaults."""
-    if payload.get("agent_kind", "openhands") == "acp":
-        migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
-    else:
-        migrated = dict(payload)
-    migrated["schema_version"] = 8
-    return migrated
+    """Advance a request to v8, leaving its switches to be folded as input."""
+    return {**payload, "schema_version": 8}
 
 
 def _migrate_agent_settings_payload(
@@ -766,7 +754,7 @@ def _migrate_agent_settings_payload(
 ) -> dict[str, Any]:
     payload = _copy_persisted_payload(data)
     is_request = not persisted and payload.get("schema_version") is None
-    return _apply_persisted_migrations(
+    payload = _apply_persisted_migrations(
         payload,
         current_version=AGENT_SETTINGS_SCHEMA_VERSION,
         migrations=(
@@ -775,6 +763,13 @@ def _migrate_agent_settings_payload(
             else _AGENT_SETTINGS_MIGRATIONS
         ),
         payload_name="AgentSettings",
+    )
+    if payload.get("agent_kind", "openhands") == "acp":
+        return drop_retired_tool_switches(payload)
+    # A loaded payload is launched by a serving layer, which drops a browser
+    # the runtime can't run.
+    return fold_deprecated_tool_switches(
+        payload, owner="OpenHandsAgentSettings", enable_browser=True
     )
 
 
@@ -1478,22 +1473,21 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     @model_validator(mode="before")
     @classmethod
     def _fold_retired_tool_switches(cls, data: Any) -> Any:
-        if not isinstance(data, Mapping) or not any(
-            key in data for key in RETIRED_TOOL_SWITCHES
-        ):
-            return data
-        _warn_retired_tool_switches()
-        return fold_retired_tool_switches(data, sparse=True)
+        # Settings built in code are launched by create_agent, which adds no
+        # browser to the standard set.
+        return fold_deprecated_tool_switches(
+            data, owner="OpenHandsAgentSettings", enable_browser=False
+        )
 
     @property
     def enable_sub_agents(self) -> bool:
         _warn_retired_tool_switches()
-        return self.tools is not None and _selects(self.tools, SUB_AGENT_TOOL_NAME)
+        return self.tools is not None and selects_tool(self.tools, SUB_AGENT_TOOL_NAME)
 
     @property
     def enable_switch_llm_tool(self) -> bool:
         _warn_retired_tool_switches()
-        return self.tools is None or _selects(self.tools, SWITCH_LLM_TOOL_NAME)
+        return self.tools is None or selects_tool(self.tools, SWITCH_LLM_TOOL_NAME)
 
     @field_validator("condenser", mode="before")
     @classmethod
@@ -1516,37 +1510,19 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 
-        def as_builtin(name: str) -> type[ToolDefinition] | None:
-            builtin = builtin_tool_class(name)
-            registered = registered_tool_class(name)
-            return builtin if registered in (None, builtin) else None
-
-        specs = resolve_tool_specs(self.tools)
+        specs = merge_duplicate_tools(resolve_tool_specs(self.tools))
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-
-        builtin_params: dict[str, dict[str, Any]] = {}
-        for spec in specs:
-            builtin = as_builtin(spec.name)
-            if builtin is not None and spec.params:
-                builtin_params.setdefault(builtin.__name__, spec.params)
-
         tools: list[Tool] = []
-        attached_builtins: set[str] = set()
         for spec in specs:
-            builtin = as_builtin(spec.name)
+            builtin = effective_builtin_class(spec.name)
             if builtin is None:
                 tools.append(spec)
-                continue
-            class_name = builtin.__name__
-            if class_name in attached_builtins:
-                continue
-            attached_builtins.add(class_name)
-            if class_name in builtin_params:
-                tools.append(Tool(name=class_name, params=builtin_params[class_name]))
-                if class_name in include_default_tools:
-                    include_default_tools.remove(class_name)
-            elif class_name not in include_default_tools:
-                include_default_tools.append(class_name)
+            elif spec.params:
+                tools.append(Tool(name=builtin.__name__, params=spec.params))
+                if builtin.__name__ in include_default_tools:
+                    include_default_tools.remove(builtin.__name__)
+            elif builtin.__name__ not in include_default_tools:
+                include_default_tools.append(builtin.__name__)
 
         # The routing tool needs the active meta-profile name, which the
         # name-only ``include_default_tools`` path cannot pass, so add it as a

@@ -321,6 +321,33 @@ def test_builtin_lookup_sees_builtins_added_later(monkeypatch):
     )
 
 
+def test_a_tool_registered_under_a_builtin_name_is_not_swapped_for_it():
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.profiles import OpenHandsAgentProfile
+    from openhands.sdk.settings import OpenHandsAgentSettings
+    from openhands.sdk.tool.defaults import canonical_tool_name
+
+    assert canonical_tool_name("ThinkTool") == "think"
+    register_tool("ThinkTool", _SimpleHelloTool)
+    spec = Tool(name="ThinkTool", params={"greeting": "hi"})
+
+    profile = OpenHandsAgentProfile(name="x", llm_profile_ref="y", tools=[spec])
+    agent = OpenHandsAgentSettings(llm=LLM(model="m"), tools=[spec]).create_agent()
+
+    assert canonical_tool_name("ThinkTool") == "ThinkTool"
+    assert profile.tools == [spec]
+    assert agent.tools == [spec]
+
+
+def test_a_builtin_class_name_is_not_collapsed_onto_a_registered_tool():
+    from openhands.sdk.tool.defaults import canonical_tool_name
+
+    register_tool("think", _SimpleHelloTool)
+
+    assert canonical_tool_name("think") == "think"
+    assert canonical_tool_name("ThinkTool") == "ThinkTool"
+
+
 def test_sealed_catalog_ignores_later_registrations(monkeypatch):
     """Registrations after sealing are per-conversation and stay out."""
     register_tool("catalog_at_startup", _SimpleHelloTool)

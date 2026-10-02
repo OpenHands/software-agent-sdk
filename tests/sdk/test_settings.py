@@ -1019,8 +1019,49 @@ def test_retired_enable_sub_agents_folds_into_the_default_tools() -> None:
         "terminal",
         "file_editor",
         "task_tracker",
-        "browser_tool_set",
         "task_tool_set",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("switches", "expected"),
+    [
+        ({"enable_sub_agents": True}, ["task_tool_set", "switch_llm"]),
+        ({"enable_switch_llm_tool": False}, []),
+    ],
+)
+def test_retired_switches_pin_the_browser_only_for_loaded_settings(
+    switches: dict[str, bool], expected: list[str]
+) -> None:
+    payload = {"agent_kind": "openhands", "llm": {"model": "test-model"}, **switches}
+    built = OpenHandsAgentSettings.model_validate(payload)
+    loaded = validate_agent_settings(payload)
+    stored = validate_agent_settings(
+        {**payload, "schema_version": AGENT_SETTINGS_SCHEMA_VERSION}
+    )
+
+    standard = ["terminal", "file_editor", "task_tracker"]
+    assert [t.name for t in built.tools or []] == [*standard, *expected]
+    for settings in (loaded, stored):
+        assert isinstance(settings, OpenHandsAgentSettings)
+        assert [t.name for t in settings.tools or []] == [
+            *standard,
+            "browser_tool_set",
+            *expected,
+        ]
+
+
+def test_create_agent_collapses_duplicate_tools() -> None:
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"),
+        tools=[
+            Tool(name="terminal"),
+            Tool(name="terminal", params={"username": "dev"}),
+        ],
+    ).create_agent()
+
+    assert [(t.name, t.params) for t in agent.tools] == [
+        ("terminal", {"username": "dev"})
     ]
 
 

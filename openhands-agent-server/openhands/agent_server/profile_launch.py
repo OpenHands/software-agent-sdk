@@ -12,11 +12,8 @@ from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
-from openhands.sdk.settings import (
-    AgentSettingsConfig,
-    OpenHandsAgentSettings,
-    agent_settings_tools_unset,
-)
+from openhands.sdk.settings import AgentSettingsConfig, OpenHandsAgentSettings
+from openhands.sdk.settings.model import agent_settings_tools_unset
 from openhands.sdk.skills import Skill
 from openhands.sdk.tool import (
     BROWSER_TOOL_NAME,
