@@ -305,17 +305,20 @@ Let me check the current task list first:
 </function>
 """,
         "plan": """
-I'll create or update the full plan based on your requirements and current progress:
+I'll create or update the full plan based on your requirements and current progress.
+When updating an existing task, I'll preserve the ID returned by `view`:
 <function=task_tracker>
 <parameter=command>plan</parameter>
 <parameter=task_list>
 [
   {
+    "id": "task-001",
     "title": "Initialize repo",
     "status": "done",
     "notes": "Repository created and README added."
   },
   {
+    "id": "task-002",
     "title": "Implement nested param parsing",
     "status": "in_progress",
     "notes": "Add recursive parsing for array-typed parameters."

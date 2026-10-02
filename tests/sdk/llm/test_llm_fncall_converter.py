@@ -19,6 +19,7 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_tools_to_description,
     system_message_suffix_TEMPLATE,
 )
+from openhands.sdk.llm.mixins.fn_call_examples import get_example_for_tools
 
 
 FNCALL_TOOLS: list[ChatCompletionToolParam] = [
@@ -155,6 +156,18 @@ def test_convert_fncall_to_non_fncall_with_in_context_learning():
     assert has_example, (
         "In-context learning examples should be added to message content"
     )
+
+
+def test_task_tracker_example_preserves_existing_task_ids() -> None:
+    tools = cast(
+        list[ChatCompletionToolParam],
+        [{"type": "function", "function": {"name": "task_tracker"}}],
+    )
+
+    example = get_example_for_tools(tools)
+
+    assert '"id": "task-001"' in example
+    assert '"id": "task-002"' in example
 
 
 def test_convert_fncall_to_non_fncall_without_in_context_learning():
