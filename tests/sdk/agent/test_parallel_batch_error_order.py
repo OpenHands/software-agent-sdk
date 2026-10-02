@@ -63,9 +63,7 @@ def test_batch_errors_flush_after_sibling_actions():
     )
     agent = Agent(llm=llm, tools=[])
     collected_events = []
-    conversation = Conversation(
-        agent=agent, callbacks=[collected_events.append]
-    )
+    conversation = Conversation(agent=agent, callbacks=[collected_events.append])
 
     with patch(
         "openhands.sdk.llm.llm.litellm_completion",
@@ -80,25 +78,17 @@ def test_batch_errors_flush_after_sibling_actions():
         agent.step(conversation, on_event=collected_events.append)
 
     batch = [
-        e
-        for e in collected_events
-        if isinstance(e, (ActionEvent, AgentErrorEvent))
+        e for e in collected_events if isinstance(e, (ActionEvent, AgentErrorEvent))
     ]
     kinds = [type(e).__name__ for e in batch]
     assert kinds == ["ActionEvent"] * 4 + ["AgentErrorEvent"] * 4, kinds
-    assert [e.tool_call_id for e in batch[:4]] == [
-        f"call_{i}" for i in range(1, 5)
-    ]
-    assert [e.tool_call_id for e in batch[4:]] == [
-        f"call_{i}" for i in range(1, 5)
-    ]
+    assert [e.tool_call_id for e in batch[:4]] == [f"call_{i}" for i in range(1, 5)]
+    assert [e.tool_call_id for e in batch[4:]] == [f"call_{i}" for i in range(1, 5)]
 
     messages = LLMConvertibleEvent.events_to_messages(
         [e for e in collected_events if isinstance(e, LLMConvertibleEvent)]
     )
-    assistant_batches = [
-        m for m in messages if m.role == "assistant" and m.tool_calls
-    ]
+    assistant_batches = [m for m in messages if m.role == "assistant" and m.tool_calls]
     assert len(assistant_batches) == 1
     assert [c.id for c in assistant_batches[0].tool_calls] == [
         f"call_{i}" for i in range(1, 5)
@@ -106,6 +96,4 @@ def test_batch_errors_flush_after_sibling_actions():
     head = messages.index(assistant_batches[0])
     tail = messages[head + 1 : head + 5]
     assert [m.role for m in tail] == ["tool"] * 4
-    assert [m.tool_call_id for m in tail] == [
-        f"call_{i}" for i in range(1, 5)
-    ]
+    assert [m.tool_call_id for m in tail] == [f"call_{i}" for i in range(1, 5)]
