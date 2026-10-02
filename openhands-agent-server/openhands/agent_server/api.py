@@ -41,6 +41,7 @@ from openhands.agent_server.conversation_router import (
     conversation_router,
 )
 from openhands.agent_server.conversation_service import (
+    ConversationArchivedError,
     CredentialBindingActivationRequired,
     get_default_conversation_service,
 )
@@ -579,6 +580,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 "retryable": True,
             },
         )
+
+    @api.exception_handler(ConversationArchivedError)
+    async def _conversation_archived_handler(
+        _request: Request,
+        exc: ConversationArchivedError,
+    ) -> JSONResponse:
+        # 409 matches the Docker runtime's rejection of the same operation, so a
+        # client sees one status whether the conversation is host-local or
+        # container-backed.
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @api.exception_handler(RequestValidationError)
     async def _validation_exception_handler(

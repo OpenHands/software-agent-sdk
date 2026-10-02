@@ -121,6 +121,48 @@ def sample_start_conversation_request():
     )
 
 
+@pytest.mark.parametrize(
+    ("action", "archived"), (("archive", True), ("unarchive", False))
+)
+def test_set_conversation_archive_state(
+    client, mock_conversation_service, sample_conversation_info, action, archived
+):
+    mock_conversation_service.set_conversation_archived.return_value = (
+        sample_conversation_info.model_copy(
+            update={"archived_at": utc_now() if archived else None}
+        )
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_info.id}/{action}"
+        )
+        assert response.status_code == 200
+        assert (response.json()["archived_at"] is not None) == archived
+        mock_conversation_service.set_conversation_archived.assert_awaited_once_with(
+            sample_conversation_info.id, archived=archived
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_archive_conversation_not_found(client, mock_conversation_service):
+    conversation_id = uuid4()
+    mock_conversation_service.set_conversation_archived.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(f"/api/conversations/{conversation_id}/archive")
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_search_conversations_default_params(
     client, mock_conversation_service, sample_conversation_info
 ):
@@ -147,7 +189,7 @@ def test_search_conversations_default_params(
 
         # Verify service was called with default parameters
         mock_conversation_service.search_conversations.assert_called_once_with(
-            None, 100, None, ConversationSortOrder.CREATED_AT_DESC
+            None, 100, None, ConversationSortOrder.CREATED_AT_DESC, False
         )
     finally:
         client.app.dependency_overrides.clear()
@@ -211,6 +253,7 @@ def test_search_conversations_with_all_params(
                 "limit": 50,
                 "status": ConversationExecutionStatus.IDLE.value,
                 "sort_order": ConversationSortOrder.UPDATED_AT_DESC.value,
+                "archived": True,
             },
         )
 
@@ -225,6 +268,7 @@ def test_search_conversations_with_all_params(
             50,
             ConversationExecutionStatus.IDLE,
             ConversationSortOrder.UPDATED_AT_DESC,
+            True,
         )
     finally:
         client.app.dependency_overrides.clear()
@@ -295,7 +339,27 @@ def test_count_conversations_no_filter(client, mock_conversation_service):
         assert response.json() == 5
 
         # Verify service was called with no status filter
-        mock_conversation_service.count_conversations.assert_called_once_with(None)
+        mock_conversation_service.count_conversations.assert_called_once_with(
+            None, False
+        )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_count_conversations_with_archived_filter(client, mock_conversation_service):
+    mock_conversation_service.count_conversations.return_value = 2
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.get("/api/conversations/count", params={"archived": "true"})
+
+        assert response.status_code == 200
+        assert response.json() == 2
+        mock_conversation_service.count_conversations.assert_called_once_with(
+            None, True
+        )
     finally:
         client.app.dependency_overrides.clear()
 
@@ -321,7 +385,7 @@ def test_count_conversations_with_status_filter(client, mock_conversation_servic
 
         # Verify service was called with status filter
         mock_conversation_service.count_conversations.assert_called_once_with(
-            ConversationExecutionStatus.RUNNING
+            ConversationExecutionStatus.RUNNING, False
         )
     finally:
         client.app.dependency_overrides.clear()
@@ -2960,3 +3024,44 @@ def test_runtime_requires_existing_conversation(
     )
     response = client.request(method, f"/api/conversations/{uuid4()}/runtime{suffix}")
     assert response.status_code == 404
+
+
+def test_start_conversation_on_archived_id_returns_conflict(
+    client, mock_conversation_service
+):
+    """Archived start/resume is a 409, matching the Docker runtime.
+
+    Previously the archived record was re-composed into a 200 response for a
+    conversation that was never started.
+    """
+    from openhands.agent_server.conversation_service import ConversationArchivedError
+
+    mock_conversation_service.start_conversation.side_effect = (
+        ConversationArchivedError(
+            "Conversation is archived; unarchive it before using its runtime"
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="t"),
+            tools=[],
+        ),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        conversation_id=uuid4(),
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json=request.model_dump(mode="json"),
+        )
+
+        assert response.status_code == 409
+        assert "archived" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()

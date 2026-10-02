@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.dependencies import get_event_service
+from openhands.agent_server.dependencies import get_read_event_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.file_router import file_discovery_router
@@ -58,7 +58,7 @@ def test_search_events_rejects_out_of_range_limit(limit):
     app.include_router(event_router, prefix="/api")
     service = AsyncMock(spec=EventService)
     service.search_events = AsyncMock(return_value={"items": [], "next_page_id": None})
-    app.dependency_overrides[get_event_service] = lambda: service
+    app.dependency_overrides[get_read_event_service] = lambda: service
 
     with TestClient(app) as client:
         response = client.get(
@@ -74,7 +74,7 @@ def test_search_events_accepts_the_maximum_limit():
     app.include_router(event_router, prefix="/api")
     service = AsyncMock(spec=EventService)
     service.search_events = AsyncMock(return_value={"items": [], "next_page_id": None})
-    app.dependency_overrides[get_event_service] = lambda: service
+    app.dependency_overrides[get_read_event_service] = lambda: service
 
     with TestClient(app) as client:
         response = client.get(
