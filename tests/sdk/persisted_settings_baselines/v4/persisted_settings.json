@@ -1,8 +1,8 @@
 {
   "__expected__": {
-    "schema_version": 4,
+    "schema_version": 5,
     "active_profile": "fixture-v4-profile",
-    "agent_settings.schema_version": 7,
+    "agent_settings.schema_version": 8,
     "agent_settings.agent_kind": "acp",
     "agent_settings.acp_model": "fixture-v4-acp-model",
     "conversation_settings.max_iterations": 120,

@@ -4338,3 +4338,173 @@ async def test_refresh_persisted_conversation_only_decrypts_requested_record(
         assert reads == [conversation_id]
         assert await service.get_conversation(conversation_id) is not None
         assert reads == [conversation_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enable_browser", "usable", "tools", "expected"),
+    [
+        (
+            True,
+            True,
+            None,
+            ["terminal", "file_editor", "task_tracker", "browser_tool_set"],
+        ),
+        (True, False, None, ["terminal", "file_editor", "task_tracker"]),
+        (False, True, None, ["terminal", "file_editor", "task_tracker"]),
+        (True, True, [{"name": "terminal"}], ["terminal"]),
+        (
+            True,
+            True,
+            [{"name": "browser_tool_set"}, {"name": "terminal"}],
+            ["browser_tool_set", "terminal"],
+        ),
+        (
+            True,
+            False,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+        (
+            False,
+            True,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+    ],
+)
+async def test_settings_launch_resolves_tools_for_this_server(
+    conversation_service, tmp_path, enable_browser, usable, tools, expected
+):
+    conversation_service.enable_browser = enable_browser
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": tools,
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch(
+            "openhands.agent_server.profile_launch.is_tool_usable",
+            return_value=usable,
+        ),
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == expected
+
+
+async def test_explicit_agent_wins_over_agent_settings(conversation_service, tmp_path):
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": [{"name": "file_editor"}],
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == ["terminal"]
+
+
+@pytest.mark.asyncio
+async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_path):
+    from openhands.sdk.settings import OpenHandsAgentSettings
+
+    conversation_service.enable_browser = True
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = cast(AgentBase, kwargs.get("agent"))
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch(
+            "openhands.agent_server.profile_launch.is_tool_usable", return_value=True
+        ),
+        patch.object(
+            OpenHandsAgentSettings,
+            "create_agent",
+            side_effect=AssertionError("agent rebuilt"),
+        ),
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert "browser_tool_set" in [t.name for t in captured["agent"].tools]

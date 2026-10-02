@@ -487,12 +487,15 @@ def _initial_system_prompt(agent: Agent, temp_dir: str) -> SystemPromptEvent:
     return event
 
 
-def _agent(tools: list[Tool], system_prompt: str | None = None) -> Agent:
+def _agent(
+    tools: list[Tool], system_prompt: str | None = None, persona: str | None = None
+) -> Agent:
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     return Agent(
         llm=llm,
         tools=tools,
         system_prompt=system_prompt,
+        persona=persona,
         system_prompt_kwargs={"soul_content": "Test soul."},
     )
 
@@ -522,6 +525,17 @@ def test_custom_system_prompt_keeps_browser_guidance():
     )
 
 
+def test_persona_keeps_browser_guidance():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        event = _initial_system_prompt(
+            _agent([Tool(name=BrowserToolSet.name)], persona="You are a chef."),
+            temp_dir,
+        )
+
+    assert event.system_prompt.text.startswith("You are a chef.")
+    assert BROWSER_PROMPT_GUIDANCE in event.system_prompt.text
+
+
 def test_no_browser_guidance_when_browser_fails_to_start():
     with (
         tempfile.TemporaryDirectory() as temp_dir,
@@ -537,3 +551,37 @@ def test_no_browser_guidance_when_browser_fails_to_start():
 
     assert not any(t.name.startswith("browser_") for t in event.tools)
     assert "<BROWSER_TOOLS>" not in event.system_prompt.text
+
+
+def test_migrated_profile_with_pinned_browser_resolves_on_browserless_runtime():
+    """A migrated profile pinning `browser_tool_set` resolves without a browser."""
+    from openhands.sdk.tool.defaults import (
+        fold_retired_tool_switches,
+        resolve_tool_specs,
+    )
+    from openhands.sdk.tool.registry import resolve_tool
+
+    migrated = fold_retired_tool_switches({"tools": None, "enable_sub_agents": True})[
+        "tools"
+    ]
+    specs = resolve_tool_specs(migrated)
+    assert [spec.name for spec in specs] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "task_tool_set",
+        "switch_llm",
+    ]
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        with patch.object(
+            BrowserToolSet,
+            "_get_or_create_shared_executor",
+            side_effect=RuntimeError("no chromium on this host"),
+        ):
+            browser_spec = next(s for s in specs if s.name == "browser_tool_set")
+            resolved = resolve_tool(browser_spec, conv_state)
+
+    assert list(resolved) == []
