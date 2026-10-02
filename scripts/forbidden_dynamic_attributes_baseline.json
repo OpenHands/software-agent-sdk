@@ -230,16 +230,6 @@
         "hash": "295c04e16fcc61460fda315b541dcb1584c8c3b784c5247d5b2529fa7909d256"
     },
     {
-        "file": "openhands-sdk/openhands/sdk/hooks/config.py",
-        "name": "getattr",
-        "hash": "c4a063ff99556c1ea54a7b42cf10fb5cc7ec576c9b8b527458be5bcc70de1ec0"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/hooks/config.py",
-        "name": "getattr",
-        "hash": "cb028d0a55d58c26413712ea213f75506dcdd18ce8009ad4b46e459a7ad4e51d"
-    },
-    {
         "file": "openhands-sdk/openhands/sdk/hooks/executor.py",
         "name": "getattr",
         "hash": "78f8ec7ea04cc59e459c05dcd493ea2130576872db521152af8522537ba36759"
@@ -390,84 +380,9 @@
         "hash": "b5bcd8aea3ba63bce5220bc19ff504017e36402523dd1add6de1ece66d59be1c"
     },
     {
-        "file": "openhands-sdk/openhands/sdk/profiles/agent_profile.py",
-        "name": "getattr",
-        "hash": "1d0607d791dcbf80ab835e909b2da5b4886b8b3d1e092f16f653f33053cbde08"
-    },
-    {
         "file": "openhands-sdk/openhands/sdk/settings/__init__.py",
         "name": "getattr",
         "hash": "c813b420150ebdc58a521958ab0ebce7a2bebfd34e0f2e9da1fa6b4bdfa8e90c"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/model.py",
-        "name": "getattr",
-        "hash": "15424dd2686bddcaad7ac064779c430cb8e270ebb767d7ba117f0b062ea29293"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/model.py",
-        "name": "getattr",
-        "hash": "1d0607d791dcbf80ab835e909b2da5b4886b8b3d1e092f16f653f33053cbde08"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/model.py",
-        "name": "getattr",
-        "hash": "31f3620b0ab75ba4042ce23f6427eec4dd0fcd8f08a135d4435e51760023d471"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/model.py",
-        "name": "getattr",
-        "hash": "506e5962f93218314187c4419c81e3fa94fa994b7a4366058caa2e77534aa2b8"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/model.py",
-        "name": "getattr",
-        "hash": "914ec96e029998cb095ab76f99c391d9b5e9b18132747fce13abe1ad61a6bbdd"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/settings/model.py",
-        "name": "getattr",
-        "hash": "f6199e19d020e36caa6ebb5a7a180f9fc2fb767c79f06b03665869c2b8e28c86"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/skills/utils.py",
-        "name": "setattr",
-        "hash": "4735168bb9a033624fdf23570f93049f4b9d3bb5512c65644ea494e742e98efa"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/builtins/invoke_skill.py",
-        "name": "getattr",
-        "hash": "88e73b594847ba47980fbc67d834cfc5adfc07b7a1beeb1075187230fc540c16"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/registry.py",
-        "name": "getattr",
-        "hash": "a23e41dcbc46514255db7692e4903034dc678afe04435a4cb2b9a98436f8dd78"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/registry.py",
-        "name": "getattr",
-        "hash": "caf4032041494d5275a4042f22792c880f866c7132eb5f68821985853a11bf5f"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/schema.py",
-        "name": "getattr",
-        "hash": "e1da333e797a071f947a9364497d2e22be3d22d22295824cdd815046ba1497f5"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/schema.py",
-        "name": "getattr",
-        "hash": "f017a075a9b7c343d52f5c8c24fdbb28de15f9804bd548d50c36876728be49da"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/schema.py",
-        "name": "setattr",
-        "hash": "02fa63a9774d5ac6a846ea8184c715e6b7e78ea4dd606220ff3560ad57088a3a"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/tool/schema.py",
-        "name": "setattr",
-        "hash": "4f0ba85834954feb97a0648d020db3147d4a61c1e6d6c897df1347c31e789162"
     },
     {
         "file": "openhands-sdk/openhands/sdk/utils/files.py",

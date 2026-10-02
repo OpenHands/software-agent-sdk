@@ -19,6 +19,10 @@ from openhands.sdk.profiles import (
     OpenHandsAgentProfile,
     validate_agent_profile,
 )
+from openhands.sdk.profiles.agent_profile import (
+    AgentProfileBase,
+    _agent_profile_discriminator,
+)
 
 
 _ADAPTER: TypeAdapter[OpenHandsAgentProfile | ACPAgentProfile] = TypeAdapter(
@@ -150,6 +154,26 @@ def test_acp_profile_minimal_defaults() -> None:
 # ---------------------------------------------------------------------------
 # Discriminator + validation
 # ---------------------------------------------------------------------------
+
+
+def test_agent_profile_discriminator_declared_on_base():
+    """AgentProfileBase declares agent_kind.
+
+    The discriminator accesses it directly without getattr.
+    """
+    base = AgentProfileBase(name="test-profile")
+    assert base.agent_kind == "openhands"
+    assert _agent_profile_discriminator(base) == "openhands"
+
+    openhands_profile = OpenHandsAgentProfile(
+        name="test-openhands", llm_profile_ref="default"
+    )
+    assert openhands_profile.agent_kind == "openhands"
+    assert _agent_profile_discriminator(openhands_profile) == "openhands"
+
+    acp_profile = ACPAgentProfile(name="test-acp")
+    assert acp_profile.agent_kind == "acp"
+    assert _agent_profile_discriminator(acp_profile) == "acp"
 
 
 def test_validate_dispatches_on_agent_kind() -> None:

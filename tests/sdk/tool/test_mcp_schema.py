@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Sequence
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import Field
@@ -479,3 +480,33 @@ def test_anyof_ignores_non_schema_members(member):
     assert _process_schema_node({"anyOf": [member, {"type": "string"}]}, {}) == {
         "type": "string"
     }
+
+
+def test_schema_mcp_aliases_use_declared_class_apis():
+    """Schema declares mcp_schema_alias_specs and mcp_schema_alias_required."""
+    assert Schema.mcp_schema_alias_specs == {}
+    assert Schema.mcp_schema_alias_required == set()
+
+    mcp_schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "custom_alias": {"type": "integer"},
+        },
+        "required": ["query", "custom_alias"],
+    }
+    model = Action.from_mcp_schema("GeneratedAction", mcp_schema)
+    assert issubclass(model, Schema)
+    assert model.mcp_schema_alias_specs == {}
+    assert model.mcp_schema_alias_required == set()
+
+    # Dynamic model with alias specs
+    class CustomAliasedAction(Action):
+        mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {
+            "extra_field": {"type": "string"}
+        }
+        mcp_schema_alias_required: ClassVar[set[str]] = {"extra_field"}
+
+    exported = CustomAliasedAction.to_mcp_schema()
+    assert "extra_field" in exported.get("properties", {})
+    assert "extra_field" in exported.get("required", [])

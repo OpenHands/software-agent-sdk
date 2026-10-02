@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,7 +8,12 @@ from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
+from openhands.sdk.tool.registry import (
+    _is_abstract_method,
+    _resolver_from_subclass,
+    list_usable_tools,
+    resolve_tool,
+)
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolExecutor
@@ -152,3 +158,25 @@ def test_register_tool_type_uses_create_params():
     observation = tool(_HelloAction(name="Alice"))
     assert isinstance(observation, _HelloObservation)
     assert observation.message == "Howdy, Alice?"
+
+
+def test_tool_registration_typed_inspection():
+    """ToolDefinition subclass resolution checks create concrete classmethod."""
+
+    class ValidTool(ToolDefinition[Action, Any]):
+        @classmethod
+        def create(cls, *args, **kwargs):
+            return [cls(description="test", action_type=Action)]
+
+    assert not _is_abstract_method(ValidTool, "create")
+    resolver = _resolver_from_subclass("valid_tool", ValidTool)
+    conv_state = MagicMock()
+    resolved = resolver({}, conv_state)
+    assert len(resolved) == 1
+
+    class AbstractTool(ToolDefinition[Action, Any]):
+        pass
+
+    assert _is_abstract_method(AbstractTool, "create")
+    with pytest.raises(TypeError, match="must define .create"):
+        _resolver_from_subclass("abstract_tool", AbstractTool)

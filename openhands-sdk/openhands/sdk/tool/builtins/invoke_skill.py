@@ -168,7 +168,7 @@ class InvokeSkillTool(ToolDefinition[InvokeSkillAction, InvokeSkillObservation])
         # touch arbitrary on-disk state. Keying on the skill name serializes
         # concurrent invocations of the same skill while still allowing
         # distinct skills to render in parallel.
-        name = getattr(action, "name", "") or ""
+        name = action.name if isinstance(action, InvokeSkillAction) else ""
         return DeclaredResources(keys=(f"skill:{name.strip()}",), declared=True)
 
     @classmethod
