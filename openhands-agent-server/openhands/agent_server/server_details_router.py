@@ -67,6 +67,10 @@ class ServerInfo(BaseModel):
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
+            # Concurrent creates for one conversation id are deduplicated under
+            # the conversation's lifecycle lock, so a client may safely re-send
+            # a create whose response it never saw.
+            "idempotent_conversation_create_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(

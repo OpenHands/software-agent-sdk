@@ -37,6 +37,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -2154,6 +2155,102 @@ class TestConversationServiceStartConversation:
             )
             assert result.id == custom_id
             assert not is_new
+
+    @pytest.mark.asyncio
+    async def test_concurrent_start_conversation_same_id_starts_event_service_once(
+        self, conversation_service, tmp_path
+    ):
+        """Two concurrent creates for one id must not both create.
+
+        The pre-lock existence check awaits before it acts, so a concurrent
+        create can commit in between. Both callers then observe "new" and the
+        loser starts a second EventService for an existing id, re-running the
+        initial message. The re-check under the lifecycle lock closes that
+        window.
+        """
+        custom_id = uuid4()
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+
+        def make_request():
+            return StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+        results = await asyncio.gather(
+            conversation_service.start_conversation(make_request()),
+            conversation_service.start_conversation(make_request()),
+        )
+
+        assert [r.id for r, _ in results] == [custom_id, custom_id]
+        # Exactly one caller created the conversation; the other reused it.
+        assert sorted(is_new for _, is_new in results) == [False, True]
+        # The decisive check: one EventService, so the initial message would
+        # have been delivered once rather than twice.
+        assert list(conversation_service._event_services) == [custom_id]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_fork_same_id_forks_once(
+        self, conversation_service, tmp_path
+    ):
+        """Concurrent forks onto one id must not both fork.
+
+        Losers must be rejected before ``fork()`` writes into the shared
+        persistence directory; otherwise they reopen the winner's directory
+        and fail on its already-persisted events instead of the duplicate id.
+        """
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+
+        source, _ = await conversation_service.start_conversation(
+            StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+                confirmation_policy=NeverConfirm(),
+            )
+        )
+        source_service = await conversation_service.get_event_service(source.id)
+        assert source_service is not None
+        await source_service.send_message(
+            Message(role="user", content=[TextContent(text="hi")]), run=False
+        )
+
+        fork_id = uuid4()
+        real_fork = LocalConversation.fork
+        fork_calls = 0
+
+        def fork_after_winner_commits(self, **kwargs):
+            # Force the harmful interleave: a later fork() call only runs once
+            # the winner is registered, as a slow loser's would.
+            nonlocal fork_calls
+            fork_calls += 1
+            if fork_calls > 1:
+                deadline = time.monotonic() + 5
+                while (
+                    fork_id not in conversation_service._conversation_records
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+            return real_fork(self, **kwargs)
+
+        async def fork():
+            return await conversation_service.fork_conversation(
+                source.id, fork_id=fork_id
+            )
+
+        with patch.object(LocalConversation, "fork", fork_after_winner_commits):
+            results = await asyncio.gather(fork(), fork(), return_exceptions=True)
+        successes = [r for r in results if not isinstance(r, BaseException)]
+        failures = [r for r in results if isinstance(r, BaseException)]
+
+        assert len(successes) == 1
+        assert successes[0].id == fork_id
+        assert [str(f) for f in failures] == [
+            f"Conversation with id {fork_id} already exists"
+        ]
 
     @pytest.mark.asyncio
     async def test_start_conversation_reuse_checks_is_open(self, conversation_service):
