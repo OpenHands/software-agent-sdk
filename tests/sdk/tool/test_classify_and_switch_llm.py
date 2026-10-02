@@ -18,6 +18,7 @@ from openhands.sdk.tool.builtins import (
 )
 from openhands.sdk.tool.builtins.classify_and_switch_llm import (
     _recent_messages_text,
+    build_classifier_messages,
     build_classifier_prompt,
     parse_class_index,
     parse_direct_model,
@@ -133,10 +134,52 @@ def test_render_direct_prompt_replaces_supported_placeholders() -> None:
         "user: add parser tests",
     )
 
-    assert prompt.startswith("You are a model-routing classifier.")
+    # The rendered body no longer includes the system prefix; it lives in the
+    # system message assembled by build_classifier_messages.
+    assert "You are a model-routing classifier." not in prompt
     assert "{{" not in prompt
     assert "- GPT-5.4" in prompt
     assert "user: add parser tests" in prompt
+
+
+def test_build_classifier_messages_class_mode_has_system_and_user() -> None:
+    from openhands.sdk.llm.meta_profile_store import MetaProfile
+
+    messages = build_classifier_messages(MetaProfile.model_validate(META), "user: hi")
+
+    assert [m.role for m in messages] == ["system", "user"]
+    system_text = "".join(
+        c.text for c in messages[0].content if isinstance(c, TextContent)
+    )
+    user_text = "".join(
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    )
+    assert system_text.startswith("You are a model-routing classifier.")
+    assert "1. UI / images" in system_text
+    assert "user: hi" in user_text
+    assert "Category number:" in user_text
+
+
+def test_build_classifier_messages_direct_mode_has_system_and_user() -> None:
+    from openhands.sdk.llm.meta_profile_store import MetaProfile
+
+    messages = build_classifier_messages(
+        MetaProfile.model_validate(DIRECT_META), "user: add parser tests"
+    )
+
+    # Direct-routing must not send a system-only request: some providers
+    # (e.g. MiniMax) reject "chat content is empty" when there is no user turn.
+    assert [m.role for m in messages] == ["system", "user"]
+    system_text = "".join(
+        c.text for c in messages[0].content if isinstance(c, TextContent)
+    )
+    user_text = "".join(
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    )
+    assert system_text == "You are a model-routing classifier."
+    assert "user: add parser tests" in user_text
+    assert "- GPT-5.4" in user_text
+    assert user_text  # non-empty
 
 
 @pytest.mark.parametrize(
