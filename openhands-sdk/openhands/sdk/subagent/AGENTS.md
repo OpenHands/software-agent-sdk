@@ -111,6 +111,8 @@ Supported YAML frontmatter keys (see `AgentDefinition.load` in `schema.py`):
 - `skills` (default: `[]`): a comma-separated string or a list of skill names
 - `model` (default: `inherit`): `inherit` reuses the parent LLM; another value is
   loaded as an LLM profile name from `profile_store_dir` or the default profile store
+  - the task tool's per-call `llm_profile` applies only to `model: inherit`
+    definitions; supplying it for a definition that selects a model is an error
 - `color` (optional)
 - `max_iteration_per_run` (optional, positive integer)
 - `max_budget_per_run` (optional, positive number in USD)
