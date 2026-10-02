@@ -277,7 +277,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 deprecated_in="1.51.0",
                 removed_in="1.56.0",
                 details=(
-                    "Browser guidance now ships in the browser tool descriptions; "
+                    "Browser guidance now comes from the loaded browser tools; "
                     "only custom Jinja templates still read this kwarg."
                 ),
                 stacklevel=5,
@@ -364,14 +364,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
         the typed section registry, which also resolves a custom
         ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
-        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
-        subclass ``prompt_dir`` renders its own template.
+        ``system_prompt`` is used verbatim, followed by the loaded tools' guidance; a
+        custom ``system_prompt_filename`` or subclass ``prompt_dir`` renders its own
+        template.
 
         Returns:
             The static system prompt without dynamic context.
         """
         if self.system_prompt is not None:
-            return self.system_prompt
+            return "\n\n".join((self.system_prompt, *self._tool_guidance()))
 
         # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
         # own Jinja template; everything else (incl. custom policies) uses the registry.
@@ -389,6 +390,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static
+
+    def _tool_guidance(self) -> tuple[str, ...]:
+        """Distinct ``prompt_guidance`` texts of the loaded tools, in tool order."""
+        with self._tools_lock:
+            tools = list(self._tools.values())
+        return tuple(
+            dict.fromkeys(t.prompt_guidance for t in tools if t.prompt_guidance)
+        )
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -506,6 +515,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return PromptContext(
             template_kwargs=template_kwargs,
             tool_names=tuple(t.name for t in self.tools),
+            tool_guidance=self._tool_guidance(),
             platform=Platform.current(),
             working_dir=None,
             now=now,

@@ -38,6 +38,7 @@ __all__ = [
     "SecuritySection",
     "SelfDocumentationSection",
     "SoulSection",
+    "ToolGuidanceSection",
     "TroubleshootingSection",
     "VersionControlSection",
 ]
@@ -375,6 +376,18 @@ When an action originates from or is influenced by repository-provided context (
 - Adding lifecycle hooks (preinstall, postinstall, prepare) that execute remote scripts
 </SECURITY_RISK_ASSESSMENT>"""
         return _refine(body, ctx.platform)
+
+
+class ToolGuidanceSection(_StaticTextSection):
+    """Usage guidance supplied by the loaded tools (e.g. ``<BROWSER_TOOLS>``)."""
+
+    name = "tool_guidance"
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return bool(ctx.tool_guidance)
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return "\n\n".join(ctx.tool_guidance)
 
 
 class ExternalServicesSection(_StaticTextSection):

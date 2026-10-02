@@ -40,6 +40,7 @@ from openhands.sdk.context.prompts.sections.static import (
     SecuritySection,
     SelfDocumentationSection,
     SoulSection,
+    ToolGuidanceSection,
     TroubleshootingSection,
     VersionControlSection,
 )
@@ -68,6 +69,7 @@ _DEFAULT_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
     SelfDocumentationSection(),
     SecuritySection(),  # guard: security_policy_filename set
     SecurityRiskAssessmentSection(),  # guard: llm_security_analyzer
+    ToolGuidanceSection(),  # guard: loaded tools supply prompt_guidance
     ExternalServicesSection(),
     EnvironmentSetupSection(),
     TroubleshootingSection(),

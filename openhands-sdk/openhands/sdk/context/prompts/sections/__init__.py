@@ -32,6 +32,7 @@ from openhands.sdk.context.prompts.sections.static import (
     SecuritySection,
     SelfDocumentationSection,
     SoulSection,
+    ToolGuidanceSection,
     TroubleshootingSection,
     VersionControlSection,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "SecuritySection",
     "SelfDocumentationSection",
     "SoulSection",
+    "ToolGuidanceSection",
     "TroubleshootingSection",
     "VersionControlSection",
 ]

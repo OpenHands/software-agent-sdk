@@ -63,6 +63,7 @@ class PromptContext(BaseModel):
         default_factory=dict, validate_default=True
     )
     tool_names: tuple[str, ...] = Field(default_factory=tuple)
+    tool_guidance: tuple[str, ...] = Field(default_factory=tuple)
     platform: Platform = Field(default_factory=Platform.current)
     working_dir: str | None = None
     now: str | None = None

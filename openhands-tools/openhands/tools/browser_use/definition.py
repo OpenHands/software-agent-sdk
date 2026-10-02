@@ -164,13 +164,6 @@ BROWSER_NAVIGATE_DESCRIPTION = """Navigate to a URL in the browser.
 
 This tool allows you to navigate to any web page. You can optionally open the URL in a new tab.
 
-Browser usage rules (they apply to every browser_* tool):
-* Try curl/wget/fetch first. Use the browser only when simpler tools fail or the page requires JS/interaction.
-* Flow: navigate → get_state → interact → get_state → get_content.
-* Max 10 browser actions per sub-task. If stuck, switch approach entirely.
-* If 20+ total steps without converging, stop exploring and commit to your best answer.
-* On 403/CAPTCHA/login wall: try one alternative, then abandon the browser.
-
 Parameters:
 - url: The URL to navigate to (required)
 - new_tab: Whether to open in a new tab (optional, default: False)
@@ -227,8 +220,7 @@ Parameters:
 - index: The index of the element to click (from browser_get_state)
 - new_tab: Whether to open any resulting navigation in a new tab (optional)
 
-Important: ALWAYS call browser_get_state before EVERY browser_click — indices change after each action. Only use indices from your latest browser_get_state output.
-Do NOT submit forms or create accounts unless explicitly asked.
+Important: Only use indices that appear in your current browser_get_state output.
 """  # noqa: E501
 
 
@@ -275,8 +267,7 @@ Parameters:
 - index: The index of the input element (from browser_get_state)
 - text: The text to type
 
-Important: ALWAYS call browser_get_state before EVERY browser_type — indices change after each action. Only use indices from your latest browser_get_state output.
-Do NOT submit forms or create accounts unless explicitly asked.
+Important: Only use indices that appear in your current browser_get_state output.
 """  # noqa: E501
 
 
@@ -784,6 +775,18 @@ class BrowserStopRecordingTool(
         ]
 
 
+BROWSER_PROMPT_GUIDANCE = """\
+<BROWSER_TOOLS>
+You have a browser for navigating pages and interacting with web UIs.
+* Try curl/wget/fetch first. Use the browser only when simpler tools fail or the page requires JS/interaction.
+* ALWAYS call `browser_get_state` before EVERY `browser_click` or `browser_type` — indices change after each action. Flow: navigate → get_state → interact → get_state → get_content.
+* Max 10 browser actions per sub-task. If stuck, switch approach entirely.
+* If 20+ total steps without converging, stop exploring and commit to your best answer.
+* On 403/CAPTCHA/login wall: try one alternative, then abandon the browser.
+* Do NOT submit forms or create accounts unless explicitly asked.
+</BROWSER_TOOLS>"""  # noqa: E501
+
+
 class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
@@ -879,7 +882,10 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserStopRecordingTool,
         ]:
             tools.extend(tool_class.create(executor))
-        return tools
+        return [
+            tool.model_copy(update={"prompt_guidance": BROWSER_PROMPT_GUIDANCE})
+            for tool in tools
+        ]
 
 
 register_tool(BrowserToolSet.name, BrowserToolSet)
