@@ -99,6 +99,11 @@ class PromptContext(BaseModel):
     def cli_mode(self) -> bool:
         return bool(self.template_kwargs.get("cli_mode", False))
 
+    @property
+    def persona(self) -> str | None:
+        value = self.template_kwargs.get("persona")
+        return value if isinstance(value, str) and value else None
+
 
 @runtime_checkable
 class PromptSection(Protocol):

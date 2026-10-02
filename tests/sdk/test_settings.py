@@ -1040,6 +1040,21 @@ def test_create_agent_empty_tools_stays_bare() -> None:
     assert agent.tools == []
 
 
+def test_create_agent_applies_persona() -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tools=[], persona="You are a classifier."
+    )
+    agent = settings.create_agent()
+    assert agent.persona == "You are a classifier."
+    assert agent.static_system_message.startswith("You are a classifier.")
+
+
+def test_create_agent_without_persona_uses_builtin_prompt() -> None:
+    settings = OpenHandsAgentSettings.model_validate({"agent_kind": "openhands"})
+    assert settings.persona is None
+    assert settings.create_agent().persona is None
+
+
 def test_tool_concurrency_limit_defaults_to_one_when_omitted_from_payload() -> None:
     # Backward compatibility: payloads persisted before the field existed must
     # still load and fall back to the sequential default.

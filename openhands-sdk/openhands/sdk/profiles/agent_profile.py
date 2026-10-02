@@ -24,6 +24,8 @@ from pydantic import (
 )
 
 from openhands.sdk.settings.model import (
+    PERSONA_DESCRIPTION,
+    PERSONA_MAX_LENGTH,
     ACPServerKind,
     CondenserSettingsConfig,
     CriticMode,
@@ -174,6 +176,12 @@ class OpenHandsAgentProfile(AgentProfileBase):
         ),
     )
 
+    persona: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PERSONA_MAX_LENGTH,
+        description=PERSONA_DESCRIPTION,
+    )
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",

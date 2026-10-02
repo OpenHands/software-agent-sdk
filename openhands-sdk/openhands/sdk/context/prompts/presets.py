@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import Final
 
 from openhands.sdk.context.prompts.registry import PromptRegistry
-from openhands.sdk.context.prompts.section import PromptSection
+from openhands.sdk.context.prompts.section import PromptContext, PromptSection
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
     CustomSecretsSection,
@@ -33,6 +33,7 @@ from openhands.sdk.context.prompts.sections.static import (
     FileSystemSection,
     MemorySection,
     ModelSpecificSection,
+    PersonaSection,
     ProblemSolvingSection,
     ProcessManagementSection,
     PullRequestsSection,
@@ -56,28 +57,46 @@ class PromptPreset(StrEnum):
     PLANNING = "planning"
 
 
+class _ReplacedByPersona:
+    """A persona-layer section: dropped when the agent supplies its own persona."""
+
+    def __init__(self, section: PromptSection) -> None:
+        self._section = section
+        self.name = section.name
+        self.cache_tier = section.cache_tier
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return ctx.persona is None and self._section.guard(ctx)
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return self._section.render(ctx)
+
+
 _DEFAULT_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
-    SoulSection(),
-    RoleSection(),
+    PersonaSection(),  # guard: persona set
+    _ReplacedByPersona(SoulSection()),
+    _ReplacedByPersona(RoleSection()),
     MemorySection(),
-    EfficiencySection(),
-    FileSystemSection(),
-    CodeQualitySection(),
-    VersionControlSection(),
-    PullRequestsSection(),
-    ProblemSolvingSection(),
-    SelfDocumentationSection(),
+    _ReplacedByPersona(EfficiencySection()),
+    _ReplacedByPersona(FileSystemSection()),
+    _ReplacedByPersona(CodeQualitySection()),
+    _ReplacedByPersona(VersionControlSection()),
+    _ReplacedByPersona(PullRequestsSection()),
+    _ReplacedByPersona(ProblemSolvingSection()),
+    _ReplacedByPersona(SelfDocumentationSection()),
     SecuritySection(),  # guard: security_policy_filename set
     SecurityRiskAssessmentSection(),  # guard: llm_security_analyzer
     BrowserSection(),  # guard: ctx.enable_browser
     ExternalServicesSection(),
-    EnvironmentSetupSection(),
-    TroubleshootingSection(),
+    _ReplacedByPersona(EnvironmentSetupSection()),
+    _ReplacedByPersona(TroubleshootingSection()),
     ProcessManagementSection(),
     ModelSpecificSection(),  # guard: model_family resolved
 )
-
-_PLANNING_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (PlanningSection(),)
+_PLANNING_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
+    PersonaSection(),
+    PlanningSection(),
+)
 
 _DYNAMIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
     RepoContextSection(),  # guard: gated repo skills present

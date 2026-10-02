@@ -476,6 +476,15 @@ _RequestT = TypeVar("_RequestT")
 AGENT_SETTINGS_SCHEMA_VERSION = 7
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
+PERSONA_MAX_LENGTH = 65536
+PERSONA_DESCRIPTION = (
+    "Persona text that replaces OpenHands' built-in persona and coding-workflow "
+    "guidance. Capability and policy guidance (memory, security policy, risk "
+    "assessment, browser, external services, process management, model-specific "
+    "notes) and the dynamic context are still included. None keeps the built-in "
+    "persona."
+)
+
 
 class AgentSettingsBase(BaseModel):
     """Shared base for all agent-settings variants.
@@ -1399,6 +1408,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    persona: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PERSONA_MAX_LENGTH,
+        description=PERSONA_DESCRIPTION,
+    )
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
@@ -1496,6 +1511,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             mcp_config=self.mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
+            persona=self.persona,
             condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,

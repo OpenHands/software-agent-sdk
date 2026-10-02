@@ -59,6 +59,8 @@ export interface OpenHandsAgentProfile extends AgentProfileBase {
   llm_profile_ref: string;
   agent: string;
   skills: unknown[];
+  /** Replaces the built-in persona, keeping capability guidance; needs `profile_persona_v1`. */
+  persona?: string | null;
   system_message_suffix: string | null;
   condenser: unknown;
   verification: ProfileVerificationSettings;

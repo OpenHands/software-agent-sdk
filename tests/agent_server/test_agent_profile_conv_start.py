@@ -36,6 +36,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -43,6 +44,7 @@ from openhands.sdk.profiles.agent_profile import (
 from openhands.sdk.profiles.resolver import (
     DanglingMcpServerRef,
     ProfileNotFound,
+    resolve_agent_profile,
 )
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
@@ -881,6 +883,31 @@ class TestConversationServiceStartFromProfile:
 
         assert agent.agent_context is not None
         assert agent.agent_context.load_memory is False
+
+    @pytest.mark.asyncio
+    async def test_profile_persona_reaches_the_launched_agent(self, tmp_path):
+        persona = "You only answer questions about this repository."
+        profile = OpenHandsAgentProfile(
+            name="explorer", llm_profile_ref="default", persona=persona
+        )
+        llm_store = LLMProfileStore(base_dir=tmp_path / "llm")
+        llm_store.save("default", LLM(model="gpt-4o", usage_id="agent"))
+        resolved = resolve_agent_profile(
+            profile,
+            llm_store=llm_store,
+            mcp_config={},
+            available_skills=None,
+            cipher=None,
+        )
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(agent_context=AgentContext())
+        )
+
+        _, agent = await _start_from_profile(tmp_path, profile, resolved, persisted)
+
+        assert agent.persona == persona
+        assert agent.static_system_message.startswith(persona)
+        assert "<SECURITY>" in agent.static_system_message
 
 
 class TestConversationServiceStartWithDirectAgent:

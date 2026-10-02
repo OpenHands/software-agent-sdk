@@ -112,6 +112,35 @@ def test_acp_profile_has_no_skill_field() -> None:
         )
 
 
+def test_persona_round_trips_and_defaults_to_none() -> None:
+    assert OpenHandsAgentProfile(name="oh", llm_profile_ref="d").persona is None
+    profile = validate_agent_profile(
+        OpenHandsAgentProfile(
+            name="oh", llm_profile_ref="d", persona="You are a reviewer."
+        ).model_dump(mode="json")
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.persona == "You are a reviewer."
+
+
+@pytest.mark.parametrize("persona", ["", "x" * 65537])
+def test_persona_rejects_empty_and_oversized(persona: str) -> None:
+    with pytest.raises(ValidationError):
+        OpenHandsAgentProfile(name="oh", llm_profile_ref="d", persona=persona)
+
+
+def test_acp_profile_rejects_persona() -> None:
+    with pytest.raises(ValidationError):
+        validate_agent_profile(
+            {
+                "agent_kind": "acp",
+                "name": "acp",
+                "acp_server": "claude-code",
+                "persona": "x",
+            }
+        )
+
+
 def test_acp_profile_round_trips() -> None:
     profile = ACPAgentProfile(
         name="my-acp",
