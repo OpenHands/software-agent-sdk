@@ -47,6 +47,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.subagent.scope import SubAgentScope, scope_delegation_tools
 from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, launch_tool_specs
 from openhands.sdk.tool.registry import is_tool_available
 from openhands.sdk.tool.spec import Tool
@@ -260,10 +261,11 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": (
+        "tools": _scope_sub_agents(
+            profile,
             profile.tools
             if browser_available is None
-            else launch_tool_specs(profile.tools, browser_available=browser_available)
+            else launch_tool_specs(profile.tools, browser_available=browser_available),
         ),
         "persona": profile.persona,
         "agent_context": AgentContext(
@@ -277,6 +279,18 @@ def _build_openhands_settings(
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
+
+
+def _scope_sub_agents(
+    profile: OpenHandsAgentProfile, tools: list[Tool] | None
+) -> list[Tool] | None:
+    if tools is None:
+        return None
+    scope = SubAgentScope(
+        tools=profile.tools is not None,
+        mcp_servers=profile.mcp_server_refs is not None,
+    )
+    return scope_delegation_tools(tools, scope)
 
 
 def _unusable_tools(
