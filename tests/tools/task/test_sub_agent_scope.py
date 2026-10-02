@@ -214,8 +214,17 @@ def test_a_scoped_workflow_refuses_a_sub_agent_beyond_the_parent(
     assert "Agent 'shell' uses terminal" in observation.text
 
 
-def test_a_read_only_profile_cannot_delegate_its_way_to_a_shell(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("subagent", "missing"),
+    [
+        ("general-purpose", "file_editor, task_tracker, terminal"),
+        ("bash-runner", "terminal"),
+        ("code-explorer", "terminal"),
+        ("web-researcher", "browser_tool_set"),
+    ],
+)
+def test_a_read_only_profile_cannot_delegate_beyond_its_tools(
+    tmp_path: Path, subagent: str, missing: str
 ) -> None:
     register_builtins_agents(enable_browser=True)
     _register("grepper", ["grep"])
@@ -238,24 +247,23 @@ def test_a_read_only_profile_cannot_delegate_its_way_to_a_shell(
         profile, llm_store=store, mcp_config={}, available_skills=None
     )
     parent_llm = TestLLM.from_messages(
-        [
-            _tool_call("task", prompt="list files", subagent_type="code-explorer"),
-            _done(),
-        ]
+        [_tool_call("task", prompt="go", subagent_type=subagent), _done()]
     )
     agent = settings.create_agent().model_copy(update={"llm": parent_llm})
     conversation = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
 
-    conversation.send_message("list files")
+    conversation.send_message("go")
     conversation.run()
 
     description = conversation.agent.tools_map["task"].description
     assert "**grepper**" in description
-    for name in ("general-purpose", "bash-runner", "code-explorer", "web-researcher"):
-        assert f"**{name}**" not in description
+    assert f"**{subagent}**" not in description
     (observation,) = _observations(conversation, TaskObservation)
     assert observation.is_error
-    assert "Agent 'code-explorer' uses terminal" in observation.text
+    assert (
+        f"Agent '{subagent}' uses {missing}, which this agent does not have."
+        in observation.text
+    )
 
 
 def test_a_scoped_task_tool_says_when_no_sub_agent_fits() -> None:
