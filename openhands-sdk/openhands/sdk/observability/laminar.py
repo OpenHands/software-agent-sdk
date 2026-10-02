@@ -418,7 +418,10 @@ class RootSpan:
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
-        self.span = Laminar.start_span(name, parent_span_context=parent)
+        if parent is not None:
+            self.span = Laminar.start_span(name, parent_span_context=parent)
+        else:
+            self.span = Laminar.start_span(name)
         if attributes:
             with contextlib.suppress(Exception):
                 for key, value in attributes.items():
