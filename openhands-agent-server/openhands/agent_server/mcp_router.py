@@ -619,12 +619,18 @@ def _probe_mcp_server(
         # raises when the underlying fastmcp client fails to start. Surface
         # the root-cause message (e.g. "sh: 1: mcp-server-github: Permission
         # denied") because the wrapper alone isn't useful.
+        http_detail = _http_error_detail(exc)
         cause = exc.__cause__ or exc.__context__
-        detail = str(cause) if cause else str(exc) or "Failed to connect to MCP server"
+        detail = http_detail or (
+            str(cause) if cause else str(exc) or "Failed to connect to MCP server"
+        )
         logger.info(
             "MCP test connection failed for server %r: %s", request.name, detail
         )
-        return MCPTestFailure(error=detail, error_kind="connection")
+        return MCPTestFailure(
+            error=detail,
+            error_kind="unknown" if http_detail else "connection",
+        )
     except Exception as exc:  # noqa: BLE001 - we want to surface anything else
         # Any other exception is unexpected but should still return a
         # structured response: the UI can't recover from a 500.
@@ -635,7 +641,7 @@ def _probe_mcp_server(
                 request.name,
                 http_detail,
             )
-            return MCPTestFailure(error=http_detail, error_kind="connection")
+            return MCPTestFailure(error=http_detail, error_kind="unknown")
         logger.warning(
             "MCP test failed unexpectedly for server %r",
             request.name,
