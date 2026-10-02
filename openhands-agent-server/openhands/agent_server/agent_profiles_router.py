@@ -6,16 +6,17 @@ reference-bearing :class:`~openhands.sdk.profiles.AgentProfile` union and keeps 
 pointer-only — unlike the LLM ``/activate`` it must **not** write
 ``agent_settings`` (the creation-time-only contract).
 
-``POST /{name}/materialize`` performs a dry-run resolve of a profile's LLM and
-MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnostics`
-(never raises on dangling refs — those appear in the body).
+``POST /{name}/materialize`` performs a dry-run resolve of a stored profile, or
+of a draft body, and returns
+:class:`~openhands.sdk.profiles.AgentProfileDiagnostics` (never raises on
+dangling refs — those appear in the body).
 """
 
 import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PlainValidator, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
@@ -28,8 +29,12 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
+from openhands.agent_server.profile_launch import (
+    can_probe_tools,
+    configured_browser_available,
+    gather_profile_launch_inputs,
+)
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
-from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -37,8 +42,11 @@ from openhands.sdk.llm.llm_profile_store import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
+    ACPAgentProfile,
+    AgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
+    OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
     resolve_agent_profile_dry_run,
@@ -97,6 +105,30 @@ class ActivateAgentProfileResponse(BaseModel):
     # that agent_settings was untouched; materialize (#3717) is the path that
     # resolves a profile into settings.
     agent_settings_applied: bool = False
+
+
+def _raw_profile_payload(value: Any) -> dict[str, Any] | None:
+    if value is not None and not isinstance(value, dict):
+        raise ValueError("profile must be an object")
+    return value
+
+
+class MaterializeAgentProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Kept raw so the draft goes through the same migrations as a save.
+    profile: Annotated[
+        dict[str, Any] | None,
+        PlainValidator(
+            _raw_profile_payload, json_schema_input_type=AgentProfile | None
+        ),
+    ] = Field(
+        default=None,
+        description=(
+            "Draft profile to evaluate instead of the stored one. The path name "
+            "overrides the draft's name."
+        ),
+    )
 
 
 class RenameAgentProfileRequest(BaseModel):
@@ -304,23 +336,11 @@ async def get_agent_profile(name: ProfileName) -> AgentProfileDetailResponse:
     return AgentProfileDetailResponse(name=name, profile=payload)
 
 
-@agent_profiles_router.post(
-    "/{name}",
-    response_model=AgentProfileMutationResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def save_agent_profile(
-    name: ProfileName, body: dict[str, Any]
-) -> AgentProfileMutationResponse:
-    """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
-
-    The path ``name`` is authoritative — it overrides any ``name`` in the body.
-    The profile is secret-free at rest (#4017), so no cipher/encryption is
-    involved. Returns 409 if creating a new profile would exceed
-    ``MAX_AGENT_PROFILES``.
-    """
+def _validate_profile_payload(
+    payload: dict[str, Any],
+) -> OpenHandsAgentProfile | ACPAgentProfile:
     try:
-        profile = validate_agent_profile({**body, "name": name})
+        return validate_agent_profile(payload)
     except ValidationError as e:
         # Match FastAPI's request-validation shape (``detail`` is a list of
         # error objects): ``loc``/``type``/``msg`` (``input`` dropped — see
@@ -337,6 +357,24 @@ async def save_agent_profile(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid agent profile",
         )
+
+
+@agent_profiles_router.post(
+    "/{name}",
+    response_model=AgentProfileMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def save_agent_profile(
+    name: ProfileName, body: dict[str, Any]
+) -> AgentProfileMutationResponse:
+    """Save an ``AgentProfile`` under ``name`` (overwriting a namesake).
+
+    The path ``name`` is authoritative — it overrides any ``name`` in the body.
+    The profile is secret-free at rest (#4017), so no cipher/encryption is
+    involved. Returns 409 if creating a new profile would exceed
+    ``MAX_AGENT_PROFILES``.
+    """
+    profile = _validate_profile_payload({**body, "name": name})
 
     store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
@@ -508,23 +546,30 @@ async def activate_agent_profile(
     response_model=AgentProfileDiagnostics,
 )
 async def materialize_agent_profile(
-    request: Request, name: ProfileName
+    request: Request,
+    name: ProfileName,
+    body: MaterializeAgentProfileRequest | None = None,
 ) -> AgentProfileDiagnostics:
-    """Dry-run resolve a profile's LLM/MCP references; return a diagnostics report.
+    """Dry-run resolve a profile the way a launch would; return a diagnostics report.
 
-    Dangling LLM/MCP references are reported in the body (valid=False) rather
-    than raising — the only error status is 404 (unknown profile name).
-    resolved_settings is redacted (api_key_set booleans; no raw secrets).
+    Resolves the stored profile ``name``, or ``body.profile`` when given (so an
+    editor can preview before saving). Dangling LLM/MCP references are reported
+    in the body (valid=False) rather than raising — the only error statuses are
+    404 (unknown stored profile) and 422 (invalid draft). resolved_settings is
+    redacted (api_key_set booleans; no raw secrets).
     """
-    store = get_agent_profile_store()
-    try:
-        with store_errors():
-            profile = store.load(name)
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent profile '{name}' not found",
-        )
+    if body is not None and body.profile is not None:
+        profile = _validate_profile_payload({**body.profile, "name": name})
+    else:
+        store = get_agent_profile_store()
+        try:
+            with store_errors():
+                profile = store.load(name)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Agent profile '{name}' not found",
+            )
 
     # Still needed here (unlike the profile load above): resolve_agent_profile_
     # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
@@ -533,35 +578,33 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    # Discover skills off the event loop so the dry-run can report which skills
-    # (catalog minus ``disabled_skills``) resolve. Mirrors the launch rule in
-    # ``conversation_service._resolve_agent_from_profile`` so the preview matches
-    # a real launch: an ACP profile is only given a catalog where the CLI cannot
-    # read the user's own configuration (#4019). A discovery failure must not 500
-    # the preview: pass ``available_skills=None`` and surface the failure as its
-    # own diagnostic below.
-    discovery_error: str | None = None
-    available_skills = None
-    if profile.agent_kind == "openhands" or (
-        config.acp_skill_sourcing == "openhands_managed"
-    ):
-        try:
-            available_skills = await asyncio.to_thread(discover_profile_skills)
-        except Exception as exc:
-            available_skills = None
-            discovery_error = str(exc)
-            logger.warning("Skill discovery failed during materialize: %s", exc)
+    inputs = await asyncio.to_thread(
+        gather_profile_launch_inputs,
+        profile,
+        config.acp_skill_sourcing,
+        configured_browser_available(config),
+    )
+    if inputs.skill_discovery_error is not None:
+        logger.warning(
+            "Skill discovery failed during materialize: %s",
+            inputs.skill_discovery_error,
+        )
 
     llm_store = get_llm_profile_store()
-    diagnostics = resolve_agent_profile_dry_run(
+    diagnostics = await asyncio.to_thread(
+        resolve_agent_profile_dry_run,
         profile,
         llm_store=llm_store,
         mcp_config=mcp_config,
-        available_skills=available_skills,
+        available_skills=inputs.available_skills,
         cipher=cipher,
+        browser_available=inputs.browser_available,
+        check_usable=can_probe_tools(config),
     )
-    if discovery_error is not None:
-        diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")
+    if inputs.skill_discovery_error is not None:
+        diagnostics.errors.append(
+            f"Skill discovery failed: {inputs.skill_discovery_error}"
+        )
         diagnostics.valid = False
         diagnostics.resolved_settings = None
     return diagnostics
