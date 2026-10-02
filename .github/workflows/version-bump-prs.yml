@@ -14,11 +14,12 @@ on:
 jobs:
     create-version-bump-prs:
         runs-on: ubuntu-24.04
-        # The enterprise-dispatcher App key is stored in the `enterprise-dispatch`
-        # Environment (branch policy: main only, no required reviewers) rather than
-        # as an org secret, so the weak enterprise-write credential can only be read
-        # from a main run. See saas-deploy/scripts/create-enterprise-dispatcher.
-        environment: enterprise-dispatch
+        # The enterprise-dispatcher App key is stored in the
+        # `enterprise-sdk-bump` Environment (branch policy: main only, no
+        # required reviewers) rather than as an org secret, so the weak
+        # enterprise-write credential can only be read from a main run. See
+        # saas-deploy/scripts/create-enterprise-dispatcher.
+        environment: enterprise-sdk-bump
         env:
             GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
             SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -573,11 +574,11 @@ jobs:
             # weak `enterprise-dispatcher-sdk` App (contents:write, installed on
             # enterprise alone, not a ruleset bypass actor) created by
             # saas-deploy's scripts/create-enterprise-dispatcher (PR saas-deploy
-            # #1296). Its key is branch-gated in the `enterprise-dispatch`
+            # #1296). Its key is branch-gated in the `enterprise-sdk-bump`
             # Environment of this repo (main only), never an org secret.
             - name: Mint enterprise-dispatcher App token (scoped to OpenHands/enterprise)
               id: enterprise-dispatcher-token
-              # continue-on-error: if the enterprise-dispatch Environment or its
+              # continue-on-error: if the enterprise-sdk-bump Environment or its
               # ENTERPRISE_DISPATCHER_APP_* secrets aren't provisioned yet,
               # actions/create-github-app-token fails here. Without continue-on-error
               # that would abort the job before the Summary / Slack / gate steps run,
