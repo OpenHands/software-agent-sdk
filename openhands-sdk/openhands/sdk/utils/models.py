@@ -204,6 +204,10 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def kind(self) -> str:
         return self.__class__.__name__
 
+    @classmethod
+    def _prepare_serialized_input(cls, data: dict[str, Any]) -> dict[str, Any]:
+        return data
+
     @model_validator(mode="wrap")
     @classmethod
     def _validate_subtype(
@@ -211,9 +215,8 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     ) -> Self:
         if isinstance(data, cls):
             return data
-        prepare_legacy_input = getattr(cls, "_prepare_legacy_serialized_input", None)
-        if isinstance(data, dict) and prepare_legacy_input is not None:
-            data = prepare_legacy_input(data)
+        if isinstance(data, dict):
+            data = cls._prepare_serialized_input(data)
         if not _is_abstract(cls):
             has_kind_alias_field = any(
                 field_name != "kind" and field_info.alias == "kind"
@@ -269,7 +272,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             return self
         if self._is_handler_for_current_class(handler):
             result = handler(self)
-            return self._include_default_tools_provenance(result)
+            return self._add_serialization_metadata(result)
 
         # Delegate to the implementing class
         result = self.model_dump(
@@ -283,15 +286,9 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             round_trip=info.round_trip,
             serialize_as_any=info.serialize_as_any,
         )
-        return self._include_default_tools_provenance(result)
+        return self._add_serialization_metadata(result)
 
-    def _include_default_tools_provenance(self, result: Any) -> Any:
-        """Retain AgentBase's explicit/default selection across serialization."""
-        if not getattr(self, "_supports_conditional_default_tool_attachment", False):
-            return result
-        explicit = getattr(self, "_include_default_tools_explicit", None)
-        if explicit is not None and isinstance(result, dict):
-            result["_include_default_tools_explicit"] = explicit
+    def _add_serialization_metadata(self, result: Any) -> Any:
         return result
 
     def _is_handler_for_current_class(

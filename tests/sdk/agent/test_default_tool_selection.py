@@ -41,7 +41,7 @@ def _make_agent(include_default_tools: list[str] | None = None) -> Agent:
     )
 
 
-def _initialize(agent: Agent, tmp_path) -> set[str]:
+def _initialize(agent: AgentBase, tmp_path) -> set[str]:
     state = ConversationState.create(
         id=uuid.uuid4(),
         agent=agent,
@@ -70,6 +70,11 @@ def _mock_vision_profile(monkeypatch: pytest.MonkeyPatch) -> None:
             ["FinishTool", "ThinkTool"],
             {"finish", "think"},
             id="explicit-default-set",
+        ),
+        pytest.param(
+            ["InvokeSkillTool", "VisionInspectTool"],
+            {"invoke_skill", VISION_INSPECT_TOOL_NAME},
+            id="explicit-optional-tools",
         ),
     ],
 )

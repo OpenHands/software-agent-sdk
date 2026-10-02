@@ -316,7 +316,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     _include_default_tools_explicit: bool | None = PrivateAttr(default=None)
 
     @classmethod
-    def _prepare_legacy_serialized_input(cls, data: dict[str, Any]) -> dict[str, Any]:
+    def _prepare_serialized_input(cls, data: dict[str, Any]) -> dict[str, Any]:
         """Mark markerless serialized default lists as implicit selections."""
         if (
             cls._supports_conditional_default_tool_attachment
@@ -328,6 +328,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             data = data.copy()
             data["_include_default_tools_explicit"] = False
         return data
+
+    def _add_serialization_metadata(self, result: Any) -> Any:
+        if (
+            self._supports_conditional_default_tool_attachment
+            and self._include_default_tools_explicit is not None
+            and isinstance(result, dict)
+        ):
+            result["_include_default_tools_explicit"] = (
+                self._include_default_tools_explicit
+            )
+        return result
 
     @model_validator(mode="wrap")
     @classmethod
