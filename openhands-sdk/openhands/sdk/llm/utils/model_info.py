@@ -93,12 +93,15 @@ def _get_model_info_from_litellm_proxy(
     cache_key: int | None = None,
 ):
     logger.debug(f"Get model_info_from_litellm_proxy:{cache_key}")
+    if isinstance(secret_api_key, SecretStr):
+        secret_api_key = secret_api_key.get_secret_value()
+    if not secret_api_key:
+        # No credentials: key-scoped proxy metadata is unobtainable, so skip
+        # the request entirely instead of collecting a 401. Callers fall back
+        # to static LiteLLM metadata.
+        return None
     try:
-        headers = {}
-        if isinstance(secret_api_key, SecretStr):
-            secret_api_key = secret_api_key.get_secret_value()
-        if secret_api_key:
-            headers["Authorization"] = f"Bearer {secret_api_key}"
+        headers = {"Authorization": f"Bearer {secret_api_key}"}
 
         response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
         data = response.json().get("data", [])
