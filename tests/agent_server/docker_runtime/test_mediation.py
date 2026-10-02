@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import DEFAULT_CONVERSATION_IMAGE, Config
 from openhands.agent_server.docker_runtime.mediation import (
     prepare_start,
     serialize_start,
@@ -112,7 +112,7 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     )
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
-        "openhands.agent_server.conversation_service.discover_profile_skills",
+        "openhands.agent_server.profile_launch.discover_profile_skills",
         lambda: [],
     )
     monkeypatch.setattr(
@@ -134,3 +134,142 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     assert prepared.agent_profile_id is None
     assert launched is not None
     assert launched.agent_profile_id == profile.id
+
+
+async def test_default_tools_profile_gets_browser_without_a_host_probe(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={"conversation_runtime": "docker"}
+    )
+    get_llm_profile_store().save(
+        "docker-test-model",
+        LLM(model="test", api_key=SecretStr("model-key")),
+        include_secrets=True,
+        cipher=runtime_config.cipher,
+    )
+    profile = OpenHandsAgentProfile(
+        name="docker-default-tools", llm_profile_ref="docker-test-model"
+    )
+    get_agent_profile_store().save(profile)
+    monkeypatch.setattr(
+        "openhands.agent_server.profile_launch.discover_profile_skills",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.profile_launch.is_tool_usable", lambda name: False
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=profile.id,
+    )
+
+    prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
+
+    assert "browser_tool_set" in [tool.name for tool in prepared.agent.tools]
+
+
+async def test_default_tools_profile_skips_browser_when_the_image_lacks_it(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": False,
+        }
+    )
+    get_llm_profile_store().save(
+        "docker-test-model",
+        LLM(model="test", api_key=SecretStr("model-key")),
+        include_secrets=True,
+        cipher=runtime_config.cipher,
+    )
+    profile = OpenHandsAgentProfile(
+        name="docker-default-tools", llm_profile_ref="docker-test-model"
+    )
+    get_agent_profile_store().save(profile)
+    monkeypatch.setattr(
+        "openhands.agent_server.profile_launch.discover_profile_skills",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.profile_launch.is_tool_usable", lambda name: True
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=profile.id,
+    )
+
+    prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
+
+    assert "browser_tool_set" not in [tool.name for tool in prepared.agent.tools]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "has_browser"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+async def test_settings_launch_follows_the_container_browser(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, has_browser
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": image_has_browser,
+            "enable_browser": enable_browser,
+        }
+    )
+    body = {
+        "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+        "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+    }
+
+    prepared, _ = await prepare_start(body, runtime_config)
+
+    names = [tool.name for tool in prepared.agent.tools]
+    assert ("browser_tool_set" in names) is has_browser
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image", "has_browser"),
+    [
+        (DEFAULT_CONVERSATION_IMAGE, True),
+        ("ghcr.io/openhands/agent-server:1.50.0-python", True),
+        ("ghcr.io/openhands/agent-server:latest-python-minimal", False),
+        ("ghcr.io/openhands/agent-server:abc1234-python-minimal-amd64", False),
+        ("ghcr.io/openhands/agent-server@sha256:" + "0" * 64, True),
+        ("ghcr.io/openhands/agent-server-custom:tag", False),
+        ("example.com/custom:tag", False),
+        ("localhost:5000/agent-server", False),
+    ],
+)
+async def test_unset_image_browser_is_on_only_for_the_stock_image(
+    tmp_path, monkeypatch, image, has_browser
+):
+    runtime_config = config(tmp_path, monkeypatch).model_copy(
+        update={"conversation_runtime": "docker", "conversation_image": image}
+    )
+    body = {
+        "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+        "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+    }
+
+    prepared, _ = await prepare_start(body, runtime_config)
+
+    names = [tool.name for tool in prepared.agent.tools]
+    assert ("browser_tool_set" in names) is has_browser
+
+
+@pytest.mark.asyncio
+async def test_explicit_agent_is_not_rebuilt_from_agent_settings(tmp_path, monkeypatch):
+    body = {
+        "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+        "agent": {"kind": "Agent", "llm": {"model": "test"}, "tools": []},
+        "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+    }
+
+    prepared, _ = await prepare_start(body, config(tmp_path, monkeypatch))
+
+    assert prepared.agent.tools == []

@@ -68,6 +68,8 @@ class ServerInfo(BaseModel):
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
+            "tool_catalog_v1",
+            "agent_profile_draft_materialize_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(

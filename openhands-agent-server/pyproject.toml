@@ -12,7 +12,7 @@ dependencies = [
   "openhands-sdk",
   "openhands-tools",
   "openai>=2.33.0,<3",
-  "pydantic>=2",
+  "pydantic>=2.13.5",
   "sqlalchemy>=2",
   "uvicorn>=0.52.4",
   "websockets>=12",
