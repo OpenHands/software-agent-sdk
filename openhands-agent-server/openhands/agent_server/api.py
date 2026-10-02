@@ -29,6 +29,7 @@ from openhands.agent_server.canvas_extensions_bridge_router import (
     app_backend_bridge_router,
 )
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
+from openhands.agent_server.codex_auth import codex_auth_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -465,6 +466,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(canvas_extensions_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(codex_auth_router)
     api_router.include_router(provider_connections_router)
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
@@ -727,6 +729,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.state.conversation_registry = create_conversation_registry(config)
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
     app.state.app_backend_session_store = AppBackendSessionStore()
+    app.state.codex_auth = None
 
     _add_api_routes(app)
     _setup_static_files(app, config)
