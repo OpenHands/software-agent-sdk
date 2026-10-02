@@ -23,6 +23,8 @@ import inspect
 import json
 import os
 import re
+import shutil
+import sys
 import threading
 import time
 import uuid
@@ -484,6 +486,27 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
             agent_name,
             agent_version,
         )
+
+
+def _npx_process_command(command: list[str], env: dict[str, str]) -> list[str]:
+    """Launch npm's Windows shim through Node without shell argument parsing."""
+    if sys.platform != "win32" or Path(command[0]).stem.lower() != "npx":
+        return command
+    path = env.get("PATH") or env.get("Path")
+    if not path:
+        return command
+    executable = shutil.which(command[0], path=path)
+    if executable is None or Path(executable).suffix.lower() != ".cmd":
+        return command
+    npm_dir = Path(executable).parent
+    cli = npm_dir / "node_modules" / "npm" / "bin" / "npx-cli.js"
+    bundled_node = npm_dir / "node.exe"
+    node = (
+        str(bundled_node) if bundled_node.is_file() else shutil.which("node", path=path)
+    )
+    if node is None or not cli.is_file():
+        return command
+    return [node, str(cli), *command[1:]]
 
 
 def _npx_packages(command: list[str]) -> list[str]:
@@ -2547,15 +2570,21 @@ class ACPAgent(AgentBase):
             list(packages),
         )
         package_args = [arg for package in packages for arg in ("--package", package)]
+        command = _npx_process_command(
+            [
+                "npx",
+                "--yes",
+                "--prefer-offline",
+                *package_args,
+                "--",
+                "node",
+                "-e",
+                "",
+            ],
+            env,
+        )
         process = await asyncio.create_subprocess_exec(
-            "npx",
-            "--yes",
-            "--prefer-offline",
-            *package_args,
-            "--",
-            "node",
-            "-e",
-            "",
+            *command,
             cwd=cwd,
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
@@ -2967,6 +2996,7 @@ class ACPAgent(AgentBase):
         # the adapter. The helper returns a child-only environment and never
         # mutates the fully assembled mapping above.
         env = _with_codex_base_url(command, args, env)
+        process_command = _npx_process_command([command, *args], env)
 
         working_dir = str(state.workspace.working_dir)
         provider = detect_acp_provider_by_command(self.acp_command)
@@ -3045,8 +3075,7 @@ class ACPAgent(AgentBase):
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
             # stdout.
             process = await asyncio.create_subprocess_exec(
-                command,
-                *args,
+                *process_command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
