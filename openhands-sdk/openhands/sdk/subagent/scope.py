@@ -44,9 +44,8 @@ class SubAgentScope(BaseModel):
         if self.mcp_servers:
             missing += [
                 f"MCP server {name!r}"
-                for name in sorted(
-                    _mcp_server_names(sub_agent) - set(parent.mcp_config)
-                )
+                for name, server in sorted((sub_agent.mcp_config or {}).items())
+                if parent.mcp_config.get(name) != server
             ]
         return missing
 
@@ -80,7 +79,3 @@ def _tool_names(agent: AgentBase | AgentDefinition) -> set[str]:
     else:
         names = [*(tool.name for tool in agent.tools), *agent.include_default_tools]
     return {canonical_tool_name(name) for name in names}
-
-
-def _mcp_server_names(agent: AgentBase | AgentDefinition) -> set[str]:
-    return set(agent.mcp_config or {})
