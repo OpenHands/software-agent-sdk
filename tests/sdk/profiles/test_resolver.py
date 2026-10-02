@@ -274,6 +274,48 @@ def test_dry_run_reports_a_registered_tool_that_is_not_usable(
     assert diagnostics.valid is (unusable == [])
 
 
+def test_openhands_profile_persona_keeps_capability_guidance(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="explorer",
+        llm_profile_ref="default",
+        persona="You are a read-only code explorer.",
+        system_message_suffix="Cite file paths.",
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.persona == "You are a read-only code explorer."
+    static = settings.create_agent().static_system_message
+    assert static.startswith("You are a read-only code explorer.")
+    assert "<SECURITY_RISK_ASSESSMENT>" in static
+    assert "<ROLE>" not in static
+    assert "Cite file paths." in (settings.create_agent().dynamic_context or "")
+
+
+def test_openhands_profile_without_persona_keeps_builtin_prompt(
+    llm_store: LLMProfileStore,
+) -> None:
+    settings = resolve_agent_profile(
+        OpenHandsAgentProfile(name="plain", llm_profile_ref="default"),
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.persona is None
+    agent = settings.create_agent()
+    assert agent.persona is None
+    assert "<ROLE>" in agent.static_system_message
+
+
 def test_openhands_copies_verification(
     llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
 ) -> None:

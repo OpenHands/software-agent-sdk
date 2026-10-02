@@ -265,6 +265,7 @@ def _build_openhands_settings(
             if browser_available is None
             else launch_tool_specs(profile.tools, browser_available=browser_available)
         ),
+        "persona": profile.persona,
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,

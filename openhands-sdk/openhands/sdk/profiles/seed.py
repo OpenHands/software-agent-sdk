@@ -69,6 +69,7 @@ def build_seed_profile(
         # are frozen, so nothing can dangle at launch (the freeze-by-name seed
         # was the #4017 launch-break; the deny-list removes that failure mode).
         disabled_skills=[],
+        persona=agent_settings.persona,
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),
