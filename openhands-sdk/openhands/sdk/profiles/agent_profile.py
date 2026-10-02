@@ -217,6 +217,24 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default_factory=ProfileVerificationSettings,
         description="Critic/verification policy (secret-free; no critic_api_key).",
     )
+    enable_classify_and_switch_llm_tool: bool = Field(
+        default=False,
+        description=(
+            "Enable the built-in route_task_to_model tool, which routes the "
+            "task to an LLM profile using the meta-profile named by "
+            "`meta_profile_ref`."
+        ),
+    )
+    meta_profile_ref: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Name of the saved meta-profile the routing tool uses. The launch "
+            "copies it and the LLM profiles it routes to into the agent, so a "
+            "runtime without the stores can still route. null lets the tool "
+            "fall back to the first meta-profile in the runtime's store."
+        ),
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
