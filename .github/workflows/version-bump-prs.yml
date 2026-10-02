@@ -618,7 +618,12 @@ jobs:
                     -F "client_payload[source-repo]=$GITHUB_REPOSITORY" \
                     -F "client_payload[source-sha]=$GITHUB_SHA"
 
-                  echo "✅ Dispatched bump-sdk ($VERSION) to OpenHands/enterprise"
+                  # repository_dispatch returns 204 even when no receiver is
+                  # listening, so a success here only confirms the event was
+                  # accepted — not that enterprise opened a bump PR. The actual
+                  # bump PR is created by enterprise's bump-sdk receiver workflow;
+                  # confirm it on OpenHands/enterprise after a release run.
+                  echo "✅ Dispatched bump-sdk ($VERSION) to OpenHands/enterprise (receiver opens the bump PR)"
 
             - name: Summary
               id: summary
@@ -648,7 +653,7 @@ jobs:
                     local outcome="$2"
                     local link="$3"
                     if [ "$outcome" = "failure" ]; then
-                      echo "- ⚠️ **$name PR creation FAILED** — see the \"Create PR for $name repo\" step logs" >> $GITHUB_STEP_SUMMARY
+                      echo "- ⚠️ **$name PR creation FAILED** — see the $name step logs above" >> $GITHUB_STEP_SUMMARY
                       FAILED_COUNT=$((FAILED_COUNT + 1))
                       if [ -n "$FAILED_REPOS" ]; then FAILED_REPOS="$FAILED_REPOS, "; fi
                       FAILED_REPOS="$FAILED_REPOS$name"
