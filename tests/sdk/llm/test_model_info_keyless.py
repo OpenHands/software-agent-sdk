@@ -12,9 +12,7 @@ def _proxy_response(payload):
 
 
 def test_keyless_lookup_skips_request():
-    with patch(
-        "openhands.sdk.llm.utils.model_info.httpx.get"
-    ) as mock_get:
+    with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
         result = _get_model_info_from_litellm_proxy(
             secret_api_key=None,
             base_url="http://proxy.local:4000",
@@ -26,9 +24,7 @@ def test_keyless_lookup_skips_request():
 
 
 def test_keyless_empty_string_lookup_skips_request():
-    with patch(
-        "openhands.sdk.llm.utils.model_info.httpx.get"
-    ) as mock_get:
+    with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
         result = _get_model_info_from_litellm_proxy(
             secret_api_key="",
             base_url="http://proxy.local:4000",
@@ -40,11 +36,7 @@ def test_keyless_empty_string_lookup_skips_request():
 
 
 def test_keyed_lookup_sends_authorization_header():
-    payload = {
-        "data": [
-            {"model_name": "some-model", "model_info": {"key": "abc"}}
-        ]
-    }
+    payload = {"data": [{"model_name": "some-model", "model_info": {"key": "abc"}}]}
     with patch(
         "openhands.sdk.llm.utils.model_info.httpx.get",
         return_value=_proxy_response(payload),
