@@ -1,49 +1,26 @@
 {
   "__expected__": {
-    "schema_version": 4,
+    "schema_version": 5,
     "active_profile": "fixture-v4-profile",
-    "agent_settings.schema_version": 7,
-    "agent_settings.agent_kind": "openhands",
-    "agent_settings.llm.model": "fixture-v4-persisted-llm",
-    "agent_settings.tools": [
-      {
-        "name": "terminal",
-        "params": {}
-      },
-      {
-        "name": "task_tool_set",
-        "params": {}
-      }
-    ],
-    "conversation_settings.max_iterations": 240,
-    "misc_settings.theme": "dark"
+    "agent_settings.schema_version": 8,
+    "agent_settings.agent_kind": "acp",
+    "agent_settings.acp_model": "fixture-v4-acp-model",
+    "conversation_settings.max_iterations": 120,
+    "misc_settings.theme": "light"
   },
   "schema_version": 4,
   "agent_settings": {
     "schema_version": 7,
-    "agent_kind": "openhands",
-    "llm": {
-      "model": "fixture-v4-persisted-llm"
-    },
-    "tools": [
-      {
-        "name": "terminal",
-        "params": {}
-      },
-      {
-        "name": "task_tool_set",
-        "params": {}
-      }
-    ]
+    "agent_kind": "acp",
+    "acp_server": "claude-code",
+    "acp_model": "fixture-v4-acp-model"
   },
   "conversation_settings": {
     "schema_version": 1,
-    "max_iterations": 240,
-    "confirmation_mode": true,
-    "security_analyzer": "llm"
+    "max_iterations": 120
   },
   "active_profile": "fixture-v4-profile",
   "misc_settings": {
-    "theme": "dark"
+    "theme": "light"
   }
 }

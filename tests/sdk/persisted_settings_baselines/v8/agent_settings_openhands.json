@@ -1,25 +1,31 @@
 {
   "__expected__": {
     "agent_kind": "openhands",
-    "llm.model": "fixture-v7-llm",
+    "llm.model": "fixture-v8-llm",
     "tools": [
       {
         "name": "terminal",
         "params": {}
+      },
+      {
+        "name": "task_tool_set",
+        "params": {}
       }
     ]
   },
-  "schema_version": 7,
+  "schema_version": 8,
   "agent_kind": "openhands",
   "llm": {
-    "model": "fixture-v7-llm"
+    "model": "fixture-v8-llm"
   },
   "tools": [
     {
       "name": "terminal",
       "params": {}
+    },
+    {
+      "name": "task_tool_set",
+      "params": {}
     }
-  ],
-  "enable_sub_agents": false,
-  "enable_switch_llm_tool": false
+  ]
 }

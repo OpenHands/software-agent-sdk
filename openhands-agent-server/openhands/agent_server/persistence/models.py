@@ -26,6 +26,7 @@ from pydantic import (
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
+    OpenHandsAgentSettings,
     apply_agent_settings_diff,
     default_agent_settings,
     validate_agent_settings,
@@ -143,7 +144,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 4
+PERSISTED_SETTINGS_SCHEMA_VERSION = 5
 
 
 class PersistedSettings(BaseModel):
@@ -210,6 +211,8 @@ class PersistedSettings(BaseModel):
     @property
     def llm_api_key_is_set(self) -> bool:
         """Check if an LLM API key is configured."""
+        if not isinstance(self.agent_settings, OpenHandsAgentSettings):
+            return False
         raw = self.agent_settings.llm.api_key
         if raw is None:
             return False
@@ -395,7 +398,9 @@ class PersistedSettings(BaseModel):
           are migrated through ``validate_agent_settings`` in
           ``_normalize_inputs``; the top-level bump keeps the file schema in
           step with the nested shape change.
-        - **v4** (current): nested ``agent_settings`` advanced to schema v7
+        - **v4**: nested ``agent_settings`` advanced to schema v7
+          (dropped the deprecated ``llm`` from ACP settings).
+        - **v5** (current): nested ``agent_settings`` advanced to schema v8
           (retired tool switches folded into ``tools``).
         """
         if not isinstance(data, dict):
