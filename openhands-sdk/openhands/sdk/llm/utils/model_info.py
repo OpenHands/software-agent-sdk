@@ -10,7 +10,10 @@ from litellm import model_cost
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
-from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+from openhands.sdk.llm.utils.openhands_provider import (
+    is_openhands_proxy_base_url,
+    litellm_call_kwargs,
+)
 
 
 logger = getLogger(__name__)
@@ -95,13 +98,18 @@ def _get_model_info_from_litellm_proxy(
     logger.debug(f"Get model_info_from_litellm_proxy:{cache_key}")
     if isinstance(secret_api_key, SecretStr):
         secret_api_key = secret_api_key.get_secret_value()
-    if not secret_api_key:
-        # No credentials: key-scoped proxy metadata is unobtainable, so skip
-        # the request entirely instead of collecting a 401. Callers fall back
-        # to static LiteLLM metadata.
+    has_key = bool(secret_api_key and secret_api_key.strip())
+    if not has_key and is_openhands_proxy_base_url(base_url):
+        # The managed proxy always requires auth: without credentials the
+        # lookup cannot succeed, so skip it instead of collecting a 401.
+        # Callers fall back to static LiteLLM metadata. Generic proxies are
+        # untouched: an open proxy may legitimately serve model info without
+        # credentials.
         return None
     try:
-        headers = {"Authorization": f"Bearer {secret_api_key}"}
+        headers = {}
+        if secret_api_key:
+            headers["Authorization"] = f"Bearer {secret_api_key}"
 
         response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
         data = response.json().get("data", [])
