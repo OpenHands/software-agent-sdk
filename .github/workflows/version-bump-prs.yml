@@ -577,6 +577,14 @@ jobs:
             # Environment of this repo (main only), never an org secret.
             - name: Mint enterprise-dispatcher App token (scoped to OpenHands/enterprise)
               id: enterprise-dispatcher-token
+              # continue-on-error: if the enterprise-dispatch Environment or its
+              # ENTERPRISE_DISPATCHER_APP_* secrets aren't provisioned yet,
+              # actions/create-github-app-token fails here. Without continue-on-error
+              # that would abort the job before the Summary / Slack / gate steps run,
+              # losing the aggregated outcome and the alert. Mirror the other bump
+              # steps: let the dispatch step below surface the failure via its own
+              # continue-on-error so the Summary can report enterprise FAILED.
+              continue-on-error: true
               uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
               with:
                   app-id: ${{ secrets.ENTERPRISE_DISPATCHER_APP_ID }}
