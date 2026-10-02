@@ -2,6 +2,9 @@
 
 from fastapi import APIRouter
 
+# Registered only in the agent-server: the tool needs a server to create the
+# child on, so it is deliberately absent from get_default_tools().
+import openhands.tools.child_conversation  # noqa: E402, F401
 from openhands.sdk.tool.registry import list_registered_tools
 from openhands.tools.preset.default import (
     register_builtins_agents,

@@ -75,6 +75,53 @@ class SendMessageRequest(BaseModel):
         return Message(role=self.role, content=self.content)
 
 
+class StartChildConversationRequest(BaseModel):
+    """Payload to start a child conversation on the same backend as its parent.
+
+    Sent by the ``start_child_conversation`` tool to a child-launch endpoint:
+    the agent-server's ``POST /api/conversations/{id}/children`` by default, or
+    an equivalent launcher supplied by the backend hosting the parent.
+    """
+
+    task: str = Field(
+        min_length=1,
+        description=(
+            "Self-contained brief delivered to the child as its first user message."
+        ),
+    )
+    title: str | None = Field(
+        default=None, description="Optional title for the child conversation."
+    )
+    isolation: Literal["worktree", "shared"] = Field(
+        default="worktree",
+        description=(
+            "Workspace isolation for the child. 'worktree' runs it in a git "
+            "worktree carved from the parent's workspace when that workspace is a "
+            "git repository; 'shared' runs it in the parent's directory. Backends "
+            "that manage workspaces themselves may ignore this."
+        ),
+    )
+
+
+class StartChildConversationResponse(BaseModel):
+    """Result of a child conversation launch, returned to the parent agent."""
+
+    conversation_id: UUID
+    parent_conversation_id: UUID
+    status: str = Field(description="Initial launch status reported by the backend.")
+    title: str | None = None
+    url: str | None = Field(
+        default=None,
+        description="Link to the child conversation, when the backend knows it.",
+    )
+    workspace: str | None = Field(
+        default=None, description="Working directory of the child, when known."
+    )
+    isolation: Literal["worktree", "shared"] | None = Field(
+        default=None, description="Workspace isolation actually applied, when known."
+    )
+
+
 class AgentLaunchAdditions(BaseModel):
     """Add deployment context after agent resolution."""
 
