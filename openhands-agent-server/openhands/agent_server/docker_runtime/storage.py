@@ -42,7 +42,25 @@ class DockerRuntimeStorage:
             home = self.provisioning.direct_child(runtime_dir, "persistence")
         except ValueError:
             home = None
-        return StoredRuntime(conversation_id, last_active, home=home)
+        workspace = self._owned_workspace(conversation_id, runtime_dir)
+        return StoredRuntime(
+            conversation_id,
+            last_active,
+            home=home,
+            workspaces=(workspace,) if workspace else (),
+        )
+
+    def _owned_workspace(self, conversation_id: UUID, runtime_dir: Path) -> Path | None:
+        """The runtime's workspace, if the server created it inside runtime-data."""
+        try:
+            identity = self.provisioning.load_optional(conversation_id)
+        except Exception:
+            return None
+        if identity is None or identity.workspace_path.is_symlink():
+            return None
+        workspace = identity.workspace_path.resolve()
+        # A caller-supplied workspace is someone's checkout, not ours to prune.
+        return workspace if workspace.is_relative_to(runtime_dir.resolve()) else None
 
     def runtimes(self) -> list[StoredRuntime]:
         runtimes = [

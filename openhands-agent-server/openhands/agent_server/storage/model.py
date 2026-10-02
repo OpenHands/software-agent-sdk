@@ -9,6 +9,8 @@ class Tier(IntEnum):
 
     # Package caches in the sandbox home ($HOME/.cache, $HOME/.npm).
     CACHES = 1
+    # Git-ignored dirs in the workspace (node_modules, .venv, build output).
+    DEPENDENCIES = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,3 +21,5 @@ class StoredRuntime:
     last_active: float
     # The sandbox's own $HOME, if it has one apart from the host's.
     home: Path | None = None
+    # Workspaces the server created; never a caller-supplied checkout.
+    workspaces: tuple[Path, ...] = ()
