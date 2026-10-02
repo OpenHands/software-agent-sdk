@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import AgentErrorEvent, Event, MessageEvent
 from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
 
@@ -76,6 +76,28 @@ def classify_response(message: Message) -> LLMResponseType:
         return LLMResponseType.REASONING_ONLY
 
     return LLMResponseType.EMPTY
+
+
+def _buffer_error_events(
+    on_event: ConversationCallbackType,
+) -> tuple[ConversationCallbackType, list[AgentErrorEvent]]:
+    """Defer sync validation errors until their batch is fully emitted.
+
+    A validation failure used to be emitted between its sibling actions,
+    splitting one assistant turn into several messages (``events_to_messages``
+    only merges *consecutive* actions of one response) that strict providers
+    reject. Action events pass through in order; buffered errors flush once
+    every sibling action is emitted, restoring ``[A..A,T..T]`` order.
+    """
+    buffered: list[AgentErrorEvent] = []
+
+    def _callback(event: Event) -> None:
+        if isinstance(event, AgentErrorEvent):
+            buffered.append(event)
+        else:
+            on_event(event)
+
+    return _callback, buffered
 
 
 # ---------------------------------------------------------------------------
@@ -161,13 +183,14 @@ class ResponseDispatchMixin:
         thought_content = [c for c in message.content if isinstance(c, TextContent)]
 
         action_events: list[ActionEvent] = []
+        dispatch_event, buffered_errors = _buffer_error_events(on_event)
         assert message.tool_calls, "classify_response guarantees tool_calls"
         for i, tool_call in enumerate(message.tool_calls):
             action_event = self._get_action_event(
                 tool_call,
                 conversation=conversation,
                 llm_response_id=llm_response.id,
-                on_event=on_event,
+                on_event=dispatch_event,
                 security_analyzer=state.security_analyzer,
                 thought=thought_content if i == 0 else [],
                 reasoning_content=(message.reasoning_content if i == 0 else None),
@@ -182,6 +205,9 @@ class ResponseDispatchMixin:
             if action_event is None:
                 continue
             action_events.append(action_event)
+
+        for error_event in buffered_errors:
+            on_event(error_event)
 
         if self._requires_user_confirmation(state, action_events):
             return
@@ -215,13 +241,14 @@ class ResponseDispatchMixin:
         thought_content = [c for c in message.content if isinstance(c, TextContent)]
 
         action_events: list[ActionEvent] = []
+        dispatch_event, buffered_errors = _buffer_error_events(on_event)
         assert message.tool_calls, "classify_response guarantees tool_calls"
         for i, tool_call in enumerate(message.tool_calls):
             action_event = self._get_action_event(
                 tool_call,
                 conversation=conversation,
                 llm_response_id=llm_response.id,
-                on_event=on_event,
+                on_event=dispatch_event,
                 security_analyzer=state.security_analyzer,
                 thought=thought_content if i == 0 else [],
                 reasoning_content=(message.reasoning_content if i == 0 else None),
@@ -236,6 +263,9 @@ class ResponseDispatchMixin:
             if action_event is None:
                 continue
             action_events.append(action_event)
+
+        for error_event in buffered_errors:
+            on_event(error_event)
 
         if self._requires_user_confirmation(state, action_events):
             return
