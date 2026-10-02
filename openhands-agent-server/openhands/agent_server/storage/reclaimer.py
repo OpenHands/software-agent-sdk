@@ -188,9 +188,17 @@ def _select(runtime: StoredRuntime, tier: Tier) -> list[Path]:
 
 
 def disk_usage(path: Path) -> float:
-    usage = shutil.disk_usage(path)
+    usage = shutil.disk_usage(_existing(path))
     return usage.used / (usage.used + usage.free)
 
 
 def _free_bytes(path: Path) -> int:
-    return shutil.disk_usage(path).free
+    return shutil.disk_usage(_existing(path)).free
+
+
+def _existing(path: Path) -> Path:
+    # The root may not exist until the first runtime does; its nearest
+    # existing parent is on the same filesystem.
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return path
