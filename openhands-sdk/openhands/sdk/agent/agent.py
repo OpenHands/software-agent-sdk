@@ -94,6 +94,7 @@ from openhands.sdk.tool.builtins import (
     ThinkAction,
 )
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
+from openhands.sdk.tool.execution_context import ToolInvocation, tool_invocation_context
 
 
 logger = get_logger(__name__)
@@ -1476,18 +1477,24 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         # Execute actions!
         try:
-            if should_enable_observability():
-                tool_name = extract_action_name(action_event)
-                observation: Observation = observe(
-                    name=tool_name,
-                    span_type="TOOL",
-                    # Only the action is input; the conversation would serialize
-                    # as a bare object repr carrying a memory address.
-                    ignore_inputs=["conversation"],
-                    metadata={"tool_call_id": action_event.tool_call.id},
-                )(tool)(action_event.action, conversation)
-            else:
-                observation = tool(action_event.action, conversation)
+            with tool_invocation_context(
+                ToolInvocation(
+                    action_id=action_event.id,
+                    tool_call_id=action_event.tool_call.id,
+                )
+            ):
+                if should_enable_observability():
+                    tool_name = extract_action_name(action_event)
+                    observation: Observation = observe(
+                        name=tool_name,
+                        span_type="TOOL",
+                        # Only the action is input; the conversation would serialize
+                        # as a bare object repr carrying a memory address.
+                        ignore_inputs=["conversation"],
+                        metadata={"tool_call_id": action_event.tool_call.id},
+                    )(tool)(action_event.action, conversation)
+                else:
+                    observation = tool(action_event.action, conversation)
             assert isinstance(observation, Observation), (
                 f"Tool '{tool.name}' executor must return an Observation"
             )

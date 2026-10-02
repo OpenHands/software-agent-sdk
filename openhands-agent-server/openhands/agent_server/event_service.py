@@ -86,6 +86,7 @@ from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.files import atomic_write_text
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.task.recovery import TaskStore, recover_persisted_tasks
 
 
 LEASE_RENEW_INTERVAL_SECONDS = 15.0
@@ -1136,6 +1137,24 @@ class EventService:
                 "Failed to initialize git repository at %s: %s", working_dir, e
             )
 
+    def _recover_subagent_tasks(self) -> None:
+        subagents_dir = self.conversation_dir / "subagents"
+        if not subagents_dir.is_dir():
+            return
+        assert self._conversation is not None
+        with self._conversation._state as state:
+            recovery = recover_persisted_tasks(
+                state,
+                TaskStore(
+                    LocalFileStore(str(subagents_dir)),
+                    parent_conversation_id=state.id,
+                    write_guard=self._write_guard,
+                ),
+                write_guard=self._write_guard,
+            )
+            for observation in recovery.observations:
+                self._conversation._on_event(observation)
+
     async def start(self):
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
@@ -1316,6 +1335,10 @@ class EventService:
         # agent-server's idle timer and prevent runtime-api from killing
         # the pod during long conn.prompt() calls.
         self._setup_acp_activity_heartbeat(self._conversation.agent)
+
+        # Reconcile children before generic recovery consumes their tool calls.
+        # State locking and disk I/O stay off the server's event loop.
+        await asyncio.to_thread(self._recover_subagent_tasks)
 
         # Any conversation loaded from disk with RUNNING status is stale. Active
         # split-brain resumes are prevented earlier by the lease claim itself, so if
