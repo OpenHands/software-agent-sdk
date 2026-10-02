@@ -35,6 +35,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import detached_delegate_context
 from openhands.sdk.security import ConfirmationPolicyBase
 from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
+from openhands.sdk.subagent.scope import SubAgentScope, scope_delegation_tools
 
 
 if TYPE_CHECKING:
@@ -98,9 +99,11 @@ class TaskManager:
     def __init__(
         self,
         confirmation_handler: ConfirmationHandler | None = None,
+        sub_agent_scope: SubAgentScope | None = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
+        self._sub_agent_scope = sub_agent_scope or SubAgentScope()
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
@@ -375,9 +378,19 @@ class TaskManager:
 
         sub_agent = factory.factory_func(sub_agent_llm)
 
+        missing = self._sub_agent_scope.missing_from(parent.agent, sub_agent)
+        if missing:
+            raise ValueError(
+                f"Agent '{factory.definition.name}' uses {', '.join(missing)}, "
+                "which this agent does not have."
+            )
+
         # ensuring that the sub-agent LLM has stream deactivated
         sub_agent = sub_agent.model_copy(
-            update={"llm": sub_agent.llm.model_copy(update={"stream": False})}
+            update={
+                "llm": sub_agent.llm.model_copy(update={"stream": False}),
+                "tools": scope_delegation_tools(sub_agent.tools, self._sub_agent_scope),
+            }
         )
         return sub_agent
 

@@ -59,3 +59,11 @@ def test_default_tool_specs_parity_with_get_default_tools() -> None:
                 )
             ]
             assert sdk_names == preset_names
+
+
+def test_delegation_names_match_the_tool_sets_that_start_sub_agents() -> None:
+    from openhands.sdk.subagent.scope import DELEGATION_TOOL_NAMES
+    from openhands.tools.task import TaskToolSet
+    from openhands.tools.workflow import WorkflowToolSet
+
+    assert DELEGATION_TOOL_NAMES == (TaskToolSet.name, WorkflowToolSet.name)

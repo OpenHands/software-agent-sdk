@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 from pydantic import Field
 
+from openhands.sdk.subagent import SubAgentScope
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -179,10 +180,15 @@ class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
     def create(
         cls,
         conv_state: ConversationState,  # noqa: ARG003
+        sub_agent_scope: SubAgentScope | dict[str, bool] | None = None,
     ) -> Sequence[WorkflowTool]:
         from openhands.tools.workflow.impl import WorkflowExecutor
 
-        return WorkflowTool.create(executor=WorkflowExecutor())
+        return WorkflowTool.create(
+            executor=WorkflowExecutor(
+                sub_agent_scope=SubAgentScope.model_validate(sub_agent_scope or {})
+            )
+        )
 
 
 register_tool(WorkflowToolSet.name, WorkflowToolSet)
