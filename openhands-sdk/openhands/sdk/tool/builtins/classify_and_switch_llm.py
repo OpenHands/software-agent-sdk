@@ -12,7 +12,7 @@ visible and retryable, instead of silently routing to a default model.
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -469,6 +469,7 @@ class ClassifyAndSwitchLLMTool(
     """Tool that classifies the task and switches to a meta-profile's LLM."""
 
     name = "route_task_to_model"
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

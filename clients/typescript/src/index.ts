@@ -237,6 +237,7 @@ export type {
   LaunchedAgentProfile,
   LaunchedProfile,
 } from './models/agent-profile';
+export type { ToolCatalogEntry, ToolCatalogResponse } from './models/tool-catalog';
 
 // Agent profiles client
 export { AgentProfilesClient } from './client/agent-profiles-client';

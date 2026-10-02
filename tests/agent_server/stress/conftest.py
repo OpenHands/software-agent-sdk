@@ -49,7 +49,7 @@ async def conversation_service(tmp_path: Path) -> AsyncIterator[ConversationServ
     # test_run_admission.py separately verifies rejection beyond capacity.
     service = ConversationService(
         conversations_dir=persist_dir,
-        max_concurrent_runs=CONCURRENT_CONVERSATIONS.n_conversations,
+        max_concurrent_runs=CONCURRENT_CONVERSATIONS.n_conversations + 1,
     )
     async with service:
         yield service
