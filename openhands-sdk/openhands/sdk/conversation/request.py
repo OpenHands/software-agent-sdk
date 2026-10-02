@@ -295,7 +295,6 @@ class StartConversationRequest(ConversationConfig):
 
     agent_settings: dict[str, Any] | None = Field(
         default=None,
-        exclude=True,
         description=(
             "Reference-free agent settings, validated with the AgentSettingsBase "
             "`agent_kind` discriminator. The server builds the agent from them "

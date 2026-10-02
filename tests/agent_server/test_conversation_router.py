@@ -658,7 +658,9 @@ def test_start_conversation_accepts_openhands_agent_settings(
         assert response.status_code == 201
         request = mock_conversation_service.start_conversation.call_args.args[0]
         assert request.agent is None
-        assert "agent_settings" not in request.model_dump(mode="json")
+        assert (
+            request.model_dump(mode="json")["agent_settings"] == request.agent_settings
+        )
         agent = _launched_agent(request)
         assert agent.kind == "Agent"
         assert agent.llm.model == "settings-model"
