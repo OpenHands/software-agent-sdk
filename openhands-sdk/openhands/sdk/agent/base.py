@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    field_validator,
     model_validator,
 )
 
@@ -32,6 +33,7 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
+    BROWSER_TOOL_NAME,
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     Tool,
@@ -43,6 +45,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -263,6 +266,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return data
 
+    @field_validator("system_prompt_kwargs")
+    @classmethod
+    def _warn_deprecated_enable_browser(
+        cls, value: dict[str, object]
+    ) -> dict[str, object]:
+        if "enable_browser" in value:
+            warn_deprecated(
+                "system_prompt_kwargs['enable_browser']",
+                deprecated_in="1.51.0",
+                removed_in="1.56.0",
+                details=(
+                    "Browser guidance now ships in the browser tool descriptions; "
+                    "only custom Jinja templates still read this kwarg."
+                ),
+                stacklevel=5,
+            )
+        return value
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -356,10 +377,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # own Jinja template; everything else (incl. custom policies) uses the registry.
         preset = self._prompt_preset
         if preset is None:
+            # Deprecated kwarg, kept until 1.56.0 for templates that branch on it.
+            template_kwargs = {
+                "enable_browser": any(t.name == BROWSER_TOOL_NAME for t in self.tools),
+                **self._resolved_template_kwargs(),
+            }
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
-                **self._resolved_template_kwargs(),
+                **template_kwargs,
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static
@@ -376,10 +402,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if "soul_content" not in template_kwargs:
             template_kwargs["soul_content"] = _load_soul_md()
 
-        template_kwargs.setdefault(
-            "enable_browser",
-            any(t.name == "browser_tool_set" for t in self.tools),
-        )
         template_kwargs.setdefault(
             "memory_enabled",
             self.agent_context is not None and self.agent_context.load_memory,

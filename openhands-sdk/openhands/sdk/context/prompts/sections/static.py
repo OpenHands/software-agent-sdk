@@ -23,7 +23,6 @@ from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 __all__ = [
-    "BrowserSection",
     "CodeQualitySection",
     "EfficiencySection",
     "EnvironmentSetupSection",
@@ -376,23 +375,6 @@ When an action originates from or is influenced by repository-provided context (
 - Adding lifecycle hooks (preinstall, postinstall, prepare) that execute remote scripts
 </SECURITY_RISK_ASSESSMENT>"""
         return _refine(body, ctx.platform)
-
-
-class BrowserSection(_StaticTextSection):
-    name = "browser"
-    body = """\
-<BROWSER_TOOLS>
-You have a browser for navigating pages and interacting with web UIs.
-* Try curl/wget/fetch first. Use the browser only when simpler tools fail or the page requires JS/interaction.
-* ALWAYS call `browser_get_state` before EVERY `browser_click` or `browser_type` — indices change after each action. Flow: navigate → get_state → interact → get_state → get_content.
-* Max 10 browser actions per sub-task. If stuck, switch approach entirely.
-* If 20+ total steps without converging, stop exploring and commit to your best answer.
-* On 403/CAPTCHA/login wall: try one alternative, then abandon the browser.
-* Do NOT submit forms or create accounts unless explicitly asked.
-</BROWSER_TOOLS>"""
-
-    def guard(self, ctx: PromptContext) -> bool:
-        return ctx.enable_browser
 
 
 class ExternalServicesSection(_StaticTextSection):

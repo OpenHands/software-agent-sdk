@@ -25,7 +25,6 @@ from openhands.sdk.context.prompts.sections.dynamic import (
 )
 from openhands.sdk.context.prompts.sections.planning import PlanningSection
 from openhands.sdk.context.prompts.sections.static import (
-    BrowserSection,
     CodeQualitySection,
     EfficiencySection,
     EnvironmentSetupSection,
@@ -69,7 +68,6 @@ _DEFAULT_STATIC_SECTIONS: Final[tuple[PromptSection, ...]] = (
     SelfDocumentationSection(),
     SecuritySection(),  # guard: security_policy_filename set
     SecurityRiskAssessmentSection(),  # guard: llm_security_analyzer
-    BrowserSection(),  # guard: ctx.enable_browser
     ExternalServicesSection(),
     EnvironmentSetupSection(),
     TroubleshootingSection(),

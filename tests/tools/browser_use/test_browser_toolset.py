@@ -1,5 +1,6 @@
 """Test BrowserToolSet functionality."""
 
+import json
 import logging
 import tempfile
 import threading
@@ -11,7 +12,8 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.llm import LLM
+from openhands.sdk.event import Event, SystemPromptEvent
+from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.tool import Tool, ToolDefinition
 from openhands.sdk.tool.registry import resolve_tool
 from openhands.sdk.workspace import LocalWorkspace
@@ -472,3 +474,58 @@ def test_resolve_tool_survives_browser_executor_failure():
             resolved = resolve_tool(Tool(name=BrowserToolSet.name), conv_state)
 
     assert list(resolved) == []
+
+
+_BROWSER_RULES = (
+    "Try curl/wget/fetch first",
+    "Max 10 browser actions per sub-task",
+    "On 403/CAPTCHA/login wall",
+)
+
+
+def _initial_request_text(agent: Agent, temp_dir: str) -> tuple[str, str]:
+    """Return the system-message text and tool-schema JSON the agent sends."""
+    state = ConversationState.create(
+        id=uuid4(), agent=agent, workspace=LocalWorkspace(working_dir=temp_dir)
+    )
+    events: list[Event] = []
+    agent.init_state(state, on_event=events.append)
+    (event,) = [e for e in events if isinstance(e, SystemPromptEvent)]
+    system = "\n".join(
+        c.text for c in event.to_llm_message().content if isinstance(c, TextContent)
+    )
+    tools = json.dumps([t.to_openai_tool() for t in event.tools])
+    return system, tools
+
+
+def _browser_agent(system_prompt: str | None = None) -> Agent:
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    return Agent(
+        llm=llm, tools=[Tool(name=BrowserToolSet.name)], system_prompt=system_prompt
+    )
+
+
+@pytest.mark.parametrize("system_prompt", [None, "CUSTOM SYSTEM PROMPT"])
+def test_browser_rules_ship_once_in_tool_schemas(system_prompt):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        system, tools = _initial_request_text(_browser_agent(system_prompt), temp_dir)
+
+    for rule in _BROWSER_RULES:
+        assert rule not in system
+        assert tools.count(rule) == 1
+
+
+def test_no_browser_rules_when_browser_fails_to_start():
+    with (
+        tempfile.TemporaryDirectory() as temp_dir,
+        patch.object(
+            BrowserToolSet,
+            "_get_or_create_shared_executor",
+            side_effect=RuntimeError("chromium failed to start"),
+        ),
+    ):
+        system, tools = _initial_request_text(_browser_agent(), temp_dir)
+
+    assert "browser_navigate" not in tools
+    for rule in _BROWSER_RULES:
+        assert rule not in system + tools
