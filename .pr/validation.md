@@ -58,10 +58,35 @@ errors. Backend/cross tests were rerun: **81 passed**.
 See the [Canvas evidence](https://github.com/luxleader/OpenHands/blob/feat/codex-oauth-17372/.pr/validation.md)
 for the runtime command, screenshots and video, including its precise scope.
 
+## Authorized account verification — 2026-10-02
+
+The human completed ChatGPT device authorization in the real Canvas. The
+packaged Agent Server returned `connected=true`. Three isolated conversations
+using the active Codex Agent Profile and pinned `codex-acp@1.10.0` each reached
+`finished` and returned `OK` through the canonical `agent_final_response` API:
+before restart, after restarting the server with its original encrypted store
+and encryption key, and after refreshing credentials. No API key was supplied.
+
+The actual OpenAI refresh endpoint was exercised through `CodexAuthService`.
+Only the expiry predicate was forced to trigger refresh immediately; the OAuth
+transport, account credentials, CAS update and encrypted store were real.
+The access token changed, the refresh token rotated, and the stored version and
+last-refresh timestamp changed. The running server still reported connected.
+This does not establish naturally expired-token behavior or prolonged use.
+
+The default bare `npx` command failed on this Windows host with `[WinError 2]`.
+The local test profile was updated to invoke installed `node.exe` with npm's
+`npx-cli.js`, the existing test cache, and the same pinned adapter package.
+That machine-specific profile workaround is not a general Windows launcher fix.
+The account remains connected for the human; real account disconnect and
+browser reload were not independently repeated in this acceptance run.
+
+Credential-free observations: [live results](codex-live-results.json).
+
 ## Remaining gates
 
-Keep draft pending a human ChatGPT login and Codex turn, Docker/remote checks,
-compatible server/client publication and downstream exact pins. The separate
+Keep draft pending Docker/remote checks, compatible server/client publication
+and downstream exact pins. The separate
 Cloud App API integration is not implemented by this public Agent Server PR.
 The HUMAN note remains reserved for the human author. Remove `.pr/` manually
 before merging this fork PR.
