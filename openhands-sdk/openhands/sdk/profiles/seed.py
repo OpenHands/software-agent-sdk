@@ -73,6 +73,10 @@ def build_seed_profile(
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),
+        enable_classify_and_switch_llm_tool=(
+            agent_settings.enable_classify_and_switch_llm_tool
+        ),
+        meta_profile_ref=agent_settings.active_meta_profile,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
     )
