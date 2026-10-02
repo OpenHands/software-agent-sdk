@@ -1,0 +1,437 @@
+"""Live check of the Docker runtime split (#5398): host resolves, container finalizes.
+
+Runs a host agent-server in Docker runtime mode, so each conversation gets its
+own container started from ``--image``. The host config says whether the image
+ships chromium; the container can run it or not. The launched agent's tools show
+who decided.
+
+    python .pr/launch_docker_e2e.py --sdk <sdk checkout> --image <agent-server image> \
+        --mock-llm <mock-llm-server.py> --container-browser yes|no \
+        [--image-has-browser yes|no] [--host-browser yes|no]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+
+DATETIME_LINE = re.compile(r"current date and time is[^\n]*", re.IGNORECASE)
+
+
+def wait_ready(url: str, process: subprocess.Popen, home: Path) -> None:
+    for _ in range(240):
+        if process.poll() is not None:
+            sys.exit(f"{url} exited early; see {home}")
+        try:
+            if httpx.get(url, timeout=2).status_code == 200:
+                return
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.5)
+    sys.exit(f"{url} never became ready")
+
+
+def running_containers() -> set[str]:
+    out = subprocess.run(
+        ["docker", "ps", "--filter", "name=agent-server-conversation-", "-q"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return set(out.split())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sdk", type=Path, required=True)
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--mock-llm", type=Path, required=True)
+    parser.add_argument("--port", type=int, default=18590)
+    parser.add_argument("--llm-port", type=int, default=18599)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument(
+        "--container-browser",
+        choices=["yes", "no"],
+        default="yes",
+        help="Whether the container image can run the browser tool set.",
+    )
+    parser.add_argument(
+        "--image-has-browser",
+        choices=["yes", "no"],
+        help="OH_CONVERSATION_IMAGE_HAS_BROWSER for the host; defaults to the truth.",
+    )
+    parser.add_argument(
+        "--host-browser",
+        choices=["yes", "no"],
+        default="yes",
+        help="OH_ENABLE_BROWSER for the host.",
+    )
+    args = parser.parse_args()
+    image_has_browser = args.image_has_browser or args.container_browser
+
+    home = Path(tempfile.mkdtemp(prefix="launch-docker-e2e-"))
+    print(f"state: {home}", flush=True)
+    (home / "workspace").mkdir()
+    tmux = Path(f"/tmp/ohd{args.port}")
+    tmux.mkdir(exist_ok=True)
+    python = str(args.sdk / ".venv" / "bin" / "python")
+    env = {
+        **os.environ,
+        "OH_PERSISTENCE_DIR": str(home / "persistence"),
+        "OH_CONVERSATIONS_PATH": str(home / "conversations"),
+        "OH_WORKSPACE_PATH": str(home / "workspace"),
+        "OH_SECRET_KEY": "launch-docker-e2e-key",
+        "OH_CONVERSATION_RUNTIME": "docker",
+        "OH_CONVERSATION_IMAGE": args.image,
+        "OH_CONVERSATION_CONTAINER_STARTUP_TIMEOUT": "240",
+        "OPENHANDS_SUPPRESS_BANNER": "1",
+        "TMUX_TMPDIR": str(tmux),
+        "OH_ENABLE_VSCODE": "false",
+        "OH_CONVERSATION_IMAGE_HAS_BROWSER": (
+            "true" if image_has_browser == "yes" else "false"
+        ),
+        "OH_ENABLE_BROWSER": "true" if args.host_browser == "yes" else "false",
+    }
+    llm_url = f"http://127.0.0.1:{args.llm_port}"
+    base = f"http://127.0.0.1:{args.port}"
+    llm_proc = subprocess.Popen(
+        [python, str(args.mock_llm), "--port", str(args.llm_port)],
+        env=env,
+        stdout=(home / "mock-llm.log").open("w"),
+        stderr=subprocess.STDOUT,
+    )
+    server = subprocess.Popen(
+        [python, "-m", "openhands.agent_server", "--port", str(args.port)],
+        env=env,
+        cwd=home,
+        stdout=(home / "server.log").open("w"),
+        stderr=subprocess.STDOUT,
+    )
+    rows: dict[str, Any] = {}
+    verdicts: dict[str, bool] = {}
+    conversation_ids: list[str] = []
+    client = httpx.Client(base_url=base, timeout=300)
+    try:
+        wait_ready(f"{llm_url}/", llm_proc, home)
+        wait_ready(f"{base}/health", server, home)
+
+        def reply_with(turns: int = 20) -> None:
+            httpx.post(f"{llm_url}/admin/reset")
+            httpx.post(
+                f"{llm_url}/admin/trajectory/register",
+                json={"name": "done", "turns": [{"text": "DONE"}] * turns},
+            )
+            httpx.post(f"{llm_url}/admin/trajectory/activate", json={"name": "done"})
+
+        # The container reaches the host's mock LLM through Docker Desktop.
+        container_llm = f"http://host.docker.internal:{args.llm_port}"
+        client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"agent_context": {"load_memory": True}}},
+        ).raise_for_status()
+        client.post(
+            "/api/profiles/mock",
+            json={
+                "llm": {
+                    "model": "openai/mock-test-model",
+                    "base_url": container_llm,
+                    "api_key": "sk",
+                },
+                "include_secrets": True,
+            },
+        ).raise_for_status()
+        profile = {
+            "llm_profile_ref": "mock",
+            "system_message_suffix": "DOCKER_PROFILE_SUFFIX",
+            "secret_refs": ["ALLOWED"],
+            "mcp_server_refs": [],
+            "condenser": {"kind": "NoOpCondenser"},
+        }
+        client.post(
+            "/api/agent-profiles/docker-profile", json=profile
+        ).raise_for_status()
+        client.post(
+            "/api/agent-profiles/broken",
+            json={**profile, "llm_profile_ref": "gone", "mcp_server_refs": ["x"]},
+        ).raise_for_status()
+        ids = {
+            p["name"]: p["id"]
+            for p in client.get("/api/agent-profiles").json()["profiles"]
+        }
+
+        preview = client.post("/api/agent-profiles/docker-profile/materialize").json()
+        rows["host materialize"] = {
+            "valid": preview.get("valid"),
+            "tools": [
+                t["name"]
+                for t in (preview.get("resolved_settings") or {}).get("tools") or []
+            ],
+            "unusable_tools": preview.get("unusable_tools"),
+            "errors": preview.get("errors"),
+        }
+
+        reply_with()
+        before = running_containers()
+        response = client.post(
+            "/api/conversations",
+            params={"include_skills": "true"},
+            json={
+                "agent_profile_id": ids["docker-profile"],
+                "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+                "autotitle": False,
+                "secrets": {
+                    "ALLOWED": {"kind": "StaticSecret", "value": "allowed-value"},
+                    "OTHER": {"kind": "StaticSecret", "value": "other-value"},
+                },
+                "initial_message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hello"}],
+                    "run": True,
+                },
+            },
+        )
+        row: dict[str, Any] = {"status": response.status_code}
+        if response.status_code in (200, 201):
+            info = response.json()
+            conversation_ids.append(info["id"])
+            for _ in range(240):
+                state = client.get(f"/api/conversations/{info['id']}").json()
+                if state.get("execution_status") not in ("running", "idle"):
+                    break
+                time.sleep(0.5)
+            requests = httpx.get(f"{llm_url}/admin/requests").json()["requests"]
+            body = requests[0] if requests else {}
+            system = "\n".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for message in body.get("messages", [])
+                if message["role"] == "system"
+                for part in (
+                    message["content"]
+                    if isinstance(message["content"], list)
+                    else [message["content"]]
+                )
+            )
+            stamp = DATETIME_LINE.search(system)
+            row.update(
+                {
+                    "secrets_seen": sorted(
+                        name for name in ("ALLOWED", "OTHER") if name in system
+                    ),
+                    "model_tools": sorted(
+                        t["function"]["name"] for t in body.get("tools") or []
+                    ),
+                    "agent_tools": [t["name"] for t in info["agent"]["tools"]],
+                    "suffix": "DOCKER_PROFILE_SUFFIX" in system,
+                    "datetime": stamp.group(0) if stamp else None,
+                    "launched_agent_profile": info.get("launched_agent_profile"),
+                    "load_memory": (info["agent"].get("agent_context") or {}).get(
+                        "load_memory"
+                    ),
+                    "containers_started": len(running_containers() - before),
+                }
+            )
+        else:
+            row["detail"] = response.text[:400]
+        rows["profile launch through the Docker host"] = row
+
+        if conversation_ids:
+            cid = conversation_ids[0]
+            before = running_containers()
+            again = client.post(
+                "/api/conversations",
+                json={
+                    "conversation_id": cid,
+                    "agent_profile_id": ids["broken"],
+                    "workspace": {
+                        "kind": "LocalWorkspace",
+                        "working_dir": "/workspace",
+                    },
+                },
+            )
+            rows["re-post existing conversation with a broken profile"] = {
+                "status": again.status_code,
+                "container_still_running": before <= running_containers(),
+            }
+
+        for label, source in (
+            (
+                "agent_settings through the Docker host",
+                {
+                    "agent_settings": {
+                        "llm": {
+                            "model": "openai/mock-test-model",
+                            "base_url": container_llm,
+                            "api_key": "sk",
+                        },
+                        "agent_context": {
+                            "current_datetime": "2020-01-01T00:00:00+00:00"
+                        },
+                    }
+                },
+            ),
+            (
+                "raw agent through the Docker host",
+                {
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": {
+                            "model": "openai/mock-test-model",
+                            "base_url": container_llm,
+                            "api_key": "sk",
+                        },
+                        "tools": [{"name": "terminal"}],
+                        "agent_context": {
+                            "current_datetime": "2020-01-01T00:00:00+00:00"
+                        },
+                    }
+                },
+            ),
+        ):
+            reply_with()
+            launched = client.post(
+                "/api/conversations",
+                params={"include_skills": "true"},
+                json={
+                    **source,
+                    "workspace": {
+                        "kind": "LocalWorkspace",
+                        "working_dir": "/workspace",
+                    },
+                    "autotitle": False,
+                    "initial_message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "hello"}],
+                        "run": True,
+                    },
+                },
+            )
+            entry: dict[str, Any] = {"status": launched.status_code}
+            if launched.status_code in (200, 201):
+                info = launched.json()
+                conversation_ids.append(info["id"])
+                for _ in range(240):
+                    state = client.get(f"/api/conversations/{info['id']}").json()
+                    if state.get("execution_status") not in ("running", "idle"):
+                        break
+                    time.sleep(0.5)
+                seen = httpx.get(f"{llm_url}/admin/requests").json()["requests"]
+                system = json.dumps((seen[0] if seen else {}).get("messages", []))
+                stamp = DATETIME_LINE.search(system)
+                entry.update(
+                    {
+                        "agent_tools": [t["name"] for t in info["agent"]["tools"]],
+                        "datetime": stamp.group(0) if stamp else None,
+                        "load_memory": (info["agent"].get("agent_context") or {}).get(
+                            "load_memory"
+                        ),
+                        "model_called": bool(seen),
+                    }
+                )
+            else:
+                entry["detail"] = launched.text[:300]
+            rows[label] = entry
+
+        before = running_containers()
+        broken = client.post(
+            "/api/conversations",
+            json={
+                "agent_profile_id": ids["broken"],
+                "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+            },
+        )
+        rows["broken profile through the Docker host"] = {
+            "status": broken.status_code,
+            "detail": broken.json().get("detail"),
+            "containers_started": len(running_containers() - before),
+        }
+    finally:
+        for cid in conversation_ids:
+            try:
+                client.delete(f"/api/conversations/{cid}")
+            except httpx.HTTPError:
+                pass
+        for process in (server, llm_proc):
+            process.send_signal(signal.SIGINT)
+            try:
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+    for name, row in rows.items():
+        print(f"\n## {name}\n{json.dumps(row, indent=2, default=str)}")
+
+    launch = rows.get("profile launch through the Docker host", {})
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    host_allows = args.host_browser == "yes" and image_has_browser == "yes"
+    expect_browser = host_allows and args.container_browser == "yes"
+    preview_tools = [
+        name for name in rows["host materialize"]["tools"] if name != "switch_llm"
+    ]
+    verdicts["host preview follows the host config"] = (
+        "browser_tool_set" in preview_tools
+    ) is host_allows
+    if image_has_browser == args.container_browser:
+        verdicts["host preview equals the container's launch"] = preview_tools == (
+            launch.get("agent_tools") or []
+        )
+    verdicts["browser only when the host allows it and the container can run it"] = (
+        "browser_tool_set" in (launch.get("agent_tools") or [])
+    ) is expect_browser
+    verdicts["profile suffix reaches the model"] = bool(launch.get("suffix"))
+    verdicts["provenance recorded in the container"] = (
+        launch.get("launched_agent_profile") or {}
+    ).get("agent_profile_id") == ids.get("docker-profile")
+    verdicts["memory preference forwarded"] = launch.get("load_memory") is True
+    verdicts["fresh timestamp"] = today in (launch.get("datetime") or "")
+    repost = rows.get("re-post existing conversation with a broken profile", {})
+    verdicts["re-post of a live conversation leaves it running"] = repost.get(
+        "status"
+    ) == 200 and bool(repost.get("container_still_running"))
+    broken_row = rows["broken profile through the Docker host"]
+    detail = broken_row.get("detail") or {}
+    verdicts["dangling refs fail on the host, no container"] = (
+        broken_row["status"] == 422
+        and isinstance(detail, dict)
+        and detail.get("dangling_llm_profile_ref") == "gone"
+        and broken_row["containers_started"] == 0
+    )
+    verdicts["secret_refs scope secrets in the container"] = launch.get(
+        "secrets_seen"
+    ) == ["ALLOWED"]
+    for label in (
+        "agent_settings through the Docker host",
+        "raw agent through the Docker host",
+    ):
+        entry = rows.get(label, {})
+        verdicts[f"{label}: container finalizes (fresh timestamp, memory)"] = (
+            entry.get("status") in (200, 201)
+            and today in (entry.get("datetime") or "")
+            and entry.get("load_memory") is True
+        )
+    settings_entry = rows.get("agent_settings through the Docker host", {})
+    verdicts["agent_settings default tools: browser only when allowed and runnable"] = (
+        "browser_tool_set" in (settings_entry.get("agent_tools") or [])
+    ) is expect_browser
+    print("\n# Verdicts")
+    for name, ok in verdicts.items():
+        print(f"- {'PASS' if ok else 'FAIL'}  {name}")
+    if args.out:
+        args.out.write_text(json.dumps({"rows": rows, "verdicts": verdicts}, indent=2))
+    return 0 if all(verdicts.values()) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
