@@ -79,6 +79,7 @@ def test_a_scope_marks_every_delegation_tool_set() -> None:
         Tool(name="terminal"),
         Tool(name="task_tool_set"),
         Tool(name="workflow_tool_set"),
+        Tool(name="workflow"),
     ]
 
     scoped = scope_delegation_tools(tools, SubAgentScope(tools=True))
@@ -88,6 +89,7 @@ def test_a_scope_marks_every_delegation_tool_set() -> None:
         Tool(name="terminal"),
         Tool(name="task_tool_set", params=marked),
         Tool(name="workflow_tool_set", params=marked),
+        Tool(name="workflow", params=marked),
     ]
     assert tools[1].params == {}
 

@@ -378,6 +378,11 @@ class TaskManager:
 
         sub_agent = factory.factory_func(sub_agent_llm)
 
+        if self._sub_agent_scope.restricts and not isinstance(sub_agent, Agent):
+            raise ValueError(
+                f"Agent '{factory.definition.name}' runs as "
+                f"{type(sub_agent).__name__}, whose tools cannot be checked."
+            )
         missing = self._sub_agent_scope.missing_from(parent.agent, sub_agent)
         if missing:
             raise ValueError(

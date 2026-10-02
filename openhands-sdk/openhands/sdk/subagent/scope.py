@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 SUB_AGENT_SCOPE_PARAM: Final = "sub_agent_scope"
 
-DELEGATION_TOOL_NAMES: Final = (SUB_AGENT_TOOL_NAME, "workflow_tool_set")
-"""Tool sets that start sub-agents and take a ``sub_agent_scope`` parameter."""
+DELEGATION_TOOL_NAMES: Final = (SUB_AGENT_TOOL_NAME, "workflow_tool_set", "workflow")
+"""Tools that start sub-agents and take a ``sub_agent_scope`` parameter."""
 
 
 class SubAgentScope(BaseModel):
@@ -51,7 +51,7 @@ class SubAgentScope(BaseModel):
 
 
 def scope_delegation_tools(tools: Sequence[Tool], scope: SubAgentScope) -> list[Tool]:
-    """Return ``tools`` with ``scope`` added to every delegation tool set."""
+    """Return ``tools`` with ``scope`` added to every delegation tool."""
     if not scope.restricts:
         return list(tools)
     return [

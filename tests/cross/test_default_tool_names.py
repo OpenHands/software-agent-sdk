@@ -61,9 +61,19 @@ def test_default_tool_specs_parity_with_get_default_tools() -> None:
             assert sdk_names == preset_names
 
 
-def test_delegation_names_match_the_tool_sets_that_start_sub_agents() -> None:
-    from openhands.sdk.subagent.scope import DELEGATION_TOOL_NAMES
-    from openhands.tools.task import TaskToolSet
-    from openhands.tools.workflow import WorkflowToolSet
+def test_delegation_names_are_the_tools_that_take_a_sub_agent_scope() -> None:
+    import inspect
 
-    assert DELEGATION_TOOL_NAMES == (TaskToolSet.name, WorkflowToolSet.name)
+    import openhands.tools  # noqa: F401
+    from openhands.sdk.subagent.scope import DELEGATION_TOOL_NAMES
+    from openhands.sdk.tool.registry import list_registered_tools, registered_tool_class
+
+    scoped = set()
+    for name in list_registered_tools():
+        tool_class = registered_tool_class(name)
+        if tool_class is not None and "sub_agent_scope" in (
+            inspect.signature(tool_class.create).parameters
+        ):
+            scoped.add(name)
+
+    assert scoped == set(DELEGATION_TOOL_NAMES)

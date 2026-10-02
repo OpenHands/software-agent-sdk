@@ -6,6 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, LocalConversation, Tool
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -21,7 +22,7 @@ from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TaskObservation
 from openhands.tools.task.manager import TaskManager
 from openhands.tools.workflow import WorkflowToolSet
-from openhands.tools.workflow.definition import WorkflowObservation
+from openhands.tools.workflow.definition import WorkflowObservation, WorkflowTool
 
 
 TOOLS_ONLY = {"tools": True, "mcp_servers": False}
@@ -161,6 +162,27 @@ def test_a_sub_agent_is_checked_as_built_not_as_described(tmp_path: Path) -> Non
         manager._get_sub_agent("understated")
 
 
+def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
+    tmp_path: Path,
+) -> None:
+    register_agent(
+        name="cli",
+        factory_func=lambda llm: ACPAgent(acp_command=["true"]),  # type: ignore[arg-type,return-value]
+        description="ACP CLI agent",
+    )
+    parent = LocalConversation(
+        agent=_parent(Tool(name="grep")), workspace=str(tmp_path), visualizer=None
+    )
+    scoped = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+    scoped.attach_parent(parent)
+    unscoped = TaskManager()
+    unscoped.attach_parent(parent)
+
+    with pytest.raises(ValueError, match="'cli' runs as ACPAgent, whose tools cannot"):
+        scoped._get_sub_agent("cli")
+    assert isinstance(unscoped._get_sub_agent("cli"), ACPAgent)
+
+
 def test_a_sub_agent_delegates_within_the_same_scope(tmp_path: Path) -> None:
     _register("orchestrator", ["task_tool_set", "workflow_tool_set"])
     parent = LocalConversation(
@@ -192,8 +214,9 @@ def test_an_unscoped_task_manager_starts_any_sub_agent(tmp_path: Path) -> None:
     assert sub_agent.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
 
 
+@pytest.mark.parametrize("workflow_tool", [WorkflowToolSet.name, WorkflowTool.name])
 def test_a_scoped_workflow_refuses_a_sub_agent_beyond_the_parent(
-    tmp_path: Path,
+    tmp_path: Path, workflow_tool: str
 ) -> None:
     _register("shell", ["terminal"])
     script = "async def main(wf):\n    return await wf.run_agent('ls', 'shell')"
@@ -202,7 +225,7 @@ def test_a_scoped_workflow_refuses_a_sub_agent_beyond_the_parent(
     )
     agent = Agent(
         llm=parent_llm,
-        tools=[Tool(name=WorkflowToolSet.name, params={"sub_agent_scope": TOOLS_ONLY})],
+        tools=[Tool(name=workflow_tool, params={"sub_agent_scope": TOOLS_ONLY})],
     )
     conversation = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
 
