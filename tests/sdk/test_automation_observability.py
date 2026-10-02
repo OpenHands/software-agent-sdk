@@ -86,6 +86,22 @@ def test_automation_conversation_kwargs_include_product_and_observability_tags(
     assert kwargs.get("observability_span_name") == "automation.conversation"
 
 
+def test_automation_conversation_kwargs_uses_env_span_name(monkeypatch):
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_SPAN_NAME", "env.span")
+
+    kwargs = automation_conversation_kwargs()
+
+    assert kwargs.get("observability_span_name") == "env.span"
+
+
+def test_automation_conversation_kwargs_explicit_span_name_overrides_env(monkeypatch):
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_SPAN_NAME", "env.span")
+
+    kwargs = automation_conversation_kwargs(span_name="caller.span")
+
+    assert kwargs.get("observability_span_name") == "caller.span"
+
+
 def test_automation_observability_headers_for_direct_api_calls(monkeypatch):
     monkeypatch.setenv(
         "OPENHANDS_OBSERVABILITY_METADATA", '{"automation.run_id":"run-1"}'

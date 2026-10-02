@@ -138,10 +138,15 @@ def automation_conversation_kwargs(
         ``Conversation(..., **automation_conversation_kwargs())``
     """
     kwargs: AutomationConversationKwargs = {}
+    resolved_span_name = (
+        span_name
+        or default_observability_span_name_from_env()
+        or _DEFAULT_AUTOMATION_SPAN_NAME
+    )
     context = automation_observability_context(
         metadata=metadata,
         tags=observability_tags,
-        span_name=span_name or _DEFAULT_AUTOMATION_SPAN_NAME,
+        span_name=resolved_span_name,
         parent_span_context=parent_span_context,
     )
     if context_metadata := context.get("observability_metadata"):

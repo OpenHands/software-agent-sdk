@@ -90,11 +90,11 @@ def _request_with_observability_headers(
 ) -> StartConversationRequest:
     updates: dict[str, object] = {}
     try:
-        if span_name:
+        if span_name and "observability_span_name" not in request.model_fields_set:
             updates["observability_span_name"] = (
                 _OBSERVABILITY_SPAN_NAME_ADAPTER.validate_python(span_name)
             )
-        if tags:
+        if tags and "observability_tags" not in request.model_fields_set:
             tag_values = [tag.strip() for tag in tags.split(",") if tag.strip()]
             updates["observability_tags"] = _OBSERVABILITY_TAGS_ADAPTER.validate_python(
                 tag_values
