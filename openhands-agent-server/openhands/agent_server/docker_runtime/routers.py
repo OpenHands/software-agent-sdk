@@ -26,6 +26,7 @@ from openhands.agent_server.docker_runtime.proxy import (
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
+    RuntimeRetiredError,
 )
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
@@ -54,6 +55,10 @@ async def _container(
         raise HTTPException(404, "Conversation not found")
     try:
         return await registry.get_or_create(conversation_id)
+    except RuntimeRetiredError as exc:
+        raise HTTPException(
+            410, "Conversation runtime was retired; its history is read-only"
+        ) from exc
     except Exception as exc:
         logger.exception("Could not start conversation container %s", conversation_id)
         raise HTTPException(502, "Could not start conversation container") from exc
@@ -246,6 +251,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
     try:
         await registry.stop(conversation_id)
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        registry.retired_marker(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )

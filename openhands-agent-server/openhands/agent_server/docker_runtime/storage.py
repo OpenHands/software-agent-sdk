@@ -1,6 +1,8 @@
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -86,6 +88,17 @@ class DockerRuntimeStorage:
                 or registry.is_starting(conversation_id)
                 or conversation_id in registry._deleting
             )
+
+    def retire(self, conversation_id: UUID) -> list[Path]:
+        # Marker first: if the move never happens, the next pass retries it.
+        self.registry.retired_marker(conversation_id).write_text(
+            json.dumps({"retired_at": datetime.now(UTC).isoformat()})
+        )
+        return [self.provisioning.runtime_dir(conversation_id)]
+
+    async def on_retired(self, conversation_id: UUID) -> None:
+        if self.registry._service is not None:
+            await self.registry._service.refresh_persisted_conversation(conversation_id)
 
 
 def _parse_id(name: str) -> UUID | None:

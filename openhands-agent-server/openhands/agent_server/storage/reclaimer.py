@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import time
 from contextlib import AbstractAsyncContextManager, suppress
 from pathlib import Path
 from typing import Final, Protocol
@@ -37,6 +38,12 @@ class ReclaimableStorage(Protocol):
         """Hold the runtime still; True if nothing runs or starts in it."""
         ...
 
+    def retire(self, conversation_id: UUID) -> list[Path]:
+        """Record the runtime as retired; return what to discard. Called idle."""
+        ...
+
+    async def on_retired(self, conversation_id: UUID) -> None: ...
+
 
 class Reclaimer:
     """Frees what a runtime mode stores per conversation, by tier.
@@ -50,9 +57,11 @@ class Reclaimer:
         storage: ReclaimableStorage,
         *,
         disk_budget: float | None = None,
+        retention_days: float | None = None,
     ) -> None:
         self.storage = storage
         self.disk_budget = disk_budget
+        self.retention_days = retention_days
         self.trash = Trash(storage.root)
         self._maintenance: asyncio.Task[None] | None = None
         self._over_budget_warned = False
@@ -62,7 +71,7 @@ class Reclaimer:
         for runtime in await asyncio.to_thread(self.storage.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()
-        if self.disk_budget:
+        if self.disk_budget or self.retention_days:
             self._maintenance = asyncio.create_task(self._maintenance_loop())
 
     async def shutdown(self) -> None:
@@ -76,15 +85,18 @@ class Reclaimer:
     async def run_pass(self) -> None:
         """Apply the configured policies once; log only if something was freed."""
         free_before = _free_bytes(self.storage.root)
+        # Retention first: what it retires no longer counts against the budget.
+        retired = await self._enforce_retention()
         shed = await self._enforce_disk_budget()
-        if not shed:
+        if not (retired or shed):
             return
         await self.trash.drain()
         logger.info(
-            "Conversation storage: freed %.1f GB (dependencies of %d stopped "
-            "runtimes), %s at %.0f%%",
+            "Conversation storage: freed %.1f GB (retired %d runtimes, shed "
+            "dependencies of %d), %s at %.0f%%",
             # Other writes on the filesystem can outweigh a small reclaim.
             max(0, _free_bytes(self.storage.root) - free_before) / 1e9,
+            retired,
             shed,
             self.storage.root,
             disk_usage(self.storage.root) * 100,
@@ -102,6 +114,22 @@ class Reclaimer:
                 await self.run_pass()
             except Exception:
                 logger.exception("error_reclaiming_conversation_storage")
+
+    async def _enforce_retention(self) -> int:
+        """Retire runtimes inactive for longer than the retention period."""
+        days = self.retention_days
+        if not days:
+            return 0
+        cutoff = time.time() - days * 86400
+        retired = 0
+        for runtime in await asyncio.to_thread(self.storage.runtimes):
+            if runtime.last_active > cutoff:
+                break
+            if await self.reclaim(runtime, Tier.RUNTIME):
+                retired += 1
+        if retired:
+            self.trash.empty_soon()
+        return retired
 
     async def _enforce_disk_budget(self) -> int:
         """Shed dependencies of stopped runtimes, oldest first, until under budget."""
@@ -132,14 +160,20 @@ class Reclaimer:
 
     async def reclaim(self, runtime: StoredRuntime, tier: Tier) -> bool:
         """Discard what ``tier`` allows, unless the runtime is in use."""
-        paths = await asyncio.to_thread(_select, runtime, tier)
-        if not paths:
+        retiring = tier >= Tier.RUNTIME
+        # Retiring takes the whole runtime, so there is nothing to select.
+        paths = [] if retiring else await asyncio.to_thread(_select, runtime, tier)
+        if not (paths or retiring):
             return False
         async with self.storage.idle(runtime.id) as idle:
             if not idle:
                 return False
+            if retiring:
+                paths = self.storage.retire(runtime.id)
             # Only renames here: the lock is held for microseconds.
             moved = [path for path in paths if self.trash.discard(path)]
+        if retiring and moved:
+            await self.storage.on_retired(runtime.id)
         return bool(moved)
 
 
