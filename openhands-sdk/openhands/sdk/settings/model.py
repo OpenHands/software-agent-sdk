@@ -1242,7 +1242,11 @@ class ConversationSettings(BaseModel):
         # variant returns an ``Agent`` and the ACP variant returns an
         # ``ACPAgent``. Callers that want a narrowed type should access
         # ``self.agent_settings.create_agent()`` directly.
-        if "agent" not in payload and self.agent_settings is not None:
+        has_agent_source = any(
+            payload.get(name) is not None
+            for name in ("agent", "agent_settings", "agent_profile_id")
+        )
+        if not has_agent_source and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
@@ -2122,11 +2126,6 @@ def validate_agent_settings(
     if payload.get("agent_kind") == "llm":
         payload["agent_kind"] = "openhands"
     return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
-
-
-def agent_settings_tools_unset(data: Mapping[str, Any]) -> bool:
-    """Whether an agent-settings payload leaves ``tools`` to the standard set."""
-    return _migrate_agent_settings_payload(data).get("tools") is None
 
 
 def _merge_patch(base: dict[str, Any], diff: Mapping[str, Any]) -> dict[str, Any]:

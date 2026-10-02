@@ -23,18 +23,19 @@ from openhands.agent_server._secrets_exposure import (
     get_config,
     store_errors,
 )
+from openhands.agent_server.launch import (
+    can_probe_tools,
+    server_launch_stores,
+    target_launch_runtime,
+)
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.agent_server.profile_launch import (
-    can_probe_tools,
-    configured_browser_available,
-    gather_profile_launch_inputs,
-)
 from openhands.agent_server.profiles_router import MAX_PROFILES, _has_api_key
+from openhands.sdk.launch import preview_launch
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded as LLMProfileLimitExceeded,
@@ -49,7 +50,6 @@ from openhands.sdk.profiles import (
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
     build_seed_profile,
-    resolve_agent_profile_dry_run,
     safe_validation_error_detail,
     save_profile_preserving_identity,
     validate_agent_profile,
@@ -550,13 +550,14 @@ async def materialize_agent_profile(
     name: ProfileName,
     body: MaterializeAgentProfileRequest | None = None,
 ) -> AgentProfileDiagnostics:
-    """Dry-run resolve a profile the way a launch would; return a diagnostics report.
+    """Preview the launch of a profile; return a diagnostics report.
 
-    Resolves the stored profile ``name``, or ``body.profile`` when given (so an
-    editor can preview before saving). Dangling LLM/MCP references are reported
-    in the body (valid=False) rather than raising — the only error statuses are
-    404 (unknown stored profile) and 422 (invalid draft). resolved_settings is
-    redacted (api_key_set booleans; no raw secrets).
+    Previews the stored profile ``name``, or ``body.profile`` when given (so an
+    editor can preview before saving), with the same resolve and finalize as a
+    launch, against the runtime this server launches into. Dangling references
+    are reported in the body (valid=False) rather than raising — the only error
+    statuses are 404 (unknown stored profile) and 422 (invalid draft).
+    resolved_settings is redacted (no raw secrets).
     """
     if body is not None and body.profile is not None:
         profile = _validate_profile_payload({**body.profile, "name": name})
@@ -571,40 +572,15 @@ async def materialize_agent_profile(
                 detail=f"Agent profile '{name}' not found",
             )
 
-    # Still needed here (unlike the profile load above): resolve_agent_profile_
-    # dry_run uses it to decrypt the *referenced LLM profile's* own secret.
-    cipher = get_cipher(request)
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    mcp_config = settings.agent_settings.mcp_config
-
-    inputs = await asyncio.to_thread(
-        gather_profile_launch_inputs,
-        profile,
-        config.acp_skill_sourcing,
-        configured_browser_available(config),
-    )
-    if inputs.skill_discovery_error is not None:
-        logger.warning(
-            "Skill discovery failed during materialize: %s",
-            inputs.skill_discovery_error,
+    context = settings.agent_settings.agent_context
+    return await asyncio.to_thread(
+        lambda: preview_launch(
+            profile,
+            server_launch_stores(settings, get_cipher(request)),
+            target_launch_runtime(config),
+            load_memory=context is not None and context.load_memory,
+            check_usable=can_probe_tools(config),
         )
-
-    llm_store = get_llm_profile_store()
-    diagnostics = await asyncio.to_thread(
-        resolve_agent_profile_dry_run,
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=inputs.available_skills,
-        cipher=cipher,
-        browser_available=inputs.browser_available,
-        check_usable=can_probe_tools(config),
     )
-    if inputs.skill_discovery_error is not None:
-        diagnostics.errors.append(
-            f"Skill discovery failed: {inputs.skill_discovery_error}"
-        )
-        diagnostics.valid = False
-        diagnostics.resolved_settings = None
-    return diagnostics
