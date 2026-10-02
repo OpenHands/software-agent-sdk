@@ -570,8 +570,7 @@ def test_run_dag_diamond_concurrency() -> None:
     assert results["branch_a"] == "result:do A after result:init"
     assert results["branch_b"] == "result:do B after result:init"
     assert results["join"] == (
-        "result:merge result:do A after result:init and "
-        "result:do B after result:init"
+        "result:merge result:do A after result:init and result:do B after result:init"
     )
     # Root must execute first, join must execute last
     assert manager.prompts[0] == "general-purpose: init"
@@ -673,8 +672,7 @@ def test_run_dag_prunes_downstream_on_failure() -> None:
     error_messages = [str(e) for e in exc_info.value.exceptions]
     assert any("upstream task failed" in msg for msg in error_messages)
     assert any(
-        "skipped because dependency 'failing' failed" in msg
-        for msg in error_messages
+        "skipped because dependency 'failing' failed" in msg for msg in error_messages
     )
     # child_of_failing was never dispatched to manager
     dispatched_prompts = set(manager.prompts)
@@ -698,3 +696,26 @@ async def main(wf):
     result = execute_workflow_script(script, ctx)
     assert result == "result:build from result:design API"
 
+
+def test_run_dag_prunes_downstream_on_prompt_render_failure() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+
+    def failing_prompt(_results: dict[str, str]) -> str:
+        raise RuntimeError("render boom")
+
+    nodes = {
+        "a": {"prompt": failing_prompt},
+        "b": {"prompt": "run B after {a}", "depends_on": ["a"]},
+        "c": {"prompt": "run C after {b}", "depends_on": ["b"]},
+    }
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        asyncio.run(ctx.run_dag(nodes))
+
+    assert "run_dag" in str(exc_info.value)
+    error_messages = [str(e) for e in exc_info.value.exceptions]
+    assert any("render boom" in msg for msg in error_messages)
+    assert any("skipped because dependency 'a' failed" in msg for msg in error_messages)
+    assert any("skipped because dependency 'b' failed" in msg for msg in error_messages)
+    assert manager.prompts == []

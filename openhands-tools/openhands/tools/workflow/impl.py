@@ -344,34 +344,34 @@ class WorkflowContext:
                 events[node_id].set()
                 return
 
-            # Render prompt
+            # Render prompt and execute task
             raw_prompt = spec.get("prompt", "")
             subagent_type = spec.get("subagent_type", "general-purpose")
             description = spec.get("description")
 
-            if callable(raw_prompt):
-                rendered_prompt = str(raw_prompt(results))
-            elif isinstance(raw_prompt, str):
-                rendered_prompt = raw_prompt
-                for dep in deps:
-                    val = str(results.get(dep, ""))
-                    rendered_prompt = rendered_prompt.replace(f"{{{dep}}}", val)
-            else:
-                rendered_prompt = str(raw_prompt)
+            try:
+                if callable(raw_prompt):
+                    rendered_prompt = str(raw_prompt(results))
+                elif isinstance(raw_prompt, str):
+                    rendered_prompt = raw_prompt
+                    for dep in deps:
+                        val = str(results.get(dep, ""))
+                        rendered_prompt = rendered_prompt.replace(f"{{{dep}}}", val)
+                else:
+                    rendered_prompt = str(raw_prompt)
 
-            async with semaphore:
-                try:
+                async with semaphore:
                     res = await self._run_agent_task(
                         prompt=rendered_prompt,
                         subagent_type=subagent_type,
                         description=description,
                     )
                     results[node_id] = res
-                except Exception as exc:
-                    failed_or_skipped.add(node_id)
-                    errors[node_id] = exc
-                finally:
-                    events[node_id].set()
+            except Exception as exc:
+                failed_or_skipped.add(node_id)
+                errors[node_id] = exc
+            finally:
+                events[node_id].set()
 
         await asyncio.gather(*(run_node(k, v) for k, v in nodes.items()))
 
