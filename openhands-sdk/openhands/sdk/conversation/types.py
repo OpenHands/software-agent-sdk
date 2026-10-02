@@ -26,7 +26,7 @@ def _validate_tags(v: dict[str, str] | None) -> dict[str, str]:
     if v is None:
         return {}
     for key, value in v.items():
-        if not TAG_KEY_PATTERN.match(key):
+        if not TAG_KEY_PATTERN.fullmatch(key):
             raise ValueError(
                 f"Tag key '{key}' is invalid: keys must be lowercase alphanumeric only"
             )
