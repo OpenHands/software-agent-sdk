@@ -702,6 +702,28 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+def test_remote_conversation_created_from_agent_settings(server_env):
+    from openhands.sdk.conversation.request import StartConversationRequest
+    from openhands.sdk.workspace import LocalWorkspace
+
+    working_dir = str(server_env["workspace_path"])
+    conversation = RemoteConversation.create(
+        RemoteWorkspace(host=server_env["host"], working_dir=working_dir),
+        StartConversationRequest(
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "settings-model", "api_key": "sk-settings"},
+                "tools": [],
+            },
+            workspace=LocalWorkspace(working_dir=working_dir),
+        ),
+        visualizer=None,
+    )
+
+    assert conversation.agent.llm.model == "settings-model"
+    conversation.close()
+
+
 def test_openai_chat_completions_gateway_over_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
 ):

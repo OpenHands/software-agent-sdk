@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from openhands.agent_server.config import Config
-from openhands.agent_server.profile_launch import (
+from openhands.agent_server.launch import (
     can_probe_tools,
     configured_browser_available,
 )
