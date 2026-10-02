@@ -8492,12 +8492,20 @@ class TestDetectionAgainstRealSessionResponses:
         ]
 
     def test_gemini_046_uses_set_session_model(self):
+        # agent-client-protocol 0.12.1 bumped the ACP schema to v1.19.0, which
+        # dropped the UNSTABLE ``models`` extension from ``NewSessionResponse``.
+        # gemini-cli 0.46.0 selected its model via that legacy ``models`` block
+        # and advertises no ``model`` ``configOptions`` select, so once parsed
+        # through the 0.12.1 schema the block is no longer visible: the SDK
+        # detects no model-selection mechanism (current/available both absent,
+        # mechanism falls back to the legacy default) rather than hallucinating
+        # a model. ``_apply_acp_model`` then no-ops the legacy branch because
+        # ``ClientSideConnection.set_session_model`` was removed alongside it.
         resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
         cur, avail, via = _extract_session_models(resp)
         assert via is False
-        assert cur == "gemini-3-flash-preview"
-        assert avail is not None
-        assert "gemini-3-pro-preview" in [m.model_id for m in avail]
+        assert cur is None
+        assert avail is None
 
 
 class TestApplyAcpModelNoFallback:

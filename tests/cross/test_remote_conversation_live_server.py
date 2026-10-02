@@ -386,7 +386,7 @@ def test_preloaded_custom_tool_resolves_in_live_server(
 
     registry_snapshot = dict(tool_registry._REG)
     usability_snapshot = dict(tool_registry._USABILITY_REG)
-    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    tool_class_snapshot = dict(tool_registry._TOOL_CLASSES)
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop(package_name, None)
     sys.modules.pop(module_qualname, None)
@@ -431,8 +431,8 @@ def test_preloaded_custom_tool_resolves_in_live_server(
         tool_registry._REG.update(registry_snapshot)
         tool_registry._USABILITY_REG.clear()
         tool_registry._USABILITY_REG.update(usability_snapshot)
-        tool_registry._MODULE_QUALNAMES.clear()
-        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+        tool_registry._TOOL_CLASSES.clear()
+        tool_registry._TOOL_CLASSES.update(tool_class_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
@@ -580,6 +580,20 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         agent=agent, workspace=workspace
     )  # RemoteConversation
 
+    # Lifecycle inspection/reprovision is available without a Docker backend.
+    runtime_url = f"{server_env['host']}/api/conversations/{conv.id}/runtime"
+    with httpx.Client() as client:
+        before = client.get(runtime_url)
+        before.raise_for_status()
+        assert before.json() == {
+            "runtime_status": "available",
+            "can_resume": True,
+            "runtime_error": None,
+        }
+        after = client.post(runtime_url + "/reprovision")
+        after.raise_for_status()
+        assert after.json() == before.json()
+
     # Send a message and run
     conv.send_message("Say hello")
     conv.run()
@@ -686,6 +700,28 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
         shutil.rmtree(cwd_conversations)
+
+
+def test_remote_conversation_created_from_agent_settings(server_env):
+    from openhands.sdk.conversation.request import StartConversationRequest
+    from openhands.sdk.workspace import LocalWorkspace
+
+    working_dir = str(server_env["workspace_path"])
+    conversation = RemoteConversation.create(
+        RemoteWorkspace(host=server_env["host"], working_dir=working_dir),
+        StartConversationRequest(
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "settings-model", "api_key": "sk-settings"},
+                "tools": [],
+            },
+            workspace=LocalWorkspace(working_dir=working_dir),
+        ),
+        visualizer=None,
+    )
+
+    assert conversation.agent.llm.model == "settings-model"
+    conversation.close()
 
 
 def test_openai_chat_completions_gateway_over_real_server(
@@ -1842,10 +1878,16 @@ def test_hook_config_sent_to_server(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        # First agent call triggers PostToolUse and Stop hooks.
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2060,9 +2102,15 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
 
-        if call_count["count"] == 1:
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",
@@ -2197,8 +2245,15 @@ def test_remote_state_exposes_invoked_skills(
         from openhands.sdk.llm.message import Message
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
-        call_count["count"] += 1
-        if call_count["count"] == 1:
+        is_title_call = not tools
+        if not is_title_call:
+            call_count["count"] += 1
+
+        if is_title_call:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Generated title"}
+            )
+        elif call_count["count"] == 1:
             litellm_msg = LiteLLMMessage.model_validate(
                 {
                     "role": "assistant",

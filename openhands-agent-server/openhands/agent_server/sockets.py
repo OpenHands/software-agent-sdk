@@ -51,7 +51,8 @@ from openhands.sdk import Event, Message
 from openhands.sdk.utils.paging import page_iterator
 
 
-sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
+conversation_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
+bash_sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 conversation_service = get_default_conversation_service()
 bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
@@ -223,7 +224,7 @@ async def _accept_authenticated_websocket(
     return True
 
 
-@sockets_router.websocket("/events/{conversation_id}")
+@conversation_sockets_router.websocket("/events/{conversation_id}")
 async def events_socket(
     conversation_id: UUID,
     websocket: WebSocket,
@@ -383,7 +384,7 @@ async def events_socket(
         await event_service.unsubscribe_from_events(subscriber_id)
 
 
-@sockets_router.websocket("/bash-events")
+@bash_sockets_router.websocket("/bash-events")
 async def bash_events_socket(
     websocket: WebSocket,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
