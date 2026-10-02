@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
@@ -36,6 +36,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -43,7 +44,9 @@ from openhands.sdk.profiles.agent_profile import (
 from openhands.sdk.profiles.resolver import (
     DanglingMcpServerRef,
     ProfileNotFound,
+    resolve_agent_profile,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
 from openhands.sdk.workspace import LocalWorkspace
@@ -160,7 +163,7 @@ _RESOLVE_PATH = "openhands.sdk.profiles.resolver.resolve_agent_profile"
 # Skill discovery is patched so OpenHands-profile resolves don't hit the network
 # (load_all_skills loads public skills from GitHub). conversation_service imports
 # discover_profile_skills directly, so patch it in that namespace.
-_DISCOVER_PATH = "openhands.agent_server.conversation_service.discover_profile_skills"
+_DISCOVER_PATH = "openhands.agent_server.profile_launch.discover_profile_skills"
 # The profile branch of start_conversation reads the persisted settings through a
 # local import too, so patch the package-level name it binds.
 _SETTINGS_STORE_PATH = "openhands.agent_server.persistence.get_settings_store"
@@ -196,7 +199,7 @@ class TestResolveAgentFromProfile:
             # injected iff the host has chromium (covered by the dedicated
             # injection tests below); this test is about resolution plumbing.
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
+                "openhands.agent_server.profile_launch.is_tool_usable",
                 return_value=False,
             ),
         ):
@@ -208,7 +211,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -242,7 +245,7 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH, return_value=resolved_settings),
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
+                "openhands.agent_server.profile_launch.is_tool_usable",
                 return_value=False,
             ),
         ):
@@ -250,7 +253,7 @@ class TestResolveAgentFromProfile:
             store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -349,25 +352,24 @@ class TestResolveAgentFromProfile:
         Disc.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == catalog
 
-    def test_openhands_default_tools_get_browser_when_usable(self):
-        """A default-toolset (tools=None) OpenHands profile launch injects the
-        browser tool set when this server's runtime can run it — the
-        serving-layer counterpart of the SDK's deterministic default (#3978)."""
+    @pytest.mark.parametrize("usable", [True, False])
+    def test_openhands_launch_passes_runtime_browser_availability(self, usable):
+        """A local launch probes this process for the browser."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
 
         profile = _make_openhands_profile()
-        assert profile.tools is None
         agent = _make_agent()
 
         with (
             patch(_STORE_PATH) as MockStore,
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]),
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=True,
+                "openhands.agent_server.profile_launch.is_tool_usable",
+                return_value=usable,
             ) as MockUsable,
         ):
             store_inst = MockStore.return_value
@@ -377,78 +379,16 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_called_once_with("browser_tool_set")
-        assert [tool.name for tool in result_agent.tools] == ["browser_tool_set"]
-
-    def test_openhands_default_tools_skip_browser_when_unusable(self):
-        from openhands.agent_server.conversation_service import (
-            _resolve_agent_from_profile,
-        )
-
-        profile = _make_openhands_profile()
-        agent = _make_agent()
-
-        with (
-            patch(_STORE_PATH) as MockStore,
-            patch(_LLM_STORE_PATH),
-            patch(_RESOLVE_PATH) as MockResolve,
-            patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=False,
-            ),
-        ):
-            store_inst = MockStore.return_value
-            store_inst.name_for_id.return_value = profile.name
-            store_inst.load.return_value = profile
-            mock_config = MagicMock()
-            mock_config.create_agent.return_value = agent
-            MockResolve.return_value = mock_config
-
-            result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config={}
-            )
-
+        assert MockResolve.call_args.kwargs["browser_available"] is usable
         assert result_agent is agent
 
-    def test_openhands_explicit_tools_never_amended(self):
-        """An explicit profile tools list ([] included) is authoritative: the
-        serving layer must not inject browser on top of it."""
-        from openhands.agent_server.conversation_service import (
-            _resolve_agent_from_profile,
-        )
-
-        profile = _make_openhands_profile().model_copy(update={"tools": []})
-        agent = _make_agent()
-
-        with (
-            patch(_STORE_PATH) as MockStore,
-            patch(_LLM_STORE_PATH),
-            patch(_RESOLVE_PATH) as MockResolve,
-            patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
-                return_value=True,
-            ) as MockUsable,
-        ):
-            store_inst = MockStore.return_value
-            store_inst.name_for_id.return_value = profile.name
-            store_inst.load.return_value = profile
-            mock_config = MagicMock()
-            mock_config.create_agent.return_value = agent
-            MockResolve.return_value = mock_config
-
-            result_agent, _ = _resolve_agent_from_profile(
-                profile.id, cipher=None, mcp_config={}
-            )
-
-        MockUsable.assert_not_called()
-        assert result_agent is agent
-
-    def test_acp_profile_never_gets_browser_injection(self):
-        """ACP agents own their tooling — the injection is OpenHands-only."""
+    def test_acp_profile_never_probes_browser(self):
+        """ACP agents own their tooling, so browser availability is never probed."""
         from openhands.agent_server.conversation_service import (
             _resolve_agent_from_profile,
         )
@@ -461,7 +401,7 @@ class TestResolveAgentFromProfile:
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
             patch(
-                "openhands.agent_server.conversation_service.is_tool_usable",
+                "openhands.agent_server.profile_launch.is_tool_usable",
                 return_value=True,
             ) as MockUsable,
         ):
@@ -472,12 +412,49 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = agent
             MockResolve.return_value = mock_config
 
-            result_agent, _ = _resolve_agent_from_profile(
+            result_agent, _, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
         MockUsable.assert_not_called()
+        assert MockResolve.call_args.kwargs["browser_available"] is False
         assert result_agent is agent
+
+    def test_launched_agent_uses_resolved_tools_unchanged(self, tmp_path):
+        """The launched agent's tools are exactly what the resolver produced."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+        from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+        llm_store = LLMProfileStore(base_dir=tmp_path)
+        llm_store.save("default", LLM(model="gpt-4o"), include_secrets=True)
+        profile = _make_openhands_profile()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH, return_value=llm_store),
+            patch(_DISCOVER_PATH, return_value=[]),
+            patch(
+                "openhands.agent_server.profile_launch.is_tool_usable",
+                return_value=True,
+            ),
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+
+            result_agent, _, _ = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}
+            )
+
+        assert [tool.name for tool in result_agent.tools] == [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_tool_set",
+        ]
+        assert "SwitchLLMTool" in result_agent.include_default_tools
 
     def test_openhands_default_profile_triggers_discovery(self):
         """An OpenHands profile always discovers the skill catalog (the deny-list
@@ -553,7 +530,7 @@ class TestResolveAgentFromProfile:
             mock_config.create_agent.return_value = acp_agent
             MockResolve.return_value = mock_config
 
-            result_agent, launched = _resolve_agent_from_profile(
+            result_agent, launched, _ = _resolve_agent_from_profile(
                 profile.id, cipher=None, mcp_config={}
             )
 
@@ -645,7 +622,7 @@ async def _start_from_profile(
         # Pin the environment probe: browser injection is covered by its own
         # tests above and would otherwise vary with the host.
         patch(
-            "openhands.agent_server.conversation_service.is_tool_usable",
+            "openhands.agent_server.profile_launch.is_tool_usable",
             return_value=False,
         ),
         patch.object(
@@ -750,7 +727,7 @@ class TestConversationServiceStartFromProfile:
 
         with patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(agent, launched_agent_profile),
+            return_value=(agent, launched_agent_profile, None),
         ):
             service = ConversationService(conversations_dir=tmp_path)
             service._event_services = {}
@@ -880,6 +857,31 @@ class TestConversationServiceStartFromProfile:
 
         assert agent.agent_context is not None
         assert agent.agent_context.load_memory is False
+
+    @pytest.mark.asyncio
+    async def test_profile_persona_reaches_the_launched_agent(self, tmp_path):
+        persona = "You only answer questions about this repository."
+        profile = OpenHandsAgentProfile(
+            name="explorer", llm_profile_ref="default", persona=persona
+        )
+        llm_store = LLMProfileStore(base_dir=tmp_path / "llm")
+        llm_store.save("default", LLM(model="gpt-4o", usage_id="agent"))
+        resolved = resolve_agent_profile(
+            profile,
+            llm_store=llm_store,
+            mcp_config={},
+            available_skills=None,
+            cipher=None,
+        )
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(agent_context=AgentContext())
+        )
+
+        _, agent = await _start_from_profile(tmp_path, profile, resolved, persisted)
+
+        assert agent.persona == persona
+        assert agent.static_system_message.startswith(persona)
+        assert "<SECURITY>" in agent.static_system_message
 
 
 class TestConversationServiceStartWithDirectAgent:
@@ -1194,3 +1196,128 @@ class TestLaunchedAgentProfileRoundTrip:
         assert reloaded.launched_agent_profile is not None
         assert reloaded.launched_agent_profile.agent_profile_id == profile_id
         assert reloaded.launched_agent_profile.revision == 5
+
+
+class TestProfileSecretScope:
+    """``secret_refs`` narrows a launch's secrets, enforced server-side (#17236)."""
+
+    def _resolve(self, profile):
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]),
+            patch(
+                "openhands.agent_server.profile_launch.is_tool_usable",
+                return_value=False,
+            ),
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = _make_agent()
+            MockResolve.return_value = mock_config
+            _, _, allowed = _resolve_agent_from_profile(
+                profile.id, cipher=None, mcp_config={}
+            )
+        return allowed
+
+    def test_an_unscoped_profile_reports_no_restriction(self):
+        assert self._resolve(_make_openhands_profile()) is None
+
+    def test_a_scoped_profile_reports_its_allow_list(self):
+        profile = _make_openhands_profile()
+        profile = profile.model_copy(update={"secret_refs": ["GITHUB_TOKEN"]})
+        assert self._resolve(profile) == {"GITHUB_TOKEN"}
+
+    def test_a_scoped_acp_profile_gets_no_implicit_provider_credentials(self):
+        # Strict: an ACP profile must list its own credential to receive it.
+        profile = _make_acp_profile().model_copy(update={"secret_refs": []})
+        assert self._resolve(profile) == set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("secret_refs", "expected"),
+        [
+            (None, {"GITHUB_TOKEN", "DATADOG_API_KEY"}),
+            ([], set()),
+            (["GITHUB_TOKEN"], {"GITHUB_TOKEN"}),
+            (["GITHUB_TOKEN", "MISSING"], {"GITHUB_TOKEN"}),
+            (["MISSING"], set()),
+        ],
+    )
+    async def test_start_conversation_drops_secrets_the_profile_disallows(
+        self, tmp_path, secret_refs, expected
+    ):
+        """The filter runs on the request, so a client cannot widen the scope."""
+        profile = _make_openhands_profile().model_copy(
+            update={"secret_refs": secret_refs}
+        )
+        captured: dict[str, Any] = {}
+
+        request = StartConversationRequest(
+            agent_profile_id=profile.id,
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(value=SecretStr("gh")),
+                "DATADOG_API_KEY": StaticSecret(value=SecretStr("dd")),
+            },
+        )
+
+        async with ConversationService(
+            conversations_dir=tmp_path / "conversations"
+        ) as service:
+            with (
+                patch(_STORE_PATH) as MockStore,
+                patch(_LLM_STORE_PATH),
+                patch(_RESOLVE_PATH) as MockResolve,
+                patch(_DISCOVER_PATH, return_value=[]),
+                patch(
+                    "openhands.agent_server.profile_launch.is_tool_usable",
+                    return_value=False,
+                ),
+                patch.object(
+                    service, "_start_event_service", new_callable=AsyncMock
+                ) as mock_ses,
+            ):
+                store_inst = MockStore.return_value
+                store_inst.name_for_id.return_value = profile.name
+                store_inst.load.return_value = profile
+                agent = _make_agent()
+                mock_config = MagicMock()
+                mock_config.create_agent.return_value = agent
+                MockResolve.return_value = mock_config
+
+                mock_es = AsyncMock(spec=EventService)
+                mock_es.get_state.return_value = ConversationState(
+                    id=uuid4(),
+                    agent=agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                )
+                mock_es.stored = MagicMock(
+                    launched_agent_profile=None,
+                    client_tools=[],
+                    title=None,
+                    metrics=None,
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    forked_from_conversation_id=None,
+                    forked_from_event_id=None,
+                    parent_conversation_id=None,
+                )
+
+                async def capture(stored, **kwargs):
+                    captured["secrets"] = dict(stored.secrets)
+                    return mock_es
+
+                mock_ses.side_effect = capture
+
+                await service.start_conversation(request)
+
+        assert set(captured["secrets"]) == expected

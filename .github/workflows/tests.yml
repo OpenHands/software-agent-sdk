@@ -169,7 +169,7 @@ jobs:
             # ACP_INSTALL_CATALOG, otherwise those providers only skip.
             - name: Use Node.js 22.19
               if: steps.changed.outputs.any_changed == 'true'
-              uses: actions/setup-node@v6
+              uses: actions/setup-node@v7
               with:
                   node-version: 22.19
 
@@ -594,7 +594,7 @@ jobs:
             - name: Pytest coverage PR comment
               if: always()
               continue-on-error: true
-              uses: MishaKav/pytest-coverage-comment@fd9adbdca9fdfbe2b9bfa44a7340e6a83346ce6c # v1
+              uses: MishaKav/pytest-coverage-comment@432ac90e8d345c93e1d90ee0838b35913abc9c9b # v1
               with:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   pytest-xml-coverage-path: coverage.xml

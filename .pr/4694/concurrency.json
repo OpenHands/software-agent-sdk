@@ -1,7 +1,0 @@
-{
-  "result": "PASS",
-  "mode": "concurrent",
-  "request_count": 3,
-  "outputs_isolated": true,
-  "conversation_ids_unique": true
-}

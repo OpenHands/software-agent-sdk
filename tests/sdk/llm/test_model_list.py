@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
+    get_supported_llm_models,
     get_unverified_models,
 )
 from openhands.sdk.llm.utils.verified_models import (
@@ -14,12 +15,12 @@ from openhands.sdk.llm.utils.verified_models import (
 
 def test_organize_models_and_providers():
     models = [
-        "openai/gpt-4o",
-        "anthropic/claude-sonnet-4-20250514",
-        "o3",
-        "o4-mini",
-        "devstral-small-2505",
-        "mistral/devstral-small-2505",
+        "openai/gpt-5.6",
+        "anthropic/claude-sonnet-5",
+        "gpt-5.3-codex",
+        "gpt-6-astra",
+        "devstral-2512",
+        "mistral/devstral-2512",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
         "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
@@ -126,6 +127,40 @@ def test_kimi_k3_and_claude_opus_5_are_verified():
     assert "claude-opus-5" in VERIFIED_OPENHANDS_MODELS
 
 
+def test_openrouter_is_a_verified_provider():
+    """OpenRouter must be a verified provider (alongside openai/openhands) so the
+    provider picker shows it as verified on the local backend. Its entries are
+    namespaced ids with the ``openrouter/`` prefix stripped.
+    """
+    assert "openrouter" in VERIFIED_MODELS
+    # The picker treats any key in VERIFIED_MODELS as a verified provider, so a
+    # non-empty list is required for the OpenRouter section to render models.
+    assert VERIFIED_MODELS["openrouter"]
+    assert "anthropic/claude-opus-5" in VERIFIED_MODELS["openrouter"]
+    assert "openai/gpt-6-astra" in VERIFIED_MODELS["openrouter"]
+    # Entries must be real catalog ids (no alias-only ids like ``openai/gpt-5.6``).
+    assert "openai/gpt-5.6-sol" in VERIFIED_MODELS["openrouter"]
+    # Entries must not carry the openrouter/ prefix (it is the provider key).
+    assert not any(m.startswith("openrouter/") for m in VERIFIED_MODELS["openrouter"])
+
+
+def test_openrouter_entries_are_real_catalog_ids():
+    """Every OpenRouter verified entry must resolve to a real LiteLLM catalog
+    model (``openrouter/<entry>``), so the route has known context-window
+    metadata for condensation. An alias-only id like ``openai/gpt-5.6`` that no
+    catalog exposes must not be listed.
+    """
+    catalog = set(get_supported_llm_models())
+    missing = [
+        entry
+        for entry in VERIFIED_MODELS["openrouter"]
+        if f"openrouter/{entry}" not in catalog
+    ]
+    assert not missing, (
+        f"OpenRouter verified entries are not real LiteLLM catalog ids: {missing}"
+    )
+
+
 def test_nemotron_3_super_uses_full_infra_name():
     """The verified Nemotron Super entry must match the infra model name
     (``nemotron-3-super-120b-a12b``) and the short alias should not be listed.
@@ -139,16 +174,57 @@ def test_nemotron_3_super_uses_full_infra_name():
         )
 
 
-def test_claude_opus_4_5_uses_full_infra_name():
-    """The OpenHands proxy serves the dated snapshot ``claude-opus-4-5-20251101``;
-    the bare alias ``claude-opus-4-5`` is not a valid proxy model name and must
-    not be offered under the OpenHands provider.
+def test_openhands_haiku_uses_full_infra_name():
+    """The OpenHands proxy serves dated snapshots for some Anthropic models
+    (``claude-haiku-4-5-20251001``); bare aliases that the proxy does not know
+    must not be offered under the OpenHands provider.
     """
-    assert "claude-opus-4-5-20251101" in VERIFIED_OPENHANDS_MODELS
-    # Scope is intentionally narrower than test_nemotron_3_super_uses_full_infra_name
-    # (which loops over all providers): VERIFIED_ANTHROPIC_MODELS legitimately keeps
-    # the bare alias because direct-Anthropic BYOK may accept it.
-    assert "claude-opus-4-5" not in VERIFIED_OPENHANDS_MODELS
+    assert "claude-haiku-4-5" not in VERIFIED_OPENHANDS_MODELS
+    # VERIFIED_ANTHROPIC_MODELS keeps the dated name; direct-Anthropic BYOK is fine.
+    assert "claude-haiku-4-5-20251001" in VERIFIED_MODELS["anthropic"]
+
+
+def test_verified_lists_keep_two_latest_versions_per_line():
+    """Check the curation rule for every provider: the two latest versions of a
+    line are present and the version before them is gone (see the module
+    docstring and ``llm/utils/AGENTS.md``). Update the table when a new version
+    lands.
+    """
+    expectations = {
+        "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
+        "anthropic": (
+            {"claude-opus-5-5", "claude-opus-5"},
+            {"claude-opus-4-8", "claude-opus-4-7"},
+        ),
+        "mistral": (
+            {"devstral-2512", "devstral-medium-2512"},
+            {"devstral-medium-2507"},
+        ),
+        "gemini": ({"gemini-3.8-flash", "gemini-3.7-flash"}, {"gemini-3.6-flash"}),
+        "deepseek": ({"deepseek-v4-pro", "deepseek-v3.2-reasoner"}, set()),
+        "moonshot": ({"kimi-k3", "kimi-k2.7-code"}, {"kimi-k2.6"}),
+        "minimax": ({"minimax-m3", "minimax-m2.7"}, {"minimax-m2.5"}),
+        "glm": ({"glm-5.3", "glm-5.2"}, {"glm-5.1"}),
+        "nvidia": ({"nemotron-3.5-lightning-30b-a3b", "nemotron-3-nano"}, set()),
+        "qwen": ({"qwen3.8-max", "qwen3.7-max"}, {"qwen3-max", "qwen3-6-plus"}),
+        # OpenRouter routes other vendors' models, so entries are namespaced
+        # ids (``anthropic/claude-opus-5``) rather than bare model names.
+        "openrouter": (
+            {"anthropic/claude-opus-5", "openai/gpt-6-astra"},
+            {"anthropic/claude-opus-4-7"},
+        ),
+    }
+    assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}
+    for provider, (present, absent) in expectations.items():
+        models = set(VERIFIED_MODELS[provider])
+        assert present <= models, f"{provider}: missing {present - models}"
+        assert not (absent & models), f"{provider}: stale {absent & models}"
+    assert {"gpt-6-astra", "gpt-5.6", "claude-opus-5-5", "claude-opus-5"} <= set(
+        VERIFIED_OPENHANDS_MODELS
+    )
+    assert not {"gpt-5.5", "claude-opus-4-8", "claude-opus-4-7", "minimax-m2.5"} & set(
+        VERIFIED_OPENHANDS_MODELS
+    )
 
 
 def test_trinity_model_is_openhands_only():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -162,6 +162,8 @@ class InvokeSkillExecutor(ToolExecutor):
 
 class InvokeSkillTool(ToolDefinition[InvokeSkillAction, InvokeSkillObservation]):
     """Built-in tool for explicit invocation of progressive-disclosure skills."""
+
+    user_selectable: ClassVar[bool] = False
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         # Rendering a skill may execute inline `!`cmd`` tokens, which can

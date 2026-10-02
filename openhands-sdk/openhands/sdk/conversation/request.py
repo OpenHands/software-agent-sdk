@@ -330,6 +330,8 @@ class StartConversationRequest(ConversationConfig):
                 "`agent_profile_id` is mutually exclusive with"
                 " `agent` and `agent_settings`"
             )
+        if has_agent:
+            payload["agent_settings"] = None
         if not has_profile_id:
             if payload.get("agent") is None and has_agent_settings:
                 from openhands.sdk.settings.model import validate_agent_settings
