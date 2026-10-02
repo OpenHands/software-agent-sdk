@@ -1,5 +1,5 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex device authentication and versioned credentials</title><style>:root{--fg:#202126;--muted:#626770;--subtle:#899099;--bg:#fdfdfb;--card:#fff;--rule:#deded7;--accent:#2b4eaa;--accent-soft:#eef2fc;--warn:#b25b0e}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}.wrap{max-width:1280px;margin:auto;padding:40px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:36px}nav{position:sticky;top:20px;align-self:start;font-size:12px;overflow-wrap:anywhere}nav a{display:block;margin:8px 0}a{color:var(--accent)}h1{font-size:36px;line-height:1.2}h2{margin-top:36px}h3{font-size:18px;overflow-wrap:anywhere}.callout{border-left:4px solid var(--warn);padding:16px;background:var(--accent-soft)}article{border-top:1px solid var(--rule);padding:20px 0}.ba{display:grid;grid-template-columns:1fr 1fr;gap:18px}svg{width:100%;height:auto}.existing{fill:var(--card);stroke:var(--subtle);stroke-dasharray:6 4}.new{fill:var(--accent-soft);stroke:var(--warn);stroke-width:2}.node-title{fill:var(--fg);font:18px ui-monospace,monospace}.node-detail{fill:var(--muted);font:14px system-ui,sans-serif}figure{margin:12px 0}figcaption,.src{font:12px ui-monospace,monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid var(--rule)}pre{overflow:auto;background:var(--accent-soft);padding:16px;font-size:12px}small{color:var(--muted)}@media(max-width:850px){.wrap{display:block;padding:20px}nav{position:static}.ba{display:block}}</style><div class="wrap"><nav><strong>Changed-file index</strong><a href="#f0">clients/typescript/src/__tests__/codex-auth-client.test.ts<br><small>logic · +42/−0</small></a><a href="#f1">clients/typescript/src/client/codex-auth-client.ts<br><small>logic · +50/−0</small></a><a href="#f2">clients/typescript/src/clients.ts<br><small>mechanical · +1/−0</small></a><a href="#f3">clients/typescript/src/conversation/conversation-manager.ts<br><small>logic · +7/−1</small></a><a href="#f4">clients/typescript/src/index.ts<br><small>mechanical · +1/−0</small></a><a href="#f5">clients/typescript/src/models/api.ts<br><small>mechanical · +15/−0</small></a><a href="#f6">openhands-agent-server/openhands/agent_server/api.py<br><small>mechanical · +3/−0</small></a><a href="#f7">openhands-agent-server/openhands/agent_server/codex_auth.py<br><small>logic · +436/−0</small></a><a href="#f8">openhands-agent-server/openhands/agent_server/persistence/store.py<br><small>logic · +36/−0</small></a><a href="#f9">tests/agent_server/test_codex_auth.py<br><small>logic · +262/−0</small></a><a href="#f10">tests/cross/test_remote_conversation_live_server.py<br><small>logic · +51/−1</small></a></nav><main><header><small>OPENHANDS #17372 · DRAFT · https://github.com/OpenHands/software-agent-sdk/pull/5452</small><h1>Codex device authentication and versioned credentials</h1><p>Review the server-owned device flow and the changes that let Canvas initiate it without handling OAuth credentials.</p></header><div class="callout">★ The Canvas implementation requires the first published client/server release and corresponding exact dependency/minimum-server pins. Human authorization, real Codex turns, restart persistence and actual refresh passed on Windows using a local launcher workaround. See <a href="validation.md">validation scope</a> and <a href="codex-live-results.json">credential-free results</a>. Browser reload/disconnect and Docker/remote checks remain pending. Cloud App API support is separate from hosted Agent Servers.</div><h2>Before → after</h2><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="Version check only replaces an existing secret">
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif}.wrap{max-width:1280px;margin:auto;padding:40px;display:grid;grid-template-columns:260px minmax(0,1fr);gap:36px}nav{position:sticky;top:20px;align-self:start;font-size:12px;overflow-wrap:anywhere}nav a{display:block;margin:8px 0}a{color:var(--accent)}h1{font-size:36px;line-height:1.2}h2{margin-top:36px}h3{font-size:18px;overflow-wrap:anywhere}.callout{border-left:4px solid var(--warn);padding:16px;background:var(--accent-soft)}article{border-top:1px solid var(--rule);padding:20px 0}.ba{display:grid;grid-template-columns:1fr 1fr;gap:18px}svg{width:100%;height:auto}.existing{fill:var(--card);stroke:var(--subtle);stroke-dasharray:6 4}.new{fill:var(--accent-soft);stroke:var(--warn);stroke-width:2}.node-title{fill:var(--fg);font:18px ui-monospace,monospace}.node-detail{fill:var(--muted);font:14px system-ui,sans-serif}figure{margin:12px 0}figcaption,.src{font:12px ui-monospace,monospace;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%}td,th{padding:10px;text-align:left;border-bottom:1px solid var(--rule)}pre{overflow:auto;background:var(--accent-soft);padding:16px;font-size:12px}small{color:var(--muted)}@media(max-width:850px){.wrap{display:block;padding:20px}nav{position:static}.ba{display:block}}</style><div class="wrap"><nav><strong>Changed-file index</strong><a href="#f0">clients/typescript/src/__tests__/codex-auth-client.test.ts<br><small>logic · +42/−0</small></a><a href="#f1">clients/typescript/src/__tests__/integration/conversation.integration.test.ts<br><small>mechanical · +0/−1</small></a><a href="#f2">clients/typescript/src/__tests__/integration/websocket.integration.test.ts<br><small>mechanical · +0/−1</small></a><a href="#f3">clients/typescript/src/client/codex-auth-client.ts<br><small>logic · +50/−0</small></a><a href="#f4">clients/typescript/src/clients.ts<br><small>mechanical · +1/−0</small></a><a href="#f5">clients/typescript/src/conversation/conversation-manager.ts<br><small>logic · +7/−1</small></a><a href="#f6">clients/typescript/src/index.ts<br><small>mechanical · +1/−0</small></a><a href="#f7">clients/typescript/src/models/api.ts<br><small>mechanical · +15/−0</small></a><a href="#f8">openhands-agent-server/openhands/agent_server/api.py<br><small>mechanical · +3/−0</small></a><a href="#f9">openhands-agent-server/openhands/agent_server/codex_auth.py<br><small>logic · +436/−0</small></a><a href="#f10">openhands-agent-server/openhands/agent_server/persistence/store.py<br><small>logic · +36/−0</small></a><a href="#f11">openhands-sdk/openhands/sdk/agent/acp_agent.py<br><small>logic · +39/−10</small></a><a href="#f12">tests/agent_server/test_codex_auth.py<br><small>logic · +262/−0</small></a><a href="#f13">tests/cross/test_remote_conversation_live_server.py<br><small>logic · +51/−1</small></a><a href="#f14">tests/sdk/agent/test_acp_windows_launch.py<br><small>logic · +66/−0</small></a></nav><main><header><small>OPENHANDS #17372 · DRAFT · https://github.com/OpenHands/software-agent-sdk/pull/5452</small><h1>Codex device authentication and versioned credentials</h1><p>Review the server-owned device flow and the changes that let Canvas initiate it without handling OAuth credentials.</p></header><div class="callout">★ The Canvas implementation requires the first published client/server release and corresponding exact dependency/minimum-server pins. Five real Windows Codex turns passed, including the restored default preset and recovered conversation. Restart, actual refresh and browser reload passed. Hosted Linux: 594 backend/ACP tests and 348 client tests passed. Canonical Docker and hosted Linux HTTP acceptance passed; remote account consent/model use remains unverified. Candidate files are published in the fork; official registry release remains gated. See validation.md for exact scope. Cloud App API support is separate from hosted Agent Servers.</div><h2>Before → after</h2><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="Version check only replaces an existing secret">
     <title>Version check only replaces an existing secret</title><desc>def replace_versioned_secret( at the linked source location.</desc>
     <g><rect class="existing" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">def replace_versioned_secret(</text>
@@ -9,12 +9,12 @@
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">def update_versioned_secret(</text>
     <text x="30" y="77" class="node-detail">Version check also guards creation and deletion</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></figcaption></figure></div><h2>API and compatibility</h2><p>Additive Agent Server contract: <code>GET /api/acp/codex/auth/status</code> and <code>POST .../device/start</code>, <code>.../device/poll</code>, <code>.../device/cancel</code>, <code>.../logout</code>. Status exposes connected/state/expiry; start exposes a user code, verification URL and opaque handle. Tokens remain in the server.</p><p>Source manifest: implementation revision <code>fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743</code>; merge-base <code>cc97bf234ea63b9276a7bd71ef81491f3849a7b2</code>. Per-file links and diffs below are immutable evidence for this verified PR head.</p><h2>Observed validation</h2><p>81 backend/cross tests, 348 client tests, changed-file checks, focused Python typecheck and client type-budget passed. Real built Canvas + native Agent Server (MSW disabled) initiated an actual OpenAI challenge with HTTP 200, displayed/copied the code and cancelled it. No account authorization/model call occurred. See <a href="https://github.com/luxleader/software-agent-sdk/blob/feat/codex-oauth-17372/.pr/validation.md">validation notes</a> for commands, environment and limits.</p><h2>Changed files</h2><article id="f0"><h3>clients/typescript/src/__tests__/codex-auth-client.test.ts</h3><p>Real fetch boundary verifies paths, handles and session header. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/__tests__/codex-auth-client.test.ts#L6">clients/typescript/src/__tests__/codex-auth-client.test.ts:6</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/__tests__/codex-auth-client.test.ts#L6">clients/typescript/src/__tests__/codex-auth-client.test.ts:6</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Real fetch boundary verifies paths, handles and session header">
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></figcaption></figure></div><h2>API and compatibility</h2><p>Additive Agent Server contract: <code>GET /api/acp/codex/auth/status</code> and <code>POST .../device/start</code>, <code>.../device/poll</code>, <code>.../device/cancel</code>, <code>.../logout</code>. Status exposes connected/state/expiry; start exposes a user code, verification URL and opaque handle. Tokens remain in the server.</p><p>Source manifest: implementation revision <code>5ab913acbc8d938f21a18e981dd9aa3224eaf2ca</code>; merge-base <code>cc97bf234ea63b9276a7bd71ef81491f3849a7b2</code>. Per-file links and diffs below are immutable evidence for this verified PR head.</p><h2>Observed validation</h2><p>594 Linux backend/ACP tests passed (2 Windows-only tests skipped); 348 client tests and both native Windows launch tests passed. Focused Python typecheck and client type-budget passed. Real built Canvas + packaged Agent Server (MSW disabled) completed human ChatGPT authorization. Five real Codex turns returned OK without an API key, including the default Windows preset and recovery of the original failed conversation. Server restart, actual token refresh and browser reload passed. See <a href="validation.md">validation notes</a> for commands, environment and limits.</p><h2>Changed files</h2><article id="f0"><h3>clients/typescript/src/__tests__/codex-auth-client.test.ts</h3><p>Real fetch boundary verifies paths, handles and session header. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/codex-auth-client.test.ts#L6">clients/typescript/src/__tests__/codex-auth-client.test.ts:6</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/codex-auth-client.test.ts#L6">clients/typescript/src/__tests__/codex-auth-client.test.ts:6</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Real fetch boundary verifies paths, handles and session header">
     <title>Real fetch boundary verifies paths, handles and session header</title><desc>it(&#x27;sends only opaque at the linked source location.</desc>
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">it(&#x27;sends only opaque</text>
     <text x="30" y="77" class="node-detail">Real fetch boundary verifies paths, handles and session header</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/__tests__/codex-auth-client.test.ts#L6">clients/typescript/src/__tests__/codex-auth-client.test.ts:6</a></figcaption></figure><details><summary>Review diff (+42/−0)</summary><pre>diff --git a/clients/typescript/src/__tests__/codex-auth-client.test.ts b/clients/typescript/src/__tests__/codex-auth-client.test.ts
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/codex-auth-client.test.ts#L6">clients/typescript/src/__tests__/codex-auth-client.test.ts:6</a></figcaption></figure><details><summary>Review diff (+42/−0)</summary><pre>diff --git a/clients/typescript/src/__tests__/codex-auth-client.test.ts b/clients/typescript/src/__tests__/codex-auth-client.test.ts
 new file mode 100644
 index 000000000..081477e2e
 --- /dev/null
@@ -62,12 +62,36 @@ index 000000000..081477e2e
 +  ]);
 +  expect(calls.every(({ key }) =&gt; key === &#x27;session-key&#x27;)).toBe(true);
 +});
-</pre></details></article><article id="f1"><h3>clients/typescript/src/client/codex-auth-client.ts</h3><p>Five typed operations send opaque handles, never OAuth tokens. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/client/codex-auth-client.ts#L8">clients/typescript/src/client/codex-auth-client.ts:8</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/client/codex-auth-client.ts#L8">clients/typescript/src/client/codex-auth-client.ts:8</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Five typed operations send opaque handles, never OAuth tokens">
+</pre></details></article><article id="f1"><h3>clients/typescript/src/__tests__/integration/conversation.integration.test.ts</h3><p>Remove unused import without changing test behavior. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L11">clients/typescript/src/__tests__/integration/conversation.integration.test.ts:11</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L11">clients/typescript/src/__tests__/integration/conversation.integration.test.ts:11</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L11">clients/typescript/src/__tests__/integration/conversation.integration.test.ts:11</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Unused LLM import <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L11">clients/typescript/src/__tests__/integration/conversation.integration.test.ts:11</a></td><td>Remove unused import without changing test behavior <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L11">clients/typescript/src/__tests__/integration/conversation.integration.test.ts:11</a></td></tr></table><details><summary>Review diff (+0/−1)</summary><pre>diff --git a/clients/typescript/src/__tests__/integration/conversation.integration.test.ts b/clients/typescript/src/__tests__/integration/conversation.integration.test.ts
+index e46ca336c..b67b5948c 100644
+--- a/clients/typescript/src/__tests__/integration/conversation.integration.test.ts
++++ b/clients/typescript/src/__tests__/integration/conversation.integration.test.ts
+@@ -18,7 +18,6 @@ import {
+ } from &#x27;../../index&#x27;;
+ import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from &#x27;./test-config&#x27;;
+ import {
+-  waitFor,
+   waitForAgentIdle,
+   sleep,
+   workspaceFileExists,
+</pre></details></article><article id="f2"><h3>clients/typescript/src/__tests__/integration/websocket.integration.test.ts</h3><p>Remove unused binding without changing test behavior. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L22">clients/typescript/src/__tests__/integration/websocket.integration.test.ts:22</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L22">clients/typescript/src/__tests__/integration/websocket.integration.test.ts:22</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L22">clients/typescript/src/__tests__/integration/websocket.integration.test.ts:22</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Unused message variable <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L22">clients/typescript/src/__tests__/integration/websocket.integration.test.ts:22</a></td><td>Remove unused binding without changing test behavior <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L22">clients/typescript/src/__tests__/integration/websocket.integration.test.ts:22</a></td></tr></table><details><summary>Review diff (+0/−1)</summary><pre>diff --git a/clients/typescript/src/__tests__/integration/websocket.integration.test.ts b/clients/typescript/src/__tests__/integration/websocket.integration.test.ts
+index e1a5e44ff..e66c45c6c 100644
+--- a/clients/typescript/src/__tests__/integration/websocket.integration.test.ts
++++ b/clients/typescript/src/__tests__/integration/websocket.integration.test.ts
+@@ -201,7 +201,6 @@ describe(&#x27;WebSocket Integration Tests&#x27;, () =&gt; {
+         );
+
+         const conversationId = createResponse.data.id;
+-        let connectionCount = 0;
+         const receivedEvents: Event[] = [];
+
+         const wsClient = new WebSocketCallbackClient({
+</pre></details></article><article id="f3"><h3>clients/typescript/src/client/codex-auth-client.ts</h3><p>Five typed operations send opaque handles, never OAuth tokens. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/client/codex-auth-client.ts#L8">clients/typescript/src/client/codex-auth-client.ts:8</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/client/codex-auth-client.ts#L8">clients/typescript/src/client/codex-auth-client.ts:8</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Five typed operations send opaque handles, never OAuth tokens">
     <title>Five typed operations send opaque handles, never OAuth tokens</title><desc>export class CodexAuthClient at the linked source location.</desc>
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">export class CodexAuthClient</text>
     <text x="30" y="77" class="node-detail">Five typed operations send opaque handles, never OAuth tokens</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/client/codex-auth-client.ts#L8">clients/typescript/src/client/codex-auth-client.ts:8</a></figcaption></figure><details><summary>Review diff (+50/−0)</summary><pre>diff --git a/clients/typescript/src/client/codex-auth-client.ts b/clients/typescript/src/client/codex-auth-client.ts
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/client/codex-auth-client.ts#L8">clients/typescript/src/client/codex-auth-client.ts:8</a></figcaption></figure><details><summary>Review diff (+50/−0)</summary><pre>diff --git a/clients/typescript/src/client/codex-auth-client.ts b/clients/typescript/src/client/codex-auth-client.ts
 new file mode 100644
 index 000000000..f77731bbc
 --- /dev/null
@@ -123,7 +147,7 @@ index 000000000..f77731bbc
 +    this.client.close();
 +  }
 +}
-</pre></details></article><article id="f2"><h3>clients/typescript/src/clients.ts</h3><p>Export CodexAuthClient. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/clients.ts#L18">clients/typescript/src/clients.ts:18</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/clients.ts#L18">clients/typescript/src/clients.ts:18</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Client export barrel </td><td>Export CodexAuthClient <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/clients.ts#L18">clients/typescript/src/clients.ts:18</a></td></tr></table><details><summary>Review diff (+1/−0)</summary><pre>diff --git a/clients/typescript/src/clients.ts b/clients/typescript/src/clients.ts
+</pre></details></article><article id="f4"><h3>clients/typescript/src/clients.ts</h3><p>Export CodexAuthClient. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/clients.ts#L18">clients/typescript/src/clients.ts:18</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/clients.ts#L18">clients/typescript/src/clients.ts:18</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Client export barrel </td><td>Export CodexAuthClient <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/clients.ts#L18">clients/typescript/src/clients.ts:18</a></td></tr></table><details><summary>Review diff (+1/−0)</summary><pre>diff --git a/clients/typescript/src/clients.ts b/clients/typescript/src/clients.ts
 index 2d999817c..bacaa10af 100644
 --- a/clients/typescript/src/clients.ts
 +++ b/clients/typescript/src/clients.ts
@@ -135,7 +159,7 @@ index 2d999817c..bacaa10af 100644
  export { MCPClient } from &#x27;./client/mcp-client&#x27;;
  export { ProfilesClient } from &#x27;./client/profiles-client&#x27;;
  export { MetaProfilesClient } from &#x27;./client/meta-profiles-client&#x27;;
-</pre></details></article><article id="f3"><h3>clients/typescript/src/conversation/conversation-manager.ts</h3><p>Own codexAuth client; manager.close closes it. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/conversation/conversation-manager.ts#L36">clients/typescript/src/conversation/conversation-manager.ts:36</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/conversation/conversation-manager.ts#L35">clients/typescript/src/conversation/conversation-manager.ts:35</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/conversation/conversation-manager.ts#L36">clients/typescript/src/conversation/conversation-manager.ts:36</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="ACP conversation operations only">
+</pre></details></article><article id="f5"><h3>clients/typescript/src/conversation/conversation-manager.ts</h3><p>Own codexAuth client; manager.close closes it. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/conversation/conversation-manager.ts#L36">clients/typescript/src/conversation/conversation-manager.ts:36</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/conversation/conversation-manager.ts#L35">clients/typescript/src/conversation/conversation-manager.ts:35</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/conversation/conversation-manager.ts#L36">clients/typescript/src/conversation/conversation-manager.ts:36</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="ACP conversation operations only">
     <title>ACP conversation operations only</title><desc>export class ACPConversationNamespace at the linked source location.</desc>
     <g><rect class="existing" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">export class ACPConversationNamespace</text>
@@ -145,13 +169,13 @@ index 2d999817c..bacaa10af 100644
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">export class ACPConversationNamespace</text>
     <text x="30" y="77" class="node-detail">Own codexAuth client; manager.close closes it</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/conversation/conversation-manager.ts#L36">clients/typescript/src/conversation/conversation-manager.ts:36</a></figcaption></figure></div><details><summary>Review diff (+7/−1)</summary><pre>diff --git a/clients/typescript/src/conversation/conversation-manager.ts b/clients/typescript/src/conversation/conversation-manager.ts
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/conversation/conversation-manager.ts#L36">clients/typescript/src/conversation/conversation-manager.ts:36</a></figcaption></figure></div><details><summary>Review diff (+7/−1)</summary><pre>diff --git a/clients/typescript/src/conversation/conversation-manager.ts b/clients/typescript/src/conversation/conversation-manager.ts
 index 8ce95d6ea..afe5e0b7a 100644
 --- a/clients/typescript/src/conversation/conversation-manager.ts
 +++ b/clients/typescript/src/conversation/conversation-manager.ts
 @@ -3,6 +3,7 @@
   */
- 
+
  import { HttpClient } from &#x27;../client/http-client&#x27;;
 +import { CodexAuthClient } from &#x27;../client/codex-auth-client&#x27;;
  import { AgentProfilesClient } from &#x27;../client/agent-profiles-client&#x27;;
@@ -159,7 +183,7 @@ index 8ce95d6ea..afe5e0b7a 100644
  import { HooksClient } from &#x27;../client/hooks-client&#x27;;
 @@ -33,7 +34,11 @@ import {
  import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from &#x27;../types/base&#x27;;
- 
+
  export class ACPConversationNamespace {
 -  constructor(private readonly manager: ConversationManager) {}
 +  public readonly codexAuth: CodexAuthClient;
@@ -167,7 +191,7 @@ index 8ce95d6ea..afe5e0b7a 100644
 +  constructor(private readonly manager: ConversationManager) {
 +    this.codexAuth = new CodexAuthClient({ host: manager.host, apiKey: manager.apiKey });
 +  }
- 
+
    searchConversations(
      options: ConversationSearchRequest = {}
 @@ -396,6 +401,7 @@ export class ConversationManager {
@@ -178,7 +202,7 @@ index 8ce95d6ea..afe5e0b7a 100644
      this.server.close();
      this.llm.close();
      this.profiles.close();
-</pre></details></article><article id="f4"><h3>clients/typescript/src/index.ts</h3><p>Export CodexAuthStatus and CodexDeviceChallenge. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/index.ts#L150">clients/typescript/src/index.ts:150</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/index.ts#L150">clients/typescript/src/index.ts:150</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Public types barrel </td><td>Export CodexAuthStatus and CodexDeviceChallenge <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/index.ts#L150">clients/typescript/src/index.ts:150</a></td></tr></table><details><summary>Review diff (+1/−0)</summary><pre>diff --git a/clients/typescript/src/index.ts b/clients/typescript/src/index.ts
+</pre></details></article><article id="f6"><h3>clients/typescript/src/index.ts</h3><p>Export CodexAuthStatus and CodexDeviceChallenge. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/index.ts#L150">clients/typescript/src/index.ts:150</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/index.ts#L150">clients/typescript/src/index.ts:150</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Public types barrel </td><td>Export CodexAuthStatus and CodexDeviceChallenge <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/index.ts#L150">clients/typescript/src/index.ts:150</a></td></tr></table><details><summary>Review diff (+1/−0)</summary><pre>diff --git a/clients/typescript/src/index.ts b/clients/typescript/src/index.ts
 index a7ab8d3aa..1d9188a57 100644
 --- a/clients/typescript/src/index.ts
 +++ b/clients/typescript/src/index.ts
@@ -190,14 +214,14 @@ index a7ab8d3aa..1d9188a57 100644
  export { WorkspacesClient } from &#x27;./client/workspaces-client&#x27;;
  export {
    AGENT_SERVER_VERSION_ERROR_CODE,
-</pre></details></article><article id="f5"><h3>clients/typescript/src/models/api.ts</h3><p>Add separate token-free Codex status/challenge models. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/models/api.ts#L40">clients/typescript/src/models/api.ts:40</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/models/api.ts#L33">clients/typescript/src/models/api.ts:33</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/models/api.ts#L40">clients/typescript/src/models/api.ts:40</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>LLM subscription status/challenge models <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/models/api.ts#L33">clients/typescript/src/models/api.ts:33</a></td><td>Add separate token-free Codex status/challenge models <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/clients/typescript/src/models/api.ts#L40">clients/typescript/src/models/api.ts:40</a></td></tr></table><details><summary>Review diff (+15/−0)</summary><pre>diff --git a/clients/typescript/src/models/api.ts b/clients/typescript/src/models/api.ts
+</pre></details></article><article id="f7"><h3>clients/typescript/src/models/api.ts</h3><p>Add separate token-free Codex status/challenge models. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/models/api.ts#L40">clients/typescript/src/models/api.ts:40</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/models/api.ts#L33">clients/typescript/src/models/api.ts:33</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/models/api.ts#L40">clients/typescript/src/models/api.ts:40</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>LLM subscription status/challenge models <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/models/api.ts#L33">clients/typescript/src/models/api.ts:33</a></td><td>Add separate token-free Codex status/challenge models <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/clients/typescript/src/models/api.ts#L40">clients/typescript/src/models/api.ts:40</a></td></tr></table><details><summary>Review diff (+15/−0)</summary><pre>diff --git a/clients/typescript/src/models/api.ts b/clients/typescript/src/models/api.ts
 index 48bacfa5d..663d086c5 100644
 --- a/clients/typescript/src/models/api.ts
 +++ b/clients/typescript/src/models/api.ts
 @@ -37,6 +37,21 @@ export interface LLMSubscriptionStatusResponse {
    expires_at: number | null;
  }
- 
+
 +export interface CodexAuthStatus {
 +  connected: boolean;
 +  state: &#x27;disconnected&#x27; | &#x27;pending&#x27; | &#x27;connected&#x27; | &#x27;cancelled&#x27; | &#x27;expired&#x27; | &#x27;error&#x27;;
@@ -216,7 +240,7 @@ index 48bacfa5d..663d086c5 100644
  export interface LLMSubscriptionDeviceStartResponse {
    device_code: string;
    user_code: string;
-</pre></details></article><article id="f6"><h3>openhands-agent-server/openhands/agent_server/api.py</h3><p>Include Codex router; app owns lazy service. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/api.py#L469">openhands-agent-server/openhands/agent_server/api.py:469</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-agent-server/openhands/agent_server/api.py#L467">openhands-agent-server/openhands/agent_server/api.py:467</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/api.py#L469">openhands-agent-server/openhands/agent_server/api.py:469</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Authenticated API router <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-agent-server/openhands/agent_server/api.py#L467">openhands-agent-server/openhands/agent_server/api.py:467</a></td><td>Include Codex router; app owns lazy service <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/api.py#L469">openhands-agent-server/openhands/agent_server/api.py:469</a></td></tr></table><details><summary>Review diff (+3/−0)</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/api.py b/openhands-agent-server/openhands/agent_server/api.py
+</pre></details></article><article id="f8"><h3>openhands-agent-server/openhands/agent_server/api.py</h3><p>Include Codex router; app owns lazy service. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/api.py#L469">openhands-agent-server/openhands/agent_server/api.py:469</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-agent-server/openhands/agent_server/api.py#L467">openhands-agent-server/openhands/agent_server/api.py:467</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/api.py#L469">openhands-agent-server/openhands/agent_server/api.py:469</a></details><table><tr><th>Before</th><th>After</th></tr><tr><td>Authenticated API router <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-agent-server/openhands/agent_server/api.py#L467">openhands-agent-server/openhands/agent_server/api.py:467</a></td><td>Include Codex router; app owns lazy service <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/api.py#L469">openhands-agent-server/openhands/agent_server/api.py:469</a></td></tr></table><details><summary>Review diff (+3/−0)</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/api.py b/openhands-agent-server/openhands/agent_server/api.py
 index ac89d7219..7d777e800 100644
 --- a/openhands-agent-server/openhands/agent_server/api.py
 +++ b/openhands-agent-server/openhands/agent_server/api.py
@@ -241,15 +265,15 @@ index ac89d7219..7d777e800 100644
      app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
      app.state.app_backend_session_store = AppBackendSessionStore()
 +    app.state.codex_auth = None
- 
+
      _add_api_routes(app)
      _setup_static_files(app, config)
-</pre></details></article><article id="f7"><h3>openhands-agent-server/openhands/agent_server/codex_auth.py</h3><p>Own device attempts, full Codex credentials, refresh and logout. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/codex_auth.py#L162">openhands-agent-server/openhands/agent_server/codex_auth.py:162</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/codex_auth.py#L162">openhands-agent-server/openhands/agent_server/codex_auth.py:162</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Own device attempts, full Codex credentials, refresh and logout">
+</pre></details></article><article id="f9"><h3>openhands-agent-server/openhands/agent_server/codex_auth.py</h3><p>Own device attempts, full Codex credentials, refresh and logout. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/codex_auth.py#L162">openhands-agent-server/openhands/agent_server/codex_auth.py:162</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/codex_auth.py#L162">openhands-agent-server/openhands/agent_server/codex_auth.py:162</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Own device attempts, full Codex credentials, refresh and logout">
     <title>Own device attempts, full Codex credentials, refresh and logout</title><desc>class CodexAuthService at the linked source location.</desc>
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">class CodexAuthService</text>
     <text x="30" y="77" class="node-detail">Own device attempts, full Codex credentials, refresh and logout</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/codex_auth.py#L162">openhands-agent-server/openhands/agent_server/codex_auth.py:162</a></figcaption></figure><details><summary>Review diff (+436/−0)</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/codex_auth.py b/openhands-agent-server/openhands/agent_server/codex_auth.py
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/codex_auth.py#L162">openhands-agent-server/openhands/agent_server/codex_auth.py:162</a></figcaption></figure><details><summary>Review diff (+436/−0)</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/codex_auth.py b/openhands-agent-server/openhands/agent_server/codex_auth.py
 new file mode 100644
 index 000000000..33abb2a26
 --- /dev/null
@@ -691,7 +715,7 @@ index 000000000..33abb2a26
 +@codex_auth_router.post(&quot;/logout&quot;, response_model=CodexAuthStatus)
 +async def codex_auth_logout(request: Request) -&gt; CodexAuthStatus:
 +    return await _service(request).logout()
-</pre></details></article><article id="f8"><h3>openhands-agent-server/openhands/agent_server/persistence/store.py</h3><p>CAS also creates/deletes under the same store lock. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-agent-server/openhands/agent_server/persistence/store.py#L675">openhands-agent-server/openhands/agent_server/persistence/store.py:675</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="CAS only replaces an existing credential">
+</pre></details></article><article id="f10"><h3>openhands-agent-server/openhands/agent_server/persistence/store.py</h3><p>CAS also creates/deletes under the same store lock. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-agent-server/openhands/agent_server/persistence/store.py#L675">openhands-agent-server/openhands/agent_server/persistence/store.py:675</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="CAS only replaces an existing credential">
     <title>CAS only replaces an existing credential</title><desc>def replace_versioned_secret( at the linked source location.</desc>
     <g><rect class="existing" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">def replace_versioned_secret(</text>
@@ -701,14 +725,14 @@ index 000000000..33abb2a26
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">def update_versioned_secret(</text>
     <text x="30" y="77" class="node-detail">CAS also creates/deletes under the same store lock</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></figcaption></figure></div><details><summary>Review diff (+36/−0)</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/persistence/store.py b/openhands-agent-server/openhands/agent_server/persistence/store.py
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-agent-server/openhands/agent_server/persistence/store.py#L706">openhands-agent-server/openhands/agent_server/persistence/store.py:706</a></figcaption></figure></div><details><summary>Review diff (+36/−0)</summary><pre>diff --git a/openhands-agent-server/openhands/agent_server/persistence/store.py b/openhands-agent-server/openhands/agent_server/persistence/store.py
 index fc5986956..6b8eed300 100644
 --- a/openhands-agent-server/openhands/agent_server/persistence/store.py
 +++ b/openhands-agent-server/openhands/agent_server/persistence/store.py
 @@ -703,6 +703,42 @@ class FileSecretsStore(SecretsStore):
              self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
              return successor
- 
+
 +    def update_versioned_secret(
 +        self, name: str, expected_version: str | None, value: str | None
 +    ) -&gt; str | None:
@@ -745,15 +769,114 @@ index fc5986956..6b8eed300 100644
 +            self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
 +            return successor
 +
- 
+
  class WorkspacesStore(ABC):
      &quot;&quot;&quot;Abstract base class for workspaces storage.&quot;&quot;&quot;
-</pre></details></article><article id="f9"><h3>tests/agent_server/test_codex_auth.py</h3><p>Login/refresh/CAS/logout/provisioning and invalid-token coverage. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/tests/agent_server/test_codex_auth.py#L82">tests/agent_server/test_codex_auth.py:82</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/tests/agent_server/test_codex_auth.py#L82">tests/agent_server/test_codex_auth.py:82</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Login/refresh/CAS/logout/provisioning and invalid-token coverage">
+</pre></details></article><article id="f11"><h3>openhands-sdk/openhands/sdk/agent/acp_agent.py</h3><p>Installed npm shim resolves to Node for cache warm and ACP startup. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-sdk/openhands/sdk/agent/acp_agent.py#L491">openhands-sdk/openhands/sdk/agent/acp_agent.py:491</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-sdk/openhands/sdk/agent/acp_agent.py#L2536">openhands-sdk/openhands/sdk/agent/acp_agent.py:2536</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-sdk/openhands/sdk/agent/acp_agent.py#L491">openhands-sdk/openhands/sdk/agent/acp_agent.py:491</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="Bare npx is passed directly to Windows CreateProcess">
+    <title>Bare npx is passed directly to Windows CreateProcess</title><desc>async def _warm_npx_cache( at the linked source location.</desc>
+    <g><rect class="existing" x="10" y="8" width="680" height="100" rx="8"/>
+    <text x="30" y="45" class="node-title">async def _warm_npx_cache(</text>
+    <text x="30" y="77" class="node-detail">Bare npx is passed directly to Windows CreateProcess</text></g></svg>
+    <figcaption><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/openhands-sdk/openhands/sdk/agent/acp_agent.py#L2536">openhands-sdk/openhands/sdk/agent/acp_agent.py:2536</a></figcaption></figure><figure><svg viewBox="0 0 700 124" role="img" aria-label="Installed npm shim resolves to Node for cache warm and ACP startup">
+    <title>Installed npm shim resolves to Node for cache warm and ACP startup</title><desc>def _npx_process_command( at the linked source location.</desc>
+    <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
+    <text x="30" y="45" class="node-title">def _npx_process_command(</text>
+    <text x="30" y="77" class="node-detail">Installed npm shim resolves to Node for cache warm and ACP startup</text></g></svg>
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/openhands-sdk/openhands/sdk/agent/acp_agent.py#L491">openhands-sdk/openhands/sdk/agent/acp_agent.py:491</a></figcaption></figure></div><details><summary>Review diff (+39/−10)</summary><pre>diff --git a/openhands-sdk/openhands/sdk/agent/acp_agent.py b/openhands-sdk/openhands/sdk/agent/acp_agent.py
+index b09c6c2af..812b6391e 100644
+--- a/openhands-sdk/openhands/sdk/agent/acp_agent.py
++++ b/openhands-sdk/openhands/sdk/agent/acp_agent.py
+@@ -23,6 +23,8 @@ import inspect
+ import json
+ import os
+ import re
++import shutil
++import sys
+ import threading
+ import time
+ import uuid
+@@ -486,6 +488,27 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -&gt; None:
+         )
+
+
++def _npx_process_command(command: list[str], env: dict[str, str]) -&gt; list[str]:
++    &quot;&quot;&quot;Launch npm&#x27;s Windows shim through Node without shell argument parsing.&quot;&quot;&quot;
++    if sys.platform != &quot;win32&quot; or Path(command[0]).stem.lower() != &quot;npx&quot;:
++        return command
++    path = env.get(&quot;PATH&quot;) or env.get(&quot;Path&quot;)
++    if not path:
++        return command
++    executable = shutil.which(command[0], path=path)
++    if executable is None or Path(executable).suffix.lower() != &quot;.cmd&quot;:
++        return command
++    npm_dir = Path(executable).parent
++    cli = npm_dir / &quot;node_modules&quot; / &quot;npm&quot; / &quot;bin&quot; / &quot;npx-cli.js&quot;
++    bundled_node = npm_dir / &quot;node.exe&quot;
++    node = (
++        str(bundled_node) if bundled_node.is_file() else shutil.which(&quot;node&quot;, path=path)
++    )
++    if node is None or not cli.is_file():
++        return command
++    return [node, str(cli), *command[1:]]
++
++
+ def _npx_packages(command: list[str]) -&gt; list[str]:
+     &quot;&quot;&quot;Pinned npm specs an ``npx`` command installs, for the cache warm.
+
+@@ -2547,15 +2570,21 @@ class ACPAgent(AgentBase):
+             list(packages),
+         )
+         package_args = [arg for package in packages for arg in (&quot;--package&quot;, package)]
++        command = _npx_process_command(
++            [
++                &quot;npx&quot;,
++                &quot;--yes&quot;,
++                &quot;--prefer-offline&quot;,
++                *package_args,
++                &quot;--&quot;,
++                &quot;node&quot;,
++                &quot;-e&quot;,
++                &quot;&quot;,
++            ],
++            env,
++        )
+         process = await asyncio.create_subprocess_exec(
+-            &quot;npx&quot;,
+-            &quot;--yes&quot;,
+-            &quot;--prefer-offline&quot;,
+-            *package_args,
+-            &quot;--&quot;,
+-            &quot;node&quot;,
+-            &quot;-e&quot;,
+-            &quot;&quot;,
++            *command,
+             cwd=cwd,
+             env=env,
+             stdin=asyncio.subprocess.DEVNULL,
+@@ -2967,6 +2996,7 @@ class ACPAgent(AgentBase):
+         # the adapter. The helper returns a child-only environment and never
+         # mutates the fully assembled mapping above.
+         env = _with_codex_base_url(command, args, env)
++        process_command = _npx_process_command([command, *args], env)
+
+         working_dir = str(state.workspace.working_dir)
+         provider = detect_acp_provider_by_command(self.acp_command)
+@@ -3045,8 +3075,7 @@ class ACPAgent(AgentBase):
+             # ACP servers (e.g. claude-code-acp v0.1.x) write to
+             # stdout.
+             process = await asyncio.create_subprocess_exec(
+-                command,
+-                *args,
++                *process_command,
+                 stdin=asyncio.subprocess.PIPE,
+                 stdout=asyncio.subprocess.PIPE,
+                 stderr=asyncio.subprocess.PIPE,
+</pre></details></article><article id="f12"><h3>tests/agent_server/test_codex_auth.py</h3><p>Login/refresh/CAS/logout/provisioning and invalid-token coverage. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/agent_server/test_codex_auth.py#L82">tests/agent_server/test_codex_auth.py:82</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/agent_server/test_codex_auth.py#L82">tests/agent_server/test_codex_auth.py:82</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Login/refresh/CAS/logout/provisioning and invalid-token coverage">
     <title>Login/refresh/CAS/logout/provisioning and invalid-token coverage</title><desc>async def test_device_login_persists at the linked source location.</desc>
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">async def test_device_login_persists</text>
     <text x="30" y="77" class="node-detail">Login/refresh/CAS/logout/provisioning and invalid-token coverage</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/tests/agent_server/test_codex_auth.py#L82">tests/agent_server/test_codex_auth.py:82</a></figcaption></figure><details><summary>Review diff (+262/−0)</summary><pre>diff --git a/tests/agent_server/test_codex_auth.py b/tests/agent_server/test_codex_auth.py
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/agent_server/test_codex_auth.py#L82">tests/agent_server/test_codex_auth.py:82</a></figcaption></figure><details><summary>Review diff (+262/−0)</summary><pre>diff --git a/tests/agent_server/test_codex_auth.py b/tests/agent_server/test_codex_auth.py
 new file mode 100644
 index 000000000..7d9d5a0a1
 --- /dev/null
@@ -1021,7 +1144,7 @@ index 000000000..7d9d5a0a1
 +    provider.result = {**tokens(), &quot;id_token&quot;: invalid}
 +    assert (await service.poll(challenge.device_code)).state == &quot;error&quot;
 +    assert store.get_secret(CODEX_AUTH_SECRET_NAME) is None
-</pre></details></article><article id="f10"><h3>tests/cross/test_remote_conversation_live_server.py</h3><p>Add authenticated Codex device flow over real HTTP. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/tests/cross/test_remote_conversation_live_server.py#L60">tests/cross/test_remote_conversation_live_server.py:60</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/tests/cross/test_remote_conversation_live_server.py#L181">tests/cross/test_remote_conversation_live_server.py:181</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/tests/cross/test_remote_conversation_live_server.py#L60">tests/cross/test_remote_conversation_live_server.py:60</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="Existing full-server HTTP tests">
+</pre></details></article><article id="f13"><h3>tests/cross/test_remote_conversation_live_server.py</h3><p>Add authenticated Codex device flow over real HTTP. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/cross/test_remote_conversation_live_server.py#L60">tests/cross/test_remote_conversation_live_server.py:60</a></p><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/tests/cross/test_remote_conversation_live_server.py#L181">tests/cross/test_remote_conversation_live_server.py:181</a><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/cross/test_remote_conversation_live_server.py#L60">tests/cross/test_remote_conversation_live_server.py:60</a></details><div class="ba"><figure><svg viewBox="0 0 700 124" role="img" aria-label="Existing full-server HTTP tests">
     <title>Existing full-server HTTP tests</title><desc>def test_health_endpoints_return_ok_json at the linked source location.</desc>
     <g><rect class="existing" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">def test_health_endpoints_return_ok_json</text>
@@ -1031,14 +1154,14 @@ index 000000000..7d9d5a0a1
     <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
     <text x="30" y="45" class="node-title">def test_codex_device_login_over_authenticated_http</text>
     <text x="30" y="77" class="node-detail">Add authenticated Codex device flow over real HTTP</text></g></svg>
-    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743/tests/cross/test_remote_conversation_live_server.py#L60">tests/cross/test_remote_conversation_live_server.py:60</a></figcaption></figure></div><details><summary>Review diff (+51/−1)</summary><pre>diff --git a/tests/cross/test_remote_conversation_live_server.py b/tests/cross/test_remote_conversation_live_server.py
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/cross/test_remote_conversation_live_server.py#L60">tests/cross/test_remote_conversation_live_server.py:60</a></figcaption></figure></div><details><summary>Review diff (+51/−1)</summary><pre>diff --git a/tests/cross/test_remote_conversation_live_server.py b/tests/cross/test_remote_conversation_live_server.py
 index b501c3b3a..7988128ee 100644
 --- a/tests/cross/test_remote_conversation_live_server.py
 +++ b/tests/cross/test_remote_conversation_live_server.py
 @@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
  while keeping the LLM deterministic via monkeypatching.
  &quot;&quot;&quot;
- 
+
 +import base64
  import json
  import shutil
@@ -1050,11 +1173,11 @@ index b501c3b3a..7988128ee 100644
 -from unittest.mock import patch
 +from unittest.mock import AsyncMock, patch
  from uuid import UUID
- 
+
  import httpx
 @@ -25,6 +26,7 @@ from openai.types.responses import ResponseInputItemParam
  from pydantic import SecretStr
- 
+
  from openhands.agent_server.__main__ import preload_modules
 +from openhands.agent_server.codex_auth import OpenAICodexOAuthProvider
  from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
@@ -1070,8 +1193,8 @@ index b501c3b3a..7988128ee 100644
  from openhands.sdk.subagent.registry import (
 @@ -54,6 +57,53 @@ from openhands.sdk.workspace import RemoteWorkspace
  from openhands.workspace.docker.workspace import find_available_tcp_port
- 
- 
+
+
 +def test_codex_device_login_over_authenticated_http(tmp_path, monkeypatch):
 +    &quot;&quot;&quot;Exercise real API routing and persistence with only OAuth transport mocked.&quot;&quot;&quot;
 +    payload = (
@@ -1122,5 +1245,81 @@ index b501c3b3a..7988128ee 100644
  @contextmanager
  def live_server_env(
      tmp_path: Path,
-</pre></details></article><h2>Mechanical test cleanup</h2><p>Two unused declarations prevented full Windows client lint from passing. Both are deleted; integration test behavior is unchanged.</p><table><tr><th>File</th><th>Before</th><th>After</th></tr><tr><td>conversation.integration.test.ts</td><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L21">Unused waitFor import</a></td><td><a href="https://github.com/luxleader/software-agent-sdk/blob/2f65706cc5efa069f7c7a3b7574f06dae0d98f1e/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L21">Only used helpers imported</a></td></tr><tr><td>websocket.integration.test.ts</td><td><a href="https://github.com/OpenHands/software-agent-sdk/blob/cc97bf234ea63b9276a7bd71ef81491f3849a7b2/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L204">Unused connectionCount variable</a></td><td><a href="https://github.com/luxleader/software-agent-sdk/blob/2f65706cc5efa069f7c7a3b7574f06dae0d98f1e/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L204">Received events tracked as before</a></td></tr></table><h2>Before merge</h2><p>Remove the temporary .pr directory manually from this fork PR. Both repositories have PR-artifact cleanup workflows; automatic approval cleanup applies to same-repository branches.</p></main></div></html>
-
+</pre></details></article><article id="f14"><h3>tests/sdk/agent/test_acp_windows_launch.py</h3><p>Offline native processes exercise cache warming and ACP initialization. <a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/sdk/agent/test_acp_windows_launch.py#L18">tests/sdk/agent/test_acp_windows_launch.py:18</a></p><details><summary>Source manifest</summary><br><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/sdk/agent/test_acp_windows_launch.py#L18">tests/sdk/agent/test_acp_windows_launch.py:18</a></details><small>Added file: no before-state implementation.</small><figure><svg viewBox="0 0 700 124" role="img" aria-label="Offline native processes exercise cache warming and ACP initialization">
+    <title>Offline native processes exercise cache warming and ACP initialization</title><desc>async def test_windows_npx_launch_preserves_arguments at the linked source location.</desc>
+    <g><rect class="new" x="10" y="8" width="680" height="100" rx="8"/>
+    <text x="30" y="45" class="node-title">async def test_windows_npx_launch_preserves_arguments</text>
+    <text x="30" y="77" class="node-detail">Offline native processes exercise cache warming and ACP initialization</text></g></svg>
+    <figcaption><a class="src" href="https://github.com/luxleader/software-agent-sdk/blob/5ab913acbc8d938f21a18e981dd9aa3224eaf2ca/tests/sdk/agent/test_acp_windows_launch.py#L18">tests/sdk/agent/test_acp_windows_launch.py:18</a></figcaption></figure><details><summary>Review diff (+66/−0)</summary><pre>diff --git a/tests/sdk/agent/test_acp_windows_launch.py b/tests/sdk/agent/test_acp_windows_launch.py
+new file mode 100644
+index 000000000..46037878f
+--- /dev/null
++++ b/tests/sdk/agent/test_acp_windows_launch.py
+@@ -0,0 +1,66 @@
++&quot;&quot;&quot;Native Windows process launches, with an offline npm/ACP fixture.&quot;&quot;&quot;
++
++import json
++import os
++import shutil
++import sys
++import uuid
++
++import pytest
++
++from openhands.sdk.agent.acp_agent import ACPAgent
++from openhands.sdk.conversation.state import ConversationState
++from openhands.sdk.workspace.local import LocalWorkspace
++
++
++@pytest.mark.skipif(sys.platform != &quot;win32&quot;, reason=&quot;Windows npm shim regression&quot;)
++@pytest.mark.parametrize(&quot;operation&quot;, [&quot;warm_cache&quot;, &quot;session&quot;])
++async def test_windows_npx_launch_preserves_arguments(tmp_path, monkeypatch, operation):
++    node = shutil.which(&quot;node&quot;)
++    if node is None:
++        pytest.skip(&quot;Node.js is required for the offline process fixture&quot;)
++    npm_dir = tmp_path / &quot;Node installation with spaces&quot;
++    cli = npm_dir / &quot;node_modules&quot; / &quot;npm&quot; / &quot;bin&quot; / &quot;npx-cli.js&quot;
++    cli.parent.mkdir(parents=True)
++    (npm_dir / &quot;npx.cmd&quot;).write_text(&quot;@exit /b 99\n&quot;, encoding=&quot;utf-8&quot;)
++    record = tmp_path / &quot;arguments.json&quot;
++    cli.write_text(
++        &quot;&quot;&quot;
++const fs = require(&#x27;node:fs&#x27;);
++const args = process.argv.slice(2);
++fs.writeFileSync(process.env.ACP_TEST_ARGUMENTS, JSON.stringify(args));
++if (!args.includes(&#x27;--package&#x27;)) {
++    const lines = require(&#x27;node:readline&#x27;).createInterface({ input: process.stdin });
++    lines.on(&#x27;line&#x27;, line =&gt; {
++        const request = JSON.parse(line);
++        if (request.id === undefined) return;
++        const result = request.method === &#x27;initialize&#x27;
++            ? { protocolVersion: 1, agentCapabilities: {}, authMethods: [] }
++            : { sessionId: &#x27;native-windows-session&#x27; };
++        const response = { jsonrpc: &#x27;2.0&#x27;, id: request.id, result };
++        process.stdout.write(JSON.stringify(response) + &#x27;\\n&#x27;);
++    });
++}
++&quot;&quot;&quot;,
++        encoding=&quot;utf-8&quot;,
++    )
++    monkeypatch.setenv(&quot;PATH&quot;, str(npm_dir) + os.pathsep + os.environ[&quot;PATH&quot;])
++    monkeypatch.setenv(&quot;ACP_TEST_ARGUMENTS&quot;, str(record))
++    literal_argument = &quot;literal &amp; value with spaces&quot;
++    agent = ACPAgent(acp_command=[&quot;npx&quot;, &quot;fixture-acp@1.0.0&quot;, literal_argument])
++    try:
++        if operation == &quot;warm_cache&quot;:
++            await agent._warm_npx_cache(
++                [literal_argument], &quot;fixture&quot;, dict(os.environ), str(tmp_path)
++            )
++        else:
++            state = ConversationState.create(
++                id=uuid.uuid4(),
++                agent=agent,
++                workspace=LocalWorkspace(working_dir=str(tmp_path)),
++            )
++            agent.init_state(state, on_event=lambda _: None)
++            assert state.agent_state[&quot;acp_session_id&quot;] == &quot;native-windows-session&quot;
++        assert literal_argument in json.loads(record.read_text(encoding=&quot;utf-8&quot;))
++    finally:
++        agent.close()
+</pre></details></article><h2>Before merge</h2><p>Remove the temporary .pr directory manually from this fork PR. Both repositories have PR-artifact cleanup workflows; automatic approval cleanup applies to same-repository branches.</p></main></div></html>

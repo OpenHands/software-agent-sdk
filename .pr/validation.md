@@ -74,19 +74,63 @@ The access token changed, the refresh token rotated, and the stored version and
 last-refresh timestamp changed. The running server still reported connected.
 This does not establish naturally expired-token behavior or prolonged use.
 
-The default bare `npx` command failed on this Windows host with `[WinError 2]`.
-The local test profile was updated to invoke installed `node.exe` with npm's
-`npx-cli.js`, the existing test cache, and the same pinned adapter package.
-That machine-specific profile workaround is not a general Windows launcher fix.
-The account remains connected for the human; real account disconnect and
-browser reload were not independently repeated in this acceptance run.
+The default bare `npx` command originally failed with `[WinError 2]` on
+Windows. Commit `5ab913acbc8d938f21a18e981dd9aa3224eaf2ca` resolves the installed
+npm shim through Node in both cache warming and ACP startup, without shell
+parsing or a persisted profile change. Two offline native process tests failed
+before the fix and passed after it, including literal spaces and `&` arguments.
+The SDK wheel SHA256 is
+`8f36731135c84c180e12b225d5b3a61524f0572688b4869e1fc6c87fcec4e736`;
+its ACP module matches the source byte-for-byte. Ruff, focused Pyright and
+import rules pass; `uv`/pre-commit is unavailable on the Windows host.
+
+With that packaged SDK and Agent Server, the default profile command was
+restored to `null` (built-in Codex preset). A new conversation returned `OK`;
+the originally failed conversation was resumed and also returned `OK`.
+Five real model turns have now passed. Reloading the actual Canvas showed
+the built-in Codex command and **Connected to ChatGPT** with blank API fields.
+The human's connection remains available; real account disconnect and natural
+expiry/prolonged-use checks are still unverified.
+
+The broader Windows ACP run had 526 passes and five Unix permission-bit
+assertion failures. The exact same five failures were reproduced at the
+pre-fix commit (27 other tests passed in that baseline subset). On hosted
+Linux, the combined backend/ACP selection passed **594 tests**, with only the
+two native Windows tests skipped; the TypeScript client passed **348 tests**.
+See the [isolated runner](https://github.com/luxleader/software-agent-sdk/actions/runs/37023860358).
+All test, package, canonical Docker build and container acceptance steps passed.
 
 Credential-free observations: [live results](codex-live-results.json).
 
+
+## Docker / hosted Linux acceptance and candidate publication
+
+The [successful cloud-hosted Linux run](https://github.com/luxleader/software-agent-sdk/actions/runs/37023860358) built the canonical Agent Server
+`source-minimal` Docker target through the SDK's sdist-based builder, with the
+pinned Codex ACP provider. The image ran as its normal non-root user, exposed
+only a host-loopback port and used a fresh named volume and test session key.
+Real HTTP requests verified session authentication, device pending/success,
+credential-free responses, encrypted storage, restart persistence, refresh,
+logout deletion and cancellation of an in-flight login. These lifecycle checks
+replace only OpenAI's OAuth transport with synthetic tokens. The restarted
+unmocked image also initiated and cancelled an actual OpenAI device challenge;
+its code and handle were never included in public output. No human account
+credentials were sent to the runner and no remote model request was made.
+See [credential-free container results](codex-remote-results.json).
+
+Four Python wheels/sdists, the TypeScript tarball, source manifest, checksums
+and the acceptance report are published as a [fork candidate prerelease](https://github.com/luxleader/software-agent-sdk/releases/tag/codex-oauth-17372-candidate-5ab913ac).
+The changed SDK/server modules match production commit `5ab913ac` (line endings
+normalized). Package metadata remains the development version `1.50.1`; this
+does not mean that PyPI/npm's `1.50.1` contains this feature. Candidate publication
+does not replace the official OpenHands release or downstream exact pins.
+
 ## Remaining gates
 
-Keep draft pending Docker/remote checks, compatible server/client publication
-and downstream exact pins. The separate
+Keep draft pending maintainer CI approval, official compatible server/client
+publication and downstream exact pins. Remote human account authorization and
+model turns, real account disconnect and natural expiry are not established. The separate
 Cloud App API integration is not implemented by this public Agent Server PR.
-The HUMAN note remains reserved for the human author. Remove `.pr/` manually
+The Canvas author explicitly requested an AI-assisted HUMAN summary; it
+discloses that assistance and its latest description check passed. Remove `.pr/` manually
 before merging this fork PR.
