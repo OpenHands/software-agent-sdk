@@ -23,7 +23,7 @@
 <section>
 <div id="decision" class="card">
 <h2>What changed</h2>
-<p><strong>Decision:</strong> automation correlation is now treated as ambient observability context that can be read from environment variables, merged with explicit SDK metadata, serialized into HTTP headers, and rehydrated by the agent server before a conversation starts.</p>
+<p><strong>Decision:</strong> observability context is now product-neutral data that can be supplied through generic OpenHands env variables, merged with explicit SDK metadata, serialized into HTTP headers, and rehydrated by the agent server before a conversation starts.</p>
 <div class="callout">★ The important behavior change is that <code>POST /api/conversations</code> can now join an automation trace even when the custom automation bypasses the SDK and calls the agent-server API directly. See <code>openhands-agent-server/openhands/agent_server/conversation_router.py:83</code> and <code>:331</code>.</div>
 <p class="muted">Compatibility: additive. Existing callers may ignore the new field and headers. Existing explicit request body values continue to win over propagated header defaults.</p>
 </div>
@@ -43,7 +43,7 @@ POST /api/conversations:
 
 Remote workspace calls:
   X-Session-API-Key only</pre>
-<p>Automation span context from <code>LMNR_SPAN_CONTEXT</code> stopped at the sandbox boundary unless each script manually copied it into SDK arguments.</p>
+<p>Parent span context and searchable metadata stopped at the process boundary unless each script manually copied them into SDK arguments.</p>
 </div>
 <div class="after">
 <h3>After</h3>
@@ -57,8 +57,8 @@ POST /api/conversations headers:
   X-OpenHands-Observability-Parent-Span-Context
 
 Remote workspace calls:
-  + automation observability headers from env</pre>
-<p>The new request field is defined at <code>openhands-sdk/openhands/sdk/conversation/request.py:261</code>; headers are emitted from <code>observability_headers_from_env()</code> at <code>openhands-sdk/openhands/sdk/observability/laminar.py:121</code>.</p>
+  + generic OpenHands observability headers from env</pre>
+<p>The new request field is defined at <code>openhands-sdk/openhands/sdk/conversation/request.py:261</code>; generic headers are emitted from <code>observability_headers_from_env()</code>. Automation services can still make <code>automation.id</code> searchable by placing it in <code>OPENHANDS_OBSERVABILITY_METADATA</code>.</p>
 </div>
 </div>
 </div>
@@ -80,16 +80,16 @@ Remote workspace calls:
 <rect x="530" y="260" width="190" height="66" rx="12" class="new"/><text x="550" y="286" class="small">SDK / direct API</text><text x="550" y="305" class="small">headers or request field</text>
 <rect x="775" y="260" width="170" height="66" rx="12" class="new"/><text x="795" y="286" class="small">agent-server</text><text x="795" y="305" class="small">conversation child</text>
 <path d="M230 293 C255 293 260 293 285 293" class="wire"/><path d="M475 293 C500 293 505 293 530 293" class="wire"/><path d="M720 293 C745 293 750 293 775 293" class="wire"/>
-<text x="70" y="365" class="small">Automation IDs, trigger type, manual dispatch source, conversation IDs, and parent context all travel together.</text>
+<text x="70" y="365" class="small">Searchable metadata such as automation IDs, trigger type, manual dispatch source, conversation IDs, and parent context can travel together without the SDK knowing automation-specific env names.</text>
 </svg>
 </div>
 
 <div id="files" class="card">
 <h2>Changed file groups</h2>
 <ul class="files">
-<li><span class="tag">core helpers</span> <code>openhands-sdk/openhands/sdk/observability/laminar.py</code> adds env metadata parsing, parent context lookup, header generation, and parent-aware root span startup.</li>
+<li><span class="tag">core helpers</span> <code>openhands-sdk/openhands/sdk/observability/laminar.py</code> adds generic OpenHands metadata parsing, parent context lookup, header generation, and parent-aware root span startup.</li>
 <li><span class="tag">conversation API</span> <code>conversation/request.py</code>, <code>conversation/base.py</code>, <code>local_conversation.py</code>, <code>remote_conversation.py</code>, and <code>conversation.py</code> thread <code>observability_parent_span_context</code> through construction and span creation.</li>
-<li><span class="tag">remote calls</span> <code>workspace/remote/remote_workspace_mixin.py:77</code> merges automation observability headers into workspace/API requests.</li>
+<li><span class="tag">remote calls</span> <code>workspace/remote/remote_workspace_mixin.py:77</code> merges generic OpenHands observability headers into workspace/API requests.</li>
 <li><span class="tag">agent server</span> <code>conversation_router.py:83</code> validates and merges observability headers; <code>event_service.py</code> forwards stored parent context into server-side local conversations.</li>
 <li><span class="tag">OpenAI routes</span> <code>openai/router.py:82</code> accepts the same parent context header for OpenAI-compatible entrypoints.</li>
 <li><span class="tag">tests</span> Router and remote workspace tests cover direct API header handling and env-driven header propagation.</li>

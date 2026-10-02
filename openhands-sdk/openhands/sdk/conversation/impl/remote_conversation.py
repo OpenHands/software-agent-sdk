@@ -56,7 +56,7 @@ from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import (
     OPERATION_METADATA_KEY,
     default_observability_span_name_from_env,
-    merge_automation_observability_metadata,
+    merge_observability_metadata,
     observability_parent_span_context_from_env,
     observe,
 )
@@ -784,9 +784,7 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
-        observability_metadata = merge_automation_observability_metadata(
-            observability_metadata
-        )
+        observability_metadata = merge_observability_metadata(observability_metadata)
         observability_parent_span_context = (
             observability_parent_span_context
             or observability_parent_span_context_from_env()
@@ -964,7 +962,7 @@ class RemoteConversation(BaseConversation):
         contract; this method does not probe for an existing conversation.
         """
         updates: dict[str, object] = {
-            "observability_metadata": merge_automation_observability_metadata(
+            "observability_metadata": merge_observability_metadata(
                 request.observability_metadata
             ),
         }

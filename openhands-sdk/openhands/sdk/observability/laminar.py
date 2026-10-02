@@ -36,17 +36,8 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
 OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
 """Metadata key naming the side-utility operation a span subtree belongs to."""
 
-_AUTOMATION_METADATA_ENV_KEYS: Final[dict[str, str]] = {
-    "AUTOMATION_ID": "automation.id",
-    "AUTOMATION_NAME": "automation.name",
-    "AUTOMATION_RUN_ID": "automation.run_id",
-    "AUTOMATION_ORG_ID": "automation.org_id",
-    "AUTOMATION_USER_ID": "automation.user_id",
-    "AUTOMATION_TRIGGER_TYPE": "automation.trigger_source",
-    "AUTOMATION_RUN_TRIGGER_SOURCE": "automation.run.trigger_source",
-}
-
 _OBSERVABILITY_METADATA_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_METADATA"
+_OBSERVABILITY_TAGS_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_TAGS"
 _OBSERVABILITY_SPAN_NAME_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_SPAN_NAME"
 _OBSERVABILITY_PARENT_CONTEXT_ENV: Final[str] = (
     "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT"
@@ -79,53 +70,59 @@ def _clean_trace_metadata(value: Any) -> dict[str, TraceMetadataValue]:
     return cleaned
 
 
-def automation_observability_metadata_from_env() -> dict[str, TraceMetadataValue]:
-    """Return automation correlation metadata supplied by an automation run."""
-    metadata: dict[str, TraceMetadataValue] = {}
-    for env_key, metadata_key in _AUTOMATION_METADATA_ENV_KEYS.items():
-        value = get_env(env_key)
-        if value:
-            metadata[metadata_key] = value
-
+def observability_metadata_from_env() -> dict[str, TraceMetadataValue]:
+    """Return generic observability metadata supplied by the process env."""
     raw_metadata = get_env(_OBSERVABILITY_METADATA_ENV)
-    if raw_metadata:
-        try:
-            metadata.update(_clean_trace_metadata(json.loads(raw_metadata)))
-        except json.JSONDecodeError:
-            logger.debug("Ignoring invalid %s", _OBSERVABILITY_METADATA_ENV)
-    return metadata
+    if not raw_metadata:
+        return {}
+    try:
+        return _clean_trace_metadata(json.loads(raw_metadata))
+    except json.JSONDecodeError:
+        logger.debug("Ignoring invalid %s", _OBSERVABILITY_METADATA_ENV)
+        return {}
 
 
-def merge_automation_observability_metadata(
+def merge_observability_metadata(
     metadata: Mapping[str, TraceMetadataValue] | None,
 ) -> dict[str, TraceMetadataValue]:
-    """Merge automation env defaults with caller-supplied metadata."""
-    merged = automation_observability_metadata_from_env()
+    """Merge generic env defaults with caller-supplied metadata."""
+    merged = observability_metadata_from_env()
     if metadata:
         merged.update(metadata)
     return merged
 
 
 def observability_parent_span_context_from_env() -> str | None:
-    """Return serialized parent span context propagated by the automation service."""
+    """Return serialized parent span context propagated by the host process."""
     return get_env(_OBSERVABILITY_PARENT_CONTEXT_ENV) or get_env(
         _LAMINAR_PARENT_CONTEXT_ENV
     )
 
 
 def default_observability_span_name_from_env() -> str | None:
-    """Return the default conversation child span name supplied by an automation."""
+    """Return the default conversation child span name from generic env."""
     return get_env(_OBSERVABILITY_SPAN_NAME_ENV)
 
 
+def observability_tags_from_env() -> list[str]:
+    """Return comma-separated observability tags supplied by generic env."""
+    raw_tags = get_env(_OBSERVABILITY_TAGS_ENV)
+    if not raw_tags:
+        return []
+    return [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
+
+
 def observability_headers_from_env() -> dict[str, str]:
-    """Build observability headers for direct agent-server API calls."""
+    """Build generic observability headers for agent-server API calls."""
     headers: dict[str, str] = {}
-    metadata = automation_observability_metadata_from_env()
+    metadata = observability_metadata_from_env()
     if metadata:
         headers["X-OpenHands-Observability-Metadata"] = json.dumps(
             metadata, separators=(",", ":")
         )
+    tags = observability_tags_from_env()
+    if tags:
+        headers["X-OpenHands-Observability-Tags"] = ",".join(tags)
     span_name = default_observability_span_name_from_env()
     if span_name:
         headers["X-OpenHands-Observability-Span-Name"] = span_name

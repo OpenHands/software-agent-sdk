@@ -20,7 +20,7 @@ from openhands.sdk.observability.laminar import (
     RootSpan,
     default_observability_span_name_from_env,
     end_root_span,
-    merge_automation_observability_metadata,
+    merge_observability_metadata,
     observability_parent_span_context_from_env,
     should_enable_observability,
     start_child_span,
@@ -171,7 +171,7 @@ class BaseConversation(ABC):
         if default_span_name and span_name == "conversation":
             span_name = default_span_name
 
-        metadata = merge_automation_observability_metadata(metadata)
+        metadata = merge_observability_metadata(metadata)
         attributes: dict[str, TraceMetadataValue] = dict(metadata)
         tag_attributes = _conversation_tag_attributes(conversation_tags)
         if tag_attributes:
