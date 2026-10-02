@@ -90,9 +90,9 @@ def test_batch_errors_flush_after_sibling_actions():
     )
     assistant_batches = [m for m in messages if m.role == "assistant" and m.tool_calls]
     assert len(assistant_batches) == 1
-    assert [c.id for c in assistant_batches[0].tool_calls] == [
-        f"call_{i}" for i in range(1, 5)
-    ]
+    batch_calls = assistant_batches[0].tool_calls
+    assert batch_calls is not None
+    assert [c.id for c in batch_calls] == [f"call_{i}" for i in range(1, 5)]
     head = messages.index(assistant_batches[0])
     tail = messages[head + 1 : head + 5]
     assert [m.role for m in tail] == ["tool"] * 4
