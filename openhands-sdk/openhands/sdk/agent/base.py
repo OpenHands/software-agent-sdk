@@ -19,6 +19,10 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.sdk.agent.capabilities import (
+    SubagentCapabilityError,
+    SubagentCapabilityLimits,
+)
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
@@ -149,6 +153,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 }
             }
         ],
+    )
+    subagent_capability_limits: SubagentCapabilityLimits | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Explicit tool/MCP ceilings inherited by delegated agents.",
     )
     filter_tools_regex: str | None = Field(
         default=None,
@@ -536,37 +545,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(
-        self,
-        state: ConversationState,
-    ):
-        """Create an AgentBase instance from an AgentSpec."""
-
-        if self._initialized:
-            return
-
-        tools: list[ToolDefinition] = []
-
-        # Use ThreadPoolExecutor to parallelize tool resolution
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = []
-
-            # Submit tool resolution tasks
-            for tool_spec in self.tools:
-                future = executor.submit(resolve_tool, tool_spec, state)
-                futures.append(future)
-
-            # Collect results as they complete
-            for future in futures:
-                result = future.result()
-                tools.extend(result)
-
-        logger.info("Loaded %d tools from spec", len(tools))
-        if self.filter_tools_regex:
-            pattern = re.compile(self.filter_tools_regex)
-            tools = [tool for tool in tools if pattern.match(tool.name)]
-            logger.info("Filtered to %d tools after applying regex filter", len(tools))
-
+    def _default_tool_names(self) -> list[str]:
+        """Resolve implicit built-ins without constructing any tool."""
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
         # Auto-attach `InvokeSkillTool` iff an AgentSkills-format skill is
@@ -598,6 +578,46 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "Auto-attached %s (vision profile available for non-vision model)",
                 VisionInspectTool.__name__,
             )
+
+        return default_tool_names
+
+    def _initialize(
+        self,
+        state: ConversationState,
+    ):
+        """Create an AgentBase instance from an AgentSpec."""
+
+        if self._initialized:
+            return
+
+        if self.subagent_capability_limits is not None:
+            self.subagent_capability_limits.check_agent(self)
+
+        default_tool_names = self._default_tool_names()
+        if self.subagent_capability_limits is not None:
+            self.subagent_capability_limits.check_builtins(default_tool_names)
+
+        tools: list[ToolDefinition] = []
+
+        # Use ThreadPoolExecutor to parallelize tool resolution
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+
+            # Submit tool resolution tasks
+            for tool_spec in self.tools:
+                future = executor.submit(resolve_tool, tool_spec, state)
+                futures.append(future)
+
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
+
+        logger.info("Loaded %d tools from spec", len(tools))
+        if self.filter_tools_regex:
+            pattern = re.compile(self.filter_tools_regex)
+            tools = [tool for tool in tools if pattern.match(tool.name)]
+            logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
@@ -706,6 +726,13 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{persisted.__class__.__name__}, but self is of type "
                 f"{self.__class__.__name__}."
             )
+
+        if persisted.subagent_capability_limits is not None:
+            if self.subagent_capability_limits != persisted.subagent_capability_limits:
+                raise SubagentCapabilityError(
+                    "Cannot replace inherited capability limits when resuming"
+                )
+            persisted.subagent_capability_limits.check_agent(self)
 
         # Collect explicit tool names
         runtime_names = {tool.name for tool in self.tools}

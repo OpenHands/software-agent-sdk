@@ -1231,12 +1231,15 @@ class LocalConversation(BaseConversation):
             or marketplace_skills_loaded
             or memory_loaded
         ):
-            self.agent = self.agent.model_copy(
+            merged_agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
                     "mcp_config": merged_mcp,
                 }
             )
+            if merged_agent.subagent_capability_limits is not None:
+                merged_agent.subagent_capability_limits.check_agent(merged_agent)
+            self.agent = merged_agent
 
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
@@ -1373,6 +1376,8 @@ class LocalConversation(BaseConversation):
         # Servers the user switched off stay in the settings map but must not
         # be connected to. Filter before the emptiness check so an all-disabled
         # config is a plain no-op rather than a zero-server MCP client.
+        if self.agent.subagent_capability_limits is not None:
+            self.agent.subagent_capability_limits.check_mcp(mcp_config)
         mcp_config = enabled_mcp_servers(mcp_config)
         if not mcp_config:
             return []
@@ -1424,6 +1429,10 @@ class LocalConversation(BaseConversation):
             )
         )
         if has_invocable_skills and InvokeSkillTool.name not in self.agent.tools_map:
+            if self.agent.subagent_capability_limits is not None:
+                self.agent.subagent_capability_limits.check_builtins(
+                    [InvokeSkillTool.__name__]
+                )
             return list(InvokeSkillTool.create(self._state))
         return []
 
@@ -1468,6 +1477,11 @@ class LocalConversation(BaseConversation):
         )
         if merged_mcp:
             merged_mcp = expand_mcp_servers(merged_mcp, get_secret)
+        merged_agent = self.agent.model_copy(
+            update={"agent_context": merged_context, "mcp_config": merged_mcp}
+        )
+        if merged_agent.subagent_capability_limits is not None:
+            merged_agent.subagent_capability_limits.check_agent(merged_agent)
         runtime_mcp_tools = (
             self._runtime_mcp_tools(
                 runtime_plugin_mcp,
@@ -1479,12 +1493,7 @@ class LocalConversation(BaseConversation):
         )
 
         with self._state:
-            self.agent = self.agent.model_copy(
-                update={
-                    "agent_context": merged_context,
-                    "mcp_config": merged_mcp,
-                }
-            )
+            self.agent = merged_agent
 
             if plugin.agents:
                 register_plugin_agents(

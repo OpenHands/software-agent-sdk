@@ -13,6 +13,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
+from openhands.sdk.subagent.capabilities import prepare_subagent
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
 
@@ -185,7 +186,11 @@ class DelegateExecutor(ToolExecutor):
                 # Metrics object
                 sub_agent_llm.reset_metrics()
 
-                worker_agent = factory.factory_func(sub_agent_llm)
+                worker_agent = prepare_subagent(
+                    parent=parent_conversation.agent,
+                    child=factory.factory_func(sub_agent_llm),
+                    limits=parent_conversation.agent.subagent_capability_limits,
+                )
 
                 # ensuring that the sub-agent LLM has stream deactivated
                 worker_agent = worker_agent.model_copy(
