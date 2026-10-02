@@ -1,6 +1,7 @@
 # Validation of server-owned Codex authentication
 
 Implementation head: `fb9f996a1c8dc6d5cd6d9bcf71e36a96a0fb7743`.
+Lint cleanup: `2f65706cc5efa069f7c7a3b7574f06dae0d98f1e`.
 Canvas counterpart: https://github.com/OpenHands/OpenHands/pull/17851.
 Documentation: https://github.com/OpenHands/docs/pull/866.
 
@@ -38,14 +39,22 @@ From `clients/typescript`:
   initial Windows run failed on the unchanged `/tmp/test-utils-test` sandbox
   restriction and an import timeout. Rerunning with the specific temporary
   directory permitted and a 30-second import/test timeout resolved both.
-- Full Windows lint reports three existing unused-variable errors in unchanged
-  integration test files; scoped lint passes. These are not fixed in this PR.
+- Full Windows lint now passes with 11 existing warnings after removing an
+  unused import and variable from two integration tests. The two deletions
+  preserve behavior; client build and changed-file formatting pass.
+- The pre-commit runner is unavailable in this Windows environment. Direct
+  ESLint/Prettier checks and the SDK dynamic-attribute baseline check passed;
+  the latter received POSIX file paths because Windows auto-discovery uses
+  backslashes while its committed baseline uses forward slashes.
 
 ## Live production-facing run
 
 Full native Agent Server + built Canvas, MSW disabled: an actual OpenAI device
 challenge returned HTTP 200; the UI displayed/copied the code and cancelled the
 attempt. No actual account authorization or model call occurred.
+Repeated after switching the running server to the final built wheel:
+real device initiation, copy/cancel and manual fallback passed without page
+errors. Backend/cross tests were rerun: **81 passed**.
 See the [Canvas evidence](https://github.com/luxleader/OpenHands/blob/feat/codex-oauth-17372/.pr/validation.md)
 for the runtime command, screenshots and video, including its precise scope.
 
