@@ -373,7 +373,8 @@ class Config(BaseModel):
         default=None,
         description=(
             "Whether conversation_image ships the browser (chromium) stack. "
-            "Unset means true only for the default image."
+            "Unset means true for any tag or digest of the stock agent-server "
+            "image except its -minimal flavor, and false for other images."
         ),
     )
     enable_browser: bool = Field(

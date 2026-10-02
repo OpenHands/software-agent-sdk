@@ -199,8 +199,15 @@ def is_tool_usable(name: str) -> bool:
 
 
 def registered_tool_class(name: str) -> type[ToolDefinition] | None:
+    """Return the tool class registered under ``name`` for every conversation."""
+    from openhands.sdk.tool.client_tool import ClientTool
+
     with _LOCK:
-        return _TOOL_CLASSES.get(name)
+        tool_class = _TOOL_CLASSES.get(name)
+    # A client tool belongs to the conversation that registered it.
+    if tool_class is not None and issubclass(tool_class, ClientTool):
+        return None
+    return tool_class
 
 
 def is_tool_available(name: str, *, check_usable: bool = True) -> bool:

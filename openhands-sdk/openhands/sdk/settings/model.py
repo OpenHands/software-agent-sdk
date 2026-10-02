@@ -749,35 +749,33 @@ def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_agent_settings_v7_to_v8_request(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Advance a request to v8 without the retired switches' persisted defaults."""
+    if payload.get("agent_kind", "openhands") == "acp":
+        migrated = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
+    else:
+        migrated = dict(payload)
+    migrated["schema_version"] = 8
+    return migrated
+
+
 def _migrate_agent_settings_payload(
     data: Any, *, persisted: bool = False
 ) -> dict[str, Any]:
     payload = _copy_persisted_payload(data)
-    if persisted or payload.get("schema_version") is not None:
-        return _apply_persisted_migrations(
-            payload,
-            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-            migrations=_AGENT_SETTINGS_MIGRATIONS,
-            payload_name="AgentSettings",
-        )
-    # An unversioned payload is a request: don't impose the retired switches'
-    # persisted defaults on it.
-    payload = _apply_persisted_migrations(
-        payload,
-        current_version=7,
-        migrations=_AGENT_SETTINGS_MIGRATIONS,
-        payload_name="AgentSettings",
-    )
-    if payload.get("agent_kind", "openhands") == "acp":
-        payload = {k: v for k, v in payload.items() if k not in RETIRED_TOOL_SWITCHES}
-    payload["schema_version"] = 8
-    payload = _apply_persisted_migrations(
+    is_request = not persisted and payload.get("schema_version") is None
+    return _apply_persisted_migrations(
         payload,
         current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-        migrations=_AGENT_SETTINGS_MIGRATIONS,
+        migrations=(
+            _REQUEST_AGENT_SETTINGS_MIGRATIONS
+            if is_request
+            else _AGENT_SETTINGS_MIGRATIONS
+        ),
         payload_name="AgentSettings",
     )
-    return payload
 
 
 _MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
@@ -1078,6 +1076,10 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     5: _migrate_agent_settings_v5_to_v6,
     6: _migrate_agent_settings_v6_to_v7,
     7: _migrate_agent_settings_v7_to_v8,
+}
+_REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
+    **_AGENT_SETTINGS_MIGRATIONS,
+    7: _migrate_agent_settings_v7_to_v8_request,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,

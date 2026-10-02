@@ -591,7 +591,8 @@ async def materialize_agent_profile(
         )
 
     llm_store = get_llm_profile_store()
-    diagnostics = resolve_agent_profile_dry_run(
+    diagnostics = await asyncio.to_thread(
+        resolve_agent_profile_dry_run,
         profile,
         llm_store=llm_store,
         mcp_config=mcp_config,

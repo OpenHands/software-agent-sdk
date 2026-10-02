@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.tool import Tool, client_tool as ct, registry as reg
-from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
 from openhands.sdk.utils.models import clear_subclass_cache
 
 
@@ -154,6 +155,19 @@ def test_client_tool_named_like_an_attached_builtin_is_rejected(
     finally:
         convo.close()
         _wipe_client_tool_globals(["finish"])
+
+
+def test_client_tool_named_like_a_builtin_leaves_other_agents_alone() -> None:
+    register_client_tools([ClientToolSpec(name="switch_llm", description="client")])
+    try:
+        agent = OpenHandsAgentSettings(
+            llm=LLM(model="gpt-4o", usage_id="test-llm")
+        ).create_agent()
+    finally:
+        _wipe_client_tool_globals(["switch_llm"])
+
+    assert "switch_llm" not in {t.name for t in agent.tools}
+    assert "SwitchLLMTool" in agent.include_default_tools
 
 
 def test_recover_persisted_client_tools_no_state(tmp_path: Path) -> None:

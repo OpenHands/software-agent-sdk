@@ -38,7 +38,7 @@ from openhands.sdk.settings import (
     VerificationSettings,
     apply_agent_settings_diff,
 )
-from openhands.sdk.settings.model import ACPServerKind
+from openhands.sdk.settings.model import ACPServerKind, _migrate_agent_settings_payload
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -1382,11 +1382,37 @@ def test_unversioned_settings_still_fold_switches_they_carry() -> None:
 
 
 def test_unversioned_acp_settings_drop_the_retired_switches() -> None:
-    settings = validate_agent_settings(
+    payload = _migrate_agent_settings_payload(
         {"agent_kind": "acp", "acp_server": "claude-code", "enable_sub_agents": True}
     )
 
-    assert settings.agent_kind == "acp"
+    assert payload["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    assert "enable_sub_agents" not in payload
+
+
+def test_unversioned_acp_settings_drop_the_deprecated_llm() -> None:
+    payload = _migrate_agent_settings_payload(
+        {"agent_kind": "acp", "acp_server": "claude-code", "llm": {"model": "x"}}
+    )
+
+    assert "llm" not in payload
+
+
+def test_retired_switches_fold_into_a_tuple_of_tools() -> None:
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "llm": LLM(model="test-model"),
+            "tools": (Tool(name="terminal"),),
+            "enable_sub_agents": True,
+            "enable_switch_llm_tool": True,
+        }
+    )
+
+    assert [t.name for t in settings.tools or []] == [
+        "terminal",
+        "task_tool_set",
+        "switch_llm",
+    ]
 
 
 def test_retired_enable_sub_agents_off_removes_an_explicit_sub_agent_tool() -> None:

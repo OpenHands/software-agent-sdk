@@ -123,7 +123,7 @@ def fold_retired_tool_switches(
     sub_agents = _pop_switch(folded, "enable_sub_agents", None if sparse else False)
     switch_llm = _pop_switch(folded, "enable_switch_llm_tool", None if sparse else True)
     tools = folded.get("tools")
-    if tools is not None and not isinstance(tools, list):
+    if tools is not None and not isinstance(tools, list | tuple):
         return folded
     # Persisted `[]` predates `None` as the default.
     if not sparse and tools == []:
