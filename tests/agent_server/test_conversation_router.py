@@ -565,6 +565,51 @@ def test_start_conversation_new(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_merges_observability_headers(
+    client, mock_conversation_service, sample_conversation_info
+):
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+    try:
+        request_data = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {"model": "gpt-4o", "api_key": "test-key"},
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "observability_metadata": {"caller": "body"},
+        }
+
+        response = client.post(
+            "/api/conversations",
+            json=request_data,
+            headers={
+                "X-OpenHands-Observability-Metadata": (
+                    '{"automation.id":"a1","caller":"header"}'
+                ),
+                "X-OpenHands-Observability-Span-Name": "automation.conversation",
+                "X-OpenHands-Observability-Parent-Span-Context": "parent-context",
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.observability_metadata == {
+            "automation.id": "a1",
+            "caller": "body",
+        }
+        assert request.observability_span_name == "automation.conversation"
+        assert request.observability_parent_span_context == "parent-context"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_existing(
     client, mock_conversation_service, sample_conversation_info
 ):

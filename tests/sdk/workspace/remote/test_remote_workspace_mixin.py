@@ -68,6 +68,35 @@ def test_headers_property_without_api_key():
     assert headers == {}
 
 
+def test_headers_property_includes_automation_observability(monkeypatch):
+    monkeypatch.setenv("AUTOMATION_ID", "automation-1")
+    monkeypatch.setenv("AUTOMATION_TRIGGER_TYPE", "cron")
+    monkeypatch.setenv("AUTOMATION_RUN_TRIGGER_SOURCE", "manual")
+    monkeypatch.setenv("LMNR_SPAN_CONTEXT", "serialized-parent")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
+
+    headers = mixin._headers
+
+    assert headers["X-Session-API-Key"] == "test-key"
+    assert (
+        '"automation.id":"automation-1"'
+        in headers["X-OpenHands-Observability-Metadata"]
+    )
+    assert (
+        '"automation.trigger_source":"cron"'
+        in headers["X-OpenHands-Observability-Metadata"]
+    )
+    assert (
+        '"automation.run.trigger_source":"manual"'
+        in headers["X-OpenHands-Observability-Metadata"]
+    )
+    assert (
+        headers["X-OpenHands-Observability-Parent-Span-Context"] == "serialized-parent"
+    )
+
+
 def test_execute_command_generator_basic_flow():
     """Test _execute_command_generator basic successful flow."""
     mixin = RemoteWorkspaceMixinHelper(

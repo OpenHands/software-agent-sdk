@@ -18,7 +18,10 @@ from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
     RootSpan,
+    default_observability_span_name_from_env,
     end_root_span,
+    merge_automation_observability_metadata,
+    observability_parent_span_context_from_env,
     should_enable_observability,
     start_child_span,
     start_root_span,
@@ -147,6 +150,7 @@ class BaseConversation(ABC):
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
         conversation_tags: Mapping[str, str] | None = None,
+        parent_span_context: str | None = None,
     ) -> None:
         """Start a per-conversation observability root span.
 
@@ -163,13 +167,24 @@ class BaseConversation(ABC):
         if self._observability_root_span is not None:
             # Idempotent: never start two roots for one conversation.
             return
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and span_name == "conversation":
+            span_name = default_span_name
+
+        metadata = merge_automation_observability_metadata(metadata)
+        attributes: dict[str, TraceMetadataValue] = dict(metadata)
+        tag_attributes = _conversation_tag_attributes(conversation_tags)
+        if tag_attributes:
+            attributes.update(tag_attributes)
         self._observability_root_span = start_root_span(
             "conversation",
             session_id=session_id,
             user_id=user_id,
             metadata=metadata,
             tags=tags,
-            attributes=_conversation_tag_attributes(conversation_tags),
+            attributes=attributes,
+            parent_span_context=parent_span_context
+            or observability_parent_span_context_from_env(),
         )
         if span_name != "conversation":
             start_child_span(self._observability_root_span, span_name, tags=tags)

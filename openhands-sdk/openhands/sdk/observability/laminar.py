@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import json
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -34,6 +35,112 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
 
 OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
 """Metadata key naming the side-utility operation a span subtree belongs to."""
+
+_AUTOMATION_METADATA_ENV_KEYS: Final[dict[str, str]] = {
+    "AUTOMATION_ID": "automation.id",
+    "AUTOMATION_NAME": "automation.name",
+    "AUTOMATION_RUN_ID": "automation.run_id",
+    "AUTOMATION_ORG_ID": "automation.org_id",
+    "AUTOMATION_USER_ID": "automation.user_id",
+    "AUTOMATION_TRIGGER_TYPE": "automation.trigger_source",
+    "AUTOMATION_RUN_TRIGGER_SOURCE": "automation.run.trigger_source",
+}
+
+_OBSERVABILITY_METADATA_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_METADATA"
+_OBSERVABILITY_SPAN_NAME_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_SPAN_NAME"
+_OBSERVABILITY_PARENT_CONTEXT_ENV: Final[str] = (
+    "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT"
+)
+_LAMINAR_PARENT_CONTEXT_ENV: Final[str] = "LMNR_SPAN_CONTEXT"
+
+
+def _is_trace_metadata_value(value: Any) -> bool:
+    if isinstance(value, str | bool | int | float):
+        return True
+    if isinstance(value, list):
+        return (
+            all(isinstance(item, str) for item in value)
+            or all(isinstance(item, bool) for item in value)
+            or all(
+                isinstance(item, int) and not isinstance(item, bool) for item in value
+            )
+            or all(isinstance(item, float) for item in value)
+        )
+    return False
+
+
+def _clean_trace_metadata(value: Any) -> dict[str, TraceMetadataValue]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, TraceMetadataValue] = {}
+    for key, item in value.items():
+        if isinstance(key, str) and key and _is_trace_metadata_value(item):
+            cleaned[key] = item
+    return cleaned
+
+
+def automation_observability_metadata_from_env() -> dict[str, TraceMetadataValue]:
+    """Return automation correlation metadata supplied by an automation run."""
+    metadata: dict[str, TraceMetadataValue] = {}
+    for env_key, metadata_key in _AUTOMATION_METADATA_ENV_KEYS.items():
+        value = get_env(env_key)
+        if value:
+            metadata[metadata_key] = value
+
+    raw_metadata = get_env(_OBSERVABILITY_METADATA_ENV)
+    if raw_metadata:
+        try:
+            metadata.update(_clean_trace_metadata(json.loads(raw_metadata)))
+        except json.JSONDecodeError:
+            logger.debug("Ignoring invalid %s", _OBSERVABILITY_METADATA_ENV)
+    return metadata
+
+
+def merge_automation_observability_metadata(
+    metadata: Mapping[str, TraceMetadataValue] | None,
+) -> dict[str, TraceMetadataValue]:
+    """Merge automation env defaults with caller-supplied metadata."""
+    merged = automation_observability_metadata_from_env()
+    if metadata:
+        merged.update(metadata)
+    return merged
+
+
+def observability_parent_span_context_from_env() -> str | None:
+    """Return serialized parent span context propagated by the automation service."""
+    return get_env(_OBSERVABILITY_PARENT_CONTEXT_ENV) or get_env(
+        _LAMINAR_PARENT_CONTEXT_ENV
+    )
+
+
+def default_observability_span_name_from_env() -> str | None:
+    """Return the default conversation child span name supplied by an automation."""
+    return get_env(_OBSERVABILITY_SPAN_NAME_ENV)
+
+
+def observability_headers_from_env() -> dict[str, str]:
+    """Build observability headers for direct agent-server API calls."""
+    headers: dict[str, str] = {}
+    metadata = automation_observability_metadata_from_env()
+    if metadata:
+        headers["X-OpenHands-Observability-Metadata"] = json.dumps(
+            metadata, separators=(",", ":")
+        )
+    span_name = default_observability_span_name_from_env()
+    if span_name:
+        headers["X-OpenHands-Observability-Span-Name"] = span_name
+    parent_context = observability_parent_span_context_from_env()
+    if parent_context:
+        headers["X-OpenHands-Observability-Parent-Span-Context"] = parent_context
+    try:
+        from opentelemetry.propagate import inject
+
+        inject(headers)
+    except Exception:
+        logger.debug(
+            "Failed to inject OpenTelemetry propagation headers", exc_info=True
+        )
+    return headers
 
 
 def _get_int_env(key: str) -> int | None:
@@ -300,15 +407,21 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
-        attributes: Mapping[str, str] | None = None,
+        attributes: Mapping[str, TraceMetadataValue] | None = None,
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
+        parent_span_context: str | None = None,
     ) -> None:
         from lmnr import Laminar
 
+        parent = None
+        if parent_span_context:
+            with contextlib.suppress(Exception):
+                parent = Laminar.deserialize_span_context(parent_span_context)
+
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
-        self.span = Laminar.start_span(name)
+        self.span = Laminar.start_span(name, parent_span_context=parent)
         if attributes:
             with contextlib.suppress(Exception):
                 for key, value in attributes.items():
@@ -350,9 +463,10 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
-    attributes: Mapping[str, str] | None = None,
+    attributes: Mapping[str, TraceMetadataValue] | None = None,
     metadata: dict[str, TraceMetadataValue] | None = None,
     tags: list[str] | None = None,
+    parent_span_context: str | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
@@ -368,6 +482,7 @@ def start_root_span(
             attributes=attributes,
             metadata=metadata,
             tags=tags,
+            parent_span_context=parent_span_context,
         )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
