@@ -140,6 +140,7 @@ def _resolve_openhands(
             llm.model_copy(update={"stream": True}),
             mcp_config,
             _apply_disabled_skills(catalog, profile.disabled_skills),
+            browser_available=None,
             meta_profile=meta_profile,
             meta_profile_llms=meta_llms,
         )

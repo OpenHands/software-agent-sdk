@@ -512,6 +512,7 @@ class ConversationService:
         default=Path("/tmp/conversation-worktrees")
     )
     acp_skill_sourcing: ACPSkillSourcing = "native"
+    enable_browser: bool = True
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_records: dict[UUID, _ConversationRecord] = field(
         default_factory=dict, init=False
@@ -1544,7 +1545,9 @@ class ConversationService:
         )
         launched = finalize(
             source,
-            live_launch_runtime(self.acp_skill_sourcing),
+            live_launch_runtime(
+                self.acp_skill_sourcing, enable_browser=self.enable_browser
+            ),
             additions=request.agent_launch_additions,
             extra_suffixes=[worktree.guidance] if worktree else (),
             client_tools=client_tools,
@@ -2185,6 +2188,7 @@ class ConversationService:
             conversation_idle_ttl_seconds=config.conversation_idle_ttl_seconds,
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
+            enable_browser=config.enable_browser,
         )
 
     async def _start_event_service(

@@ -386,7 +386,7 @@ def test_preloaded_custom_tool_resolves_in_live_server(
 
     registry_snapshot = dict(tool_registry._REG)
     usability_snapshot = dict(tool_registry._USABILITY_REG)
-    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    tool_class_snapshot = dict(tool_registry._TOOL_CLASSES)
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop(package_name, None)
     sys.modules.pop(module_qualname, None)
@@ -431,8 +431,8 @@ def test_preloaded_custom_tool_resolves_in_live_server(
         tool_registry._REG.update(registry_snapshot)
         tool_registry._USABILITY_REG.clear()
         tool_registry._USABILITY_REG.update(usability_snapshot)
-        tool_registry._MODULE_QUALNAMES.clear()
-        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+        tool_registry._TOOL_CLASSES.clear()
+        tool_registry._TOOL_CLASSES.update(tool_class_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):

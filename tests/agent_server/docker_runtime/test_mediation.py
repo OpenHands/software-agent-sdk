@@ -1,18 +1,19 @@
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import DEFAULT_CONVERSATION_IMAGE, Config
 from openhands.agent_server.docker_runtime.provisioning import (
     RuntimeIdentity,
     RuntimeProvisioningStore,
 )
 from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
 from openhands.agent_server.docker_runtime.routers import _prepare_forward
-from openhands.agent_server.launch import launch_source
+from openhands.agent_server.launch import launch_source, target_launch_runtime
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_agent_profile_store,
@@ -232,4 +233,74 @@ async def test_an_existing_conversation_is_not_resolved_again(tmp_path, monkeypa
 
     assert launched is None
     assert payload["agent_profile_id"] == str(request.agent_profile_id)
+    assert "agent_settings" not in payload
+
+
+def _docker_host_browser(host: Config) -> bool:
+    # The host's own chromium says nothing about the container's.
+    with patch("openhands.agent_server.launch.is_tool_usable", return_value=False):
+        runtime = target_launch_runtime(host)
+    assert runtime.acp_skill_sourcing == "openhands_managed"
+    return runtime.browser_available
+
+
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "has_browser"),
+    [(None, True, True), (False, True, False), (True, False, False)],
+)
+def test_the_host_config_decides_the_container_browser(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, has_browser
+):
+    host = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": image_has_browser,
+            "enable_browser": enable_browser,
+        }
+    )
+
+    assert _docker_host_browser(host) is has_browser
+
+
+_STOCK_REPO = DEFAULT_CONVERSATION_IMAGE.rsplit(":", 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("image", "has_browser"),
+    [
+        (DEFAULT_CONVERSATION_IMAGE, True),
+        (f"{_STOCK_REPO}:1.50.0-python", True),
+        (f"{_STOCK_REPO}:latest-python-minimal", False),
+        (f"{_STOCK_REPO}:abc1234-python-minimal-amd64", False),
+        (f"{_STOCK_REPO}@sha256:" + "0" * 64, True),
+        (f"{_STOCK_REPO}-custom:tag", False),
+        ("example.com/custom:tag", False),
+        ("localhost:5000/agent-server", False),
+    ],
+)
+def test_an_unset_image_browser_is_on_only_for_the_stock_image(
+    tmp_path, monkeypatch, image, has_browser
+):
+    host = config(tmp_path, monkeypatch).model_copy(
+        update={"conversation_runtime": "docker", "conversation_image": image}
+    )
+
+    assert _docker_host_browser(host) is has_browser
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_agent_is_forwarded_instead_of_agent_settings(
+    tmp_path, monkeypatch
+):
+    request = StartConversationRequest.model_validate(
+        {
+            "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+            "agent": {"kind": "Agent", "llm": {"model": "test"}, "tools": []},
+            "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+        }
+    )
+
+    payload, _, _ = await _forward(request, config(tmp_path, monkeypatch))
+
+    assert payload["agent"]["tools"] == []
     assert "agent_settings" not in payload

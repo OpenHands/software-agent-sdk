@@ -48,6 +48,9 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, launch_tool_specs
+from openhands.sdk.tool.registry import is_tool_available
+from openhands.sdk.tool.spec import Tool
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
@@ -91,6 +94,14 @@ class AgentProfileDiagnostics(BaseModel):
     agent_kind: str
     valid: bool = False
     errors: list[str] = Field(default_factory=list)
+    unusable_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Selected tools the runtime cannot run. An unavailable browser is "
+            "left out of the launch; any other such tool fails the launch or "
+            "fails when the agent uses it."
+        ),
+    )
 
     # OpenHands LLM reference.
     llm_profile_ref: str | None = None
@@ -132,12 +143,6 @@ class AgentProfileDiagnostics(BaseModel):
 
     # Redacted resolved settings, present iff ``valid``.
     resolved_settings: dict[str, Any] | None = None
-
-    # The launch agent built from ``resolved_settings`` for the runtime this
-    # server launches into. ``pending`` names what that runtime decides only
-    # once it starts (e.g. ``browser_tool_set``).
-    resolved_tools: list[str] = Field(default_factory=list)
-    pending: list[str] = Field(default_factory=list)
 
 
 def _server_names(mcp_config: dict[str, MCPServer]) -> list[str]:
@@ -242,6 +247,7 @@ def _build_openhands_settings(
     mcp_config: dict[str, MCPServer],
     filtered_skills: list[Skill],
     *,
+    browser_available: bool | None,
     meta_profile: MetaProfile | None = None,
     meta_profile_llms: Mapping[str, LLM] | None = None,
 ) -> AgentSettingsConfig:
@@ -262,8 +268,12 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        # Tri-state passthrough; create_agent materializes None.
-        "tools": profile.tools,
+        "tools": (
+            profile.tools
+            if browser_available is None
+            else launch_tool_specs(profile.tools, browser_available=browser_available)
+        ),
+        "persona": profile.persona,
         "agent_context": AgentContext(
             skills=filtered_skills,
             system_message_suffix=profile.system_message_suffix,
@@ -272,8 +282,6 @@ def _build_openhands_settings(
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
-        "enable_sub_agents": profile.enable_sub_agents,
-        "enable_switch_llm_tool": profile.enable_switch_llm_tool,
         "enable_classify_and_switch_llm_tool": (
             profile.enable_classify_and_switch_llm_tool
         ),
@@ -283,6 +291,22 @@ def _build_openhands_settings(
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
+
+
+def _unusable_tools(
+    tools: list[Tool] | None, *, browser_available: bool | None, check_usable: bool
+) -> list[str]:
+    if tools is None:
+        return [] if browser_available is not False else [BROWSER_TOOL_NAME]
+    return [
+        tool.name
+        for tool in tools
+        if not (
+            browser_available is not False
+            if tool.name == BROWSER_TOOL_NAME
+            else is_tool_available(tool.name, check_usable=check_usable)
+        )
+    ]
 
 
 def _build_acp_settings(
@@ -336,6 +360,7 @@ def resolve_agent_profile(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
+    browser_available: bool | None = None,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
 
@@ -349,6 +374,9 @@ def resolve_agent_profile(
     deployment leaves skill sourcing to the CLI. Unlike the ``mcp_server_refs``
     allow-list, the ``disabled_skills`` deny-list can never dangle, so this
     never raises for skills. ``cipher`` decrypts the referenced LLM profile.
+    ``browser_available`` says whether the runtime the agent will run on can
+    use the browser tool set; the caller probes it. ``None`` leaves ``tools``
+    as the profile stores them.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
@@ -368,7 +396,13 @@ def resolve_agent_profile(
             raise ProfileNotFound(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             ) from e
-        return _build_openhands_settings(profile, llm, filtered_mcp, filtered_skills)
+        return _build_openhands_settings(
+            profile,
+            llm,
+            filtered_mcp,
+            filtered_skills,
+            browser_available=browser_available,
+        )
 
     return _build_acp_settings(
         profile, filtered_mcp, _apply_disabled_skills(available_skills, [])
@@ -382,6 +416,8 @@ def resolve_agent_profile_dry_run(
     mcp_config: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
+    browser_available: bool | None = None,
+    check_usable: bool = True,
 ) -> AgentProfileDiagnostics:
     """Compute :class:`AgentProfileDiagnostics` without raising or side effects.
 
@@ -392,6 +428,9 @@ def resolve_agent_profile_dry_run(
     error to report — ``resolved_skills`` is just the catalog minus the disabled
     names. ``available_skills=None`` (discovery skipped or failed) means no
     user/public skills resolve.
+
+    ``check_usable=False`` skips the usability probes, for runtimes this
+    process cannot probe.
     """
     filtered_mcp, resolved, dangling = _compute_mcp_filter(
         mcp_config, profile.mcp_server_refs
@@ -417,6 +456,16 @@ def resolve_agent_profile_dry_run(
             available_skills, profile.disabled_skills
         )
         diagnostics.disabled_skills = profile.disabled_skills
+        diagnostics.unusable_tools = _unusable_tools(
+            profile.tools,
+            browser_available=browser_available,
+            check_usable=check_usable,
+        )
+        failing = [n for n in diagnostics.unusable_tools if n != BROWSER_TOOL_NAME]
+        if failing:
+            diagnostics.errors.append(
+                "Tool(s) this server cannot run: " + ", ".join(failing)
+            )
     else:
         filtered_skills = _apply_disabled_skills(available_skills, [])
     diagnostics.resolved_skills = [s.name for s in filtered_skills]
@@ -463,7 +512,11 @@ def resolve_agent_profile_dry_run(
                         "OpenHands profile marked valid without a resolved LLM"
                     )
                 settings = _build_openhands_settings(
-                    profile, llm, filtered_mcp, filtered_skills
+                    profile,
+                    llm,
+                    filtered_mcp,
+                    filtered_skills,
+                    browser_available=browser_available,
                 )
             else:
                 settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)

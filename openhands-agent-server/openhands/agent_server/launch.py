@@ -7,13 +7,18 @@ conversation container to finalize.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from fastapi import HTTPException, status
 from pydantic import TypeAdapter
 
-from openhands.agent_server.config import ACPSkillSourcing, Config
+from openhands.agent_server.config import (
+    DEFAULT_CONVERSATION_IMAGE,
+    ACPSkillSourcing,
+    Config,
+)
 from openhands.agent_server.docker_runtime.mediation import materialize_secrets
 from openhands.agent_server.persistence import (
     PersistedSettings,
@@ -68,9 +73,11 @@ def server_launch_stores(
     )
 
 
-def live_launch_runtime(acp_skill_sourcing: ACPSkillSourcing) -> LaunchRuntime:
+def live_launch_runtime(
+    acp_skill_sourcing: ACPSkillSourcing, *, enable_browser: bool
+) -> LaunchRuntime:
     return LaunchRuntime(
-        browser_available=is_tool_usable(BROWSER_TOOL_NAME),
+        browser_available=enable_browser and is_tool_usable(BROWSER_TOOL_NAME),
         acp_skill_sourcing=acp_skill_sourcing,
     )
 
@@ -78,12 +85,47 @@ def live_launch_runtime(acp_skill_sourcing: ACPSkillSourcing) -> LaunchRuntime:
 def target_launch_runtime(config: Config) -> LaunchRuntime:
     """Describe the runtime this server's launches run in, without starting it."""
     if config.conversation_runtime == "docker":
-        # The container image sets managed sourcing; whether it can run the
-        # browser is known only once it starts.
+        # The container image sets managed sourcing.
         return LaunchRuntime(
-            browser_available=None, acp_skill_sourcing="openhands_managed"
+            browser_available=container_browser_enabled(config),
+            acp_skill_sourcing="openhands_managed",
         )
-    return live_launch_runtime(config.acp_skill_sourcing)
+    return live_launch_runtime(
+        config.acp_skill_sourcing, enable_browser=config.enable_browser
+    )
+
+
+def can_probe_tools(config: Config) -> bool:
+    """Whether conversations run in this process, so tool usability can be probed."""
+    return config.conversation_runtime != "docker"
+
+
+def configured_browser_available(config: Config) -> bool | None:
+    """Browser availability fixed by ``config``; ``None`` means probe this process."""
+    if config.conversation_runtime == "docker":
+        return container_browser_enabled(config)
+    return None if config.enable_browser else False
+
+
+def container_browser_enabled(config: Config) -> bool:
+    """Whether this server's conversation containers may get the browser."""
+    if not config.enable_browser:
+        return False
+    if config.conversation_image_has_browser is not None:
+        return config.conversation_image_has_browser
+    return _is_stock_image(config.conversation_image)
+
+
+_BROWSERLESS_FLAVOR = re.compile(r"-minimal(-(amd64|arm64))?$")
+
+
+def _is_stock_image(image: str) -> bool:
+    stock_repo = DEFAULT_CONVERSATION_IMAGE.rsplit(":", 1)[0]
+    repo = image.split("@", 1)[0]
+    tag = ""
+    if repo.rfind(":") > repo.rfind("/"):
+        repo, tag = repo.rsplit(":", 1)
+    return repo == stock_repo and not _BROWSERLESS_FLAVOR.search(tag)
 
 
 def launch_source(

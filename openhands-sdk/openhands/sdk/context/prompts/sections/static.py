@@ -31,6 +31,7 @@ __all__ = [
     "FileSystemSection",
     "MemorySection",
     "ModelSpecificSection",
+    "PersonaSection",
     "ProblemSolvingSection",
     "ProcessManagementSection",
     "PullRequestsSection",
@@ -97,6 +98,18 @@ class RoleSection(_StaticTextSection):
 * Your primary role is to assist users by executing commands, modifying code, and solving technical problems effectively. You should be thorough, methodical, and prioritize quality over speed.
 * If the user asks a question, like "why is X happening", don't try to fix the problem. Just give an answer to the question.
 </ROLE>"""
+
+
+class PersonaSection(_StaticTextSection):
+    """The agent's own persona, standing in for the persona sections it replaces."""
+
+    name = "persona"
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return ctx.persona is not None
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return ctx.persona
 
 
 class MemorySection(_StaticTextSection):

@@ -57,23 +57,21 @@ def test_unset_tools_get_the_default_set_with_browser_when_usable(browser, expec
     launched = finalize(_settings(), LaunchRuntime(browser_available=browser))
 
     assert _tool_names(launched) == expected
-    assert launched.pending == ()
+    assert isinstance(launched.agent, Agent)
+    assert "SwitchLLMTool" in launched.agent.include_default_tools
 
 
-def test_an_unknown_runtime_leaves_the_browser_to_the_launch():
-    launched = finalize(_settings(), LaunchRuntime(browser_available=None))
-
-    assert "browser_tool_set" not in _tool_names(launched)
-    assert launched.pending == ("browser_tool_set",)
-
-
-def test_an_explicit_tool_list_is_used_as_given():
+@pytest.mark.parametrize(
+    ("browser", "expected"),
+    [(True, ["terminal", "browser_tool_set"]), (False, ["terminal"])],
+)
+def test_an_explicit_tool_list_keeps_the_browser_only_when_usable(browser, expected):
     launched = finalize(
-        _settings(tools=[Tool(name="terminal")]),
-        LaunchRuntime(browser_available=True),
+        _settings(tools=[Tool(name="terminal"), Tool(name="browser_tool_set")]),
+        LaunchRuntime(browser_available=browser),
     )
 
-    assert _tool_names(launched) == ["terminal"]
+    assert _tool_names(launched) == expected
 
 
 def test_an_acp_agent_never_gets_the_browser():
