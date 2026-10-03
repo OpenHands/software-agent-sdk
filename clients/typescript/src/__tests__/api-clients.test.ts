@@ -1491,7 +1491,6 @@ describe('Auxiliary API clients', () => {
             {
               name: 'balanced',
               classifier_model: 'classifier',
-              default_model: 'default',
               num_classes: 2,
             },
           ],
@@ -1520,7 +1519,6 @@ describe('Auxiliary API clients', () => {
           name: 'my profile',
           config: {
             classifier_model: 'classifier',
-            default_model: 'default',
             classes: [{ description: 'UI', model: 'fast' }],
           },
         }),
@@ -1550,7 +1548,6 @@ describe('Auxiliary API clients', () => {
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const config = {
       classifier_model: 'classifier',
-      default_model: 'default',
       classes: [{ description: 'tests', model: 'slow' }],
     };
     const result = await client.saveMetaProfile('balanced', config);
@@ -2372,7 +2369,7 @@ describe('Auxiliary API clients', () => {
 
     const client = new ConversationClient({ host: 'http://example.com' });
     await expect(
-      client.countConversations({ status: ConversationExecutionStatus.IDLE })
+      client.countConversations({ status: ConversationExecutionStatus.IDLE, archived: true })
     ).resolves.toBe(2);
     await expect(client.searchEvents('c1', { kind: 'MessageEvent', limit: 5 })).resolves.toEqual({
       items: [event],
@@ -2391,7 +2388,7 @@ describe('Auxiliary API clients', () => {
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
-      'http://example.com/api/conversations/count?status=idle',
+      'http://example.com/api/conversations/count?status=idle&archived=true',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(

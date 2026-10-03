@@ -20,6 +20,7 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
+    ConversationArchivedError,
     ConversationService,
     _compose_conversation_info,
     _ConversationRecord,
@@ -1262,6 +1263,14 @@ class TestConversationServiceSearchConversations:
                 await conversation_service.search_conversations(archived=True)
             ).items
         ] == [conversation_id]
+        assert await conversation_service.count_conversations() == 0
+        assert await conversation_service.count_conversations(archived=True) == 1
+        assert (
+            await conversation_service.count_conversations(
+                ConversationExecutionStatus.IDLE, archived=True
+            )
+            == 1
+        )
 
         restored = await conversation_service.set_conversation_archived(
             conversation_id, archived=False
@@ -1273,6 +1282,190 @@ class TestConversationServiceSearchConversations:
             item.id
             for item in (await conversation_service.search_conversations()).items
         ] == [conversation_id]
+        assert await conversation_service.count_conversations() == 1
+        assert await conversation_service.count_conversations(archived=True) == 0
+
+    @pytest.mark.asyncio
+    async def test_archive_keeps_metadata_replaced_by_live_service(
+        self, conversation_service, sample_stored_conversation
+    ):
+        conversation_id = sample_stored_conversation.id
+        state = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        directory = conversation_service.conversations_dir / conversation_id.hex
+        directory.mkdir(parents=True)
+        (directory / "base_state.json").write_text(state.model_dump_json())
+        live_service = AsyncMock(spec=EventService)
+        live_service.stored = sample_stored_conversation
+        live_service.get_state.return_value = state
+        live_service.is_open.return_value = True
+        conversation_service._event_services[conversation_id] = live_service
+        await conversation_service._reconcile_active_records()
+        # e.g. switch_acp_model or credential scrubbing replace the live copy
+        # without syncing the catalog record.
+        live_service.stored = sample_stored_conversation.model_copy(
+            update={"title": "Live title"}
+        )
+
+        archived = await conversation_service.set_conversation_archived(
+            conversation_id, archived=True
+        )
+
+        assert archived is not None and archived.title == "Live title"
+        assert live_service.stored.title == "Live title"
+        assert live_service.stored.archived_at is not None
+        live_service.close.assert_awaited_once()
+        persisted = json.loads((directory / "meta.json").read_text())
+        assert persisted["title"] == "Live title"
+
+    @pytest.mark.asyncio
+    async def test_archived_conversation_is_still_deletable(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """``DELETE`` must reach archived conversations, not 400 on them."""
+        conversation_id = sample_stored_conversation.id
+        state = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        directory = conversation_service.conversations_dir / conversation_id.hex
+        directory.mkdir(parents=True)
+        (directory / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        (directory / "base_state.json").write_text(state.model_dump_json())
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_service.get_state.return_value = state
+        mock_service.conversation_dir = directory
+        mock_service.is_open.return_value = False
+        conversation_service._event_services[conversation_id] = mock_service
+        await conversation_service._reconcile_active_records()
+        conversation_service._event_services.pop(conversation_id)
+
+        archived = await conversation_service.set_conversation_archived(
+            conversation_id, archived=True
+        )
+        assert archived is not None and archived.archived_at is not None
+
+        assert await conversation_service.delete_conversation(conversation_id) is True
+        assert conversation_id not in conversation_service._conversation_records
+        assert not directory.exists()
+
+    @pytest.mark.asyncio
+    async def test_start_on_archived_conversation_raises_instead_of_succeeding(
+        self, conversation_service, sample_stored_conversation, tmp_path
+    ):
+        """Resuming an archived id must fail, not return 200 for a dead runtime.
+
+        Before this guard, ``_start_conversation`` composed the record into a
+        ``ConversationInfo`` and reported success while leaving the archived
+        conversation unstarted.
+        """
+        conversation_id = sample_stored_conversation.id
+        state = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        directory = conversation_service.conversations_dir / conversation_id.hex
+        directory.mkdir(parents=True)
+        (directory / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        (directory / "base_state.json").write_text(state.model_dump_json())
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_service.get_state.return_value = state
+        mock_service.is_open.return_value = False
+        conversation_service._event_services[conversation_id] = mock_service
+        await conversation_service._reconcile_active_records()
+        conversation_service._event_services.pop(conversation_id)
+
+        assert (
+            await conversation_service.set_conversation_archived(
+                conversation_id, archived=True
+            )
+            is not None
+        )
+
+        workspace_dir = tmp_path / "resume-workspace"
+        workspace_dir.mkdir()
+        request = StartConversationRequest(
+            agent=_sample_agent(),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+            conversation_id=conversation_id,
+        )
+
+        with pytest.raises(ConversationArchivedError):
+            await conversation_service.start_conversation(request)
+
+        # The failed start must not leave a runtime behind.
+        assert conversation_id not in conversation_service._event_services
+        assert len(conversation_service._conversation_records) == 1
+
+    @pytest.mark.asyncio
+    async def test_archived_history_remains_readable(
+        self, conversation_service, sample_stored_conversation, tmp_path
+    ):
+        """Archiving releases the runtime but must not hide event history."""
+        conversation_id = sample_stored_conversation.id
+        state = ConversationState(
+            id=conversation_id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        directory = conversation_service.conversations_dir / conversation_id.hex
+        directory.mkdir(parents=True)
+        (directory / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        (directory / "base_state.json").write_text(state.model_dump_json())
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = sample_stored_conversation
+        mock_service.get_state.return_value = state
+        mock_service.is_open.return_value = False
+        conversation_service._event_services[conversation_id] = mock_service
+        await conversation_service._reconcile_active_records()
+        conversation_service._event_services.pop(conversation_id)
+
+        assert (
+            await conversation_service.set_conversation_archived(
+                conversation_id, archived=True
+            )
+            is not None
+        )
+
+        assert await conversation_service.is_conversation_archived(conversation_id)
+        # No runtime is handed out for an archived conversation...
+        assert await conversation_service.get_event_service(conversation_id) is None
+        # ...but the persisted log is still openable for reads.
+        persisted = await conversation_service.get_persisted_event_service(
+            conversation_id
+        )
+        assert persisted is not None
+
+    @pytest.mark.asyncio
+    async def test_is_conversation_archived_is_false_for_unknown_id(
+        self, conversation_service
+    ):
+        assert not await conversation_service.is_conversation_archived(uuid4())
 
     @pytest.mark.asyncio
     async def test_search_conversations_with_critic_redacts_api_key(

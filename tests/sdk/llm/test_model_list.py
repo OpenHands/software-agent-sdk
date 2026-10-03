@@ -157,7 +157,10 @@ def test_verified_lists_keep_two_latest_versions_per_line():
     """
     expectations = {
         "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
-        "anthropic": ({"claude-opus-5", "claude-opus-4-8"}, {"claude-opus-4-7"}),
+        "anthropic": (
+            {"claude-opus-5-5", "claude-opus-5"},
+            {"claude-opus-4-8", "claude-opus-4-7"},
+        ),
         "mistral": (
             {"devstral-2512", "devstral-medium-2512"},
             {"devstral-medium-2507"},
@@ -175,8 +178,10 @@ def test_verified_lists_keep_two_latest_versions_per_line():
         models = set(VERIFIED_MODELS[provider])
         assert present <= models, f"{provider}: missing {present - models}"
         assert not (absent & models), f"{provider}: stale {absent & models}"
-    assert {"gpt-6-astra", "gpt-5.6", "claude-opus-5"} <= set(VERIFIED_OPENHANDS_MODELS)
-    assert not {"gpt-5.5", "claude-opus-4-7", "minimax-m2.5"} & set(
+    assert {"gpt-6-astra", "gpt-5.6", "claude-opus-5-5", "claude-opus-5"} <= set(
+        VERIFIED_OPENHANDS_MODELS
+    )
+    assert not {"gpt-5.5", "claude-opus-4-8", "claude-opus-4-7", "minimax-m2.5"} & set(
         VERIFIED_OPENHANDS_MODELS
     )
 

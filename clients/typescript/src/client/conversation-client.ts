@@ -85,7 +85,7 @@ export class ConversationClient {
   }
 
   async countConversations(
-    options: { status?: ConversationExecutionStatus } = {}
+    options: { status?: ConversationExecutionStatus; archived?: boolean } = {}
   ): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options as Record<string, unknown>,

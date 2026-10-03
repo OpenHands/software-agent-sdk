@@ -306,6 +306,15 @@ class InvalidParentConversation(ValueError):
     a different workspace."""
 
 
+class ConversationArchivedError(ValueError):
+    """An archived conversation cannot be started or resumed.
+
+    Archiving retains history but releases the runtime; the caller must
+    unarchive before execution can be restarted. Mirrors the Docker runtime's
+    409 rejection so both runtimes reject the same operation identically.
+    """
+
+
 def _same_workspace(a: LocalWorkspace, b: LocalWorkspace) -> bool:
     return Path(a.working_dir).resolve() == Path(b.working_dir).resolve()
 
@@ -1228,6 +1237,7 @@ class ConversationService:
         *,
         require_runtime_bindings: bool = True,
         agent: AgentBase | None = None,
+        allow_archived: bool = False,
     ) -> EventService | None:
         event_services = self._event_services
         if event_services is None:
@@ -1240,7 +1250,12 @@ class ConversationService:
             return event_service
 
         record = self._conversation_records.get(conversation_id)
-        if record is None or record.stored.archived_at is not None:
+        if record is None:
+            return None
+        if record.stored.archived_at is not None and not allow_archived:
+            # An archived conversation retains its history but has no runnable
+            # runtime. Deletion is the exception: it must still reach the
+            # archived conversation so it can be permanently removed.
             return None
 
         pending_bindings = self._credential_bindings.get(conversation_id, {})
@@ -1405,26 +1420,31 @@ class ConversationService:
     async def count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None = None,
+        archived: bool = False,
     ) -> int:
-        return await self._count_conversations(execution_status=execution_status)
+        return await self._count_conversations(
+            execution_status=execution_status, archived=archived
+        )
 
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
+        archived: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         await self._reconcile_active_records()
 
-        if execution_status is None:
-            return len(self._conversation_records)
-
-        await self._refresh_execution_statuses()
+        if execution_status is not None:
+            await self._refresh_execution_statuses()
         return sum(
             1
             for record in self._conversation_records.values()
-            if record.execution_status == execution_status
+            if (record.stored.archived_at is not None) == archived
+            and (
+                execution_status is None or record.execution_status == execution_status
+            )
         )
 
     async def batch_get_conversations(
@@ -1508,6 +1528,19 @@ class ConversationService:
         ):
             async with self._conversation_lifecycle(conversation_id):
                 existing_event_service = self._event_services.get(conversation_id)
+                current_record = self._conversation_records.get(conversation_id)
+                if (
+                    current_record is not None
+                    and current_record.stored.archived_at is not None
+                ):
+                    # Archiving releases the runtime and retains history. A
+                    # start/resume on an archived id must fail loudly instead of
+                    # returning 200 for a conversation that never came up; the
+                    # caller unarchives first, exactly as Docker requires.
+                    raise ConversationArchivedError(
+                        "Conversation is archived; unarchive it before using "
+                        "its runtime"
+                    )
                 stored = (
                     existing_event_service.stored
                     if existing_event_service is not None
@@ -1951,6 +1984,10 @@ class ConversationService:
             event_service = await self._get_or_load_event_service_locked(
                 conversation_id,
                 require_runtime_bindings=False,
+                # Deletion is independent of archive state: an archived
+                # conversation must still be permanently removable rather
+                # than retained as archived.
+                allow_archived=True,
             )
             if event_service is None:
                 return False
@@ -2062,20 +2099,28 @@ class ConversationService:
             if record is None:
                 return None
 
-            now = utc_now()
-            archived_at = (record.stored.archived_at or now) if archived else None
-            record.stored = record.stored.model_copy(
-                update={"archived_at": archived_at, "updated_at": now}
-            )
-            record.cached_info = None
-
             event_service = (
                 self._event_services.get(conversation_id)
                 if self._event_services is not None
                 else None
             )
-            if event_service is not None and event_service.is_open():
-                event_service.stored = record.stored
+            live_service = (
+                event_service
+                if event_service is not None and event_service.is_open()
+                else None
+            )
+            # A live service may have replaced its stored metadata without
+            # syncing the catalog record; it is authoritative while open.
+            current = live_service.stored if live_service is not None else record.stored
+            now = utc_now()
+            archived_at = (current.archived_at or now) if archived else None
+            record.stored = current.model_copy(
+                update={"archived_at": archived_at, "updated_at": now}
+            )
+            record.cached_info = None
+
+            if live_service is not None:
+                live_service.stored = record.stored
 
             metadata = record.stored.model_dump_json(
                 context={"cipher": self._cipher_for(conversation_id)}
@@ -2083,8 +2128,8 @@ class ConversationService:
             meta_file = self.conversations_dir / conversation_id.hex / "meta.json"
             await asyncio.to_thread(meta_file.write_text, metadata)
 
-            if archived and event_service is not None and event_service.is_open():
-                await event_service.close()
+            if archived and live_service is not None:
+                await live_service.close()
                 if self._event_services is not None:
                     self._event_services.pop(conversation_id, None)
 
@@ -2103,6 +2148,13 @@ class ConversationService:
         if record is None:
             return None
         return EventService.for_persisted_events(record.stored, self.conversations_dir)
+
+    async def is_conversation_archived(self, conversation_id: UUID) -> bool:
+        """Whether the catalog marks this conversation as archived."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        record = self._conversation_records.get(conversation_id)
+        return record is not None and record.stored.archived_at is not None
 
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
