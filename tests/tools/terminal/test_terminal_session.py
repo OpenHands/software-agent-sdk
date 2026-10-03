@@ -1265,4 +1265,3 @@ def test_no_change_timeout_strips_heredoc_wrapper(terminal_type):
             assert "__openhands_status" not in obs.text
         finally:
             session.close()
-
