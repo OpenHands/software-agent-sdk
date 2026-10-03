@@ -35,6 +35,7 @@ import {
   SharedClient,
   SkillsClient,
   SubAgentsClient,
+  ToolClient,
   WorkspacesClient,
 } from '../clients';
 import * as http from 'node:http';
@@ -525,6 +526,54 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
+
+    it('materializeAgentProfile sends a draft as the profile body', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ agent_kind: 'openhands', valid: true, errors: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new AgentProfilesClient({ host: 'http://example.com' });
+      const draft = {
+        agent_kind: 'openhands' as const,
+        llm_profile_ref: 'gpt-4o',
+        tools: [{ name: 'terminal', params: {} }],
+      };
+      await client.materializeAgentProfile('draft', draft);
+
+      const [, init] = (global.fetch as Mock).mock.calls[0];
+      expect(JSON.parse(init.body)).toEqual({ profile: draft });
+    });
+  });
+
+  it('ToolClient.getToolCatalog gets /api/tools/catalog', async () => {
+    const catalog = {
+      tools: [
+        {
+          name: 'terminal',
+          user_selectable: true,
+          usable: true,
+          description: 'Run shell commands',
+          in_default_set: true,
+        },
+      ],
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(catalog), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ToolClient({ host: 'http://example.com' });
+
+    expect(await client.getToolCatalog()).toEqual(catalog);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/tools/catalog',
+      expect.objectContaining({ method: 'GET' })
+    );
   });
 
   it('Workspace exposes bash namespace', () => {
