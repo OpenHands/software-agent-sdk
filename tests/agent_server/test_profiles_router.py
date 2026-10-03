@@ -2,6 +2,7 @@
 
 import tempfile
 import time
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -354,6 +355,24 @@ def test_provider_connection_delete_rejects_active_settings_reference(client):
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
     assert settings["agent_settings"]["llm"]["api_key"] == "sk-ant-old"
+
+
+def test_provider_connection_delete_ignores_acp_settings(client):
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic Work",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+    client.patch("/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}})
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="ACPAgentSettings.llm")
+        delete = client.delete(f"/api/llm/provider-connections/{connection_id}")
+
+    assert delete.status_code == 200
 
 
 def test_provider_connection_rotation_not_copied_into_active_settings(client):
@@ -1399,6 +1418,26 @@ def test_activate_profile_with_api_key(client, store):
     settings_response = client.get("/api/settings")
     assert settings_response.status_code == 200
     assert settings_response.json()["llm_api_key_is_set"] is True
+
+
+def test_activate_profile_leaves_acp_settings_without_llm(client, store):
+    store.save(
+        "with-key",
+        LLM(model="gpt-4o", api_key="sk-profile-secret"),
+        include_secrets=True,
+    )
+    client.patch("/api/settings", json={"agent_settings_diff": {"agent_kind": "acp"}})
+
+    response = client.post("/api/profiles/with-key/activate")
+
+    assert response.status_code == 200
+    assert response.json()["llm_applied"] is False
+    settings = client.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["active_profile"] == "with-key"
+    assert "llm" not in settings["agent_settings"]
+    assert settings["llm_api_key_is_set"] is False
 
 
 def test_list_profiles_shows_active_after_activation(client, store):
