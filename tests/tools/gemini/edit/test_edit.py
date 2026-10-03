@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from openhands.tools.gemini.edit.definition import EditAction, EditTool
 from openhands.tools.gemini.edit.impl import EditExecutor
 
@@ -20,6 +22,42 @@ def test_edit_basic_replacement(tmp_path):
     assert not obs.is_new_file
     assert obs.replacements_made == 1
     assert test_file.read_text() == "def foo():\n    return 'new'\n"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(b"caf\xe9\nold\n", id="latin-1"),
+        pytest.param(b"old\n\xe2\x82", id="truncated-utf-8"),
+    ],
+)
+def test_edit_invalid_utf8_leaves_file_unchanged(tmp_path, content):
+    test_file = tmp_path / "test.txt"
+    test_file.write_bytes(content)
+
+    executor = EditExecutor(workspace_root=str(tmp_path))
+    obs = executor(EditAction(file_path="test.txt", old_string="old", new_string="new"))
+
+    assert obs.is_error
+    assert "utf-8" in obs.text
+    assert obs.replacements_made == 0
+    assert test_file.read_bytes() == content
+
+
+def test_edit_preserves_utf8_content(tmp_path):
+    test_file = tmp_path / "test.txt"
+    content = "caf\u00e9 \u96ea \ufffd\nold\n"
+    test_file.write_bytes(content.encode("utf-8"))
+
+    executor = EditExecutor(workspace_root=str(tmp_path))
+    obs = executor(EditAction(file_path="test.txt", old_string="old", new_string="new"))
+
+    expected = "caf\u00e9 \u96ea \ufffd\nnew\n"
+    assert not obs.is_error
+    assert obs.replacements_made == 1
+    assert obs.old_content == content
+    assert obs.new_content == expected
+    assert test_file.read_bytes() == expected.encode("utf-8")
 
 
 def test_edit_multiple_replacements(tmp_path):
