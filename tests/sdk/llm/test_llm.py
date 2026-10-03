@@ -14,6 +14,7 @@ from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextCo
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
+from openhands.sdk.llm.utils.model_info import MODEL_INFO_DISCOVERY_TIMEOUT
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.tool.builtins.finish import FinishTool
 
@@ -131,6 +132,7 @@ def test_base_url_for_openhands_provider(mock_get):
     mock_get.assert_called_once_with(
         "https://llm-proxy.app.all-hands.dev/v1/model/info",
         headers={"Authorization": "Bearer test-key"},
+        timeout=MODEL_INFO_DISCOVERY_TIMEOUT,
     )
 
 
