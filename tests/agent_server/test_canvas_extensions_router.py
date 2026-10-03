@@ -6,6 +6,7 @@ default install dir is redirected), so nothing touches the real
 ~/.openhands.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
+from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 
 from .canvas_extensions.conftest import write_extension
@@ -538,3 +540,93 @@ def test_install_rejects_repo_path_escaping_the_source(
 
     assert install.status_code == 400
     assert "escapes" in install.json()["detail"]
+
+
+_SVG = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+
+
+def _write_icon_extension(directory: Path, icon: object) -> Path:
+    src = write_extension(directory, name="demo-extension")
+    manifest_path = src / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest["icon"] = icon
+    manifest_path.write_text(json.dumps(manifest))
+    (src / "assets").mkdir()
+    (src / "assets" / "icon.svg").write_text(_SVG)
+    return src
+
+
+def test_icon_endpoint_serves_declared_svg_sandboxed(
+    client: TestClient, tmp_path: Path
+):
+    src = _write_icon_extension(tmp_path / "src" / "demo-extension", "assets/icon.svg")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    got = client.get("/canvas-extensions/installed/demo-extension")
+    resp = client.get("/canvas-extensions/installed/demo-extension/icon")
+
+    assert got.json()["manifest"]["icon"] == "assets/icon.svg"
+    assert resp.status_code == 200
+    assert resp.text == _SVG
+    assert resp.headers["content-type"].startswith("image/svg+xml")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in resp.headers["content-security-policy"]
+
+
+def test_icon_endpoint_returns_404_without_declared_icon(
+    client: TestClient, tmp_path: Path
+):
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    got = client.get("/canvas-extensions/installed/demo-extension")
+    resp = client.get("/canvas-extensions/installed/demo-extension/icon")
+
+    assert "icon" not in got.json()["manifest"]
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "bad_icon", ["../icon.svg", "/etc/icon.svg", "assets/icon.png", "a\\b.svg", 42]
+)
+def test_invalid_icon_is_dropped_without_hiding_extension(
+    client: TestClient, tmp_path: Path, bad_icon: object
+):
+    src = _write_icon_extension(tmp_path / "src" / "demo-extension", bad_icon)
+    install = client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    got = client.get("/canvas-extensions/installed/demo-extension")
+
+    assert install.status_code == 200
+    assert got.json()["manifest"] is not None
+    assert "icon" not in got.json()["manifest"]
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/icon").status_code
+        == 404
+    )
+
+
+def test_icon_endpoint_returns_404_for_missing_or_escaping_icon(
+    client: TestClient, tmp_path: Path
+):
+    src = _write_icon_extension(tmp_path / "src" / "demo-extension", "assets/icon.svg")
+    install = client.post("/canvas-extensions/install", json={"source": str(src)})
+    icon = Path(install.json()["install_path"]) / "assets" / "icon.svg"
+
+    icon.unlink()
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/icon").status_code
+        == 404
+    )
+
+    outside = tmp_path / "outside.svg"
+    outside.write_text(_SVG)
+    icon.symlink_to(outside)
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/icon").status_code
+        == 404
+    )
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/bundle").status_code
+        == 200
+    )
