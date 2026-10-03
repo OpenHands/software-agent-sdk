@@ -428,7 +428,7 @@ def test_preloaded_custom_tool_resolves_in_live_server(
 
     registry_snapshot = dict(tool_registry._REG)
     usability_snapshot = dict(tool_registry._USABILITY_REG)
-    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    tool_class_snapshot = dict(tool_registry._TOOL_CLASSES)
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop(package_name, None)
     sys.modules.pop(module_qualname, None)
@@ -473,8 +473,8 @@ def test_preloaded_custom_tool_resolves_in_live_server(
         tool_registry._REG.update(registry_snapshot)
         tool_registry._USABILITY_REG.clear()
         tool_registry._USABILITY_REG.update(usability_snapshot)
-        tool_registry._MODULE_QUALNAMES.clear()
-        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+        tool_registry._TOOL_CLASSES.clear()
+        tool_registry._TOOL_CLASSES.update(tool_class_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
@@ -742,6 +742,28 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
         shutil.rmtree(cwd_conversations)
+
+
+def test_remote_conversation_created_from_agent_settings(server_env):
+    from openhands.sdk.conversation.request import StartConversationRequest
+    from openhands.sdk.workspace import LocalWorkspace
+
+    working_dir = str(server_env["workspace_path"])
+    conversation = RemoteConversation.create(
+        RemoteWorkspace(host=server_env["host"], working_dir=working_dir),
+        StartConversationRequest(
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "settings-model", "api_key": "sk-settings"},
+                "tools": [],
+            },
+            workspace=LocalWorkspace(working_dir=working_dir),
+        ),
+        visualizer=None,
+    )
+
+    assert conversation.agent.llm.model == "settings-model"
+    conversation.close()
 
 
 def test_openai_chat_completions_gateway_over_real_server(

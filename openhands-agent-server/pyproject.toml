@@ -1,6 +1,6 @@
 [project]
 name = "openhands-agent-server"
-version = "1.49.6"
+version = "1.50.1"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 
 requires-python = ">=3.12"
@@ -12,7 +12,7 @@ dependencies = [
   "openhands-sdk",
   "openhands-tools",
   "openai>=2.33.0,<3",
-  "pydantic>=2",
+  "pydantic>=2.13.5",
   "sqlalchemy>=2",
   "uvicorn>=0.52.4",
   "websockets>=12",

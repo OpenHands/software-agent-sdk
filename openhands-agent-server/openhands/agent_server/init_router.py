@@ -34,6 +34,7 @@ from openhands.agent_server.telemetry import (
     emit_server_started,
     shutdown_telemetry_sink,
 )
+from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability import maybe_init_laminar
 
@@ -270,6 +271,15 @@ class InitService:
 
             new_root_path = _get_root_path(new_config)
             self._app.root_path = new_root_path
+
+            # VSCode's token is the first session key, as on a normal boot. A
+            # dormant server that booted without one gave VSCode a random
+            # token, so switch it to the key delivered here.
+            vscode_service = get_vscode_service()
+            if vscode_service is not None and new_config.session_api_keys:
+                await vscode_service.set_connection_token(
+                    new_config.session_api_keys[0]
+                )
 
             mark_initialization_complete()
             self._state = "ready"
