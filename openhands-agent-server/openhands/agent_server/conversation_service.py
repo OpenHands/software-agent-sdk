@@ -1273,6 +1273,155 @@ class ConversationService:
 
     # Write Methods
 
+    def _has_conversation(self, conversation_id: UUID) -> bool:
+        """Whether this id is already known to the service.
+
+        Cheap, non-awaiting hint used to choose the reuse or create path.
+        The create path re-checks under the lifecycle lock, because a
+        concurrent create for the same id can commit in between.
+        """
+        event_services = self._event_services
+        if event_services is None:
+            return False
+        existing_record = self._conversation_records.get(conversation_id)
+        existing_event_service = event_services.get(conversation_id)
+        return existing_record is not None or (
+            existing_event_service is not None and existing_event_service.is_open()
+        )
+
+    async def _reuse_existing_conversation_locked(
+        self,
+        conversation_id: UUID,
+        request: StartConversationRequest,
+    ) -> tuple[ConversationInfo, bool]:
+        """Reuse an existing conversation without recreating it.
+
+        The caller must hold this conversation's lifecycle lock, so the
+        catalog cannot change between the existence check and the reuse.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        existing_record = self._conversation_records.get(conversation_id)
+        existing_event_service = self._event_services.get(conversation_id)
+        stored = (
+            existing_event_service.stored
+            if existing_event_service is not None
+            else existing_record.stored
+            if existing_record is not None
+            else None
+        )
+        if stored is not None:
+            request = request.model_copy(
+                update={
+                    "secrets": {
+                        name: value
+                        for name, value in request.secrets.items()
+                        if self._profile_allows_secret(stored, name)
+                    }
+                }
+            )
+        if existing_event_service is not None and existing_event_service.is_open():
+            # ``is_open()`` above guarantees a live conversation, so the
+            # public getter never raises here.
+            existing_agent = existing_event_service.get_conversation().agent
+            if (
+                self._is_codex_agent(existing_agent)
+                and CODEX_AUTH_SECRET_NAME
+                not in existing_event_service.credential_bindings
+            ):
+                # Reuse the live agent we already resolved above instead
+                # of letting _resolve_credential_bindings fall back to a
+                # synchronous base_state.json read.
+                late_bindings = await self._resolve_credential_bindings(
+                    existing_event_service.stored, agent=existing_agent
+                )
+                try:
+                    for secret_name, binding in late_bindings.items():
+                        await existing_event_service.activate_credential_binding(
+                            secret_name,
+                            binding,
+                        )
+                except Exception:
+                    pending = self._credential_bindings.setdefault(conversation_id, {})
+                    for secret_name, binding in late_bindings.items():
+                        pending.setdefault(secret_name, binding)
+                    raise
+            if (
+                CODEX_AUTH_SECRET_NAME in request.secrets
+                and CODEX_AUTH_SECRET_NAME
+                not in existing_event_service.credential_bindings
+            ):
+                await existing_event_service.apply_resume_secrets(
+                    {CODEX_AUTH_SECRET_NAME: request.secrets[CODEX_AUTH_SECRET_NAME]}
+                )
+            state = await existing_event_service.get_state()
+            self._conversation_records[conversation_id] = _ConversationRecord(
+                stored=existing_event_service.stored,
+                execution_status=state.execution_status,
+            )
+            return (
+                _compose_conversation_info(
+                    existing_event_service.stored,
+                    state,
+                    self._children_of(conversation_id),
+                ),
+                False,
+            )
+        if existing_record is None:
+            raise ValueError(f"Persisted conversation {conversation_id} has no record")
+        # Read base_state.json off the event loop, matching the
+        # asyncio.to_thread pattern used for the same read elsewhere
+        # (_resolve_credential_bindings, _conversation_info).
+        reattach_agent = await asyncio.to_thread(
+            self._agent_from_base_state, conversation_id
+        )
+        managed_codex_credential = self._is_codex_agent(reattach_agent) and (
+            CODEX_AUTH_SECRET_NAME in self._credential_bindings.get(conversation_id, {})
+            or await self._has_local_codex_credential()
+        )
+        fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
+        if managed_codex_credential or fallback_secret is not None:
+            original_stored = existing_record.stored
+            injected_fallback = (
+                not managed_codex_credential and fallback_secret is not None
+            )
+            if injected_fallback:
+                existing_record.stored = original_stored.model_copy(
+                    update={
+                        "secrets": {
+                            **original_stored.secrets,
+                            CODEX_AUTH_SECRET_NAME: fallback_secret,
+                        }
+                    }
+                )
+            try:
+                # Reuse the agent we already parsed from base_state.json
+                # above so the load path doesn't read and parse it again.
+                event_service = await self._get_or_load_event_service_locked(
+                    conversation_id, agent=reattach_agent
+                )
+            finally:
+                if injected_fallback:
+                    existing_record.stored = original_stored
+            if event_service is not None:
+                state = await event_service.get_state()
+                return (
+                    _compose_conversation_info(
+                        event_service.stored,
+                        state,
+                        self._children_of(conversation_id),
+                    ),
+                    False,
+                )
+        conversation_info = await self._conversation_info(
+            conversation_id, existing_record
+        )
+        if conversation_info is None:
+            raise ValueError(
+                f"Persisted conversation {conversation_id} has no base state"
+            )
+        return conversation_info, False
+
     async def start_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
@@ -1291,145 +1440,11 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
-        existing_record = self._conversation_records.get(conversation_id)
-        existing_event_service = self._event_services.get(conversation_id)
-        if existing_record is not None or (
-            existing_event_service is not None and existing_event_service.is_open()
-        ):
+        if self._has_conversation(conversation_id):
             async with self._conversation_lifecycle(conversation_id):
-                existing_event_service = self._event_services.get(conversation_id)
-                stored = (
-                    existing_event_service.stored
-                    if existing_event_service is not None
-                    else existing_record.stored
-                    if existing_record is not None
-                    else None
+                return await self._reuse_existing_conversation_locked(
+                    conversation_id, request
                 )
-                if stored is not None:
-                    request = request.model_copy(
-                        update={
-                            "secrets": {
-                                name: value
-                                for name, value in request.secrets.items()
-                                if self._profile_allows_secret(stored, name)
-                            }
-                        }
-                    )
-                if (
-                    existing_event_service is not None
-                    and existing_event_service.is_open()
-                ):
-                    # ``is_open()`` above guarantees a live conversation, so the
-                    # public getter never raises here.
-                    existing_agent = existing_event_service.get_conversation().agent
-                    if (
-                        self._is_codex_agent(existing_agent)
-                        and CODEX_AUTH_SECRET_NAME
-                        not in existing_event_service.credential_bindings
-                    ):
-                        # Reuse the live agent we already resolved above instead
-                        # of letting _resolve_credential_bindings fall back to a
-                        # synchronous base_state.json read.
-                        late_bindings = await self._resolve_credential_bindings(
-                            existing_event_service.stored, agent=existing_agent
-                        )
-                        try:
-                            for secret_name, binding in late_bindings.items():
-                                await (
-                                    existing_event_service.activate_credential_binding(
-                                        secret_name,
-                                        binding,
-                                    )
-                                )
-                        except Exception:
-                            pending = self._credential_bindings.setdefault(
-                                conversation_id, {}
-                            )
-                            for secret_name, binding in late_bindings.items():
-                                pending.setdefault(secret_name, binding)
-                            raise
-                    if (
-                        CODEX_AUTH_SECRET_NAME in request.secrets
-                        and CODEX_AUTH_SECRET_NAME
-                        not in existing_event_service.credential_bindings
-                    ):
-                        await existing_event_service.apply_resume_secrets(
-                            {
-                                CODEX_AUTH_SECRET_NAME: request.secrets[
-                                    CODEX_AUTH_SECRET_NAME
-                                ]
-                            }
-                        )
-                    state = await existing_event_service.get_state()
-                    self._conversation_records[conversation_id] = _ConversationRecord(
-                        stored=existing_event_service.stored,
-                        execution_status=state.execution_status,
-                    )
-                    return (
-                        _compose_conversation_info(
-                            existing_event_service.stored,
-                            state,
-                            self._children_of(conversation_id),
-                        ),
-                        False,
-                    )
-                if existing_record is None:
-                    raise ValueError(
-                        f"Persisted conversation {conversation_id} has no record"
-                    )
-                # Read base_state.json off the event loop, matching the
-                # asyncio.to_thread pattern used for the same read elsewhere
-                # (_resolve_credential_bindings, _conversation_info).
-                reattach_agent = await asyncio.to_thread(
-                    self._agent_from_base_state, conversation_id
-                )
-                managed_codex_credential = self._is_codex_agent(reattach_agent) and (
-                    CODEX_AUTH_SECRET_NAME
-                    in self._credential_bindings.get(conversation_id, {})
-                    or await self._has_local_codex_credential()
-                )
-                fallback_secret = request.secrets.get(CODEX_AUTH_SECRET_NAME)
-                if managed_codex_credential or fallback_secret is not None:
-                    original_stored = existing_record.stored
-                    injected_fallback = (
-                        not managed_codex_credential and fallback_secret is not None
-                    )
-                    if injected_fallback:
-                        existing_record.stored = original_stored.model_copy(
-                            update={
-                                "secrets": {
-                                    **original_stored.secrets,
-                                    CODEX_AUTH_SECRET_NAME: fallback_secret,
-                                }
-                            }
-                        )
-                    try:
-                        # Reuse the agent we already parsed from base_state.json
-                        # above so the load path doesn't read and parse it again.
-                        event_service = await self._get_or_load_event_service_locked(
-                            conversation_id, agent=reattach_agent
-                        )
-                    finally:
-                        if injected_fallback:
-                            existing_record.stored = original_stored
-                    if event_service is not None:
-                        state = await event_service.get_state()
-                        return (
-                            _compose_conversation_info(
-                                event_service.stored,
-                                state,
-                                self._children_of(conversation_id),
-                            ),
-                            False,
-                        )
-                conversation_info = await self._conversation_info(
-                    conversation_id, existing_record
-                )
-            if conversation_info is None:
-                raise ValueError(
-                    f"Persisted conversation {conversation_id} has no base state"
-                )
-            return conversation_info, False
 
         with await RunSlot.acquire(self._run_semaphore) as run_slot:
             return await self._create_conversation(request, conversation_id, run_slot)
@@ -1628,6 +1643,19 @@ class ConversationService:
                 **request_data,
             )
         async with self._conversation_lifecycle(conversation_id):
+            # Re-check under the lock. Preparing ``stored`` above awaits, so a
+            # concurrent create for this same id can have committed since the
+            # check at the top of this method. Without this the loser would
+            # start a second EventService for an id that already exists,
+            # re-running its initial message.
+            if self._has_conversation(conversation_id):
+                return await self._reuse_existing_conversation_locked(
+                    conversation_id, request
+                )
+            # New conversation: the agent is written to base_state.json (its
+            # single source of truth), not to meta.json. Pass it explicitly.
+            # ``new_agent`` is ``request.agent`` (decrypted when the request was
+            # secrets_encrypted).
             event_service = await self._start_event_service(
                 stored, is_new_conversation=True, launched=launched
             )
@@ -1880,58 +1908,67 @@ class ConversationService:
             return None
 
         source_conversation = source_service.get_conversation()
+        fork_conv_id = fork_id or uuid4()
 
-        # fork() deep-copies events, state, and writes to a new persistence dir.
-        fork_conv = await asyncio.to_thread(
-            source_conversation.fork,
-            conversation_id=fork_id,
-            title=title,
-            tags=tags,
-            reset_metrics=reset_metrics,
-            from_event_id=from_event_id,
-        )
-        # Extract the persisted data, then discard the temporary conversation.
-        fork_conv_id = fork_conv.id
-        fork_agent = cast(AgentBase, fork_conv.agent)
-        fork_workspace = fork_conv.workspace
-        fork_conv.delete_on_close = False
-        fork_conv.close()
-
-        # _start_event_service will resume from the persisted fork directory.
-        # Copy the source's stored metadata so request-level configuration
-        # (client_tools, tool_module_qualnames, agent_definitions, plugins,
-        # secrets, ...) is preserved on the fork, then override only the
-        # fork-specific fields. Without this, e.g. a fork of a client-tool
-        # conversation would lose ``client_tools`` in meta.json and be unable
-        # to re-register its tools after a server restart.
-        # Note: the agent is NOT stored in meta.json (StoredConversation) — the
-        # fork's agent is already persisted to the fork's base_state.json by
-        # ``source_conversation.fork`` above.
-        fork_overrides: dict[str, Any] = {
-            "id": fork_conv_id,
-            "workspace": fork_workspace,
-            "title": title,
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
-            "forked_from_conversation_id": source_id,
-            "forked_from_event_id": from_event_id,
-        }
-        if reset_metrics:
-            fork_overrides["metrics"] = None
-        if tags is not None:
-            fork_overrides["tags"] = tags
-        fork_stored = source_service.stored.model_copy(update=fork_overrides)
-        # If the service fails to start, clean up the orphaned persistence
-        # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
-        try:
-            async with self._conversation_lifecycle(fork_conv_id):
+        async with self._conversation_lifecycle(fork_conv_id):
+            # Re-check under the lock, before fork() writes into ``fork_dir``: a
+            # concurrent fork of the same id can have committed since the check
+            # above, and both fork() and the cleanup below would then touch the
+            # winner's persisted data.
+            if self._has_conversation(fork_conv_id):
+                raise ValueError(f"Conversation with id {fork_id} already exists")
+
+            # fork() deep-copies events and state into ``fork_dir``.
+            fork_conv = await asyncio.to_thread(
+                source_conversation.fork,
+                conversation_id=fork_conv_id,
+                title=title,
+                tags=tags,
+                reset_metrics=reset_metrics,
+                from_event_id=from_event_id,
+            )
+            # Extract the persisted data, then discard the temporary conversation.
+            fork_agent = cast(AgentBase, fork_conv.agent)
+            fork_workspace = fork_conv.workspace
+            fork_conv.delete_on_close = False
+            fork_conv.close()
+
+            # _start_event_service will resume from the persisted fork directory.
+            # Copy the source's stored metadata so request-level configuration
+            # (client_tools, tool_module_qualnames, agent_definitions, plugins,
+            # secrets, ...) is preserved on the fork, then override only the
+            # fork-specific fields. Without this, e.g. a fork of a client-tool
+            # conversation would lose ``client_tools`` in meta.json and be unable
+            # to re-register its tools after a server restart.
+            # Note: the agent is NOT stored in meta.json (StoredConversation) — the
+            # fork's agent is already persisted to the fork's base_state.json by
+            # ``source_conversation.fork`` above. It is passed to
+            # ``_start_event_service`` via ``agent=`` for the new-conversation
+            # path.
+            fork_overrides: dict[str, Any] = {
+                "id": fork_conv_id,
+                "workspace": fork_workspace,
+                "title": title,
+                "created_at": utc_now(),
+                "updated_at": utc_now(),
+                "forked_from_conversation_id": source_id,
+                "forked_from_event_id": from_event_id,
+            }
+            if reset_metrics:
+                fork_overrides["metrics"] = None
+            if tags is not None:
+                fork_overrides["tags"] = tags
+            fork_stored = source_service.stored.model_copy(update=fork_overrides)
+            try:
+                # If the service fails to start, clean up the orphaned
+                # persistence directory so we don't leave stale state on disk.
                 fork_event_service = await self._start_event_service(
                     fork_stored, is_new_conversation=True, persisted_agent=fork_agent
                 )
-        except Exception:
-            safe_rmtree(fork_dir)
-            raise
+            except Exception:
+                safe_rmtree(fork_dir)
+                raise
 
         state = await fork_event_service.get_state()
         return _compose_conversation_info(
