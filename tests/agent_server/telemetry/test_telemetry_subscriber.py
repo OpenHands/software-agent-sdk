@@ -667,13 +667,14 @@ def test_is_automation_is_derived_from_allowlisted_tags(tags, is_automation):
 
 
 async def test_event_count_ignores_streaming_deltas(factory):
-    """Deltas must not inflate event_count_bucket (regression for #4673)."""
+    """Telemetry registers on the durable bus, deltas go elsewhere (#4673)."""
     sink = CollectingSink()
     sub = make_subscriber(sink, factory)
     pub_sub: PubSub = PubSub()
     pub_sub.subscribe(sub)
 
+    delta_pub_sub: PubSub[StreamingDeltaEvent] = PubSub()
     for _ in range(50):
-        await pub_sub(StreamingDeltaEvent(content="tok"))
+        await delta_pub_sub(StreamingDeltaEvent(content="tok"))
 
     assert sub._event_count == 0

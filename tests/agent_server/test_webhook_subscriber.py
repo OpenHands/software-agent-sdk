@@ -23,9 +23,8 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
-from openhands.agent_server.pub_sub import PubSub
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent, Event
+from openhands.sdk import LLM, Agent
 from openhands.sdk.event import StreamingDeltaEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
@@ -1565,19 +1564,18 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
 async def test_streaming_deltas_never_reach_webhook(
     mock_event_service, webhook_spec, sample_conversation_id
 ):
-    """No StreamingDeltaEvent is enqueued or POSTed (regression for #4672)."""
+    """Webhooks register on the durable bus, deltas go elsewhere (#4672)."""
     subscriber = WebhookSubscriber(
         conversation_id=sample_conversation_id,
         service=mock_event_service,
         spec=webhook_spec,
     )
-    pub_sub: PubSub[Event] = PubSub()
-    pub_sub.subscribe(subscriber)
+    mock_event_service._pub_sub.subscribe(subscriber)
 
     with patch.object(subscriber, "_post_events", new_callable=AsyncMock) as post:
         # Past event_buffer_size: an unfiltered queue would flush here.
         for _ in range(webhook_spec.event_buffer_size + 2):
-            await pub_sub(StreamingDeltaEvent(content="tok"))
+            await mock_event_service._delta_pub_sub(StreamingDeltaEvent(content="tok"))
 
         assert subscriber.queue == []
         post.assert_not_called()
