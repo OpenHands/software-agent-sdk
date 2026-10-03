@@ -20,6 +20,7 @@ persist it through the settings API under the tested server's ``auth.state``.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 import uuid
@@ -30,6 +31,7 @@ import httpx
 import mcp.types
 from fastapi import APIRouter, HTTPException, Request
 from fastmcp.client.auth.oauth import ClientNotFoundError, OAuth
+from mcp.client.auth.utils import extract_field_from_www_auth
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
@@ -66,6 +68,7 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 
 _DEFAULT_SERVER_NAME = "test-server"
 _OAUTH_PROBE_JOB_TTL_SECONDS = 15 * 60
+_HTTP_ERROR_REASON_MAX_CHARS = 300
 
 
 class _StdioMCPServerSpec(BaseModel):
@@ -522,6 +525,57 @@ def _run_tool_call(
     return MCPToolCallResult(is_error=bool(result.isError), text=text)
 
 
+def _describe_http_status_error(exc: httpx.HTTPStatusError) -> str:
+    response = exc.response
+    url = exc.request.url.copy_with(userinfo=b"", query=None, fragment=None)
+    summary = f"HTTP {response.status_code} {response.reason_phrase} from {url}"
+    reason = _http_error_reason(response)
+    return f"{summary}: {reason}" if reason else summary
+
+
+def _http_error_reason(response: httpx.Response) -> str | None:
+    """Best human-readable reason a server gave for rejecting the request.
+
+    RFC 6750 puts it in ``WWW-Authenticate``'s ``error_description``, but most
+    servers only send an error code there and explain in a JSON body instead.
+    """
+    try:
+        text = response.text.strip()
+    except httpx.ResponseNotRead:
+        text = ""
+    candidates = [
+        extract_field_from_www_auth(response, "error_description"),
+        *_json_body_reasons(text),
+        extract_field_from_www_auth(response, "error"),
+        text,
+    ]
+    reason = next((c for c in candidates if c), None)
+    if reason is None:
+        return None
+    reason = " ".join(reason.split())
+    if len(reason) > _HTTP_ERROR_REASON_MAX_CHARS:
+        reason = reason[: _HTTP_ERROR_REASON_MAX_CHARS - 3] + "..."
+    return reason
+
+
+def _json_body_reasons(text: str) -> list[str]:
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return []
+    if not isinstance(body, dict):
+        return []
+    error = body.get("error")
+    candidates = [
+        body.get("error_description"),
+        body.get("message"),
+        error.get("message") if isinstance(error, dict) else None,
+        body.get("detail"),
+        error,
+    ]
+    return [c for c in candidates if isinstance(c, str)]
+
+
 def _probe_mcp_server(
     request: MCPTestRequest,
     cipher: Cipher | None,
@@ -591,6 +645,10 @@ def _probe_mcp_server(
             "MCP test connection failed for server %r: %s", request.name, detail
         )
         return MCPTestFailure(error=detail, error_kind="connection")
+    except httpx.HTTPStatusError as exc:
+        detail = _describe_http_status_error(exc)
+        logger.warning("MCP test failed for server %r: %s", request.name, detail)
+        return MCPTestFailure(error=detail, error_kind="unknown")
     except Exception as exc:  # noqa: BLE001 - we want to surface anything else
         # Any other exception is unexpected but should still return a
         # structured response: the UI can't recover from a 500.
