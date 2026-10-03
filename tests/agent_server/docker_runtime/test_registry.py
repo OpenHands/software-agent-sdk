@@ -24,7 +24,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 def registry(
-    tmp_path, monkeypatch, idle_ttl: float | None = 1200
+    tmp_path, monkeypatch, idle_ttl: float | None = 1200, **config
 ) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     return DockerConversationRegistry(
@@ -33,6 +33,7 @@ def registry(
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
             conversation_idle_ttl_seconds=idle_ttl,
+            **config,
         )
     )
 
@@ -209,7 +210,7 @@ async def test_terminal_idle_runtime_is_stopped(tmp_path, monkeypatch):
     conversation_id = uuid4()
     runtime._containers[conversation_id] = container(conversation_id)
     runtime._last_access[conversation_id] = 0
-    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    service = set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
     stopped = []
     monkeypatch.setattr(
         ConversationContainer,
@@ -224,6 +225,7 @@ async def test_terminal_idle_runtime_is_stopped(tmp_path, monkeypatch):
 
     assert runtime.get(conversation_id) is None
     assert stopped == [f"container-{conversation_id}"]
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
 
 
 @pytest.mark.asyncio
@@ -365,9 +367,11 @@ async def test_shutdown_cancels_eviction_and_stops_containers(tmp_path, monkeypa
     assert stopped == [active.container_id]
 
 
-def build_container(runtime, monkeypatch, conversation_id):
+def _build_container(runtime, monkeypatch, conversation_id):
     """Run ``_build_container`` with docker mocked out; return the result and
     the recorded ``docker run`` command with its environment."""
+    if runtime.provisioning.load_optional(conversation_id) is None:
+        runtime.provisioning.create(conversation_id)
     commands = []
 
     def run(command, **kwargs):
@@ -397,9 +401,7 @@ def build_container(runtime, monkeypatch, conversation_id):
 def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
-    runtime.provisioning.create(conversation_id)
-
-    result, command, env = build_container(runtime, monkeypatch, conversation_id)
+    result, command, env = _build_container(runtime, monkeypatch, conversation_id)
     assert result.host == "http://127.0.0.1:32123"
     assert ["--cap-drop", "ALL"] == command[
         command.index("--cap-drop") : command.index("--cap-drop") + 2
@@ -436,7 +438,7 @@ def test_worktree_root_resolves_identically_on_host_and_in_container(
     ).model_copy(update={"worktree_repository_path": repository})
     runtime.provisioning.save(identity)
 
-    _, command, env = build_container(runtime, monkeypatch, conversation_id)
+    _, command, env = _build_container(runtime, monkeypatch, conversation_id)
 
     worktree_root = env["OH_CONVERSATION_WORKTREE_ROOT"]
     runtime_dir = runtime.provisioning.runtime_dir(conversation_id)
@@ -467,7 +469,7 @@ def test_nested_worktree_workspace_mounts_repository_at_its_host_path(
     ).model_copy(update={"worktree_repository_path": repository})
     runtime.provisioning.save(identity)
 
-    _, command, _ = build_container(runtime, monkeypatch, conversation_id)
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
 
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
     assert f"{workspace}:/workspace" in mounts
@@ -494,8 +496,30 @@ def test_linked_source_worktree_mounts_its_external_git_common_dir(
     )
     runtime.provisioning.save(identity)
 
-    _, command, _ = build_container(runtime, monkeypatch, conversation_id)
+    _, command, _ = _build_container(runtime, monkeypatch, conversation_id)
 
     mounts = [command[index + 1] for index, item in enumerate(command) if item == "-v"]
     assert f"{repository}:{repository}" in mounts
     assert f"{git_common_dir}:{git_common_dir}" in mounts
+
+
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "flag"),
+    [(None, True, "1"), (False, True, "0"), (True, False, "0")],
+)
+def test_container_gets_the_host_browser_setting(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, flag
+):
+    runtime = registry(
+        tmp_path,
+        monkeypatch,
+        conversation_image_has_browser=image_has_browser,
+        enable_browser=enable_browser,
+    )
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert env["OH_ENABLE_BROWSER"] == flag
+    assert ["-e", "OH_ENABLE_BROWSER"] == command[
+        command.index("OH_ENABLE_BROWSER") - 1 : command.index("OH_ENABLE_BROWSER") + 1
+    ]

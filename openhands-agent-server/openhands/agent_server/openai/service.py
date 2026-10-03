@@ -117,7 +117,11 @@ def _with_profile_llm_and_system_text(
     llm: LLM,
     system_text: str,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
-    updated = agent_settings.model_copy(update={"llm": llm})
+    updated = (
+        agent_settings.model_copy(update={"llm": llm})
+        if isinstance(agent_settings, OpenHandsAgentSettings)
+        else agent_settings
+    )
     if not system_text:
         return updated
 
@@ -303,11 +307,11 @@ def _create_conversation_request(
         llm,
         system_text,
     )
-    conversation_settings = settings.conversation_settings.model_copy(
-        update={"agent_settings": agent_settings}
-    )
-    return conversation_settings.create_request(
+    return settings.conversation_settings.create_request(
         StartConversationRequest,
+        agent_settings=agent_settings.model_dump(
+            mode="json", context={"expose_secrets": True}
+        ),
         workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,
         initial_message=SendMessageRequest(

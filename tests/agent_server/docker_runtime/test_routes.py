@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -134,6 +135,57 @@ def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     assert captured["upstream_path"] == f"/api/conversations/{conversation_id}"
+
+
+@pytest.mark.parametrize("is_git_repository", [False, True])
+def test_worktree_start_forwards_only_mounted_host_paths(
+    tmp_path, monkeypatch, is_git_repository
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    if is_git_repository:
+        run_git_command(["git", "init", "-b", "main"], repository)
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+    )
+    app = FastAPI()
+    registry = DockerConversationRegistry(config)
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    monkeypatch.setattr(
+        registry,
+        "get_or_create",
+        AsyncMock(
+            return_value=SimpleNamespace(host="http://inner", api_key="inner-key")
+        ),
+    )
+    captured = {}
+
+    def receive(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(201, json={})
+
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(receive), **kwargs),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "worktree": True,
+                "workspace": {"kind": "LocalWorkspace", "working_dir": str(repository)},
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+            },
+        )
+    assert response.status_code == 201
+    expected = str(repository) if is_git_repository else "/workspace"
+    assert captured["workspace"]["working_dir"] == expected
 
 
 def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
@@ -539,3 +591,79 @@ async def test_secret_updates_are_materialized_and_profile_scoped(
     request.app.state.conversation_service.refresh_persisted_conversation.assert_awaited_once_with(
         conversation_id
     )
+
+
+def _docker_start_app(
+    tmp_path, monkeypatch
+) -> tuple[FastAPI, DockerConversationRegistry]:
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+    )
+    registry = DockerConversationRegistry(config)
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    return app, registry
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_a_rejected_start_stops_only_a_container_it_created(
+    tmp_path, monkeypatch, existing
+):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    if existing:
+        registry.provisioning.create(conversation_id)
+        conversation_dir = registry.conversation_dir(conversation_id)
+        conversation_dir.mkdir(parents=True, exist_ok=True)
+        (conversation_dir / "meta.json").write_text("{}")
+    stopped = []
+
+    async def get_or_create(_conversation_id):
+        return SimpleNamespace(host="http://inner", api_key="inner-key")
+
+    async def stop(stopped_id):
+        stopped.append(stopped_id)
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(500, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(registry, "get_or_create", get_or_create)
+    monkeypatch.setattr(registry, "stop", stop)
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+            },
+        )
+
+    assert response.status_code == 500
+    assert stopped == ([] if existing else [conversation_id])
+
+
+def test_a_symlinked_conversation_dir_is_rejected(tmp_path, monkeypatch):
+    app, registry = _docker_start_app(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    registry.config.conversations_path.mkdir(parents=True, exist_ok=True)
+    (registry.config.conversations_path / conversation_id.hex).symlink_to(elsewhere)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "conversation_id": str(conversation_id),
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+            },
+        )
+
+    assert response.status_code == 422

@@ -33,6 +33,26 @@ def test_switch_openhands_to_acp_replaces_with_fresh_variant() -> None:
     assert result.agent_context is None
 
 
+def test_switch_to_acp_drops_persona() -> None:
+    base = {"agent_kind": "openhands", "llm": {"model": "gpt"}, "persona": "x"}
+
+    result = apply_agent_settings_diff(
+        base, {"agent_kind": "acp", "acp_server": "claude-code"}
+    )
+
+    assert isinstance(result, ACPAgentSettings)
+    assert "persona" not in result.model_dump()
+
+
+def test_none_in_diff_clears_persona() -> None:
+    base = {"agent_kind": "openhands", "llm": {"model": "gpt"}, "persona": "x"}
+
+    result = apply_agent_settings_diff(base, {"persona": None})
+
+    assert isinstance(result, OpenHandsAgentSettings)
+    assert result.persona is None
+
+
 def test_switch_acp_to_openhands_replaces_with_fresh_variant() -> None:
     base = {"agent_kind": "acp", "acp_server": "claude-code"}
 
