@@ -564,6 +564,26 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(
     }
 
 
+def test_get_llm_without_active_profile_rejects_acp_settings():
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {"agent_kind": "acp", "acp_server": "claude-code"},
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": None,
+    }
+    settings_response.raise_for_status = Mock()
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    with pytest.raises(ValueError, match="ACP agent"):
+        workspace.get_llm()
+
+
 def test_get_llm_with_kwargs_override(monkeypatch):
     """Test get_llm allows kwargs to override persisted settings."""
     from pydantic import SecretStr
