@@ -1,4 +1,5 @@
 from .base import BaseWorkspace
+from .landlock import LandlockWorkspace, get_landlock_abi_version, is_landlock_supported
 from .local import LocalWorkspace
 from .models import CommandResult, FileOperationResult, PlatformType, TargetType
 from .remote import AsyncRemoteWorkspace, RemoteWorkspace
@@ -13,6 +14,7 @@ __all__ = [
     "CommandResult",
     "FileOperationResult",
     "GitProvider",
+    "LandlockWorkspace",
     "LocalWorkspace",
     "PlatformType",
     "RemoteWorkspace",
@@ -20,4 +22,6 @@ __all__ = [
     "RepoSource",
     "TargetType",
     "Workspace",
+    "get_landlock_abi_version",
+    "is_landlock_supported",
 ]
