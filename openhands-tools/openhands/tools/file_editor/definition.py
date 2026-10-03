@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field, PrivateAttr
 
@@ -192,6 +192,8 @@ Remember: when making multiple file edits in a row to the same file, you should 
 
 class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
     """A ToolDefinition subclass that automatically initializes a FileEditorExecutor."""
+
+    catalog_description: ClassVar[str] = "View, create and edit files."
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Declare file resources accessed by this action.
