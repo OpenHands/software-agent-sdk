@@ -1210,6 +1210,29 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('BashClient.stopCommand POSTs to the stop endpoint and swallows 404', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new BashClient({ host: 'http://example.com' });
+    await client.stopCommand('cmd-1');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/bash/bash_commands/cmd-1/stop',
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 })) as typeof fetch;
+
+    await expect(client.stopCommand('missing')).resolves.toBeUndefined();
+  });
+
   it('ProfilesClient.listProfiles GETs the profiles endpoint', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
