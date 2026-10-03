@@ -53,7 +53,13 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    default_observability_span_name_from_env,
+    merge_observability_metadata,
+    observability_parent_span_context_from_env,
+    observe,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -739,6 +745,7 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -777,6 +784,15 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
+        observability_metadata = merge_observability_metadata(observability_metadata)
+        observability_parent_span_context = (
+            observability_parent_span_context
+            or observability_parent_span_context_from_env()
+        )
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and observability_span_name == "conversation":
+            observability_span_name = default_span_name
+
         # Client tool specs the server already has persisted for this
         # conversation (populated when re-attaching to an existing one). These
         # must be registered locally before the initial event sync so that
@@ -860,6 +876,7 @@ class RemoteConversation(BaseConversation):
                 if observability_tags is not None
                 else [],
                 "observability_span_name": observability_span_name,
+                "observability_parent_span_context": observability_parent_span_context,
                 "user_id": user_id,
             }
             if user_id:
@@ -921,6 +938,7 @@ class RemoteConversation(BaseConversation):
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
+            parent_span_context=observability_parent_span_context,
         )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
@@ -944,6 +962,22 @@ class RemoteConversation(BaseConversation):
         conversation ID follows the server's idempotency contract; this method
         does not probe for an existing conversation.
         """
+        updates: dict[str, object] = {
+            "observability_metadata": merge_observability_metadata(
+                request.observability_metadata
+            ),
+        }
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and request.observability_span_name == "conversation":
+            updates["observability_span_name"] = default_span_name
+        parent_span_context = (
+            request.observability_parent_span_context
+            or observability_parent_span_context_from_env()
+        )
+        if parent_span_context:
+            updates["observability_parent_span_context"] = parent_span_context
+        request = request.model_copy(update=updates)
+
         response = _send_request(
             workspace.client,
             "POST",
@@ -962,6 +996,7 @@ class RemoteConversation(BaseConversation):
             metadata=request.observability_metadata,
             tags=request.observability_tags,
             conversation_tags=request.tags,
+            parent_span_context=request.observability_parent_span_context,
         )
         return conversation
 
