@@ -58,7 +58,12 @@ def get_registry(request: Request) -> DockerConversationRegistry:
 
 
 def _is_archived(registry: DockerConversationRegistry, conversation_id: UUID) -> bool:
-    metadata_path = registry.conversation_dir(conversation_id) / "meta.json"
+    try:
+        metadata_path = registry.conversation_dir(conversation_id) / "meta.json"
+    except ValueError:
+        # Symlinked runtime mount: not archived, and the caller reports the
+        # guard violation itself.
+        return False
     if not metadata_path.is_file():
         return False
     return json.loads(metadata_path.read_text()).get("archived_at") is not None
@@ -154,18 +159,19 @@ async def start_conversation(
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
     registry = get_registry(request)
-    if _is_archived(registry, conversation_id):
-        raise HTTPException(
-            409, "Conversation is archived; unarchive it before using its runtime"
-        )
-    # Only a conversation the container already created is left alone on
-    # failure; a manifest from a failed earlier start is retried like a new one.
+    # Resolve the directory before the archive check: a symlinked mount must
+    # surface as the 422 the guard in conversation_dir raises, not a 500 from
+    # reading metadata through it.
     try:
         existing = (
             registry.conversation_dir(conversation_id).joinpath("meta.json").is_file()
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if _is_archived(registry, conversation_id):
+        raise HTTPException(
+            409, "Conversation is archived; unarchive it before using its runtime"
+        )
     try:
         payload, launched = await _prepare_forward(body, registry, existing=existing)
         identity = registry.provisioning.create(conversation_id, host_workspace)
