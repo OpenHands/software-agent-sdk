@@ -33,7 +33,6 @@ from openhands.sdk.context.prompts.sections.dynamic import (
     RepoContextSection,
 )
 from openhands.sdk.context.prompts.sections.static import (
-    BrowserSection,
     EfficiencySection,
     MemorySection,
     ModelSpecificSection,
@@ -132,12 +131,6 @@ def test_refine_swaps_shell_term_on_windows_only() -> None:
     windows = EfficiencySection().render(_ctx(platform=Platform.WINDOWS)) or ""
     assert "bash" in posix and "powershell" not in posix
     assert "powershell" in windows and "bash" not in windows
-
-
-def test_browser_section_guarded_on_enable_browser() -> None:
-    assert BrowserSection().guard(_ctx(enable_browser=True)) is True
-    assert BrowserSection().guard(_ctx(enable_browser=False)) is False
-    assert BrowserSection().guard(_ctx()) is False
 
 
 def test_security_section_guarded_on_policy_filename() -> None:

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -13,11 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, WebSocket
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.docker_runtime.mediation import (
-    materialize_secrets,
-    prepare_start,
-    serialize_start,
-)
+from openhands.agent_server.docker_runtime.mediation import materialize_secrets
 from openhands.agent_server.docker_runtime.proxy import (
     bridge_websocket,
     proxy_http,
@@ -27,15 +24,27 @@ from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
 )
+from openhands.agent_server.launch import (
+    forward_to_runtime,
+    launch_http_exception,
+    launch_source,
+    request_secrets,
+    server_launch_stores,
+)
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
+    StartConversationRequest,
     UpdateSecretsRequest,
 )
+from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.agent_server.utils import safe_rmtree
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, ResolvedLaunch
 from openhands.sdk.logger import get_logger
-from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
+from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
+from openhands.sdk.profiles.resolver import ProfileNotFound
+from openhands.sdk.utils.cipher import Cipher
 
 
 logger = get_logger(__name__)
@@ -149,49 +158,95 @@ async def start_conversation(
         raise HTTPException(
             409, "Conversation is archived; unarchive it before using its runtime"
         )
+    # Only a conversation the container already created is left alone on
+    # failure; a manifest from a failed earlier start is retried like a new one.
     try:
-        prepared, launched = await prepare_start(body, registry.config)
+        existing = (
+            registry.conversation_dir(conversation_id).joinpath("meta.json").is_file()
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
+        payload, launched = await _prepare_forward(body, registry, existing=existing)
         identity = registry.provisioning.create(conversation_id, host_workspace)
         if launched is not None and identity.launched_agent_profile is None:
             identity = identity.model_copy(update={"launched_agent_profile": launched})
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
-        payload = serialize_start(prepared, identity)
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
                 params={"include_skills": include_skills},
                 headers={"X-Session-API-Key": container.api_key},
-                json=payload,
+                json=await asyncio.to_thread(payload, identity.cipher),
             )
-    except ProfileNotFound as exc:
-        raise HTTPException(404, str(exc)) from exc
-    except DanglingMcpServerRef as exc:
-        raise HTTPException(
-            422,
-            {"message": str(exc), "dangling_mcp_server_refs": exc.missing},
-        ) from exc
+    except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
+        raise launch_http_exception(exc) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except httpx.HTTPError as exc:
-        await registry.stop(conversation_id)
+        if not existing:
+            await registry.stop(conversation_id)
         raise HTTPException(
             502, "Conversation container did not accept the request"
         ) from exc
     except Exception as exc:
-        await registry.stop(conversation_id)
+        if not existing:
+            await registry.stop(conversation_id)
         logger.exception("Could not create conversation container")
         raise HTTPException(502, "Could not create conversation container") from exc
 
     content = response.json() if response.content else None
     if response.is_error:
-        await registry.stop(conversation_id)
+        if not existing:
+            await registry.stop(conversation_id)
         content = {"detail": "Conversation runtime rejected the request"}
     else:
         await get_conversation_service(request).refresh_persisted_conversation(
             conversation_id
         )
     return JSONResponse(content=content, status_code=response.status_code)
+
+
+async def _prepare_forward(
+    body: dict[str, Any], registry: DockerConversationRegistry, *, existing: bool
+) -> tuple[Callable[[Cipher], dict[str, Any]], LaunchedAgentProfile | None]:
+    """Resolve the start request with this host's stores; the container finalizes.
+
+    The profile of a conversation that already exists is not resolved again:
+    its container returns the conversation as it is.
+    """
+    config = registry.config
+    start = StartConversationRequest.model_validate(
+        body,
+        context={"cipher": config.cipher} if body.get("secrets_encrypted") else None,
+    )
+    try:
+        settings = await asyncio.to_thread(get_settings_store(config).load)
+    except (OSError, PermissionError):
+        settings = None
+    settings = settings or PersistedSettings()
+    context = settings.agent_settings.agent_context
+    load_memory = context is not None and context.load_memory
+    secrets = await asyncio.to_thread(request_secrets, start, config.cipher)
+    source = (
+        None
+        if existing and start.agent_profile_id is not None
+        else await asyncio.to_thread(
+            launch_source,
+            start,
+            lambda: server_launch_stores(settings, config.cipher),
+            config.cipher,
+        )
+    )
+
+    def payload(cipher: Cipher) -> dict[str, Any]:
+        return forward_to_runtime(
+            start, source, secrets, cipher, load_memory=load_memory
+        )
+
+    launched = source.profile if isinstance(source, ResolvedLaunch) else None
+    return payload, launched
 
 
 @docker_conversation_router.get(
