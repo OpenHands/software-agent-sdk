@@ -172,6 +172,19 @@ class DelegateExecutor(ToolExecutor):
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
+            agent_context = parent_conversation.agent.agent_context
+            disabled = set(agent_context.disabled_agents if agent_context else [])
+            blocked = sorted({t for t in resolved_agent_types if t in disabled})
+            if blocked:
+                return DelegateObservation.from_text(
+                    text=(
+                        f"Sub-agent type(s) disabled for this conversation: "
+                        f"{', '.join(blocked)} (agent_context.disabled_agents). "
+                        f"Choose another agent type."
+                    ),
+                    command=action.command,
+                    is_error=True,
+                )
             factories = [
                 get_agent_factory(name=agent_type)
                 for agent_type in resolved_agent_types

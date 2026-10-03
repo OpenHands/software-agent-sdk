@@ -1,6 +1,7 @@
 import json
+import logging
 
-from openhands.sdk import Agent, Conversation, LocalConversation, Tool
+from openhands.sdk import Agent, AgentContext, Conversation, LocalConversation, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible.observation import ObservationEvent
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
@@ -273,6 +274,41 @@ class TestTaskToolSetIntegration:
         obs = observations[0]
         assert obs.is_error is True
         assert obs.status == TaskStatus.ERROR
+
+    def test_disabled_agent_refusal_returns_clean_error(self, tmp_path, caplog):
+        """A deny-list refusal is a policy outcome, not a crash: the model gets
+        an error observation naming the type, and nothing logs at ERROR."""
+        sub_llm = TestLLM.from_messages([_text_message("never reached")])
+        _register_simple_agent("test_agent", sub_llm)
+
+        parent_llm = TestLLM.from_messages(
+            [
+                _task_tool_call("call_1", prompt="Run this"),
+                _text_message("Understood, that type is unavailable."),
+            ]
+        )
+
+        agent = Agent(
+            llm=parent_llm,
+            tools=[Tool(name=TaskToolSet.name)],
+            agent_context=AgentContext(disabled_agents=["test_agent"]),
+        )
+        conversation = Conversation(
+            agent=agent, workspace=str(tmp_path), visualizer=None
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            conversation.send_message("Run this")
+            conversation.run()
+
+        observations = _get_task_observations(conversation)
+        assert len(observations) == 1
+        obs = observations[0]
+        assert obs.is_error is True
+        assert "test_agent" in obs.text
+        assert "disabled" in obs.text
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert error_records == []
 
     def test_task_ids_are_unique_and_sequential(self, tmp_path):
         """Each task gets a unique, incrementing ID."""
