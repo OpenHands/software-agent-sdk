@@ -110,8 +110,9 @@ class ConversationConfig(BaseModel):
         default=False,
         description=(
             "If true and the workspace is already inside a git repository, create "
-            "a dedicated git worktree for this conversation under "
-            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
+            "a dedicated git worktree for this conversation under the server's "
+            "conversation worktree root (by default "
+            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`)."
         ),
     )
     conversation_id: UUID | None = Field(

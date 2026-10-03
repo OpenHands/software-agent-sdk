@@ -23,7 +23,9 @@ from openhands.agent_server.conversation_service import (
     ConversationService,
     _compose_conversation_info,
     _ConversationRecord,
+    _create_conversation_worktree,
     _get_worktree_start_point,
+    _plan_conversation_worktree,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -56,6 +58,38 @@ from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
+
+
+@pytest.mark.parametrize("missing_worktree", ["sibling", "owned"])
+def test_worktree_creation_preserves_unmounted_sibling(tmp_path, missing_worktree):
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    workspace = LocalWorkspace(working_dir=repo)
+    root = tmp_path / "worktrees"
+    sibling_id, conversation_id = uuid4(), uuid4()
+    sibling_plan = _plan_conversation_worktree(workspace, sibling_id, root)
+    owned_plan = _plan_conversation_worktree(workspace, conversation_id, root)
+    assert sibling_plan is not None
+    assert owned_plan is not None
+    sibling = _create_conversation_worktree(sibling_plan)
+    missing_root = Path(sibling.working_dir)
+    if missing_worktree == "owned":
+        owned = _create_conversation_worktree(owned_plan)
+        missing_root = Path(owned.working_dir)
+    hidden_root = tmp_path / "unmounted"
+    missing_root.rename(hidden_root)
+
+    created = _create_conversation_worktree(owned_plan)
+
+    assert created is not None
+    if missing_worktree == "sibling":
+        hidden_root.rename(missing_root)
+    assert run_git_command(
+        ["git", "branch", "--show-current"], sibling.working_dir
+    ) == (f"openhands/{sibling_id}")
+    assert run_git_command(
+        ["git", "branch", "--show-current"], created.working_dir
+    ) == (f"openhands/{conversation_id}")
 
 
 @pytest.fixture

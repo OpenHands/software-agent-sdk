@@ -24,6 +24,7 @@ from openhands.agent_server.docker_runtime.routers import (
 )
 from openhands.agent_server.event_router import event_read_router
 from openhands.agent_server.models import UpdateSecretsRequest
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.secret import LookupSecret
 
@@ -134,6 +135,57 @@ def test_root_conversation_proxy_preserves_canonical_path(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     assert captured["upstream_path"] == f"/api/conversations/{conversation_id}"
+
+
+@pytest.mark.parametrize("is_git_repository", [False, True])
+def test_worktree_start_forwards_only_mounted_host_paths(
+    tmp_path, monkeypatch, is_git_repository
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    if is_git_repository:
+        run_git_command(["git", "init", "-b", "main"], repository)
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        workspace_path=tmp_path / "workspaces",
+        secret_key=SecretStr("outer-key"),
+    )
+    app = FastAPI()
+    registry = DockerConversationRegistry(config)
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    monkeypatch.setattr(
+        registry,
+        "get_or_create",
+        AsyncMock(
+            return_value=SimpleNamespace(host="http://inner", api_key="inner-key")
+        ),
+    )
+    captured = {}
+
+    def receive(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(201, json={})
+
+    client_class = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(receive), **kwargs),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "worktree": True,
+                "workspace": {"kind": "LocalWorkspace", "working_dir": str(repository)},
+                "agent": {"kind": "Agent", "llm": {"model": "test"}},
+            },
+        )
+    assert response.status_code == 201
+    expected = str(repository) if is_git_repository else "/workspace"
+    assert captured["workspace"]["working_dir"] == expected
 
 
 def test_runtime_credentials_and_release_use_the_existing_sdk_contract(
@@ -284,6 +336,126 @@ def test_delete_stops_runtime_before_removing_outer_owned_state(tmp_path, monkey
     )
     assert not conversation_dir.exists()
     assert not runtime_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "head_state",
+    ["expected", "switched", "detached", "unregistered", "missing-repository"],
+)
+def test_delete_unregisters_host_worktree_before_removing_runtime(
+    tmp_path, monkeypatch, head_state
+):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    run_git_command(["git", "init", "-b", "main"], repository)
+    run_git_command(["git", "config", "user.name", "Test User"], repository)
+    run_git_command(["git", "config", "user.email", "test@example.com"], repository)
+    run_git_command(["git", "commit", "--allow-empty", "-m", "initial"], repository)
+
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    identity = registry.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    registry.provisioning.save(identity)
+    conversation_dir = registry.conversation_dir(conversation_id)
+    conversation_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    runtime_dir = registry.provisioning.runtime_dir(conversation_id)
+    worktree_root = runtime_dir / "worktrees" / str(conversation_id) / repository.name
+    worktree_root.parent.mkdir(parents=True)
+    branch = f"openhands/{conversation_id}"
+    sibling_root = tmp_path / "sibling" / repository.name
+    run_git_command(
+        ["git", "worktree", "add", "-b", "sibling", str(sibling_root), "main"],
+        repository,
+    )
+    run_git_command(
+        ["git", "worktree", "add", "-b", branch, str(worktree_root), "main"],
+        repository,
+    )
+    if head_state == "switched":
+        run_git_command(["git", "switch", "-c", "agent-changed-branch"], worktree_root)
+    elif head_state == "detached":
+        run_git_command(["git", "checkout", "--detach"], worktree_root)
+    elif head_state == "unregistered":
+        run_git_command(
+            ["git", "worktree", "remove", "--force", str(worktree_root)], repository
+        )
+        worktree_root.mkdir()
+    elif head_state == "missing-repository":
+        repository.rename(tmp_path / "moved-repository")
+    registry.stop = AsyncMock()
+
+    app = FastAPI()
+    app.state.conversation_registry = registry
+    app.state.conversation_service = AsyncMock()
+    app.include_router(docker_conversation_router, prefix="/api")
+    with TestClient(app) as client:
+        response = client.delete(f"/api/conversations/{conversation_id}")
+
+    assert response.status_code == 200
+    assert not runtime_dir.exists()
+    assert not registry.provisioning.manifest_path(conversation_id).exists()
+    assert not conversation_dir.exists()
+    if head_state != "missing-repository":
+        worktree_state = run_git_command(
+            ["git", "worktree", "list", "--porcelain"], repository
+        )
+        assert str(worktree_root) not in worktree_state
+        assert "prunable" not in worktree_state
+        assert run_git_command(["git", "branch", "--list", branch], repository) == ""
+        assert run_git_command(["git", "branch", "--show-current"], sibling_root) == (
+            "sibling"
+        )
+
+
+def test_cleanup_worktree_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    run_git_command(["git", "init", "-b", "main"], repository)
+    run_git_command(["git", "config", "user.name", "Test User"], repository)
+    run_git_command(["git", "config", "user.email", "test@example.com"], repository)
+    run_git_command(["git", "commit", "--allow-empty", "-m", "initial"], repository)
+
+    config = Config(
+        conversations_path=tmp_path / "conversations",
+        secret_key=SecretStr("outer-key"),
+    )
+    conversation_id = uuid4()
+    registry = DockerConversationRegistry(config)
+    identity = registry.provisioning.create(
+        conversation_id, workspace_path=repository
+    ).model_copy(update={"worktree_repository_path": repository})
+    registry.provisioning.save(identity)
+    worktree_root = (
+        registry.provisioning.runtime_dir(conversation_id)
+        / "worktrees"
+        / str(conversation_id)
+        / repository.name
+    )
+    worktree_root.parent.mkdir(parents=True)
+    branch = f"openhands/{conversation_id}"
+    run_git_command(
+        ["git", "worktree", "add", "-b", branch, str(worktree_root), "main"],
+        repository,
+    )
+
+    registry.cleanup_worktree(conversation_id)
+    registry.cleanup_worktree(conversation_id)
+
+    worktree_state = run_git_command(
+        ["git", "worktree", "list", "--porcelain"], repository
+    )
+    assert str(worktree_root) not in worktree_state
+    assert "prunable" not in worktree_state
+    assert run_git_command(["git", "branch", "--list", branch], repository) == ""
 
 
 @pytest.mark.asyncio
