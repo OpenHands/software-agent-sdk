@@ -5661,8 +5661,8 @@ class TestReapplySessionModelOnResume:
     @pytest.mark.asyncio
     async def test_client_rejection_is_swallowed_on_resume(self):
         # A client/protocol rejection (method-not-found = server doesn't support
-        # the call, or invalid model id) must not break resume — mirrors the
-        # load_session fallback. The error is logged, not raised.
+        # the call, or invalid model id) must not break model reapplication.
+        # The error is logged, not raised.
         conn = AsyncMock()
         conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
@@ -5678,8 +5678,7 @@ class TestReapplySessionModelOnResume:
     @pytest.mark.asyncio
     async def test_any_request_error_is_swallowed_on_resume(self):
         # Any ACPRequestError (here a -32603 server error) is tolerated on
-        # resume — like the load_session fallback — so a flaky/stale server
-        # can't break session startup; the session keeps the server default.
+        # model reapplication; the resumed session keeps the server default.
         conn = AsyncMock()
         conn.set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
@@ -6533,21 +6532,30 @@ class TestACPSessionIdPersistence:
         assert state.agent_state["acp_suffix_installed"] is True
         assert agent._suffix_install_state == "installed"
 
-    def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
-        """ACPRequestError on load_session → new_session is called."""
+    @pytest.mark.parametrize("code", [-32603, -32602, -32000])
+    def test_load_session_failure_preserves_session(self, tmp_path, code):
+        """A failed resume must not discard the provider's conversation history."""
         agent = _make_agent()
         state = _make_state(tmp_path)
         state.agent_state = {**state.agent_state, "acp_session_id": "stale-sess"}
         conn = self._make_conn(
             new_session_id="replacement-sess",
-            load_exc=ACPRequestError(-32602, "unknown session"),
+            load_exc=ACPRequestError(code, "provider failure"),
         )
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        with (
+            self._transport_patches(conn),
+            pytest.raises(
+                ACPRequestError, match="Could not resume the existing ACP session"
+            ) as exc,
+        ):
+            agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert agent._session_id == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert exc.value.code == code
+        assert state.agent_state["acp_session_id"] == "stale-sess"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
 
     # ----- explicit acp_resume_session_id (the durable-mirror override) -----
 
@@ -6615,13 +6623,8 @@ class TestACPSessionIdPersistence:
         assert client.before_mask is not None
         assert client.before_mask() is None
 
-    def test_acp_resume_session_id_failure_falls_back_to_new_session(self, tmp_path):
-        """If the server can't load the explicit id, fall back to new_session.
-
-        The ACP server may have lost its own session storage (no PVC, different
-        host …); failing closed by aborting is worse than starting fresh.
-        Matches the existing ``load_session`` failure path.
-        """
+    def test_acp_resume_session_id_failure_preserves_override(self, tmp_path):
+        """An explicit resume must fail rather than silently start fresh."""
         agent = _make_agent(acp_resume_session_id="missing-sess")
         state = _make_state(tmp_path)
         conn = self._make_conn(
@@ -6629,11 +6632,13 @@ class TestACPSessionIdPersistence:
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
 
-        self._patched_start_acp_server(agent, state, conn=conn)
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert agent._session_id == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert agent.acp_resume_session_id == "missing-sess"
+        assert "acp_session_id" not in state.agent_state
 
     def test_acp_resume_session_id_matches_fs_id_uses_fs_cwd(self, tmp_path):
         """When the explicit id equals the FS id, the FS cwd is reused.
@@ -6685,13 +6690,14 @@ class TestACPSessionIdPersistence:
             new_session_id="replacement",
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
-        with caplog.at_level("WARNING"):
-            self._patched_start_acp_server(agent2, state2, conn=conn2)
-        fail_warnings = "\n".join(
-            rec.getMessage()
-            for rec in caplog.records
-            if "load_session" in rec.getMessage()
-        )
+        with (
+            caplog.at_level("WARNING"),
+            self._transport_patches(conn2),
+            pytest.raises(ACPRequestError),
+        ):
+            agent2.init_state(state2, on_event=lambda _: None)
+        fail_warnings = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert "Could not resume" in fail_warnings
         assert sensitive_explicit not in fail_warnings
 
     def test_fingerprint_session_id_helper(self):
@@ -7068,18 +7074,8 @@ class TestACPSessionIdPersistence:
         assert agent._model_override_applied is False
         assert "acp_current_model_id" not in state.agent_state
 
-    def test_fresh_replacement_clears_stale_model_when_new_session_omits_models(
-        self, tmp_path
-    ):
-        """Fresh replacement (load_session failed → new_session) with no
-        ``models`` block in the response must clear the persisted
-        ``acp_current_model_*`` rather than carry the old session's values
-        forward.
-
-        Otherwise ``acp_session_id`` points at the replacement session while
-        the model fields still describe the dead one — ``ConversationInfo``
-        renders the wrong chip.
-        """
+    def test_failed_resume_preserves_model_and_emits_error(self, tmp_path):
+        """Failed resume retains the session metadata and surfaces a useful error."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7093,30 +7089,29 @@ class TestACPSessionIdPersistence:
                 {"model_id": "claude-opus-4-1", "name": "Opus 4.1"}
             ],
         }
-        # load_session fails → new_session runs; its response has no .models.
-        new_session_response = MagicMock(spec=["session_id"])
-        new_session_response.session_id = "replacement-sess"
+        before = dict(state.agent_state)
         conn = self._make_conn(
-            load_exc=ACPRequestError(-32602, "unknown session"),
+            load_exc=ACPRequestError(-32603, "Internal error", {"reason": "busy"}),
         )
-        conn.new_session = AsyncMock(return_value=new_session_response)
 
         agent._executor = AsyncExecutor()
-        with self._transport_patches(conn):
-            agent.init_state(state, on_event=lambda _: None)
+        events = []
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent.init_state(state, on_event=events.append)
 
-        # Replacement id wins, and the stale model fields are gone.
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
-        assert "acp_current_model_id" not in state.agent_state
-        assert "acp_available_models" not in state.agent_state
+        assert state.agent_state == before
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPInitError"
+        assert "No new session was started" in errors[0].detail
+        assert "busy" in errors[0].detail
+        conn.new_session.assert_not_awaited()
 
     def test_cwd_mismatch_clears_stale_model_when_new_session_omits_models(
         self, tmp_path
     ):
-        """Same contract as the load_session-failure case, but reached via
-        the cwd-mismatch branch in ``_start_acp_server`` (which sets
-        ``prior_session_id = None`` before falling through to new_session).
-        """
+        """A changed workspace clears stale model state on a fresh session."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7145,11 +7140,8 @@ class TestACPSessionIdPersistence:
         assert "acp_current_model_id" not in state.agent_state
         assert "acp_available_models" not in state.agent_state
 
-    def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
-        """When load_session fails and new_session runs, init_state must
-        overwrite state.agent_state['acp_session_id'] with the new id so
-        the next restart doesn't keep trying to resume the stale one.
-        """
+    def test_failed_resume_retains_session_id_in_agent_state(self, tmp_path):
+        """A failed resume must retain the original id for another attempt."""
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         agent = _make_agent()
@@ -7165,18 +7157,16 @@ class TestACPSessionIdPersistence:
         )
 
         agent._executor = AsyncExecutor()
-        with self._transport_patches(conn):
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
             agent.init_state(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
 
-    def test_fallback_replacement_clears_suffix_marker(self, tmp_path):
-        """If load_session fails, the replacement session has not seen any
-        suffix yet, even if the stale session had persisted the marker.
-        """
+    def test_cancel_drain_failed_resume_can_retry_original_session(self, tmp_path):
+        """Retry after a failed restart keeps the original session and suffix."""
         agent = _make_agent(
             agent_context=AgentContext(system_message_suffix="Team rules.")
         )
@@ -7192,15 +7182,23 @@ class TestACPSessionIdPersistence:
             load_exc=ACPRequestError(-32602, "unknown session"),
         )
 
-        with self._transport_patches(conn):
-            agent.init_state(state, on_event=lambda _: None)
+        with self._transport_patches(conn), pytest.raises(ACPRequestError):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
 
         conn.load_session.assert_awaited_once()
-        conn.new_session.assert_awaited_once()
-        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        conn.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
-        assert state.agent_state.get("acp_suffix_installed") is not True
-        assert agent._suffix_install_state == "pending_first_prompt"
+        assert state.agent_state["acp_suffix_installed"] is True
+
+        recovered = self._make_conn()
+        with self._transport_patches(recovered):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
+
+        assert recovered.load_session.call_args.kwargs["session_id"] == "stale-sess"
+        recovered.new_session.assert_not_awaited()
+        assert state.agent_state["acp_session_id"] == "stale-sess"
+        assert state.agent_state["acp_suffix_installed"] is True
 
     def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
         """load_session must be followed by the same set_session_model and
