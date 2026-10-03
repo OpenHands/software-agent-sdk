@@ -1,6 +1,8 @@
 import json
+import os
 import shutil
 import warnings
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -2059,6 +2061,29 @@ def test_acp_custom_server_with_command_resolves() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _mock_acp_binary_probe_for_mock_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure mock / non-existent binary paths return their pinned version,
+    while real paths created on disk (e.g. in tmp_path) execute the real probe."""
+    import openhands.sdk.settings.model as model_mod
+    from openhands.sdk.settings.acp_install_catalog import ACP_INSTALL_CATALOG
+
+    model_mod._probe_acp_binary_version.cache_clear()
+    pinned_by_bin = {
+        spec.binary_name: spec.packages[0].version
+        for spec in ACP_INSTALL_CATALOG.values()
+    }
+    real_probe = model_mod._probe_acp_binary_version
+
+    def fake_probe(path: str) -> str | None:
+        if os.path.exists(path):
+            return real_probe(path)
+        bin_name = Path(path).name
+        return pinned_by_bin.get(bin_name)
+
+    monkeypatch.setattr(model_mod, "_probe_acp_binary_version", fake_probe)
+
+
 def _which_returning(*available: str):
     """Build a ``shutil.which`` stub resolving only the named binaries."""
     paths = {name: f"/usr/local/bin/{name}" for name in available}
@@ -2137,6 +2162,117 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     """
     monkeypatch.setattr(shutil, "which", lambda _: None)
     settings = ACPAgentSettings(acp_server="codex")
+    assert settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "--prefer-offline",
+        "@agentclientprotocol/codex-acp@1.10.0",
+    ]
+    claude_settings = ACPAgentSettings(acp_server="claude-code")
+    assert claude_settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "--prefer-offline",
+        "@agentclientprotocol/claude-agent-acp@0.63.0",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("server", "binary_name", "version_output", "expected_cmd"),
+    [
+        (
+            "codex",
+            "codex-acp",
+            "codex-acp 1.10.0",
+            ["codex-acp"],
+        ),
+        (
+            "claude-code",
+            "claude-agent-acp",
+            "0.63.0",
+            ["claude-agent-acp"],
+        ),
+    ],
+)
+def test_acp_resolve_command_with_real_script_pinned_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server: ACPServerKind,
+    binary_name: str,
+    version_output: str,
+    expected_cmd: list[str],
+) -> None:
+    """A provider binary on PATH that reports the pinned version is rewritten."""
+    script = tmp_path / binary_name
+    script.write_text(f"#!/bin/sh\necho '{version_output}'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+
+    settings = ACPAgentSettings(acp_server=server)
+    assert settings.resolve_acp_command() == expected_cmd
+
+
+@pytest.mark.parametrize(
+    ("server", "binary_name", "stale_version_output", "expected_npx"),
+    [
+        (
+            "codex",
+            "codex-acp",
+            "codex-acp 0.16.0",
+            ["npx", "-y", "--prefer-offline", "@agentclientprotocol/codex-acp@1.10.0"],
+        ),
+        (
+            "claude-code",
+            "claude-agent-acp",
+            "0.44.0",
+            [
+                "npx",
+                "-y",
+                "--prefer-offline",
+                "@agentclientprotocol/claude-agent-acp@0.63.0",
+            ],
+        ),
+    ],
+)
+def test_acp_resolve_command_with_real_script_stale_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    server: ACPServerKind,
+    binary_name: str,
+    stale_version_output: str,
+    expected_npx: list[str],
+) -> None:
+    """A stale provider binary on PATH is not substituted for the pinned npx command."""
+    script = tmp_path / binary_name
+    script.write_text(f"#!/bin/sh\necho '{stale_version_output}'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+
+    settings = ACPAgentSettings(acp_server=server)
+    assert settings.resolve_acp_command() == expected_npx
+
+
+def test_acp_resolve_command_with_real_script_unparseable_or_failing_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the version cannot be determined (unparseable or error exit), npx is kept."""
+    # 1. Unparseable output
+    script = tmp_path / "codex-acp"
+    script.write_text("#!/bin/sh\necho 'error: unknown option'\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+
+    settings = ACPAgentSettings(acp_server="codex")
+    assert settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "--prefer-offline",
+        "@agentclientprotocol/codex-acp@1.10.0",
+    ]
+
+    # 2. Failing exit code
+    script.write_text("#!/bin/sh\nexit 1\n")
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",

@@ -23,6 +23,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -115,6 +116,10 @@ from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextC
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.settings.acp_install_catalog import (
+    _ACP_VERSION_RE,
+    ACP_INSTALL_CATALOG,
+)
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
     ACPEnvConflictSpec,
@@ -174,7 +179,7 @@ _ACP_AUTH_TIMEOUT: float = float(os.environ.get("ACP_AUTH_TIMEOUT", "30.0"))
 _ACP_NPX_CACHE_WARM_TIMEOUT: float = float(
     os.environ.get("ACP_NPX_CACHE_WARM_TIMEOUT", "300")
 )
-_ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
+# _ACP_VERSION_RE imported from acp_install_catalog
 
 _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 
@@ -432,17 +437,25 @@ def _warn_auth_selection_failure(
     )
 
 
-def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
+def _log_acp_provider_version(
+    agent_name: str,
+    agent_version: str,
+    command: Sequence[str] | None = None,
+) -> None:
     try:
         provider = detect_acp_provider_by_agent_name(agent_name)
         if provider is None:
             return
-        pinned_version = None
-        for command_part in provider.default_command:
-            package, separator, version = command_part.rpartition("@")
-            if separator and package:
-                pinned_version = version
-                break
+        catalog_spec = ACP_INSTALL_CATALOG.get(provider.key)
+        if catalog_spec and catalog_spec.packages:
+            pinned_version = catalog_spec.packages[0].version
+        else:
+            pinned_version = None
+            for command_part in provider.default_command:
+                package, separator, version = command_part.rpartition("@")
+                if separator and package:
+                    pinned_version = version
+                    break
         reported_version = next(
             (
                 match.group(1)
@@ -470,14 +483,25 @@ def _log_acp_provider_version(agent_name: str, agent_version: str) -> None:
                 agent_version,
             )
         elif pinned_version is not None and reported_version != pinned_version:
-            logger.warning(
-                "ACP provider version mismatch: provider=%s, pinned_version=%r, "
-                "reported_version=%r; provider was probably installed at runtime "
-                "via the npx fallback rather than preinstalled in the image",
-                provider.key,
-                pinned_version,
-                reported_version,
-            )
+            if command and command[0] != "npx":
+                binary_path = shutil.which(command[0]) or command[0]
+                logger.warning(
+                    "ACP provider version mismatch: provider=%s, pinned_version=%r, "
+                    "reported_version=%r; running binary %s at %s",
+                    provider.key,
+                    pinned_version,
+                    reported_version,
+                    command[0],
+                    binary_path,
+                )
+            else:
+                logger.warning(
+                    "ACP provider version mismatch: provider=%s, pinned_version=%r, "
+                    "reported_version=%r",
+                    provider.key,
+                    pinned_version,
+                    reported_version,
+                )
     except Exception:
         logger.warning(
             "Could not verify ACP provider version: agent_name=%r, agent_version=%r",
@@ -3098,7 +3122,7 @@ class ACPAgent(AgentBase):
                 agent_name,
                 agent_version,
             )
-            _log_acp_provider_version(agent_name, agent_version)
+            _log_acp_provider_version(agent_name, agent_version, self.acp_command)
 
             # Translate any configured MCP servers into ACP protocol objects,
             # gating remote (http/sse) transports on what this server advertised

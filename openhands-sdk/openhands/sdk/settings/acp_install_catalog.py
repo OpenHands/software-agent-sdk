@@ -20,6 +20,7 @@ bump only needs to happen here.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -36,6 +37,9 @@ class ACPPackagePin:
     def pinned(self) -> str:
         """The ``name@version`` token passed to ``npm``/``npx``."""
         return f"{self.name}@{self.version}"
+
+
+_ACP_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)")
 
 
 @dataclass(frozen=True)
