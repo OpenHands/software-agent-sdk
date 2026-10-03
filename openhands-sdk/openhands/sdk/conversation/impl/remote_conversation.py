@@ -957,9 +957,10 @@ class RemoteConversation(BaseConversation):
     ) -> Self:
         """Submit a creation request and connect to the returned conversation.
 
-        The request selects the agent or saved server profile and all server
-        options. A supplied conversation ID follows the server's idempotency
-        contract; this method does not probe for an existing conversation.
+        The request selects the agent source (``agent``, ``agent_settings`` or a
+        saved ``agent_profile_id``) and all server options. A supplied
+        conversation ID follows the server's idempotency contract; this method
+        does not probe for an existing conversation.
         """
         updates: dict[str, object] = {
             "observability_metadata": merge_observability_metadata(
