@@ -1014,3 +1014,67 @@ def test_security_risk_param_allowed_for_tool_that_does_not_declare_it():
     arguments = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert arguments["message"] == "Hello!"
     assert arguments["security_risk"] == "LOW"
+
+
+def test_convert_non_fncall_to_fncall_tool_call_tag():
+    """Repro of #4540: Synthetic provider emits <tool_call> wrapper syntax.
+
+    The conversion should rewrite the wrapper tags into the canonical
+    <function=name></function> form and produce a structured tool_call.
+    """
+    non_fncall_messages = [
+        {"role": "user", "content": "Please run ls"},
+        {
+            "role": "assistant",
+            "content": (
+                "I'll run ls.\n\n"
+                "<tool_call>terminal\n"
+                "<parameter=command>ls</parameter>\n"
+                "</tool_call>"
+            ),
+        },
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        non_fncall_messages, FNCALL_TOOLS
+    )
+
+    assistant_msgs = [msg for msg in fncall_messages if msg.get("role") == "assistant"]
+    tool_call_msgs = [msg for msg in assistant_msgs if msg.get("tool_calls")]
+
+    assert len(tool_call_msgs) == 1, (
+        f"Expected exactly one assistant message with a tool_call, "
+        f"got {len(tool_call_msgs)}: {fncall_messages!r}"
+    )
+    tool_call = tool_call_msgs[0]["tool_calls"][0]
+    assert tool_call["function"]["name"] == "terminal"
+    assert json.loads(tool_call["function"]["arguments"]) == {"command": "ls"}
+    # The raw wrapper tag must NOT leak into the assistant text content.
+    assert "<tool_call>" not in tool_call_msgs[0]["content"]
+    assert "</tool_call>" not in tool_call_msgs[0]["content"]
+
+
+def test_convert_non_fncall_to_fncall_tool_call_prose_not_converted():
+    """Plain prose that mentions the literal "<tool_call>" substring must not be
+    converted into a tool_call. Acceptance criterion from #4540."""
+    non_fncall_messages = [
+        {"role": "user", "content": "Tell me about tool calls."},
+        {
+            "role": "assistant",
+            "content": (
+                "I can mention <tool_call> syntax in prose, but I should not "
+                "actually invoke a tool unless you ask me to."
+            ),
+        },
+    ]
+
+    fncall_messages = convert_non_fncall_messages_to_fncall_messages(
+        non_fncall_messages, FNCALL_TOOLS
+    )
+
+    for msg in fncall_messages:
+        if msg.get("role") != "assistant":
+            continue
+        assert not msg.get("tool_calls"), (
+            f"Prose-only message should not produce a tool_call, got: {msg!r}"
+        )
