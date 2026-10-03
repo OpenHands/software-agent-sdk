@@ -437,13 +437,7 @@ def test_ask_agent_with_existing_events_and_tool_calls(
 def test_ask_agent_drops_in_flight_action_without_observation(
     mock_completion, tmp_path, agent
 ):
-    """ask_agent must not forward an ActionEvent whose observation hasn't landed.
-
-    The main agent can be mid-tool-call when ask_agent() runs on another thread,
-    leaving an ActionEvent in the cached view without its ObservationEvent.
-    Anthropic rejects a ``tool_use`` with no following ``tool_result``, so the
-    orphaned action must be dropped before the context is sent.
-    """
+    """ask_agent must drop an in-flight ActionEvent that has no observation yet."""
     mock_completion.return_value = create_mock_llm_response("answer")
 
     conv = Conversation(
