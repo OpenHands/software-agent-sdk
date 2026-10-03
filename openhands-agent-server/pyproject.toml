@@ -22,8 +22,8 @@ dependencies = [
 [project.optional-dependencies]
 # Product-analytics exporter. Optional on purpose: the core server and every
 # library/headless consumer must be able to run without a vendor analytics SDK
-# on the import path. Pinned to the major already resolved in uv.lock (6.7.7,
-# via browser-use) so installing the extra cannot force a resolver conflict.
+# on the import path. Constrained to the major already resolved in uv.lock so
+# installing the extra cannot force a resolver conflict.
 posthog = ["posthog>=7.60.0,<8"]
 
 [project.urls]
