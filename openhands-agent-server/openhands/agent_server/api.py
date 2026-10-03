@@ -133,33 +133,26 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
 
 
 def _cleanup_stale_tmux_sessions() -> None:
-    """Clean up any stale tmux sessions on server startup.
-
-    Tmux sessions live in a separate process that survives agent-server restarts.
-    This function kills all existing sessions on the shared OpenHands tmux socket
-    to prevent accumulation of orphaned sessions.
-    """
-    try:
-        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
-        sessions = server.sessions
-        if not sessions:
-            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
-            return
-
-        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
-
-        for session in sessions:
-            try:
-                logger.debug("Killing tmux session: %s", session.name)
-                session.kill()
-            except Exception as e:
-                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
-
-        logger.info("Tmux cleanup completed")
-
-    except Exception as e:
-        # Don't let tmux cleanup failures prevent server startup
-        logger.warning("Failed to cleanup tmux sessions: %s", e)
+    """Clean up legacy and isolated terminal sockets on server startup."""
+    if os.name != "posix":
+        return
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    socket_names = [TMUX_SOCKET_NAME]
+    socket_names.extend(
+        path.name
+        for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
+        if path.is_socket()
+    )
+    for socket_name in socket_names:
+        try:
+            server = libtmux.Server(socket_name=socket_name)
+            for session in server.sessions:
+                try:
+                    session.kill()
+                except Exception as e:
+                    logger.warning("Failed to kill tmux session %s: %s", session, e)
+        except Exception as e:
+            logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
 
 
 @asynccontextmanager
