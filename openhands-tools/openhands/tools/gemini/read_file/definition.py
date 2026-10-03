@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import Field
 from rich.text import Text
@@ -108,6 +108,8 @@ MAX_LINES_PER_READ = 1000
 
 class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
     """Tool for reading file contents with pagination support."""
+
+    user_selectable: ClassVar[bool] = False
 
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Lock on the target file path so a read never sees
