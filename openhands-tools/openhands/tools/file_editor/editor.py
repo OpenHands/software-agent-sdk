@@ -490,6 +490,9 @@ class FileEditor:
         truncating the file. Note that the fallback transcodes the whole file to
         UTF-8.
         """
+        if path.is_symlink() and path.exists():
+            path = path.resolve()
+
         default = self._encoding_manager.default_encoding
         if encoding != default and not _is_encodable(file_text, encoding):
             logger.warning(
