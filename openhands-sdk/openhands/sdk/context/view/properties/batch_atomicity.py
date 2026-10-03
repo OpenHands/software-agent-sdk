@@ -1,6 +1,5 @@
 from collections import defaultdict
 from collections.abc import Sequence
-from itertools import pairwise
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.base import ViewPropertyBase
@@ -61,17 +60,15 @@ class BatchAtomicityProperty(ViewPropertyBase):
             current_view_events
         )
 
-        for index, (left, right) in enumerate(pairwise(current_view_events)):
-            # If the left and right event correspond to action events with the same LLM
-            # response ID, they're part of the same batch. We need to remove the index
-            # between them -- the enumeration index corresponds to the index for `left`,
-            # so we remove `index + 1`.
-            if (
-                isinstance(left, ActionEvent)
-                and isinstance(right, ActionEvent)
-                and left.llm_response_id == right.llm_response_id
-            ):
-                manipulation_indices.remove(index + 1)
+        last_action_index: dict[EventID, int] = {}
+        for index, event in enumerate(current_view_events):
+            if isinstance(event, ActionEvent):
+                previous = last_action_index.get(event.llm_response_id)
+                if previous is not None:
+                    manipulation_indices.difference_update(
+                        range(previous + 1, index + 1)
+                    )
+                last_action_index[event.llm_response_id] = index
 
         return manipulation_indices
 

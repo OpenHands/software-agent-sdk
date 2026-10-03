@@ -1,0 +1,166 @@
+{
+  "variant": "candidate",
+  "case": "3",
+  "provenance": {
+    "source_file": "pr-case3.raw.json",
+    "source_sha256": "345fb188cf723bcf4687d6b3d670d39d5731d7abcad7431e14d99d4d36d94b6e",
+    "record_label": "pr-rerun",
+    "source_revision": "Not recorded by the raw recorder; supplied for the local candidate."
+  },
+  "versions": {
+    "python": "3.13.12",
+    "openhands_sdk": "1.49.6",
+    "openhands_tools": "1.49.6",
+    "litellm": "1.93.0",
+    "pydantic": "2.12.5"
+  },
+  "scripted_first_response": {
+    "reasoning_content": "(120 chars, see live_deepseek.py)",
+    "tool_calls": [
+      {
+        "id": "call_00_Aa1bC2dE3f",
+        "name": "file_editor",
+        "arguments": "{\"command\": \"view\", \"path\": \"<workspace>/notes.txt\"}"
+      },
+      {
+        "id": "call_01_Bb2cD3eF4g",
+        "name": "task_tracker",
+        "arguments": "{\"command\": \"plan\", \"task_list\": [{\"title\": \"Summarize notes\", \"notes\": \"\", \"status\": \"pending\"}]}"
+      },
+      {
+        "id": "call_02_Cc3dE4fG5h",
+        "name": "task_tracker",
+        "arguments": "{\"command\": \"view\"}"
+      }
+    ]
+  },
+  "second_request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "params": {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "max_completion_tokens": 512,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "provider": {
+        "order": [
+          "DeepSeek"
+        ],
+        "allow_fallbacks": false
+      }
+    },
+    "tools_sha256": "9e96b6380a3be918d02c4aee548ef1f5152184623b0a213c8e03552bf7dae89f",
+    "messages": [
+      {
+        "content": "<SDK system prompt: 15228 chars, sha256 ec7656c1a1975904653d8cba87e41ae5d493d110ce1607b6d8b5476e254b6d3a>",
+        "role": "system"
+      },
+      {
+        "content": "Look at <workspace>/notes.txt and set up a task list for summarizing it. Then reply with a one-line summary.",
+        "role": "user"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_00_Aa1bC2dE3f",
+            "type": "function",
+            "function": {
+              "name": "file_editor",
+              "arguments": "{\"command\": \"view\", \"path\": \"<workspace>/notes.txt\"}"
+            }
+          },
+          {
+            "id": "call_01_Bb2cD3eF4g",
+            "type": "function",
+            "function": {
+              "name": "task_tracker",
+              "arguments": "{\"command\": \"plan\", \"task_list\": [{\"title\": \"Summarize notes\", \"notes\": \"\", \"status\": \"pending\"}]}"
+            }
+          },
+          {
+            "id": "call_02_Cc3dE4fG5h",
+            "type": "function",
+            "function": {
+              "name": "task_tracker",
+              "arguments": "{\"command\": \"view\"}"
+            }
+          }
+        ],
+        "reasoning_content": "The user wants the notes file inspected and a task list set up. I will call both tools in parallel in a single response."
+      },
+      {
+        "content": "Error validating tool 'task_tracker': 1 validation error for TaskTrackerAction\ntask_list.0.status\n  Input should be 'todo', 'in_progress' or 'done' [type=literal_error, input_value='pending', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/literal_error. Parameters provided: ['command', 'task_list']",
+        "role": "tool",
+        "tool_call_id": "call_01_Bb2cD3eF4g",
+        "name": "task_tracker"
+      },
+      {
+        "content": "Here's the result of running `cat -n` on <workspace>/notes.txt:\n     1\talpha: first item\n     2\tbeta: second item\n     3\t\n",
+        "role": "tool",
+        "tool_call_id": "call_00_Aa1bC2dE3f",
+        "name": "file_editor"
+      },
+      {
+        "content": "No task list found. Use the \"plan\" command to create one.",
+        "role": "tool",
+        "tool_call_id": "call_02_Cc3dE4fG5h",
+        "name": "task_tracker"
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "provider_name": "DeepSeek",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "call_00_LtDIcqIzdDMv96sIbN8E4958",
+            "function": {
+              "name": "task_tracker",
+              "arguments": "{\"command\": \"plan\", \"task_list\": [{\"notes\": \"Read notes.txt (done: alpha: first item, beta: second item)\", \"status\": \"done\", \"title\": \"Read notes.txt\"}, {\"notes\": \"Condense the two entries into a one-line summary\", \"status\": \"in_progress\", \"title\": \"Summarize contents\"}]}"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "sdk_events": [
+    "SystemPromptEvent:",
+    "MessageEvent:",
+    "ActionEvent:call_00_Aa1bC2dE3f",
+    "ActionEvent:call_01_Bb2cD3eF4g",
+    "AgentErrorEvent:call_01_Bb2cD3eF4g",
+    "ActionEvent:call_02_Cc3dE4fG5h",
+    "ObservationEvent:call_00_Aa1bC2dE3f",
+    "ObservationEvent:call_02_Cc3dE4fG5h",
+    "ActionEvent:call_00_LtDIcqIzdDMv96sIbN8E4958",
+    "ObservationEvent:call_00_LtDIcqIzdDMv96sIbN8E4958",
+    "ConversationErrorEvent:"
+  ],
+  "real_api_calls": 1,
+  "run_outcome": {
+    "llm_calls_total": 2,
+    "run_result": "returned",
+    "execution_status": "ConversationExecutionStatus.ERROR",
+    "error_event_payload_recorded": false
+  },
+  "baseline_comparison": {
+    "request_parameters_match": true,
+    "system_prompt_hash_matches": true,
+    "normalized_tools_hash_matches": true,
+    "normalized_user_message_matches": true,
+    "tool_call_objects_match": true,
+    "tool_result_contents_and_order_match": true,
+    "messages_match_after_combining_baseline_calls": true,
+    "validation_error_event_precedes_last_action": true
+  }
+}

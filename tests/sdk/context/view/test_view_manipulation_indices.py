@@ -5,7 +5,10 @@ events (inserting new events or forgetting ranges) while respecting atomicity
 constraints.
 """
 
+import pytest
+
 from openhands.sdk.context.view import View
+from openhands.sdk.event import AgentErrorEvent, LLMConvertibleEvent
 from openhands.sdk.llm import (
     ThinkingBlock,
 )
@@ -20,6 +23,38 @@ def test_empty_list() -> None:
     """Test manipulation_indices with empty event list."""
     view = View.from_events([])
     assert view.manipulation_indices == {0}
+
+
+@pytest.mark.parametrize("all_invalid", [False, True], ids=["mixed", "all_invalid"])
+@pytest.mark.parametrize("same_response", [False, True])
+def test_validation_errors_preserve_batch_boundaries(
+    all_invalid: bool, same_response: bool
+) -> None:
+    events: list[LLMConvertibleEvent] = [message_event("Before")]
+    for index in range(2):
+        response_id = "response" if same_response else f"response_{index}"
+        call_id = f"call_{index}"
+        action = create_action_event(response_id, call_id)
+        if index == 0 or all_invalid:
+            events.extend(
+                [
+                    action.model_copy(update={"action": None}),
+                    AgentErrorEvent(
+                        error="invalid",
+                        tool_name=action.tool_name,
+                        tool_call_id=call_id,
+                    ),
+                ]
+            )
+        else:
+            events.extend([action, create_observation_event(call_id)])
+    events.append(message_event("After"))
+
+    view = View.from_events(events)
+    assert view.events == events
+    assert view.manipulation_indices == (
+        {0, 1, 5, 6} if same_response else {0, 1, 3, 5, 6}
+    )
 
 
 def test_single_message_event() -> None:

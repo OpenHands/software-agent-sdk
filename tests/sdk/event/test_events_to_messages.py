@@ -737,3 +737,54 @@ class TestEventsToMessages:
         assert msgs[0].role == "assistant"
         assert msgs[1].role == "tool"
         assert msgs[1].tool_call_id == "call_ne"
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "user",
+        "assistant",
+        "other_response",
+        "unrelated_error",
+        "executable_error",
+        "observation",
+    ],
+)
+def test_validation_error_grouping_respects_boundaries(boundary: str) -> None:
+    first = create_action_event("First", "test", "call_1", "response", {})
+    if boundary != "executable_error":
+        first = first.model_copy(update={"action": None})
+    second = create_action_event("", "test", "call_2", "response", {}).model_copy(
+        update={"thought": []}
+    )
+    separator: LLMConvertibleEvent = AgentErrorEvent(
+        error="invalid",
+        tool_name="test",
+        tool_call_id="other" if boundary == "unrelated_error" else "call_1",
+    )
+    if boundary == "observation":
+        separator = ObservationEvent(
+            observation=EventsToMessagesMockObservation(result="result"),
+            action_id=first.id,
+            tool_name="test",
+            tool_call_id="call_1",
+        )
+    if boundary == "other_response":
+        second = second.model_copy(update={"llm_response_id": "other_response"})
+
+    events: list[LLMConvertibleEvent] = [first, separator]
+    if boundary in ("user", "assistant"):
+        events.append(
+            MessageEvent(
+                source="user" if boundary == "user" else "agent",
+                llm_message=Message(
+                    role="user" if boundary == "user" else "assistant",
+                    content=[TextContent(text="Boundary")],
+                ),
+            )
+        )
+    events.append(second)
+
+    assert LLMConvertibleEvent.events_to_messages(events) == [
+        event.to_llm_message() for event in events
+    ]
