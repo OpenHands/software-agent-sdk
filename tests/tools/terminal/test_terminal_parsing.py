@@ -2,6 +2,7 @@ import pytest
 
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
+    group_heredoc_script_for_execution,
     split_bash_commands,
 )
 
@@ -34,6 +35,14 @@ world "
 '
 """.strip(),
         """
+mkdir -p _modules && \
+for month in {01..04}; do
+    for day in {01..05}; do
+        touch "_modules/2024-${month}-${day}-sample.md"
+    done
+done
+""".strip(),
+        """
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -47,14 +56,6 @@ spec:
     - sleep
     - "1000000"
 EOF
-""".strip(),
-        """
-mkdir -p _modules && \
-for month in {01..04}; do
-    for day in {01..05}; do
-        touch "_modules/2024-${month}-${day}-sample.md"
-    done
-done
 """.strip(),
     ]
     joined_cmds = "\n".join(cmds)
@@ -71,6 +72,8 @@ done
         ("ls -l", ["ls -l"]),
         ("echo 'Hello, world!'", ["echo 'Hello, world!'"]),
         ("cd /tmp && touch test.txt", ["cd /tmp && touch test.txt"]),
+        ("test -f missing || echo absent", ["test -f missing || echo absent"]),
+        ("sleep 0 & wait", ["sleep 0 & wait"]),
         ("echo -e 'line1\\nline2\\nline3'", ["echo -e 'line1\\nline2\\nline3'"]),
         (
             "grep 'pattern' file.txt | sort | uniq",
@@ -91,15 +94,78 @@ def test_single_commands(input_command, expected_output):
     assert split_bash_commands(input_command) == expected_output
 
 
-def test_heredoc():
-    input_commands = """
-cat <<EOF
-multiline
-text
-EOF
-echo "Done"
-"""
-    expected_output = ["cat <<EOF\nmultiline\ntext\nEOF", 'echo "Done"']
+@pytest.mark.parametrize(
+    "input_commands",
+    [
+        "cat <<EOF\nmultiline\ntext\nEOF\necho done",
+        "cat <<'EOF'\n$VALUE\nEOF\nprintf done",
+        "cat <<-EOF\n\tindented\n\tEOF\nprintf done",
+        "cat <<EOF | sed 's/text/replaced/'\ntext\nEOF\nprintf done",
+        "value=$(cat <<EOF\ntext\nEOF\n) && printf '%s' \"$value\"",
+        (
+            "printf start; python - <<'PY'\n"
+            "print('first')\n"
+            "PY\n"
+            "printf middle; python - <<'PY'\n"
+            "print('second')\n"
+            "PY\n"
+            "printf done"
+        ),
+    ],
+)
+def test_heredoc_script_is_not_split(input_commands):
+    assert split_bash_commands(input_commands) == [input_commands]
+
+
+def test_post_heredoc_statements_are_grouped_for_one_completion_prompt():
+    command = "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done\n"
+
+    assert group_heredoc_script_for_execution(command) == (
+        "{\ncat <<'EOF'\nbody\nEOF\nsleep 1; echo done\n}"
+    )
+
+
+def test_single_heredoc_is_not_grouped_for_execution():
+    command = "cat <<'EOF'\nbody\nEOF\n"
+
+    assert group_heredoc_script_for_execution(command) == command
+
+
+@pytest.mark.parametrize(
+    "input_commands, expected_output",
+    [
+        ("echo first\necho second", ["echo first", "echo second"]),
+        ("cat <<< text\necho second", ["cat <<< text", "echo second"]),
+        (
+            "cat <<EOF\ntext\nEOF\necho second\necho third",
+            ["cat <<EOF\ntext\nEOF\necho second", "echo third"],
+        ),
+        (
+            "cat <<EOF\nunterminated\necho second",
+            ["cat <<EOF\nunterminated\necho second"],
+        ),
+        # A heredoc *nested* in a compound statement or substitution does not
+        # end the statement: tree-sitter leaves the closing token (`fi`, `)`)
+        # unnamed, so the following newline must still split.
+        (
+            "if true; then\n  cat <<EOF\nx\nEOF\nfi\necho after",
+            ["if true; then\n  cat <<EOF\nx\nEOF\nfi", "echo after"],
+        ),
+        (
+            "x=$(cat <<EOF\nhi\nEOF\n)\nrm -rf /tmp/x",
+            ["x=$(cat <<EOF\nhi\nEOF\n)", "rm -rf /tmp/x"],
+        ),
+        (
+            "( cat <<EOF\nx\nEOF\n)\necho after",
+            ["( cat <<EOF\nx\nEOF\n)", "echo after"],
+        ),
+        (
+            "for i in 1 2; do cat <<EOF\nx\nEOF\ndone\necho after",
+            ["for i in 1 2; do cat <<EOF\nx\nEOF\ndone", "echo after"],
+        ),
+    ],
+)
+def test_non_heredoc_newlines_still_split(input_commands, expected_output):
     assert split_bash_commands(input_commands) == expected_output
 
 
@@ -240,9 +306,7 @@ text
 EOF
 echo "Done"
 """
-    expected_output = ["cat <<EOF\nmultiline\ntext\nEOF", 'echo "Done"']
-    result = split_bash_commands(input_commands)
-    assert result == expected_output, f"Expected {expected_output}, got {result}"
+    assert split_bash_commands(input_commands) == [input_commands.strip()]
 
 
 def test_split_commands_with_backslash_continuation():

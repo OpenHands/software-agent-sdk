@@ -30,15 +30,58 @@ _PRESERVE_TYPES: frozenset[str] = frozenset(
 _ESCAPE_PATTERN: re.Pattern[bytes] = re.compile(rb"\\([;&|<>])")
 
 
+def _ends_with_heredoc(node: Node) -> bool:
+    """Whether ``node``'s final token is a heredoc terminator.
+
+    Checking only that the last *named* descendant is a ``heredoc_end`` is not
+    enough: tree-sitter leaves closing tokens such as ``fi``, ``done``, and
+    ``)`` unnamed, so a compound statement or substitution that merely
+    *contains* a heredoc would match and swallow the newline that actually ends
+    the statement. Require the terminator to reach ``node``'s end too.
+    """
+    last = node
+    while last.named_children:
+        last = last.named_children[-1]
+    return last.type == "heredoc_end" and last.end_byte == node.end_byte
+
+
+def group_heredoc_script_for_execution(commands: str) -> str:
+    """Group scripts whose post-heredoc statements share an input submission.
+
+    Interactive bash emits a prompt after each top-level statement. When a complete
+    script is pasted at once, that intermediate prompt can appear before bash reads
+    a statement buffered after a heredoc terminator. A brace group gives the script
+    one completion prompt while preserving its effects in the current shell.
+    """
+    source = commands.encode()
+    result = parse(commands)
+    if result.has_error:
+        return commands
+
+    statements = [
+        child
+        for child in result.tree.root_node.named_children
+        if child.type != "comment"
+    ]
+    needs_group = any(
+        _ends_with_heredoc(current)
+        and b"\n" in source[current.end_byte : following.start_byte]
+        for current, following in zip(statements, statements[1:])
+    )
+    if not needs_group:
+        return commands
+    return "{\n" + commands.rstrip("\n") + "\n}"
+
+
 def split_bash_commands(commands: str) -> list[str]:
     """Split a multi-statement bash input into top-level statements.
 
     Statements separated by a newline (with or without intermediate
-    whitespace/comments) become separate entries; statements joined by
-    ``;``, ``&&``, ``||``, ``|``, or ``&`` stay together. Comments and
-    whitespace between two statements are folded into the preceding
-    entry. On parse failure the input is returned as a single-element
-    list.
+    whitespace/comments) become separate entries, except after a completed
+    heredoc. Statements joined by ``;``, ``&&``, ``||``, ``|``, or ``&`` stay
+    together. Comments and whitespace between two statements are folded into
+    the preceding entry. On parse failure the input is returned as a
+    single-element list.
     """
     if not commands.strip():
         return [""]
@@ -61,7 +104,9 @@ def split_bash_commands(commands: str) -> list[str]:
 
     boundaries = [statements[0].start_byte]
     for cur, nxt in zip(statements, statements[1:]):
-        if b"\n" in source[cur.end_byte : nxt.start_byte]:
+        if b"\n" in source[cur.end_byte : nxt.start_byte] and not _ends_with_heredoc(
+            cur
+        ):
             boundaries.append(nxt.start_byte)
     boundaries.append(len(source))
 
