@@ -1,7 +1,7 @@
 """Golden-snapshot oracle for the rendered system prompt (issue #3607).
 
 Pins ``static_system_message`` + ``dynamic_context`` across the matrix that varies
-their output: model family x enable_browser x llm_security_analyzer x cli_mode.
+their output: model family x llm_security_analyzer x cli_mode.
 Snapshots live under ``snapshots/`` (one .txt per cell), the dependency-free
 golden-file idiom from ``tests/sdk/persisted_settings_baselines``.
 
@@ -27,7 +27,6 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool.spec import Tool
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -69,7 +68,6 @@ ISO_DATETIME_RE: Final[re.Pattern[str]] = re.compile(
 @dataclass(frozen=True)
 class Cell:
     family: str
-    enable_browser: bool
     llm_security_analyzer: bool
     cli_mode: bool
 
@@ -81,7 +79,6 @@ class Cell:
         return "__".join(
             [
                 self.family,
-                flag("browser", self.enable_browser),
                 flag("secana", self.llm_security_analyzer),
                 flag("cli", self.cli_mode),
             ]
@@ -91,14 +88,11 @@ class Cell:
 def _build_matrix() -> list[Cell]:
     cells: list[Cell] = []
     for family in FAMILY_MODELS:
-        for enable_browser in (True, False):
-            for llm_security_analyzer in (True, False):
-                # cli_mode only affects the security-analyzer section.
-                cli_values = (True, False) if llm_security_analyzer else (True,)
-                for cli_mode in cli_values:
-                    cells.append(
-                        Cell(family, enable_browser, llm_security_analyzer, cli_mode)
-                    )
+        for llm_security_analyzer in (True, False):
+            # cli_mode only affects the security-analyzer section.
+            cli_values = (True, False) if llm_security_analyzer else (True,)
+            for cli_mode in cli_values:
+                cells.append(Cell(family, llm_security_analyzer, cli_mode))
     return cells
 
 
@@ -112,7 +106,6 @@ def _build_agent(cell: Cell) -> Agent:
         tools=[],
         agent_context=DYNAMIC_CONTEXT,
         system_prompt_kwargs={
-            "enable_browser": cell.enable_browser,
             "llm_security_analyzer": cell.llm_security_analyzer,
             "cli_mode": cell.cli_mode,
             # Pin soul_content to the built-in default so snapshots are
@@ -152,7 +145,6 @@ def test_prompt_snapshot(cell: Cell) -> None:
 # Representative cell with every section "on", used to pin the windows variant.
 PLATFORM_CELL: Final[Cell] = Cell(
     family="anthropic",
-    enable_browser=True,
     llm_security_analyzer=True,
     cli_mode=True,
 )
@@ -165,15 +157,6 @@ def test_prompt_snapshot_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     content = _rendered(PLATFORM_CELL)
     _check_snapshot(f"{PLATFORM_CELL.id}__win32", content)
     assert "powershell" in content  # the substitution actually fired
-
-
-def test_enable_browser_is_autodetected_from_tools() -> None:
-    # The matrix drives enable_browser via system_prompt_kwargs, bypassing the
-    # auto-detection in base.py (enable_browser defaults to whether a
-    # browser_tool_set is in `tools`). Pin that wiring with a real tool spec.
-    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
-    agent = Agent(llm=llm, tools=[Tool(name="browser_tool_set")])
-    assert "<BROWSER_TOOLS>" in agent.static_system_message
 
 
 def test_dynamic_context_with_secret_registry(tmp_path: Path) -> None:

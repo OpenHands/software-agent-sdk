@@ -256,7 +256,7 @@ async def test_start_conversation_registers_and_injects_client_tools(
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -325,17 +325,12 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         confirmation_policy=NeverConfirm(),
         secrets_encrypted=True,
     )
-    assert (
-        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
-            "GITHUB_PERSONAL_ACCESS_TOKEN"
-        ]
-        == encrypted_mcp_token
-    )
+    assert request.agent is None
 
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -4390,7 +4385,7 @@ async def test_settings_launch_resolves_tools_for_this_server(
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -4405,7 +4400,7 @@ async def test_settings_launch_resolves_tools_for_this_server(
 
     with (
         patch(
-            "openhands.agent_server.profile_launch.is_tool_usable",
+            "openhands.agent_server.launch.is_tool_usable",
             return_value=usable,
         ),
         patch.object(
@@ -4437,7 +4432,7 @@ async def test_explicit_agent_wins_over_agent_settings(conversation_service, tmp
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -4477,7 +4472,7 @@ async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_p
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -4491,14 +4486,13 @@ async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_p
         return service
 
     with (
-        patch(
-            "openhands.agent_server.profile_launch.is_tool_usable", return_value=True
-        ),
+        patch("openhands.agent_server.launch.is_tool_usable", return_value=True),
         patch.object(
             OpenHandsAgentSettings,
             "create_agent",
-            side_effect=AssertionError("agent rebuilt"),
-        ),
+            autospec=True,
+            side_effect=OpenHandsAgentSettings.create_agent,
+        ) as create_agent,
         patch.object(
             conversation_service,
             "_start_event_service",
@@ -4507,4 +4501,5 @@ async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_p
     ):
         await conversation_service.start_conversation(request)
 
+    create_agent.assert_called_once()
     assert "browser_tool_set" in [t.name for t in captured["agent"].tools]

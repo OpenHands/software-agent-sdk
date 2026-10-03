@@ -29,12 +29,13 @@ Resource-specific secret channels:
 from __future__ import annotations
 
 import shlex
-from collections.abc import Container
+from collections.abc import Container, Mapping
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.llm.meta_profile_store import MetaProfile
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
@@ -47,6 +48,7 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.subagent.scope import SubAgentScope, scope_delegation_tools
 from openhands.sdk.tool.defaults import BROWSER_TOOL_NAME, launch_tool_specs
 from openhands.sdk.tool.registry import is_tool_available
 from openhands.sdk.tool.spec import Tool
@@ -134,6 +136,11 @@ class AgentProfileDiagnostics(BaseModel):
     acp_api_key_secret_name: str | None = None
     acp_base_url_secret_name: str | None = None
     acp_file_secret_names: list[str] = Field(default_factory=list)
+
+    # Meta-profile routing (OpenHands only).
+    meta_profile_ref: str | None = None
+    dangling_meta_profile_ref: str | None = None
+    dangling_meta_profile_llm_refs: list[str] = Field(default_factory=list)
 
     # Redacted resolved settings, present iff ``valid``.
     resolved_settings: dict[str, Any] | None = None
@@ -242,6 +249,8 @@ def _build_openhands_settings(
     filtered_skills: list[Skill],
     *,
     browser_available: bool | None,
+    meta_profile: MetaProfile | None = None,
+    meta_profile_llms: Mapping[str, LLM] | None = None,
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
@@ -260,10 +269,11 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
-        "tools": (
+        "tools": _scope_sub_agents(
+            profile,
             profile.tools
             if browser_available is None
-            else launch_tool_specs(profile.tools, browser_available=browser_available)
+            else launch_tool_specs(profile.tools, browser_available=browser_available),
         ),
         "persona": profile.persona,
         "agent_context": AgentContext(
@@ -274,9 +284,27 @@ def _build_openhands_settings(
         ),
         "condenser": profile.condenser,
         "verification": profile.verification.model_dump(),
+        "enable_classify_and_switch_llm_tool": (
+            profile.enable_classify_and_switch_llm_tool
+        ),
+        "active_meta_profile": profile.meta_profile_ref,
+        "meta_profile": meta_profile,
+        "meta_profile_llms": dict(meta_profile_llms or {}),
         "tool_concurrency_limit": profile.tool_concurrency_limit,
     }
     return validate_agent_settings(payload)
+
+
+def _scope_sub_agents(
+    profile: OpenHandsAgentProfile, tools: list[Tool] | None
+) -> list[Tool] | None:
+    if tools is None:
+        return None
+    scope = SubAgentScope(
+        tools=profile.tools is not None,
+        mcp_servers=profile.mcp_server_refs is not None,
+    )
+    return scope_delegation_tools(tools, scope)
 
 
 def _unusable_tools(

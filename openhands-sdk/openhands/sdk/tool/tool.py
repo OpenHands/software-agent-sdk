@@ -408,6 +408,13 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         default=None, repr=False, exclude=True
     )
 
+    prompt_guidance: SkipJsonSchema[str | None] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="System-prompt guidance for this tool; deduplicated by text.",
+    )
+
     response_schema: SkipJsonSchema[ResponseSchema | None] = Field(
         default=None, repr=False, exclude=True
     )

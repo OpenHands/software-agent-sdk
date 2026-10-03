@@ -49,7 +49,6 @@ def test_prompt_context_defaults() -> None:
     assert ctx.secret_names == ()
     assert isinstance(ctx.platform, Platform)
     # typed views over template_kwargs
-    assert ctx.enable_browser is False
     assert ctx.model_family is None
     assert ctx.cli_mode is False
 
@@ -61,21 +60,19 @@ def test_prompt_context_is_frozen() -> None:
 
 
 def test_template_kwargs_is_read_only() -> None:
-    ctx = PromptContext(template_kwargs={"enable_browser": False})
+    ctx = PromptContext(template_kwargs={"cli_mode": False})
     with pytest.raises(TypeError):
-        ctx.template_kwargs["enable_browser"] = True  # type: ignore[index]
-    assert ctx.enable_browser is False
+        ctx.template_kwargs["cli_mode"] = True  # type: ignore[index]
+    assert ctx.cli_mode is False
 
 
 def test_typed_views_read_template_kwargs() -> None:
     ctx = PromptContext(
         template_kwargs={
-            "enable_browser": True,
             "model_family": "anthropic_claude",
             "cli_mode": True,
         }
     )
-    assert ctx.enable_browser is True
     assert ctx.model_family == "anthropic_claude"
     assert ctx.cli_mode is True
 
