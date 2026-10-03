@@ -196,6 +196,7 @@ def test_prompt_cache_support(model, expected_cache):
         ("gemini-1.5-pro", True),
         ("llama-3.1-70b", True),
         ("unknown-model", True),  # Most models support stop words
+        ("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", True),
         # Models that don't support stop words
         ("o1", False),
         ("o1-2024-12-17", False),
@@ -467,6 +468,11 @@ def test_stop_words_grok_provider_prefixed():
         "o1-2024-12-17",
         "xai/grok-4-0709",
         "xai/grok-code-fast-1",
+        "bedrock/openai.gpt-oss-120b-1:0",
+        "bedrock/us.openai.gpt-5.6-sol",
+        "bedrock/us.openai.gpt-6-sol",
+        "bedrock/global.openai.gpt-6-luna",
+        "bedrock/us.openai.gpt-6-astra",
     ],
 )
 def test_supports_stop_words_false_models(model):
