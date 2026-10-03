@@ -273,7 +273,7 @@ class EventService:
     async def load_meta(self):
         meta_file = self.conversation_dir / "meta.json"
         self.stored = StoredConversation.model_validate_json(
-            meta_file.read_text(),
+            meta_file.read_text(encoding="utf-8"),
             context={
                 "cipher": self.cipher,
             },
@@ -287,7 +287,8 @@ class EventService:
                     context={
                         "cipher": self.cipher,
                     }
-                )
+                ),
+                encoding="utf-8",
             )
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
