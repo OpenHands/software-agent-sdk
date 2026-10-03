@@ -1048,6 +1048,16 @@ templates.",
         assert restored.current_datetime != "2024-03-15T14:30:00Z"
         assert restored.current_datetime is not None
 
+    def test_explicit_current_datetime_include_is_serialized(self):
+        context = AgentContext(current_datetime="2024-03-15T14:30:00Z")
+
+        assert context.model_dump(include={"current_datetime"}) == {
+            "current_datetime": "2024-03-15T14:30:00Z"
+        }
+        assert context.model_dump_json(include={"current_datetime"}) == (
+            '{"current_datetime":"2024-03-15T14:30:00Z"}'
+        )
+
     def test_explicit_none_current_datetime_is_serialized(self):
         """ACP's explicit no-timestamp value must survive persistence."""
         context = AgentContext(current_datetime=None)

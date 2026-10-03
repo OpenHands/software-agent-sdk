@@ -236,7 +236,8 @@ class AgentContext(BaseModel):
             return data
 
         if self.current_datetime is not None:
-            data.pop("current_datetime", None)
+            if info.include is None or "current_datetime" not in info.include:
+                data.pop("current_datetime", None)
         elif (
             "current_datetime" in self.model_fields_set
             and (info.include is None or "current_datetime" in info.include)
