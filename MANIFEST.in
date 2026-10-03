@@ -22,6 +22,7 @@ include openhands-tools/pyproject.toml
 recursive-include openhands-tools *.py
 recursive-include openhands-tools *.j2
 recursive-include openhands-tools py.typed
+recursive-include openhands-tools/openhands/tools/preset/subagents *.md
 
 # ==============================================================================
 # openhands-workspace
