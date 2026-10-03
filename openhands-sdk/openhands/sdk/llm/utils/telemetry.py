@@ -59,11 +59,15 @@ def normalize_usage(usage: Usage | ResponseAPIUsage | None) -> UsageSnapshot | N
         completion_details = usage.completion_tokens_details
         # ``cache_creation_tokens`` defaults to ``None``, so presence in
         # ``model_fields_set`` is what distinguishes "provider reported a cache
-        # write" from "provider said nothing about cache writes".
+        # write" from "provider said nothing about cache writes". litellm,
+        # however, deletes the attribute from the instance when the value is
+        # ``None`` (e.g. minimax-m3 reports ``cache_creation_tokens: null``),
+        # so ``model_fields_set`` alone is insufficient; guard with ``hasattr``.
         cache_write = 0
         if (
             prompt_details is not None
             and "cache_creation_tokens" in prompt_details.model_fields_set
+            and hasattr(prompt_details, "cache_creation_tokens")
         ):
             cache_write = int(prompt_details.cache_creation_tokens or 0)
         return UsageSnapshot(

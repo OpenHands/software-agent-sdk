@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 
 from .canvas_extensions.conftest import write_extension
@@ -130,6 +131,56 @@ def test_patch_toggles_enabled_state(client: TestClient, tmp_path: Path):
         "/canvas-extensions/installed/demo-extension", json={"enabled": False}
     )
     assert disabled.json()["enabled"] is False
+
+
+@pytest.fixture
+def client_with_sessions(tmp_path: Path, monkeypatch) -> tuple[TestClient, object]:
+    """A TestClient with an app-scoped session store attached."""
+    store = tmp_path / "installed-store"
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions.installed."
+        "get_installed_canvas_extensions_dir",
+        lambda: store,
+    )
+    app = FastAPI()
+    app.include_router(canvas_extensions_router)
+    sessions = AppBackendSessionStore()
+    app.state.app_backend_session_store = sessions
+    return TestClient(app), sessions
+
+
+@pytest.mark.parametrize("revision_route", ["disabled", "uninstalled", "stopped"])
+def test_disable_uninstall_and_stop_revoke_app_sessions(
+    client_with_sessions, tmp_path: Path, revision_route: str
+):
+    """A live app cookie must stop authorizing once the app is torn down.
+
+    Regression test: these handlers used to call `stop()` directly, leaving
+    `revoke_app` (which also cancels attached WebSocket bridges) as dead code.
+    """
+    import asyncio
+
+    client, sessions = client_with_sessions
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    endpoint = ("127.0.0.1", 4321)
+    token, _ = asyncio.run(sessions.create("demo-extension", endpoint))
+    assert asyncio.run(sessions.authorize(token, "demo-extension", endpoint))
+
+    if revision_route == "disabled":
+        response = client.patch(
+            "/canvas-extensions/installed/demo-extension", json={"enabled": False}
+        )
+    elif revision_route == "uninstalled":
+        response = client.delete("/canvas-extensions/installed/demo-extension")
+    else:
+        response = client.post(
+            "/canvas-extensions/installed/demo-extension/backend/stop"
+        )
+    assert response.status_code == 200, response.text
+
+    assert asyncio.run(sessions.authorize(token, "demo-extension", endpoint)) is None
 
 
 def test_uninstall_removes_from_installed_list(client: TestClient, tmp_path: Path):
