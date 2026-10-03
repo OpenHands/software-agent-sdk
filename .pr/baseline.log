@@ -1,0 +1,10 @@
+Base: 9c3571a694547734002518bd94b3cb41a187f9b6
+Independent loopback HTTP reproduction, exit 1:
+FAIL empty user: HTTP 400; messages[0] (user): content=[]
+FAIL blank assistant: HTTP 400; messages[1] (assistant): blank text block
+FAIL mixed blank/valid user blocks: HTTP 400; messages[0] (user): blank text block
+FAIL empty tool result: HTTP 400; messages[2] (tool): content=[]
+0/4 cases passed; loopback HTTP only
+
+Regression tests added before the production fix:
+17 failed, 1 passed, 16 deselected
