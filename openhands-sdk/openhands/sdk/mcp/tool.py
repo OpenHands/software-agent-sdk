@@ -435,6 +435,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,  # noqa: ARG002
+        risk_description: str | None = None,
     ) -> dict[str, Any]:
         """Build the LLM-facing schema from the raw MCP inputSchema.
 
@@ -462,7 +463,9 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             schema["properties"]["security_risk"] = {
                 "type": "string",
                 "description": (
-                    "The LLM's assessment of the safety risk of this action."
+                    risk_description
+                    if risk_description is not None
+                    else "The LLM's assessment of the safety risk of this action."
                 ),
                 "enum": [e.value for e in risk.SecurityRisk],
             }
@@ -491,6 +494,8 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
+        *,
+        risk_description: str | None = None,
     ) -> ChatCompletionToolParam:
         """Convert a Tool to an OpenAI tool.
 
@@ -505,6 +510,8 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 to the action schema for LLM to predict. This is useful for
                 tools that may have safety risks, so the LLM can reason about
                 the risk level before calling the tool.
+            action_type: Must be None for MCPTool.
+            risk_description: Optional custom description for the `security_risk` field.
         """
         if action_type is not None:
             raise ValueError(
@@ -514,12 +521,15 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         assert self.name == self.mcp_tool.name
         return super().to_openai_tool(
             add_security_risk_prediction=add_security_risk_prediction,
+            risk_description=risk_description,
         )
 
     def to_responses_tool(
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
+        *,
+        risk_description: str | None = None,
     ) -> FunctionToolParam:
         """Convert a Tool to a Responses API function tool.
 
@@ -532,6 +542,8 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 to the action schema for LLM to predict. This is useful for
                 tools that may have safety risks, so the LLM can reason about
                 the risk level before calling the tool.
+            action_type: Must be None for MCPTool.
+            risk_description: Optional custom description for the `security_risk` field.
         """
         if action_type is not None:
             raise ValueError(
@@ -541,4 +553,5 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         assert self.name == self.mcp_tool.name
         return super().to_responses_tool(
             add_security_risk_prediction=add_security_risk_prediction,
+            risk_description=risk_description,
         )

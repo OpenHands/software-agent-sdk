@@ -130,3 +130,29 @@ def test_max_on_concrete_risks():
     )
     assert max([SecurityRisk.LOW, SecurityRisk.LOW]) == SecurityRisk.LOW
     assert max([SecurityRisk.MEDIUM, SecurityRisk.HIGH]) == SecurityRisk.HIGH
+
+
+def test_get_security_risk_description():
+    """Test get_security_risk_description returns appropriate tiers for
+    CLI/sandbox mode.
+    """
+    from openhands.sdk.security.risk import (
+        CLI_TIERS,
+        DEFAULT_SECURITY_RISK_DESCRIPTION,
+        SANDBOX_TIERS,
+        get_security_risk_description,
+    )
+
+    assert (
+        get_security_risk_description(cli_mode=True)
+        == f"{DEFAULT_SECURITY_RISK_DESCRIPTION}\n\n{CLI_TIERS}"
+    )
+    assert (
+        get_security_risk_description(cli_mode=False)
+        == f"{DEFAULT_SECURITY_RISK_DESCRIPTION}\n\n{SANDBOX_TIERS}"
+    )
+    assert "**LOW**: Safe, read-only actions." in CLI_TIERS
+    assert "**LOW**: Read-only actions inside sandbox" in SANDBOX_TIERS
+    assert DEFAULT_SECURITY_RISK_DESCRIPTION == (
+        "The LLM's assessment of the safety risk of this action."
+    )

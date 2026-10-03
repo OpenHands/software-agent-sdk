@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 ActionT = TypeVar("ActionT", bound=Action)
 ObservationT = TypeVar("ObservationT", bound=Observation)
 type ResponseSchema = type[BaseModel] | dict[str, Any]
-_action_types_with_risk: dict[type, type] = {}
+_action_types_with_risk: dict[type | tuple[type, str], type] = {}
 _action_types_with_summary: dict[type, type] = {}
 _action_type_lock = threading.Lock()
 # JSON schema for Pydantic-model response schemas, cached by the immutable class
@@ -711,6 +711,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
+        risk_description: str | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
 
@@ -719,12 +720,17 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             self.annotations is None or (not self.annotations.readOnlyHint)
         )
         if add_security_risk_prediction:
-            action_type = create_action_type_with_risk(action_type)
+            action_type = create_action_type_with_risk(
+                action_type, description=risk_description
+            )
 
         # Always add summary field for transparency and explainability
         action_type = _create_action_type_with_summary(action_type)
 
         schema = self._merge_response_schema(action_type.to_mcp_schema())
+        if add_security_risk_prediction and risk_description is not None:
+            if "properties" in schema and "security_risk" in schema["properties"]:
+                schema["properties"]["security_risk"]["description"] = risk_description
         _prioritize_schema_fields(
             schema=schema,
             priority=("security_risk", "summary"),
@@ -758,6 +764,8 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
+        *,
+        risk_description: str | None = None,
     ) -> ChatCompletionToolParam:
         """Convert a Tool to an OpenAI tool.
 
@@ -769,6 +777,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             action_type: Optionally override the action_type to use for the schema.
                 This is useful for MCPTool to use a dynamically created action type
                 based on the tool's input schema.
+            risk_description: Optional custom description for the `security_risk` field.
 
         Note:
             Summary field is always added to the schema for transparency and
@@ -782,6 +791,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 parameters=self._get_tool_schema(
                     add_security_risk_prediction,
                     action_type,
+                    risk_description=risk_description,
                 ),
             ),
         )
@@ -790,6 +800,8 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         self,
         add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
+        *,
+        risk_description: str | None = None,
     ) -> FunctionToolParam:
         """Convert a Tool to a Responses API function tool (LiteLLM typed).
 
@@ -799,6 +811,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         Args:
             add_security_risk_prediction: Whether to add a `security_risk` field
             action_type: Optional override for the action type
+            risk_description: Optional custom description for the `security_risk` field
 
         Note:
             Summary field is always added to the schema for transparency and
@@ -812,6 +825,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             "parameters": self._get_tool_schema(
                 add_security_risk_prediction,
                 action_type,
+                risk_description=risk_description,
             ),
             "strict": False,
         }
@@ -870,9 +884,20 @@ def _prioritize_schema_fields(
     schema["properties"] = ordered
 
 
-def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
+def create_action_type_with_risk(
+    action_type: type[Schema],
+    description: str | None = None,
+) -> type[Schema]:
+    desc = (
+        description
+        if description is not None
+        else risk.DEFAULT_SECURITY_RISK_DESCRIPTION
+    )
     with _action_type_lock:
-        action_type_with_risk = _action_types_with_risk.get(action_type)
+        key = (action_type, desc)
+        action_type_with_risk = _action_types_with_risk.get(key)
+        if not action_type_with_risk and desc == risk.DEFAULT_SECURITY_RISK_DESCRIPTION:
+            action_type_with_risk = _action_types_with_risk.get(action_type)
         if action_type_with_risk:
             return action_type_with_risk
 
@@ -881,8 +906,12 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
         target_name = f"{action_type.__name__}WithRisk"
         for sub in action_type.__subclasses__():
             if sub.__name__ == target_name:
-                _action_types_with_risk[action_type] = sub
-                return sub
+                field_info = sub.model_fields.get("security_risk")
+                if field_info and field_info.description == desc:
+                    _action_types_with_risk[key] = sub
+                    if desc == risk.DEFAULT_SECURITY_RISK_DESCRIPTION:
+                        _action_types_with_risk[action_type] = sub
+                    return sub
 
         action_type_with_risk = type(
             target_name,
@@ -890,12 +919,14 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
             {
                 "security_risk": Field(
                     default=risk.SecurityRisk.UNKNOWN,
-                    description="The LLM's assessment of the safety risk of this action.",  # noqa:E501
+                    description=desc,
                 ),
                 "__annotations__": {"security_risk": risk.SecurityRisk},
             },
         )
-        _action_types_with_risk[action_type] = action_type_with_risk
+        _action_types_with_risk[key] = action_type_with_risk
+        if desc == risk.DEFAULT_SECURITY_RISK_DESCRIPTION:
+            _action_types_with_risk[action_type] = action_type_with_risk
         return action_type_with_risk
 
 

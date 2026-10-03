@@ -790,9 +790,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 messages=_messages,
                 tools=list(self.tools_map.values()),
                 store=False,
-                add_security_risk_prediction=True,
+                add_security_risk_prediction=bool(
+                    self.system_prompt_kwargs.get("llm_security_analyzer", True)
+                ),
                 on_token=stream.token_callback,
                 call_context=call_context,
+                risk_description=self.security_risk_description,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -1002,9 +1005,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     messages=_messages,
                     tools=list(self.tools_map.values()),
                     store=False,
-                    add_security_risk_prediction=True,
+                    add_security_risk_prediction=bool(
+                        self.system_prompt_kwargs.get("llm_security_analyzer", True)
+                    ),
                     on_token=stream.token_callback,
                     call_context=call_context,
+                    risk_description=self.security_risk_description,
                 )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
