@@ -45,8 +45,41 @@ class TerminalCommandStatus(Enum):
     HARD_TIMEOUT = "hard_timeout"
 
 
+def _normalize_echo_line(line: str) -> str:
+    """Collapse an echoed line for comparison against what was sent.
+
+    Different backends alter the echo: readline drops leading tabs (tmux) or
+    substitutes a BEL for each of them (subprocess). Ignore whitespace and
+    control characters so the comparison still recognizes the echo.
+    """
+    return re.sub(r"[\x00-\x1f\x7f]", "", line).strip()
+
+
 def _remove_command_prefix(command_output: str, command: str) -> str:
-    return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
+    """Strip the terminal's echo of `command` from the front of the output.
+
+    readline consumes or rewrites leading tabs when echoing a line, so the echo
+    can differ from the text that was sent by whitespace alone. An exact prefix
+    match then fails and the whole wrapper (plus both halves of the completion
+    marker) leaks into the observation, so fall back to comparing line by line
+    with whitespace and control characters normalized.
+    """
+    stripped = command_output.lstrip()
+    cmd = command.lstrip()
+    if stripped.startswith(cmd):
+        return stripped[len(cmd) :].lstrip()
+
+    if not cmd:
+        return stripped
+    out_lines = stripped.split("\n")
+    cmd_lines = cmd.split("\n")
+    for index, cmd_line in enumerate(cmd_lines):
+        if index >= len(out_lines) or _normalize_echo_line(
+            out_lines[index]
+        ) != _normalize_echo_line(cmd_line):
+            # Not an echo of this command; leave the output untouched.
+            return stripped
+    return "\n".join(out_lines[len(cmd_lines) :]).lstrip()
 
 
 def _remove_powershell_echo(command_output: str, command: str) -> str:
@@ -93,6 +126,12 @@ class TerminalSession(TerminalSessionBase):
         # Store the last command for interactive input handling
         self.prev_status = None
         self.prev_output = ""
+        # Wrapper sent to delimit a grouped heredoc script: the completion
+        # marker and the exact text echoed for it. Kept on the session so that
+        # a timeout, or a follow-up poll with an empty command, can strip both
+        # from the screen the same way a completed command does.
+        self._boundary_marker: str | None = None
+        self._wrapper_echo: str | None = None
         # Stateful filter for terminal query sequences (handles split sequences)
         self._query_filter = TerminalQueryFilter()
 
@@ -300,6 +339,7 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
+        echoed_command: str | None = None,
     ) -> TerminalObservation:
         """Handle a command that timed out due to no output change."""
         self.prev_status = TerminalCommandStatus.NO_CHANGE_TIMEOUT
@@ -319,7 +359,7 @@ class TerminalSession(TerminalSessionBase):
             f"{self.no_change_timeout_seconds} seconds. {TIMEOUT_MESSAGE_TEMPLATE}]"
         )
         command_output = self._get_command_output(
-            command,
+            echoed_command or command,
             raw_command_output,
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
@@ -340,6 +380,7 @@ class TerminalSession(TerminalSessionBase):
         terminal_content: str,
         ps1_matches: list[re.Match],
         timeout: float,
+        echoed_command: str | None = None,
     ) -> TerminalObservation:
         """Handle a command that timed out due to hard timeout."""
         self.prev_status = TerminalCommandStatus.HARD_TIMEOUT
@@ -359,7 +400,7 @@ class TerminalSession(TerminalSessionBase):
             f"{TIMEOUT_MESSAGE_TEMPLATE}]"
         )
         command_output = self._get_command_output(
-            command,
+            echoed_command or command,
             raw_command_output,
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
@@ -378,6 +419,25 @@ class TerminalSession(TerminalSessionBase):
         """Reset the content buffer for a new command."""
         # Clear the current content
         self.terminal.clear_screen()
+
+    def _strip_boundary_wrapper(self, terminal_content: str) -> str:
+        """Remove the grouped-heredoc wrapper from a raw screen read.
+
+        A completed command strips the completion marker before parsing, but
+        the timeout paths and a follow-up poll (empty command) read the screen
+        directly. Without this, the wrapper echo and both halves of the marker
+        leak into the observation the agent sees.
+        """
+        if self._boundary_marker is not None:
+            terminal_content = terminal_content.replace(self._boundary_marker, "")
+            terminal_content = terminal_content.replace("\x1b[?2004l", "").replace(
+                "\x1b[?2004h", ""
+            )
+        if self._wrapper_echo:
+            terminal_content = _remove_command_prefix(
+                terminal_content, self._wrapper_echo
+            )
+        return terminal_content
 
     def _combine_outputs_between_matches(
         self,
@@ -473,6 +533,11 @@ class TerminalSession(TerminalSessionBase):
 
         command_to_send = command
         command_boundary_marker: str | None = None
+        if command:
+            # A new command supersedes any wrapper tracked from a previous one.
+            # An empty follow-up poll must keep it so it can still strip.
+            self._boundary_marker = None
+            self._wrapper_echo = None
         if command and not is_input and not self.terminal.is_powershell():
             command_to_send = group_heredoc_script_for_execution(command_to_send)
             if command_to_send != command:
@@ -485,7 +550,13 @@ class TerminalSession(TerminalSessionBase):
                     f"'{marker_start}' '{marker_end}'; "
                     'exit "$__openhands_status")'
                 )
+                # Remember what we wrapped so a timeout or follow-up poll can
+                # strip the echo even though it never sees this local value.
+                self._boundary_marker = command_boundary_marker
             command_to_send = escape_bash_special_chars(command_to_send)
+            if command_boundary_marker is not None:
+                # The terminal echoes the escaped text, so match against that.
+                self._wrapper_echo = command_to_send
 
         # Get initial state before sending command
         initial_terminal_output = self.terminal.read_screen()
@@ -617,9 +688,17 @@ class TerminalSession(TerminalSessionBase):
             ):
                 completed_terminal_output = cur_terminal_output
                 completed_ps1_matches = ps1_matches
-                if command_boundary_marker is not None:
+                # A follow-up poll sends no command, so fall back to the wrapper
+                # tracked on the session to strip it from the screen.
+                effective_marker = command_boundary_marker or self._boundary_marker
+                effective_echo = (
+                    command_to_send
+                    if command_boundary_marker is not None
+                    else self._wrapper_echo
+                )
+                if effective_marker is not None:
                     completed_terminal_output = completed_terminal_output.replace(
-                        command_boundary_marker, ""
+                        effective_marker, ""
                     )
                     completed_terminal_output = completed_terminal_output.replace(
                         "\x1b[?2004l", ""
@@ -631,9 +710,7 @@ class TerminalSession(TerminalSessionBase):
                     command,
                     terminal_content=completed_terminal_output,
                     ps1_matches=completed_ps1_matches,
-                    echoed_command=(
-                        command_to_send if command_boundary_marker is not None else None
-                    ),
+                    echoed_command=effective_echo,
                 )
                 return obs
 
@@ -653,10 +730,14 @@ class TerminalSession(TerminalSessionBase):
                 and self.no_change_timeout_seconds is not None
                 and time_since_last_change >= self.no_change_timeout_seconds
             ):
+                stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
                 obs = self._handle_nochange_timeout_command(
                     command,
-                    terminal_content=cur_terminal_output,
-                    ps1_matches=ps1_matches,
+                    terminal_content=stripped_output,
+                    ps1_matches=CmdOutputMetadata.matches_ps1_metadata(stripped_output),
+                    echoed_command=(
+                        command_to_send if command_boundary_marker is not None else None
+                    ),
                 )
                 return obs
 
@@ -669,11 +750,19 @@ class TerminalSession(TerminalSessionBase):
             if action.timeout is not None:
                 time_since_start = time.time() - start_time
                 if time_since_start >= action.timeout:
+                    stripped_output = self._strip_boundary_wrapper(cur_terminal_output)
                     obs = self._handle_hard_timeout_command(
                         command,
-                        terminal_content=cur_terminal_output,
-                        ps1_matches=ps1_matches,
+                        terminal_content=stripped_output,
+                        ps1_matches=CmdOutputMetadata.matches_ps1_metadata(
+                            stripped_output
+                        ),
                         timeout=action.timeout,
+                        echoed_command=(
+                            command_to_send
+                            if command_boundary_marker is not None
+                            else None
+                        ),
                     )
                     return obs
 

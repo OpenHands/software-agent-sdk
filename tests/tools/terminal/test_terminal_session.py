@@ -1207,3 +1207,62 @@ def test_pager_does_not_hijack_terminal(tmp_path, terminal_type):
         assert "diff --git" not in obs.text
     finally:
         session.close()
+
+
+@parametrize_terminal_types
+def test_indented_heredoc_echo_is_stripped(terminal_type):
+    """A tab-indented heredoc must not leak the wrapper or completion marker.
+
+    readline consumes leading tabs when echoing a line, so the echo no longer
+    matches the text sent byte for byte. The exact ``removeprefix`` used to
+    strip it then failed and the whole wrapper, plus both halves of the marker,
+    appeared in the observation.
+    """
+    command = "cat <<-EOF\n\tindented\n\tEOF\nprintf done"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 0
+            assert "indented" in obs.text
+            assert "done" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert "__openhands_status" not in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_no_change_timeout_strips_heredoc_wrapper(terminal_type):
+    """A soft timeout must not leak the wrapper for a grouped heredoc script.
+
+    Only the completed branch stripped the marker, so a command that timed out
+    returned the echoed wrapper and the completion marker to the agent.
+    """
+    command = "cat <<'EOF'\nbody\nEOF\nsleep 5; echo done"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir,
+            terminal_type=terminal_type,
+            no_change_timeout_seconds=2,
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert "body" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert "__openhands_status" not in obs.text
+
+            # A follow-up poll sees the same screen and must stay clean too.
+            obs = _run_bash_action(session, "", is_input=False, timeout=10)
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert "__openhands_status" not in obs.text
+        finally:
+            session.close()
+
