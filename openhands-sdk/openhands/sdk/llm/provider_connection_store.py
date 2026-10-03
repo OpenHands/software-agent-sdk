@@ -25,6 +25,7 @@ import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -34,6 +35,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    ValidationError,
     field_serializer,
     field_validator,
 )
@@ -83,6 +85,24 @@ class ProviderConnectionNotFound(ValueError):
     """
 
 
+_UNDECRYPTABLE_MSG: Final[str] = (
+    "api_key is encrypted but cannot be decrypted with the current "
+    "cipher. Verify that OH_SECRET_KEY matches the key used when "
+    "this connection was saved."
+)
+
+
+class ProviderConnectionUndecryptable(ValueError):
+    """A stored connection exists but its key cannot be decrypted.
+
+    Subclasses :class:`ValueError` so existing ``except ValueError`` /
+    ``store_errors`` paths keep mapping it to 400. Tolerant read paths catch
+    this specifically to degrade a single entry instead of failing the whole
+    list, while write paths targeting the entry itself still raise to avoid
+    overwriting recoverable ciphertext with a mismatched key.
+    """
+
+
 class ProviderConnection(BaseModel):
     """A shared credential bundle reused by one or more LLM profiles."""
 
@@ -118,11 +138,7 @@ class ProviderConnection(BaseModel):
         if cipher is not None and secret_value.startswith(FERNET_TOKEN_PREFIX):
             decrypted = cipher.decrypt(secret_value)
             if decrypted is None:
-                raise ValueError(
-                    "api_key is encrypted but cannot be decrypted with the current "
-                    "cipher. Verify that OH_SECRET_KEY matches the key used when "
-                    "this connection was saved."
-                )
+                raise ProviderConnectionUndecryptable(_UNDECRYPTABLE_MSG)
             return decrypted
         return v if isinstance(v, SecretStr) else SecretStr(secret_value)
 
@@ -145,6 +161,26 @@ class PersistedProviderConnections(BaseModel):
     connections: list[ProviderConnection] = Field(default_factory=list)
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConnectionView:
+    """A single connection plus whether its key failed to decrypt."""
+
+    connection: ProviderConnection
+    undecryptable: bool = False
+
+
+def _is_undecryptable_error(exc: ValidationError) -> bool:
+    errors = exc.errors()
+    if not errors:
+        return False
+    for error in errors:
+        if tuple(error.get("loc", ())) != ("api_key",):
+            return False
+        if "cannot be decrypted" not in str(error.get("msg", "")):
+            return False
+    return True
 
 
 class ProviderConnectionStore:
@@ -175,15 +211,9 @@ class ProviderConnectionStore:
                 f"Provider connection store lock acquisition timed out after {timeout}s"
             )
 
-    def _read(self, *, cipher: Cipher | None) -> PersistedProviderConnections:
-        """Read the file without locking. Missing file -> empty container.
-
-        A corrupted file raises ``ValueError`` rather than being silently
-        replaced, so a bad key or truncated write never destroys stored
-        credentials.
-        """
+    def _read_raw(self) -> tuple[int, list[dict[str, Any]]]:
         if not self._path.exists():
-            return PersistedProviderConnections()
+            return (PROVIDER_CONNECTIONS_SCHEMA_VERSION, [])
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
@@ -198,21 +228,47 @@ class ProviderConnectionStore:
                 f"schema_version {version} is newer than supported "
                 f"{PROVIDER_CONNECTIONS_SCHEMA_VERSION}"
             )
-        raw["schema_version"] = PROVIDER_CONNECTIONS_SCHEMA_VERSION
-        context = {"cipher": cipher} if cipher else None
-        return PersistedProviderConnections.model_validate(raw, context=context)
+        entries = raw.get("connections", [])
+        if not isinstance(entries, list):
+            raise ValueError("Provider connections file has invalid connections")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("Provider connections file has invalid entry")
+        return (version, entries)
 
-    def _write(
-        self, persisted: PersistedProviderConnections, *, cipher: Cipher | None
-    ) -> None:
+    def _parse_entry(
+        self, entry: dict[str, Any], cipher: Cipher | None
+    ) -> ProviderConnection:
+        context = {"cipher": cipher} if cipher else None
+        return ProviderConnection.model_validate(entry, context=context)
+
+    def _degraded_entry(self, raw_entry: dict[str, Any]) -> ProviderConnection:
+        degraded_raw = dict(raw_entry)
+        degraded_raw["api_key"] = None
+        return ProviderConnection.model_validate(degraded_raw)
+
+    def _dump_entry(
+        self, connection: ProviderConnection, cipher: Cipher | None
+    ) -> dict[str, Any]:
         context: dict[str, Any] = {}
         if cipher is not None:
             context["cipher"] = cipher
             context["expose_secrets"] = "encrypted"
         else:
             context["expose_secrets"] = True
-        data = persisted.model_dump(mode="json", context=context)
-        payload = json.dumps(data, indent=2)
+        dumped = connection.model_dump(mode="json", context=context)
+        assert isinstance(dumped, dict)
+        return dumped
+
+    def _write_entries(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        version: int = PROVIDER_CONNECTIONS_SCHEMA_VERSION,
+    ) -> None:
+        payload = json.dumps(
+            {"schema_version": version, "connections": entries}, indent=2
+        )
         with tempfile.NamedTemporaryFile(
             mode="w", dir=self.base_dir, suffix=".tmp", delete=False
         ) as tmp:
@@ -224,6 +280,45 @@ class ProviderConnectionStore:
             tmp_path.unlink(missing_ok=True)
             raise
 
+    def _read(self, *, cipher: Cipher | None) -> PersistedProviderConnections:
+        """Read the file without locking. Missing file -> empty container.
+
+        A corrupted file raises ``ValueError`` rather than being silently
+        replaced, so a bad key or truncated write never destroys stored
+        credentials.
+        """
+        version, raw_entries = self._read_raw()
+        connections = [self._parse_entry(e, cipher) for e in raw_entries]
+        return PersistedProviderConnections(
+            schema_version=version, connections=connections
+        )
+
+    def _write(
+        self, persisted: PersistedProviderConnections, *, cipher: Cipher | None
+    ) -> None:
+        entries = [self._dump_entry(c, cipher) for c in persisted.connections]
+        self._write_entries(entries, version=persisted.schema_version)
+
+    def _split_good_and_broken(
+        self, raw_entries: list[dict[str, Any]], cipher: Cipher | None
+    ) -> tuple[list[ProviderConnection], list[dict[str, Any]]]:
+        good: list[ProviderConnection] = []
+        broken: list[dict[str, Any]] = []
+        for raw_entry in raw_entries:
+            try:
+                good.append(self._parse_entry(raw_entry, cipher))
+            except ValidationError as e:
+                if _is_undecryptable_error(e):
+                    logger.warning(
+                        "[Provider Connections] Entry %r undecryptable "
+                        "with current cipher; preserving ciphertext.",
+                        raw_entry.get("id"),
+                    )
+                    broken.append(raw_entry)
+                else:
+                    raise ValueError(str(e)) from e
+        return (good, broken)
+
     def list(self, *, cipher: Cipher | None = None) -> list[ProviderConnection]:
         with self._acquire_lock():
             return list(self._read(cipher=cipher).connections)
@@ -232,10 +327,72 @@ class ProviderConnectionStore:
         self, connection_id: str, *, cipher: Cipher | None = None
     ) -> ProviderConnection | None:
         with self._acquire_lock():
-            for connection in self._read(cipher=cipher).connections:
-                if connection.id == connection_id:
-                    return connection
-        return None
+            _, raw_entries = self._read_raw()
+            for raw_entry in raw_entries:
+                if raw_entry.get("id") != connection_id:
+                    continue
+                return self._parse_entry(raw_entry, cipher)
+            return None
+
+    def list_tolerant(
+        self, *, cipher: Cipher | None = None
+    ) -> list[ProviderConnectionView]:
+        """List connections without failing on undecryptable entries.
+
+        File-level corruption still raises ``ValueError``. Per-entry cipher
+        mismatches degrade to ``api_key=None`` with ``undecryptable=True``
+        and a warning, preserving the ciphertext on disk.
+        """
+        with self._acquire_lock():
+            _, raw_entries = self._read_raw()
+            views: list[ProviderConnectionView] = []
+            for raw_entry in raw_entries:
+                try:
+                    views.append(
+                        ProviderConnectionView(
+                            self._parse_entry(raw_entry, cipher), False
+                        )
+                    )
+                except ValidationError as e:
+                    if not _is_undecryptable_error(e):
+                        raise ValueError(str(e)) from e
+                    logger.warning(
+                        "[Provider Connections] Entry %r undecryptable "
+                        "with current cipher; surfacing as broken.",
+                        raw_entry.get("id"),
+                    )
+                    views.append(
+                        ProviderConnectionView(self._degraded_entry(raw_entry), True)
+                    )
+            return views
+
+    def get_tolerant(
+        self, connection_id: str, *, cipher: Cipher | None = None
+    ) -> ProviderConnectionView | None:
+        """Fetch one connection without failing on unrelated bad entries.
+
+        Returns ``None`` when missing. Never raises for cipher mismatches;
+        the target itself surfaces as ``undecryptable=True``.
+        """
+        with self._acquire_lock():
+            _, raw_entries = self._read_raw()
+            for raw_entry in raw_entries:
+                if raw_entry.get("id") != connection_id:
+                    continue
+                try:
+                    return ProviderConnectionView(
+                        self._parse_entry(raw_entry, cipher), False
+                    )
+                except ValidationError as e:
+                    if not _is_undecryptable_error(e):
+                        raise ValueError(str(e)) from e
+                    logger.warning(
+                        "[Provider Connections] Entry %r undecryptable "
+                        "with current cipher; surfacing as broken.",
+                        connection_id,
+                    )
+                    return ProviderConnectionView(self._degraded_entry(raw_entry), True)
+            return None
 
     def create(
         self, connection: ProviderConnection, *, cipher: Cipher | None = None
@@ -243,17 +400,20 @@ class ProviderConnectionStore:
         if not CONNECTION_ID_REGEX.match(connection.id):
             raise ValueError(f"Invalid provider connection id: {connection.id!r}")
         with self._acquire_lock():
-            persisted = self._read(cipher=cipher)
-            if any(c.id == connection.id for c in persisted.connections):
+            version, raw_entries = self._read_raw()
+            if any(r.get("id") == connection.id for r in raw_entries):
                 raise ValueError(
                     f"Provider connection {connection.id!r} already exists"
                 )
-            if len(persisted.connections) >= MAX_PROVIDER_CONNECTIONS:
+            if len(raw_entries) >= MAX_PROVIDER_CONNECTIONS:
                 raise ProviderConnectionLimitExceeded(
                     f"Provider connection limit reached ({MAX_PROVIDER_CONNECTIONS})."
                 )
-            persisted.connections.append(connection)
-            self._write(persisted, cipher=cipher)
+            good, broken = self._split_good_and_broken(raw_entries, cipher)
+            good.append(connection)
+            merged = [self._dump_entry(c, cipher) for c in good]
+            merged.extend(broken)
+            self._write_entries(merged, version=version)
         logger.info(
             "[Provider Connections] Created connection",
             extra={"connection_id": connection.id},
@@ -264,14 +424,37 @@ class ProviderConnectionStore:
         self, connection: ProviderConnection, *, cipher: Cipher | None = None
     ) -> ProviderConnection:
         with self._acquire_lock():
-            persisted = self._read(cipher=cipher)
-            if not any(c.id == connection.id for c in persisted.connections):
+            version, raw_entries = self._read_raw()
+            target_raw = next(
+                (r for r in raw_entries if r.get("id") == connection.id), None
+            )
+            if target_raw is None:
                 raise ProviderConnectionNotFound(connection.id)
-            persisted.connections = [
-                connection if c.id == connection.id else c
-                for c in persisted.connections
-            ]
-            self._write(persisted, cipher=cipher)
+            try:
+                self._parse_entry(target_raw, cipher)
+            except ValidationError as e:
+                if _is_undecryptable_error(e):
+                    raise ProviderConnectionUndecryptable(_UNDECRYPTABLE_MSG) from e
+                raise ValueError(str(e)) from e
+            merged: list[dict[str, Any]] = []
+            for raw_entry in raw_entries:
+                if raw_entry.get("id") == connection.id:
+                    merged.append(self._dump_entry(connection, cipher))
+                    continue
+                try:
+                    parsed = self._parse_entry(raw_entry, cipher)
+                    merged.append(self._dump_entry(parsed, cipher))
+                except ValidationError as e:
+                    if _is_undecryptable_error(e):
+                        logger.warning(
+                            "[Provider Connections] Entry %r undecryptable "
+                            "with current cipher; preserving ciphertext.",
+                            raw_entry.get("id"),
+                        )
+                        merged.append(raw_entry)
+                    else:
+                        raise ValueError(str(e)) from e
+            self._write_entries(merged, version=version)
         logger.info(
             "[Provider Connections] Updated connection",
             extra={"connection_id": connection.id},
@@ -280,12 +463,36 @@ class ProviderConnectionStore:
 
     def delete(self, connection_id: str, *, cipher: Cipher | None = None) -> None:
         with self._acquire_lock():
-            persisted = self._read(cipher=cipher)
-            remaining = [c for c in persisted.connections if c.id != connection_id]
-            if len(remaining) == len(persisted.connections):
+            version, raw_entries = self._read_raw()
+            target_raw = next(
+                (r for r in raw_entries if r.get("id") == connection_id), None
+            )
+            if target_raw is None:
                 raise ProviderConnectionNotFound(connection_id)
-            persisted.connections = remaining
-            self._write(persisted, cipher=cipher)
+            try:
+                self._parse_entry(target_raw, cipher)
+            except ValidationError as e:
+                if _is_undecryptable_error(e):
+                    raise ProviderConnectionUndecryptable(_UNDECRYPTABLE_MSG) from e
+                raise ValueError(str(e)) from e
+            merged: list[dict[str, Any]] = []
+            for raw_entry in raw_entries:
+                if raw_entry.get("id") == connection_id:
+                    continue
+                try:
+                    parsed = self._parse_entry(raw_entry, cipher)
+                    merged.append(self._dump_entry(parsed, cipher))
+                except ValidationError as e:
+                    if _is_undecryptable_error(e):
+                        logger.warning(
+                            "[Provider Connections] Entry %r undecryptable "
+                            "with current cipher; preserving ciphertext.",
+                            raw_entry.get("id"),
+                        )
+                        merged.append(raw_entry)
+                    else:
+                        raise ValueError(str(e)) from e
+            self._write_entries(merged, version=version)
         logger.info(
             "[Provider Connections] Deleted connection",
             extra={"connection_id": connection_id},
