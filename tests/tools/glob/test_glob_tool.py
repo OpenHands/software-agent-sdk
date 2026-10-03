@@ -346,7 +346,11 @@ def test_glob_tool_declared_resources_with_ripgrep(pattern, path):
     ],
 )
 def test_glob_tool_declared_resources_without_ripgrep(pattern, path):
-    """Test that GlobTool falls back to tool-wide mutex when ripgrep is unavailable."""
+    """Guards #4663: the Python fallback is lock-free too.
+
+    It scopes its search with ``glob(root_dir=...)`` rather than mutating the
+    process-global cwd, so it no longer needs the tool-wide mutex.
+    """
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
         tools = GlobTool.create(conv_state)
@@ -359,7 +363,7 @@ def test_glob_tool_declared_resources_without_ripgrep(pattern, path):
         resources = tool.declared_resources(action)
 
         assert isinstance(resources, DeclaredResources)
-        assert resources.declared is False
+        assert resources.declared is True
         assert resources.keys == ()
 
 
