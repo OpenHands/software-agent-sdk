@@ -624,6 +624,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         preset = self._prompt_preset or PromptPreset.DEFAULT
         return create_registry(preset).build(ctx).dynamic
 
+    @staticmethod
+    def _mark_conversation_finished(state: ConversationState) -> None:
+        state.execution_status = ConversationExecutionStatus.FINISHED
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -647,11 +651,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             check_iterative_refinement=lambda ae: (
                 self._check_iterative_refinement(conversation, ae)
             ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
+            mark_finished=lambda: self._mark_conversation_finished(state),
         )
 
     async def _aexecute_actions(
@@ -682,11 +682,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             check_iterative_refinement=lambda ae: (
                 self._check_iterative_refinement(conversation, ae)
             ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
+            mark_finished=lambda: self._mark_conversation_finished(state),
         )
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
@@ -1563,7 +1559,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             condenser_config = self.condenser.model_dump(
                 exclude={"llm"}, exclude_none=True
             )
-            condenser_llm_obj = getattr(self.condenser, "llm", None)
+            condenser_llm_obj = self.condenser.get_llm()
             condenser_llm = (
                 condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
             )

@@ -18,6 +18,7 @@ from openhands.sdk.llm import (
     ThinkingBlock,
 )
 from openhands.sdk.security import risk
+from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.schema import Action
 
 
@@ -87,6 +88,18 @@ class ActionEvent(LLMConvertibleEvent):
             "'viewing directory structure to locate source files'"
         ),
     )
+
+    @property
+    def message(self) -> str | None:
+        """User-facing message or summary from the action, if any."""
+        if self.action is not None:
+            if isinstance(self.action, FinishAction):
+                return self.action.message
+            if "message" in self.action.__dict__:
+                msg = self.action.__dict__["message"]
+                if isinstance(msg, str) and msg.strip():
+                    return msg
+        return None
 
     @property
     def visualize(self) -> Text:

@@ -29,6 +29,10 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
     step the condenser will use that condensation event to produce a new `View`.
     """
 
+    def get_llm(self) -> LLM | None:
+        """The LLM used by the condenser, if any."""
+        return None
+
     @abstractmethod
     def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
         """Condense a sequence of events into a potentially smaller list.

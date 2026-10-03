@@ -520,8 +520,8 @@ class LocalConversation(BaseConversation):
         # Idempotent with the create_request() lift; lower priority than
         # request.secrets (below). On resume, fill-if-absent so a persisted
         # value is never downgraded (or lost to redacted/no-cipher serialization).
-        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
-            ctx_secrets = getattr(ctx, "secrets", None)
+        if self.agent is not None and self.agent.agent_context is not None:
+            ctx_secrets = self.agent.agent_context.secrets
             if ctx_secrets:
                 existing_sources = self._state.secret_registry.secret_sources
                 fill_secrets: dict[str, SecretValue] = {}
@@ -2800,9 +2800,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if getattr(self, "_cleanup_complete", False):
+        if self._cleanup_complete:
             return
-        first_attempt = not getattr(self, "_cleanup_initiated", False)
+        first_attempt = not self._cleanup_initiated
         if first_attempt:
             self._cleanup_initiated = True
 
@@ -2817,7 +2817,7 @@ class LocalConversation(BaseConversation):
                 logger.debug(f"Could not register accumulated cost: {e}")
 
             logger.debug("Closing conversation and cleaning up tool executors")
-            hook_processor = getattr(self, "_hook_processor", None)
+            hook_processor = self._hook_processor
             if hook_processor is not None:
                 hook_processor.run_session_end()
             try:
