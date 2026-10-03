@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pydantic import PrivateAttr, ValidationError, model_validator
+from pydantic import Field, PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
@@ -452,6 +452,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
     """
 
+    persona: str | None = Field(
+        default=None,
+        description=(
+            "Persona text that replaces OpenHands' built-in persona and "
+            "coding-workflow sections of the system prompt. Capability and policy "
+            "sections (memory, security policy, risk assessment, browser, external "
+            "services, process management, model-specific guidance) and the dynamic "
+            "context still apply. Ignored when `system_prompt` is set; a custom "
+            "template receives it as the `persona` kwarg."
+        ),
+    )
     _parallel_executor: ParallelToolExecutor = PrivateAttr(
         default_factory=ParallelToolExecutor
     )
@@ -461,6 +472,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         self._parallel_executor = ParallelToolExecutor(
             max_workers=self.tool_concurrency_limit
         )
+
+    def _resolved_template_kwargs(self) -> dict[str, object]:
+        template_kwargs = super()._resolved_template_kwargs()
+        if self.persona is not None:
+            template_kwargs["persona"] = self.persona
+        return template_kwargs
 
     @model_validator(mode="before")
     @classmethod

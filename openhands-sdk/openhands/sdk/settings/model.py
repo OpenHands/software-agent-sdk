@@ -55,6 +55,18 @@ from openhands.sdk.mcp.config import (
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, ClassifyAndSwitchLLMTool
+from openhands.sdk.tool.defaults import (
+    SUB_AGENT_TOOL_NAME,
+    SWITCH_LLM_TOOL_NAME,
+    drop_retired_tool_switches,
+    effective_builtin_class,
+    fold_deprecated_tool_switches,
+    fold_retired_tool_switches,
+    merge_duplicate_tools,
+    resolve_tool_specs,
+    selects_tool,
+)
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
@@ -473,7 +485,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 7
+AGENT_SETTINGS_SCHEMA_VERSION = 8
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -540,12 +552,7 @@ class AgentSettingsBase(BaseModel):
             return data
         if isinstance(data, BaseModel):
             data = data.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-        payload = _apply_persisted_migrations(
-            data,
-            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-            migrations=_AGENT_SETTINGS_MIGRATIONS,
-            payload_name="AgentSettings",
-        )
+        payload = _migrate_agent_settings_payload(data, persisted=True)
         return cls.model_validate(payload, context=context)
 
     def create_agent(self) -> AgentBase:
@@ -713,6 +720,57 @@ def _migrate_agent_settings_v6_to_v7(payload: dict[str, Any]) -> dict[str, Any]:
         migrated.pop("llm", None)
     migrated["schema_version"] = 7
     return migrated
+
+
+def _warn_retired_tool_switches() -> None:
+    warn_deprecated(
+        "OpenHandsAgentSettings.enable_sub_agents and "
+        "OpenHandsAgentSettings.enable_switch_llm_tool",
+        deprecated_in="1.51.0",
+        removed_in="1.56.0",
+        details="Select task_tool_set and switch_llm in `tools` instead.",
+    )
+
+
+def _migrate_agent_settings_v7_to_v8(payload: dict[str, Any]) -> dict[str, Any]:
+    """Fold the retired tool switches into ``tools``."""
+    if payload.get("agent_kind", "openhands") == "acp":
+        migrated = drop_retired_tool_switches(payload)
+    else:
+        migrated = fold_retired_tool_switches(payload)
+    migrated["schema_version"] = 8
+    return migrated
+
+
+def _migrate_agent_settings_v7_to_v8_request(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Advance a request to v8, leaving its switches to be folded as input."""
+    return {**payload, "schema_version": 8}
+
+
+def _migrate_agent_settings_payload(
+    data: Any, *, persisted: bool = False
+) -> dict[str, Any]:
+    payload = _copy_persisted_payload(data)
+    is_request = not persisted and payload.get("schema_version") is None
+    payload = _apply_persisted_migrations(
+        payload,
+        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+        migrations=(
+            _REQUEST_AGENT_SETTINGS_MIGRATIONS
+            if is_request
+            else _AGENT_SETTINGS_MIGRATIONS
+        ),
+        payload_name="AgentSettings",
+    )
+    if payload.get("agent_kind", "openhands") == "acp":
+        return drop_retired_tool_switches(payload)
+    # A loaded payload is launched by a serving layer, which drops a browser
+    # the runtime can't run.
+    return fold_deprecated_tool_switches(
+        payload, owner="OpenHandsAgentSettings", enable_browser=True
+    )
 
 
 _MCP_OAUTH_TOKEN_COLLECTION = "mcp-oauth-token"
@@ -1012,6 +1070,11 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     4: _migrate_agent_settings_v4_to_v5,
     5: _migrate_agent_settings_v5_to_v6,
     6: _migrate_agent_settings_v6_to_v7,
+    7: _migrate_agent_settings_v7_to_v8,
+}
+_REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
+    **_AGENT_SETTINGS_MIGRATIONS,
+    7: _migrate_agent_settings_v7_to_v8_request,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1179,7 +1242,11 @@ class ConversationSettings(BaseModel):
         # variant returns an ``Agent`` and the ACP variant returns an
         # ``ACPAgent``. Callers that want a narrowed type should access
         # ``self.agent_settings.create_agent()`` directly.
-        if "agent" not in payload and self.agent_settings is not None:
+        has_agent_source = any(
+            payload.get(name) is not None
+            for name in ("agent", "agent_settings", "agent_profile_id")
+        )
+        if not has_agent_source and self.agent_settings is not None:
             payload["agent"] = self.agent_settings.create_agent()
 
         # --- secrets (from agent's context) ---------------------------------
@@ -1287,41 +1354,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Tools available to the agent. None (the default) resolves to the "
-            "standard exec set (see openhands.sdk.tool.defaults), plus the "
-            "sub-agent tool set when enable_sub_agents is set; [] is an "
-            "explicitly bare agent; a non-empty list is used exactly as given. "
-            "Environment-dependent tools (browser) are injected by the serving "
-            "layer, not the default."
+            "standard exec set plus switch_llm (see openhands.sdk.tool.defaults); "
+            "[] is an explicitly bare agent; a non-empty list is used exactly as "
+            "given. Environment-dependent tools (browser) are injected by the "
+            "serving layer, not the default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
                 prominence=SettingProminence.MAJOR,
-                variant="openhands",
-            ).model_dump()
-        },
-    )
-    enable_sub_agents: bool = Field(
-        default=False,
-        description="Enable sub-agent delegation via TaskToolSet.",
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Enable sub-agents",
-                prominence=SettingProminence.MAJOR,
-                variant="openhands",
-            ).model_dump()
-        },
-    )
-    enable_switch_llm_tool: bool = Field(
-        default=True,
-        description=(
-            "Enable the built-in switch_llm tool for switching between saved "
-            "LLM profiles."
-        ),
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Enable LLM switching tool",
-                prominence=SettingProminence.MINOR,
                 variant="openhands",
             ).model_dump()
         },
@@ -1399,6 +1440,18 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    persona: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=65536,
+        description=(
+            "Persona text that replaces OpenHands' built-in persona and "
+            "coding-workflow guidance. Capability and policy guidance (memory, "
+            "security policy, risk assessment, browser, external services, process "
+            "management, model-specific notes) and the dynamic context are still "
+            "included. None keeps the built-in persona."
+        ),
+    )
     agent_context: AgentContext = Field(
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
@@ -1433,6 +1486,25 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_retired_tool_switches(cls, data: Any) -> Any:
+        # Settings built in code are launched by create_agent, which adds no
+        # browser to the standard set.
+        return fold_deprecated_tool_switches(
+            data, owner="OpenHandsAgentSettings", enable_browser=False
+        )
+
+    @property
+    def enable_sub_agents(self) -> bool:
+        _warn_retired_tool_switches()
+        return self.tools is not None and selects_tool(self.tools, SUB_AGENT_TOOL_NAME)
+
+    @property
+    def enable_switch_llm_tool(self) -> bool:
+        _warn_retired_tool_switches()
+        return self.tools is None or selects_tool(self.tools, SWITCH_LLM_TOOL_NAME)
+
     @field_validator("condenser", mode="before")
     @classmethod
     def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
@@ -1453,31 +1525,25 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-        from openhands.sdk.tool import Tool
-        from openhands.sdk.tool.builtins import (
-            BUILT_IN_TOOLS,
-            ClassifyAndSwitchLLMTool,
-            SwitchLLMTool,
-        )
-        from openhands.sdk.tool.defaults import default_tool_specs
 
-        # Single defaulting point: None = the canonical default set (honoring
-        # enable_sub_agents); [] stays an explicitly bare agent.
-        tools = (
-            self.tools
-            if self.tools is not None
-            else default_tool_specs(enable_sub_agents=self.enable_sub_agents)
-        )
-
+        specs = merge_duplicate_tools(resolve_tool_specs(self.tools))
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-        if self.enable_switch_llm_tool:
-            include_default_tools.append(SwitchLLMTool.__name__)
+        tools: list[Tool] = []
+        for spec in specs:
+            builtin = effective_builtin_class(spec.name)
+            if builtin is None:
+                tools.append(spec)
+            elif spec.params:
+                tools.append(Tool(name=builtin.__name__, params=spec.params))
+                if builtin.__name__ in include_default_tools:
+                    include_default_tools.remove(builtin.__name__)
+            elif builtin.__name__ not in include_default_tools:
+                include_default_tools.append(builtin.__name__)
 
         # The routing tool needs the active meta-profile name, which the
         # name-only ``include_default_tools`` path cannot pass, so add it as a
         # ``Tool`` spec carrying the param. When no meta-profile is active, the
         # tool falls back to the first available one, so we still wire it.
-        tools = list(tools)
         if self.enable_classify_and_switch_llm_tool:
             params: dict[str, Any] = {}
             if self.active_meta_profile:
@@ -1486,6 +1552,11 @@ class OpenHandsAgentSettings(AgentSettingsBase):
                 params["meta_profile"] = self.meta_profile.model_dump(mode="json")
             if self.meta_profile_llms:
                 params["meta_profile_llms"] = self.meta_profile_llms
+            if ClassifyAndSwitchLLMTool.__name__ in include_default_tools:
+                include_default_tools.remove(ClassifyAndSwitchLLMTool.__name__)
+            tools = [
+                spec for spec in tools if spec.name != ClassifyAndSwitchLLMTool.__name__
+            ]
             tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
 
         llm = create_subscription_llm_from_config(self.llm)
@@ -1496,6 +1567,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             mcp_config=self.mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
+            persona=self.persona,
             condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,
@@ -2033,21 +2105,19 @@ def validate_agent_settings(
     data: Any,
     *,
     context: Mapping[str, Any] | None = None,
+    persisted: bool = False,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Load and validate an agent-settings payload.
 
     Persisted payloads are migrated to the current schema version before
     validation, including legacy ``agent_kind: "llm"`` payloads from before the
-    ``OpenHandsAgentSettings`` rename.
+    ``OpenHandsAgentSettings`` rename. Pass ``persisted=True`` for stored data,
+    so a payload without ``schema_version`` is migrated as a legacy row rather
+    than validated as a request.
     """
     if isinstance(data, OpenHandsAgentSettings | ACPAgentSettings):
         return data
-    payload = _apply_persisted_migrations(
-        data,
-        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-        migrations=_AGENT_SETTINGS_MIGRATIONS,
-        payload_name="AgentSettings",
-    )
+    payload = _migrate_agent_settings_payload(data, persisted=persisted)
     # The v1->v2 migration renames the deprecated ``agent_kind: 'llm'`` tag, but
     # only while advancing ``schema_version``. A payload already at the current
     # version keeps the ``llm`` tag and would dispatch to the deprecated
