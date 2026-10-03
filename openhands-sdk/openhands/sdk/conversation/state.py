@@ -450,6 +450,29 @@ class ConversationState(OpenHandsModel):
             with self._write_guard():
                 fs.write(BASE_STATE, payload)
 
+    def flush(self) -> None:
+        """Flush deferred durability for events and base-state snapshots.
+
+        Event files, length markers and base-state snapshots share one
+        FileStore, so draining its background durability writer covers all
+        of them. Re-raises the first durability failure, if any, so it
+        propagates to the caller instead of being swallowed.
+        """
+        try:
+            fs = self._fs
+        except AttributeError:
+            # A directly constructed state may not have a store yet.
+            return
+        fs.flush()
+
+    def close(self) -> None:
+        """Flush deferred durability and release the store's background writer."""
+        try:
+            fs = self._fs
+        except AttributeError:
+            return
+        fs.close()
+
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
     def create(
