@@ -236,6 +236,7 @@ class LocalConversation(BaseConversation):
         # positional argument.
         max_budget_per_run: float | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
@@ -552,6 +553,7 @@ class LocalConversation(BaseConversation):
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
+            parent_span_context=observability_parent_span_context,
         )
         self.delete_on_close = delete_on_close
 
