@@ -476,6 +476,25 @@ def test_supports_stop_words_false_models(model):
 
 
 @pytest.mark.parametrize(
+    "model",
+    [
+        "bedrock/openai.gpt-oss-120b-1:0",
+        "bedrock/openai.gpt-5.6",
+        "bedrock/openai.gpt-6-sol",
+        "bedrock/openai.gpt-6-luna",
+        "bedrock/openai.gpt-6-astra",
+    ],
+)
+def test_bedrock_openai_models_do_not_support_stop_words(model):
+    features = get_features(model)
+    assert features.supports_stop_words is False
+
+
+def test_openai_models_still_support_stop_words():
+    assert get_features("openai/gpt-4.1").supports_stop_words is True
+
+
+@pytest.mark.parametrize(
     "model,expected_responses",
     [
         ("gpt-5.1", True),

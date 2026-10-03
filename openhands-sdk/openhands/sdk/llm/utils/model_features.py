@@ -253,6 +253,8 @@ SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
     # o-series families don't support stop words
     "o1",
     "o3",
+    # Bedrock-hosted OpenAI models don't support stop words
+    "bedrock/openai.",
     # grok-4 specific model name (basename)
     "grok-4-0709",
     "grok-code-fast-1",
