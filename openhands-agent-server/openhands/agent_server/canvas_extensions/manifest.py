@@ -272,9 +272,8 @@ def resolve_icon(manifest: CanvasExtensionManifest, package_root: Path) -> Path 
     Raises:
         ValueError: If the icon escapes ``package_root`` or is not a file.
     """
-    if manifest.icon is None:
-        return None
-    return _resolve_contained_file("icon", manifest.icon, package_root)
+    icon = manifest.icon
+    return None if icon is None else _resolve_contained_file("icon", icon, package_root)
 
 
 def _resolve_contained_file(label: str, relative_path: str, package_root: Path) -> Path:

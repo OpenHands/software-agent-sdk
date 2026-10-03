@@ -18,6 +18,7 @@ directory in one rename), rolling back if the second fails.
 
 import os
 import shutil
+from contextlib import suppress
 from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
@@ -262,10 +263,9 @@ def get_canvas_extension_icon_path(
     manifest = get_installed_canvas_extension_manifest(name, installed_dir)
     if manifest is None:
         return None
-    try:
+    with suppress(ValueError, OSError):
         return resolve_icon(manifest, installed_dir / name)
-    except (ValueError, OSError):
-        return None
+    return None
 
 
 class CanvasExtensionUpdateCheck(BaseModel):
