@@ -141,3 +141,46 @@ def test_operation_cancelled_error_custom():
     custom_message = "Custom operation cancelled message"
     error = OperationCancelled(custom_message)
     assert str(error) == custom_message
+
+
+def test_sdk_exception_types_declare_retry_metadata():
+    """SDK exception types declare retry_attempt and max_retries explicitly."""
+    from openhands.sdk.llm.exceptions import LLMError, SupportsRetryMetadata
+
+    err = LLMError("base error")
+    assert err.retry_attempt is None
+    assert err.max_retries is None
+    assert isinstance(err, SupportsRetryMetadata)
+
+    err_with_meta = LLMError("with meta", retry_attempt=2, max_retries=5)
+    assert err_with_meta.retry_attempt == 2
+    assert err_with_meta.max_retries == 5
+    assert str(err_with_meta) == "with meta"
+
+
+def test_sdk_exception_subclasses_support_retry_metadata():
+    """All LLMError subclasses declare and accept retry metadata."""
+    from openhands.sdk.llm.exceptions import (
+        LLMBadRequestError,
+        LLMNoResponseError,
+        LLMRateLimitError,
+        LLMServiceUnavailableError,
+        SupportsRetryMetadata,
+    )
+
+    subclasses = [
+        LLMNoResponseError("no response", retry_attempt=1, max_retries=3),
+        LLMRateLimitError("rate limit", retry_attempt=2, max_retries=4),
+        LLMServiceUnavailableError("unavailable", retry_attempt=3, max_retries=5),
+        LLMBadRequestError("bad request", retry_attempt=1, max_retries=1),
+    ]
+    for exc in subclasses:
+        assert isinstance(exc, SupportsRetryMetadata)
+        assert exc.retry_attempt is not None
+        assert exc.max_retries is not None
+
+        # Static field reassignment without setattr
+        exc.retry_attempt = 10
+        exc.max_retries = 20
+        assert exc.retry_attempt == 10
+        assert exc.max_retries == 20

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import (
     Field,
@@ -13,13 +13,14 @@ from pydantic import (
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message
-from openhands.sdk.llm.streaming import TokenCallbackType
+from openhands.sdk.llm.streaming import AnyTokenCallbackType, TokenCallbackType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolDefinition
 
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLMCallContext
+    from openhands.sdk.llm.utils.runtime_metadata import ModelRuntimeMetadata
 
 
 logger = get_logger(__name__)
@@ -54,6 +55,27 @@ class RouterLLM(LLM):
             )
         return v
 
+    @property
+    def fallback_llm(self) -> LLM:
+        """The currently active LLM, or the first configured LLM as fallback."""
+        if self.active_llm is not None:
+            return self.active_llm
+        if not self.llms_for_routing:
+            raise AttributeError("RouterLLM has no configured LLMs in llms_for_routing")
+        return next(iter(self.llms_for_routing.values()))
+
+    def _select_and_activate(self, messages: list[Message]) -> LLM:
+        """Select, activate, and return the routed LLM for given messages."""
+        selected_model = self.select_llm(messages)
+        if selected_model not in self.llms_for_routing:
+            raise KeyError(
+                f"Router '{self.router_name}' selected unknown LLM '{selected_model}'. "
+                f"Configured models: {list(self.llms_for_routing.keys())}"
+            )
+        self.active_llm = self.llms_for_routing[selected_model]
+        logger.info(f"RouterLLM routing to {selected_model}...")
+        return self.active_llm
+
     def completion(
         self,
         messages: list[Message],
@@ -78,14 +100,8 @@ class RouterLLM(LLM):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        # Select appropriate LLM
-        selected_model = self.select_llm(messages)
-        self.active_llm = self.llms_for_routing[selected_model]
-
-        logger.info(f"RouterLLM routing to {selected_model}...")
-
-        # Delegate to selected LLM.
-        return self.active_llm.completion(
+        active_llm = self._select_and_activate(messages)
+        return active_llm.completion(
             messages=messages,
             tools=tools,
             add_security_risk_prediction=add_security_risk_prediction,
@@ -93,6 +109,173 @@ class RouterLLM(LLM):
             call_context=call_context,
             **kwargs,
         )
+
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async completion delegated to selected LLM."""
+        active_llm = self._select_and_activate(messages)
+        return await active_llm.acompletion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    def responses(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Responses call delegated to selected LLM."""
+        active_llm = self._select_and_activate(messages)
+        return active_llm.responses(
+            messages=messages,
+            tools=tools,
+            include=include,
+            store=store,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    async def aresponses(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async responses call delegated to selected LLM."""
+        active_llm = self._select_and_activate(messages)
+        return await active_llm.aresponses(
+            messages=messages,
+            tools=tools,
+            include=include,
+            store=store,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    def generate(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Generate response delegated to selected LLM."""
+        active_llm = self._select_and_activate(messages)
+        return active_llm.generate(
+            messages=messages,
+            tools=tools,
+            include=include,
+            store=store,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    async def agenerate(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of generate delegated to selected LLM."""
+        active_llm = self._select_and_activate(messages)
+        return await active_llm.agenerate(
+            messages=messages,
+            tools=tools,
+            include=include,
+            store=store,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    def get_token_count(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+    ) -> int:
+        """Delegate token count estimation to fallback LLM."""
+        return self.fallback_llm.get_token_count(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+        )
+
+    def vision_is_active(self) -> bool:
+        """Delegate vision capability check to fallback LLM."""
+        return self.fallback_llm.vision_is_active()
+
+    @property
+    def effective_max_input_tokens(self) -> int | None:
+        """Delegate effective max input tokens to fallback LLM."""
+        return self.fallback_llm.effective_max_input_tokens
+
+    @property
+    def effective_max_output_tokens(self) -> int | None:
+        """Delegate effective max output tokens to fallback LLM."""
+        return self.fallback_llm.effective_max_output_tokens
+
+    def resolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Delegate runtime metadata resolution to configured LLMs."""
+        fallback = self.fallback_llm
+        fallback_meta: ModelRuntimeMetadata | None = None
+        for target_llm in self.llms_for_routing.values():
+            meta = target_llm.resolve_runtime_metadata(force=force)
+            if target_llm is fallback:
+                fallback_meta = meta
+        return fallback_meta
+
+    async def aresolve_runtime_metadata(
+        self, *, force: bool = False
+    ) -> ModelRuntimeMetadata | None:
+        """Async delegate runtime metadata resolution to configured LLMs."""
+        fallback = self.fallback_llm
+        fallback_meta: ModelRuntimeMetadata | None = None
+        for target_llm in self.llms_for_routing.values():
+            meta = await target_llm.aresolve_runtime_metadata(force=force)
+            if target_llm is fallback:
+                fallback_meta = meta
+        return fallback_meta
 
     @abstractmethod
     def select_llm(self, messages: list[Message]) -> str:
@@ -110,11 +293,30 @@ class RouterLLM(LLM):
             The key/name of the LLM to use from llms_for_routing dictionary.
         """
 
-    def __getattr__(self, name):
-        """Delegate other attributes/methods to the active LLM."""
-        fallback_llm = next(iter(self.llms_for_routing.values()))
-        logger.info(f"RouterLLM: No active LLM, using first LLM for attribute '{name}'")
-        return getattr(fallback_llm, name)
+    def __getattr__(self, name: str) -> Any:
+        """Narrow compatibility boundary: delegate unhandled attributes to fallback LLM.
+
+        This boundary exists for backwards compatibility with dynamic attribute
+        access on router instances. Direct capability access should prefer the
+        typed LLM interface methods.
+        """
+        try:
+            return super().__getattr__(name)  # pyright: ignore[reportAttributeAccessIssue]
+        except AttributeError:
+            pass
+
+        if name.startswith("_"):
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{name}'"
+            )
+        fallback = self.fallback_llm
+        logger.info(f"RouterLLM: delegating attribute '{name}' to fallback LLM")
+        try:
+            return fallback.__getattribute__(name)
+        except AttributeError:
+            if hasattr(type(fallback), "__getattr__"):
+                return type(fallback).__getattr__(fallback, name)  # pyright: ignore[reportAttributeAccessIssue]
+            raise
 
     def __str__(self) -> str:
         """String representation of the router."""

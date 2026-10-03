@@ -26,12 +26,16 @@ from .types import (
     LLMServiceUnavailableError,
     LLMTimeoutError,
     OperationCancelled,
+    SupportsMaxRetries,
+    SupportsRetryMetadata,
     UserCancelledError,
 )
 
 
 __all__ = [
     # Types
+    "SupportsMaxRetries",
+    "SupportsRetryMetadata",
     "LLMError",
     "LLMMalformedActionError",
     "LLMNoActionError",

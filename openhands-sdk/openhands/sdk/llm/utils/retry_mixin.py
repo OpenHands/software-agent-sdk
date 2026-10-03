@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable
-from typing import Any, cast
+from typing import Any, Protocol, runtime_checkable
 
 from tenacity import (
     RetryCallState,
@@ -10,7 +10,11 @@ from tenacity import (
     wait_exponential,
 )
 
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import (
+    LLMNoResponseError,
+    SupportsMaxRetries,
+    SupportsRetryMetadata,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -18,6 +22,67 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int, BaseException | None], None]
+
+
+@runtime_checkable
+class SupportsTemperature(Protocol):
+    """Protocol for objects exposing a configured temperature."""
+
+    temperature: float | None
+
+
+@runtime_checkable
+class SupportsMaxAttemptNumber(Protocol):
+    """Protocol for tenacity stop predicates declaring max_attempt_number."""
+
+    max_attempt_number: int
+
+
+@runtime_checkable
+class SupportsMaxAttempts(Protocol):
+    """Protocol for stop predicates declaring max_attempts."""
+
+    max_attempts: int
+
+
+@runtime_checkable
+class SupportsCompoundStops(Protocol):
+    """Protocol for compound tenacity stop conditions (e.g. stop_any, stop_all)."""
+
+    stops: Iterable[Any]
+
+
+@runtime_checkable
+class SupportsStopCondition(Protocol):
+    """Protocol for tenacity retry objects declaring a stop condition."""
+
+    stop: Any
+
+
+def extract_max_retries(stop_condition: Any) -> int | None:
+    """Extract maximum attempt limit from a tenacity stop condition, if bounded.
+
+    Normalizes access across single stop conditions (e.g. ``stop_after_attempt``),
+    compound stop conditions (e.g. ``stop_any``, ``stop_all``), and custom stop
+    predicates. Returns ``None`` for unbounded retries (e.g. ``stop_never``).
+    """
+    if stop_condition is None:
+        return None
+
+    if isinstance(stop_condition, SupportsCompoundStops):
+        for stop_func in stop_condition.stops:
+            max_val = extract_max_retries(stop_func)
+            if max_val is not None:
+                return max_val
+        return None
+
+    if isinstance(stop_condition, SupportsMaxAttemptNumber):
+        return stop_condition.max_attempt_number
+
+    if isinstance(stop_condition, SupportsMaxAttempts):
+        return stop_condition.max_attempts
+
+    return None
 
 
 class RetryMixin:
@@ -49,11 +114,14 @@ class RetryMixin:
 
             # Only adjust temperature for LLMNoResponseError
             if isinstance(exc, LLMNoResponseError):
-                kwargs = getattr(retry_state, "kwargs", None)
+                kwargs = retry_state.kwargs
                 if isinstance(kwargs, dict):
-                    current_temp = kwargs.get(
-                        "temperature", getattr(self, "temperature", None)
+                    configured_temp: float | None = (
+                        self.temperature
+                        if isinstance(self, SupportsTemperature)
+                        else None
                     )
+                    current_temp = kwargs.get("temperature", configured_temp)
                     if current_temp is None:
                         logger.warning(
                             "LLMNoResponseError with no configured temperature, "
@@ -132,24 +200,25 @@ class RetryMixin:
 
         # Try to get max attempts from the stop condition if present
         max_attempts: int | None = None
-        retry_obj = getattr(retry_state, "retry_object", None)
-        stop_condition = getattr(retry_obj, "stop", None)
-        if stop_condition is not None:
-            # stop_any has .stops, single stop does not
-            stops: Iterable[Any]
-            if hasattr(stop_condition, "stops"):
-                stops = stop_condition.stops  # type: ignore[attr-defined]
-            else:
-                stops = [stop_condition]
-            for stop_func in stops:
-                if hasattr(stop_func, "max_attempts"):
-                    max_attempts = getattr(stop_func, "max_attempts")
-                    break
+        retry_obj = retry_state.retry_object
+        if isinstance(retry_obj, SupportsStopCondition):
+            max_attempts = extract_max_retries(retry_obj.stop)
 
-        # Attach dynamic fields for downstream consumers (keep existing behavior)
-        setattr(cast(Any, exc), "retry_attempt", retry_state.attempt_number)
-        if max_attempts is not None:
-            setattr(cast(Any, exc), "max_retries", max_attempts)
+        # Attach typed fields for downstream consumers and listeners
+        if isinstance(exc, SupportsRetryMetadata):
+            exc.retry_attempt = retry_state.attempt_number
+            if max_attempts is not None:
+                exc.max_retries = max_attempts
+        elif isinstance(exc, SupportsMaxRetries):
+            # Third-party transport exceptions (e.g. litellm) declare max_retries
+            # but not retry_attempt; attach retry_attempt defensively so listeners
+            # and mapping receive it.
+            try:
+                exc.retry_attempt = retry_state.attempt_number  # type: ignore[attr-defined]
+            except (AttributeError, TypeError):
+                pass
+            if max_attempts is not None:
+                exc.max_retries = max_attempts
 
         logger.error(
             "%s. Attempt #%d | You can customize retry values in the configuration.",
