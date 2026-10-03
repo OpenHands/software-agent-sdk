@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, Field, TypeAdapter
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.observability.laminar import observability_headers_from_env
 from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
@@ -73,7 +74,7 @@ class RemoteWorkspaceMixin(BaseModel):
 
     @property
     def _headers(self):
-        headers = {}
+        headers = observability_headers_from_env()
         if self.api_key:
             headers["X-Session-API-Key"] = self.api_key
         return headers
