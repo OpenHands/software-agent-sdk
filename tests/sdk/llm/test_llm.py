@@ -131,6 +131,7 @@ def test_base_url_for_openhands_provider(mock_get):
     mock_get.assert_called_once_with(
         "https://llm-proxy.app.all-hands.dev/v1/model/info",
         headers={"Authorization": "Bearer test-key"},
+        timeout=3.0,
     )
 
 

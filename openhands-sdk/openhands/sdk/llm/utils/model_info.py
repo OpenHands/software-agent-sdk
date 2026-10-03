@@ -2,6 +2,8 @@ import time
 from collections.abc import Mapping
 from functools import lru_cache
 from logging import getLogger
+from queue import Empty, Queue
+from threading import BoundedSemaphore, Thread
 from typing import Any
 
 import httpx
@@ -14,6 +16,11 @@ from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 
 
 logger = getLogger(__name__)
+
+# Model metadata is optional. A synchronous provider probe can otherwise freeze
+# the Agent Server event loop while FastAPI validates an LLM profile request.
+MODEL_INFO_DISCOVERY_TIMEOUT_SECONDS = 5.0
+_model_info_slots = BoundedSemaphore(4)
 
 
 def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
@@ -100,7 +107,7 @@ def _get_model_info_from_litellm_proxy(
         if secret_api_key:
             headers["Authorization"] = f"Bearer {secret_api_key}"
 
-        response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
+        response = httpx.get(f"{base_url}/v1/model/info", headers=headers, timeout=3.0)
         data = response.json().get("data", [])
         # Match against either the public alias (`model_name`) or the
         # underlying provider/model_name form (`litellm_params.model`). The proxy itself
@@ -126,14 +133,12 @@ def _get_model_info_from_litellm_proxy(
             # Make custom proxy aliases priceable so cost instrumentation does
             # not silently record $0 (#4816).
             underlying_model = current.get("litellm_params", {}).get("model")
-            underlying_model_info = None
-            if isinstance(underlying_model, str) and underlying_model != stripped:
-                try:
-                    underlying_model_info = get_model_info(underlying_model)
-                except Exception as e:
-                    logger.debug(
-                        f"get_model_info(underlying={underlying_model}) failed: {e}"
-                    )
+            underlying_model_info = (
+                model_cost.get(underlying_model)
+                or model_cost.get(underlying_model.split("/")[-1])
+                if isinstance(underlying_model, str) and underlying_model != stripped
+                else None
+            )
             _register_proxy_alias_pricing(
                 alias=stripped,
                 underlying_model_info=underlying_model_info,
@@ -149,7 +154,7 @@ def _get_model_info_from_litellm_proxy(
         )
 
 
-def get_litellm_model_info(
+def _get_litellm_model_info_sync(
     secret_api_key: SecretStr | str | None, base_url: str | None, model: str
 ) -> dict[str, Any] | None:
     call_kwargs = litellm_call_kwargs(model, base_url)
@@ -177,6 +182,13 @@ def get_litellm_model_info(
         )
         if model_info:
             return model_info
+        # A proxy alias is already the authoritative route. Keep known local
+        # metadata, but avoid a second network-bound provider discovery probe.
+        stripped = model.removeprefix("litellm_proxy/")
+        local_info = model_cost.get(stripped) or model_cost.get(stripped.split("/")[-1])
+        if isinstance(local_info, Mapping):
+            return dict(local_info)
+        return None
 
     # Fallbacks: try base name variants
     try:
@@ -193,3 +205,41 @@ def get_litellm_model_info(
         pass
 
     return None
+
+
+def get_litellm_model_info(
+    secret_api_key: SecretStr | str | None, base_url: str | None, model: str
+) -> dict[str, Any] | None:
+    """Bound optional discovery without leaving non-daemon threads at shutdown."""
+    if not _model_info_slots.acquire(blocking=False):
+        logger.warning("Model-info discovery capacity reached; continuing without it")
+        return None
+
+    result: Queue[tuple[bool, dict[str, Any] | BaseException | None]] = Queue(maxsize=1)
+
+    def discover() -> None:
+        try:
+            result.put_nowait(
+                (True, _get_litellm_model_info_sync(secret_api_key, base_url, model))
+            )
+        except BaseException as exc:
+            result.put_nowait((False, exc))
+        finally:
+            _model_info_slots.release()
+
+    try:
+        Thread(target=discover, name="model-info-discovery", daemon=True).start()
+    except BaseException:
+        _model_info_slots.release()
+        raise
+
+    try:
+        succeeded, value = result.get(timeout=MODEL_INFO_DISCOVERY_TIMEOUT_SECONDS)
+    except Empty:
+        logger.warning("Model-info discovery timed out; continuing without it")
+        return None
+    if not succeeded:
+        assert isinstance(value, BaseException)
+        raise value
+    assert value is None or isinstance(value, dict)
+    return value
