@@ -211,10 +211,85 @@ describe('Auxiliary API clients', () => {
         host: 'https://runtime.example.com',
         method: 'POST',
         path: '/api/conversations/c1/events',
-        headers: { 'X-Session-API-Key': 'runtime-key' },
-        body: { role: 'user' },
+        headers: {
+          'X-Session-API-Key': 'runtime-key',
+          'Content-Type': 'application/json',
+        },
+        body: '{"role":"user"}',
       });
     });
+
+    it.each([
+      { name: 'object', body: { accept: true }, expectedBody: '{"accept":true}', json: true },
+      { name: 'array', body: ['one', 'two'], expectedBody: '["one","two"]', json: true },
+      { name: 'false', body: false, expectedBody: 'false', json: true },
+      { name: 'zero', body: 0, expectedBody: '0', json: true },
+      { name: 'raw text', body: 'hello\nworld', expectedBody: 'hello\nworld', json: false },
+      { name: 'JSON text', body: '{"accept":true}', expectedBody: '{"accept":true}', json: false },
+      { name: 'empty string', body: '', expectedBody: '', json: false },
+      { name: 'null', body: null, expectedBody: null, json: false },
+      { name: 'undefined', body: undefined, expectedBody: null, json: false },
+    ])('CloudClient preserves the proxy text-body contract for $name', async (testCase) => {
+      global.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch;
+      const client = new CloudClient({
+        host: 'https://app.all-hands.dev',
+        proxy: { host: 'http://localhost:8001' },
+      });
+
+      await client.request({
+        method: 'POST',
+        hostOverride: 'https://runtime.example.com',
+        path: '/api/conversations/c1/events/respond_to_confirmation',
+        body: testCase.body,
+        authMode: 'none',
+      });
+
+      const envelope = JSON.parse((global.fetch as Mock).mock.calls[0][1].body as string);
+      expect(envelope.body).toBe(testCase.expectedBody);
+      expect(envelope.headers).toEqual(testCase.json ? { 'Content-Type': 'application/json' } : {});
+    });
+
+    it.each(['Content-Type', 'content-type'])(
+      'CloudClient preserves caller %s and proxy headers when serializing JSON',
+      async (contentTypeHeader) => {
+        global.fetch = vi
+          .fn()
+          .mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch;
+        const client = new CloudClient({
+          host: 'https://app.all-hands.dev',
+          apiKey: 'cloud-key',
+          orgId: 'org-1',
+          proxy: {
+            host: 'http://localhost:8001',
+            apiKey: 'local-key',
+            headers: { 'X-Proxy-Header': 'proxy-value' },
+          },
+        });
+
+        await client.request({
+          method: 'POST',
+          hostOverride: 'https://runtime.example.com',
+          path: '/api/conversations/c1/events/respond_to_confirmation',
+          body: { accept: true },
+          headers: { [contentTypeHeader]: 'application/vnd.example+json' },
+        });
+
+        const init = (global.fetch as Mock).mock.calls[0][1] as RequestInit;
+        expect(init.headers).toEqual({
+          'Content-Type': 'application/json',
+          'X-Session-API-Key': 'local-key',
+          'X-Proxy-Header': 'proxy-value',
+        });
+        expect(JSON.parse(init.body as string)).toMatchObject({
+          body: '{"accept":true}',
+          headers: {
+            Authorization: 'Bearer cloud-key',
+            'X-Org-Id': 'org-1',
+            [contentTypeHeader]: 'application/vnd.example+json',
+          },
+        });
+      }
+    );
 
     it('CloudClient forwards app-conversation observability fields', async () => {
       global.fetch = vi.fn().mockResolvedValue(
