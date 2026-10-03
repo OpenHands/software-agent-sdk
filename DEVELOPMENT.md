@@ -50,3 +50,45 @@ software-agent-sdk/
 4. Push and create a pull request
 
 For questions, join our [Slack community](https://openhands.dev/joinslack).
+
+## LLM message construction invariant
+
+**Every LLM request built in this repository must place a `system` message before
+the first `user` message.**
+
+The canonical enforcement lives in `Agent.init_state()`
+(`openhands-sdk/openhands/sdk/agent/agent.py`): it guarantees the `SystemPromptEvent`
+sits at the head of the event stream (index 0/1) and raises `AssertionError` if a user
+`MessageEvent` appears before it. `LLMConvertibleEvent.events_to_messages()`
+(`openhands-sdk/openhands/sdk/event/base.py`) projects the event stream to messages in
+order, preserving the system lead-in on the main agent loop.
+
+This applies to **all** standalone LLM calls, not just the agent loop: condensers, goal
+judges, agent-server profile pre-flight pings, security analyzers, title generation,
+cleanup prompts, hook prompts, toolshield analyzers, and vision inspect. Each must begin
+its message list with a `system` role.
+
+### Why it matters
+
+- **Consistent steering:** standalone calls that omit a system message lose the shared
+  context/format expectations other paths get.
+- **Correct transport serialization:** on the OpenAI Responses API,
+  `Message.to_responses_value()` returns a string for `system` (→ `instructions`) and a
+  dict list for `user` (→ `input`). Sending steering instructions as a lone `user`
+  message conflates "how" with "what", and a lone `system` message serializes to
+  `instructions` with empty `input`.
+- **Subscription/Codex transport** prepends system chunks onto the first user message;
+  a missing system lead-in produces a bare, unsteered request.
+
+### Documented exceptions
+
+- **ACP agents:** the real system prompt and tools are managed by the ACP server, not by
+  an SDK-constructed message list; the SDK emits a placeholder `SystemPromptEvent` for
+  the visualizer.
+- **Subscription/Codex transport** (`transform_for_subscription`): system chunks are
+  prepended *into* the first user message's content because Codex-style endpoints reject
+  long/complex `instructions` — ordering intent preserved, shape flattened.
+
+### Reviewer checklist
+
+The first message role must be `system`, or there must be a documented exception above.

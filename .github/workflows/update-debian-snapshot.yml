@@ -29,7 +29,7 @@ jobs:
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
-            - name: Select the newest snapshot older than seven days
+            - name: Select the newest snapshot older than three days
               run: python .github/scripts/update_debian_snapshot.py --dockerfile "$DOCKERFILE"
 
             - name: Build binary-minimal
@@ -71,14 +71,14 @@ jobs:
                   git checkout -B "$BRANCH"
                   git add "$DOCKERFILE"
                   git commit -m "chore(agent-server): update Debian snapshot to $SNAPSHOT" \
-                    -m "Use the newest UTC snapshot that has completed the seven-day observation period." \
+                    -m "Use the newest UTC snapshot that has completed the three-day observation period." \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push --force-with-lease -u origin "$BRANCH"
 
                   BODY=$(cat <<EOF
                   ## Summary
 
-                  Advance the agent-server runtime to Debian snapshot \`$SNAPSHOT\`, the newest UTC snapshot that has completed the seven-day observation period.
+                  Advance the agent-server runtime to Debian snapshot \`$SNAPSHOT\`, the newest UTC snapshot that has completed the three-day observation period.
 
                   The workflow successfully built and scanned \`binary-minimal\` before opening this PR.
 
