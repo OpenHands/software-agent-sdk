@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -7,6 +8,7 @@ from litellm import get_optional_params
 from openhands.sdk.llm import LLM, LLMCallContext
 from openhands.sdk.llm.call_context import llm_call_context_scope
 from openhands.sdk.llm.options.chat_options import select_chat_options
+from openhands.sdk.llm.utils import model_features
 from openhands.sdk.llm.utils.model_features import ModelFeatures, get_features
 
 
@@ -28,6 +30,7 @@ class DummyLLM:
     prompt_cache_retention: str | None = "24h"
     openrouter_site_url: str = ""
     openrouter_app_name: str = ""
+    model_fields_set: set[str] = field(default_factory=set)
 
     def _openrouter_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -116,6 +119,91 @@ def test_kimi_k3_uses_reasoning_effort_and_strips_temp_top_p():
     assert out.get("reasoning_effort") == "high"
     assert "temperature" not in out
     assert "top_p" not in out
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openhands/deepseek-v4-pro",
+        "openhands/deepseek-v4-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek-v4-pro",
+        "litellm_proxy/deepseek-v4-flash",
+        "litellm_proxy/deepseek-v4.1-flash",
+    ],
+)
+def test_deepseek_v4_proxy_aliases_send_reasoning_effort_without_metadata(
+    model, monkeypatch
+):
+    # The native provider advertises more capabilities than the proxy alias.
+    # Resolving reasoning support must not enable those unrelated features.
+    monkeypatch.setattr(
+        model_features,
+        "get_supported_openai_params",
+        lambda model, custom_llm_provider: (
+            ["reasoning_effort", "prompt_cache_key"]
+            if model.startswith("deepseek/")
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        model_features,
+        "litellm_supports_vision",
+        lambda model: model.startswith("deepseek/"),
+    )
+    model_features._normalized_supported_openai_params.cache_clear()
+    model_features._model_supports_vision.cache_clear()
+    llm = DummyLLM(model=model, reasoning_effort="low", model_info=None)
+
+    try:
+        out = select_chat_options(
+            llm,
+            user_kwargs={},
+            has_tools=True,
+            call_context=LLMCallContext(prompt_cache_key="conv-abc"),
+        )
+
+        assert out["reasoning_effort"] == "low"
+        assert "prompt_cache_key" not in out
+        assert llm._model_features().supports_vision is False
+    finally:
+        model_features._normalized_supported_openai_params.cache_clear()
+        model_features._model_supports_vision.cache_clear()
+
+
+def test_openai_reasoning_override_allows_reasoning_effort_through_litellm():
+    llm = DummyLLM(
+        model="openai/openrouter/deepseek/deepseek-v4.1-flash",
+        reasoning_effort="high",
+        capability_overrides={"supports_reasoning_effort": True},
+    )
+
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+    optional_params = get_optional_params(
+        model="openrouter/deepseek/deepseek-v4.1-flash",
+        custom_llm_provider="openai",
+        drop_params=True,
+        reasoning_effort=out["reasoning_effort"],
+        allowed_openai_params=out["allowed_openai_params"],
+    )
+
+    assert optional_params["reasoning_effort"] == "high"
+
+
+def test_unsupported_reasoning_effort_is_not_sent_and_logs_model(caplog):
+    model = "openai/openrouter/deepseek/deepseek-v4.1-flash"
+    llm = DummyLLM(
+        model=model,
+        reasoning_effort="high",
+        model_fields_set={"reasoning_effort"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+    assert model in caplog.text
+    assert "not forwarded" in caplog.text
 
 
 def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():

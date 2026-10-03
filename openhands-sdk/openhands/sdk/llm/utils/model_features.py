@@ -68,6 +68,14 @@ class ModelFeatures:
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
 
+DEEPSEEK_V4_MODEL_IDS = frozenset(
+    {
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+    }
+)
+
 # Common deployment path prefixes used in LiteLLM proxy configurations
 DEPLOYMENT_PREFIXES = ("prod/", "dev/", "staging/", "test/")
 
@@ -93,6 +101,27 @@ def _normalize_model_for_litellm(model: str | None) -> str | None:
         return "moonshot/kimi-k3"
 
     return normalized
+
+
+def is_deepseek_v4_proxy_alias(model: str | None) -> bool:
+    """Return whether model is a bare DeepSeek V4 OpenHands/proxy alias."""
+    if not model:
+        return False
+
+    normalized = model.strip().lower()
+    for provider_prefix in (LITELLM_PROXY_PREFIX, OPENHANDS_PROVIDER_PREFIX):
+        if normalized.startswith(provider_prefix):
+            normalized = normalized.removeprefix(provider_prefix)
+            break
+    else:
+        return False
+
+    for prefix in DEPLOYMENT_PREFIXES:
+        if normalized.startswith(prefix):
+            normalized = normalized.removeprefix(prefix)
+            break
+
+    return normalized in DEEPSEEK_V4_MODEL_IDS
 
 
 # Provider labels that describe the SDK/proxy routing layer rather than the
@@ -179,6 +208,16 @@ def _supports_prompt_cache_key_param(
     return "prompt_cache_key" in _normalized_supported_openai_params(
         model, provider_hint
     )
+
+
+def _supports_reasoning_effort_param(model: str | None) -> bool:
+    """Resolve reasoning support without changing other proxy capabilities."""
+    if is_deepseek_v4_proxy_alias(model):
+        # Bare V4 aliases cannot be resolved by LiteLLM without proxy metadata.
+        # Consult the native provider only for this parameter; its cache and
+        # vision capabilities need not match the serving proxy's capabilities.
+        model = f"deepseek/{_normalize_model_for_litellm(model)}"
+    return "reasoning_effort" in _normalized_supported_openai_params(model)
 
 
 REASONING_EFFORT_MODEL_OVERRIDES = {
@@ -438,11 +477,9 @@ def get_features(
 ) -> ModelFeatures:
     """Resolve model features from overrides, metadata, and fallbacks."""
     provider_hint = _real_litellm_provider(model_info)
-    # Use the bare-name param set here so the provider hint (only needed to
-    # recover prompt_cache_key for proxied models) does not leak into
-    # reasoning_effort detection. prompt_cache_key is resolved separately via
-    # _supports_prompt_cache_key_param below (#5332 review follow-up).
-    supported_params = _normalized_supported_openai_params(model)
+    # Keep the provider hint scoped to prompt_cache_key (#5332 review follow-up).
+    # The reasoning helper likewise resolves DeepSeek aliases for that single
+    # capability without changing cache or vision detection.
     supports_reasoning_effort = _resolved_bool(
         "supports_reasoning_effort",
         overrides=overrides,
@@ -450,7 +487,7 @@ def get_features(
         metadata_key="supports_reasoning",
         fallback=(
             model_matches(model, REASONING_EFFORT_MODEL_OVERRIDES)
-            or "reasoning_effort" in supported_params
+            or _supports_reasoning_effort_param(model)
         ),
     )
     thinking_mode = _thinking_mode(model, model_info, overrides)
