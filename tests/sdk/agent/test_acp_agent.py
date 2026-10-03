@@ -32,6 +32,7 @@ from openhands.sdk.agent.acp_agent import (
     _auth_selection_failure_reason,
     _classify_acp_init_error,
     _classify_acp_turn_error,
+    _claude_model_config_options,
     _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
@@ -5399,6 +5400,22 @@ class TestCodexModelConfigOptions:
         )
 
 
+class TestClaudeModelConfigOptions:
+    def test_splits_combined_model_and_effort(self):
+        assert _claude_model_config_options("sonnet/high") == (
+            ("model", "sonnet"),
+            ("effort", "high"),
+        )
+
+    def test_leaves_bare_model_id_unchanged(self):
+        assert _claude_model_config_options("sonnet") == (("model", "sonnet"),)
+
+    def test_leaves_unrecognized_suffix_unchanged(self):
+        assert _claude_model_config_options("sonnet/ultrafast") == (
+            ("model", "sonnet/ultrafast"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
@@ -5456,6 +5473,30 @@ class TestMaybeSetSessionModel:
                 call(
                     config_id="reasoning_effort",
                     value="low",
+                    session_id="session-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_claude_config_option_splits_effort(self):
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn,
+            "claude-agent-acp",
+            "session-1",
+            "sonnet/high",
+            via_config_option=True,
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="sonnet", session_id="session-1"),
+                call(
+                    config_id="effort",
+                    value="high",
                     session_id="session-1",
                 ),
             ]
@@ -5597,6 +5638,26 @@ class TestReapplySessionModelOnResume:
                 call(config_id="model", value="gpt-5.4", session_id="sess-1"),
                 call(
                     config_id="reasoning_effort",
+                    value="low",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_claude_reapply_splits_effort(self):
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "claude-agent-acp", "sess-1", "sonnet/low", via_config_option=True
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="sonnet", session_id="sess-1"),
+                call(
+                    config_id="effort",
                     value="low",
                     session_id="sess-1",
                 ),
@@ -5813,6 +5874,24 @@ class TestSetACPModel:
             config_id="model", value="sonnet", session_id="sess-1"
         )
         assert agent._current_model_id == "sonnet"
+
+    def test_switches_claude_via_config_option_splits_effort(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("sonnet/high")
+        _agent_conn(agent).set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="sonnet", session_id="sess-1"),
+                call(
+                    config_id="effort",
+                    value="high",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert _agent_conn(agent).set_config_option.await_count == 2
+        _agent_conn(agent).set_session_model.assert_not_called()
+        assert agent.llm.model == "sonnet/high"
+        assert agent._current_model_id == "sonnet/high"
 
     def test_switch_method_not_found_raises_no_fallback(self):
         # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
