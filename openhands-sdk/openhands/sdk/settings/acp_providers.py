@@ -436,6 +436,46 @@ _OPENCODE_MODELS: tuple[ACPModelOption, ...] = (
     ),
 )
 
+# Model IDs accepted by ``agent acp`` (Cursor CLI), taken from the
+# ``models.availableModels`` list ``session/new`` reports. The CLI's
+# ``--list-models`` names (e.g. ``composer-2.5``) are a different namespace —
+# the ACP server wants the bracketed runtime ids. Curated to the Auto router
+# plus a stable subset; the live session advertises more, and a user may still
+# set any id the server lists. Verified against Cursor CLI 2026.09.02-c22c1a3.
+_CURSOR_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="default[]", label="Auto"),
+    ACPModelOption(id="composer-2.5[fast=true]", label="Composer 2.5"),
+    ACPModelOption(id="grok-4.6[effort=high,fast=true]", label="Grok 4.6"),
+    ACPModelOption(
+        id="claude-opus-5[thinking=true,context=300k,effort=high,fast=false]",
+        label="Claude Opus 5",
+    ),
+    ACPModelOption(
+        id="claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]",
+        label="Claude Opus 4.8",
+    ),
+    ACPModelOption(
+        id="claude-sonnet-5[thinking=true,context=300k,effort=high]",
+        label="Claude Sonnet 5",
+    ),
+    ACPModelOption(
+        id="gpt-5.6-sol[context=272k,reasoning=medium,fast=false]",
+        label="GPT-5.6 Sol",
+    ),
+    ACPModelOption(
+        id="gpt-5.5[context=272k,reasoning=medium,fast=false]",
+        label="GPT-5.5",
+    ),
+    ACPModelOption(
+        id="gpt-5.3-codex[reasoning=medium,fast=false]",
+        label="GPT-5.3 Codex",
+    ),
+    ACPModelOption(
+        id="gemini-3.8-flash[reasoning_effort=high]",
+        label="Gemini 3.8 Flash",
+    ),
+)
+
 
 # ---------------------------------------------------------------------------
 # Reserved file-content credential secrets for the built-in providers.
@@ -508,7 +548,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "claude-code": ACPProviderInfo(
             key="claude-code",
             display_name="Claude Code",
-            default_command=ACP_INSTALL_CATALOG["claude-code"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["claude-code"].launch_command(),
             api_key_env_var="ANTHROPIC_API_KEY",
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
@@ -544,7 +584,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "codex": ACPProviderInfo(
             key="codex",
             display_name="Codex",
-            default_command=ACP_INSTALL_CATALOG["codex"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["codex"].launch_command(),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
             default_session_mode="agent-full-access",
@@ -561,7 +601,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=ACP_INSTALL_CATALOG["gemini-cli"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["gemini-cli"].launch_command(),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             # gemini-cli 0.46.0 rejects ``set_session_mode("yolo")`` at session
@@ -589,7 +629,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "kimi-code": ACPProviderInfo(
             key="kimi-code",
             display_name="Kimi Code",
-            default_command=ACP_INSTALL_CATALOG["kimi-code"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["kimi-code"].launch_command(),
             # No env-var API key: ``KIMI_API_KEY`` is read only from inside
             # config.toml, so exporting it authenticates nothing (verified on
             # 0.38.0, with and without a config file present). The credential
@@ -634,7 +674,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # ``pi-acp`` as the positional npx runs — which is also the only
             # token ``_prefer_pinned_binary`` and
             # ``detect_acp_provider_by_command`` can match on.
-            default_command=ACP_INSTALL_CATALOG["pi"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["pi"].launch_command(),
             api_key_env_var="ANTHROPIC_API_KEY",
             # pi resolves each provider's base URL from its own catalogue;
             # ANTHROPIC_BASE_URL reaches only the vendored Anthropic SDK, which
@@ -657,7 +697,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "opencode": ACPProviderInfo(
             key="opencode",
             display_name="OpenCode",
-            default_command=ACP_INSTALL_CATALOG["opencode"].npx_command(),
+            default_command=ACP_INSTALL_CATALOG["opencode"].launch_command(),
             # OpenCode Zen, the CLI's own gateway and the provider its model
             # ids are namespaced under. Third-party keys (ANTHROPIC_API_KEY,
             # OPENAI_API_KEY, ...) also enable their providers inside OpenCode,
@@ -695,6 +735,42 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # XDG_{DATA,CONFIG,CACHE,STATE}_HOME, which all fall back to HOME.
             # Relocating HOME is the only single lever that moves all of them.
             data_dir_env_var="HOME",
+        ),
+        "cursor": ACPProviderInfo(
+            key="cursor",
+            display_name="Cursor",
+            default_command=ACP_INSTALL_CATALOG["cursor"].launch_command(),
+            # ``--api-key`` / CURSOR_API_KEY. Login also works via the ACP
+            # ``cursor_login`` auth method after ``agent login``, with no key.
+            api_key_env_var="CURSOR_API_KEY",
+            base_url_env_var="CURSOR_API_ENDPOINT",
+            # Verified against Cursor CLI 2026.09.02-c22c1a3: ``session/new``
+            # reports modes ``agent`` / ``plan`` / ``ask``. ``agent`` is the
+            # tool-executing default. There is no permission-bypass mode;
+            # the ACP bridge auto-approves request_permission.
+            default_session_mode="agent",
+            # ``initialize`` currently omits ``agentInfo.name``. Command-time
+            # detection matches the official ``agent`` binary (and the
+            # unwrapped ``cursor-agent`` basename the installer places under
+            # ``~/.local/share/cursor-agent/``).
+            agent_name_patterns=("cursor-agent", "agent"),
+            # Verified: ``session/set_model`` and ``session/set_config_option``
+            # (configId=model) both succeed after session/new. The session
+            # advertises a ``model`` configOptions select, so the SDK's
+            # auto-detect prefers that path when present.
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            available_models=_CURSOR_MODELS,
+            # The CLI's own default (models.currentModelId / configOptions
+            # currentValue) — the Auto router, not a pinned snapshot.
+            default_model="default[]",
+            binary_name=ACP_INSTALL_CATALOG["cursor"].binary_name,
+            # Login state, ACP sessions and cli-config live under ``~/.cursor``.
+            # There is no dedicated config-dir env that moves sessions without
+            # also dropping the login; relocating HOME would unauthenticate
+            # the subprocess. Isolation is therefore skipped.
+            data_dir_env_var=None,
         ),
     }
 )

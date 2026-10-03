@@ -8,8 +8,10 @@ from typing import get_args
 import pytest
 
 from openhands.sdk.settings.acp_install_catalog import (
+    ACP_INSTALL_CATALOG,
     PI_ACP_VERSION,
     PI_CODING_AGENT_VERSION,
+    is_npm_install_spec,
 )
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
@@ -39,7 +41,9 @@ class TestACPProviderInfo:
             assert isinstance(info, ACPProviderInfo)
 
     def test_default_commands_prefer_offline_cache(self):
-        for info in ACP_PROVIDERS.values():
+        for key, info in ACP_PROVIDERS.items():
+            if not is_npm_install_spec(ACP_INSTALL_CATALOG[key]):
+                continue
             assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
 
     def test_claude_code_metadata(self):
@@ -213,6 +217,29 @@ class TestACPProviderInfo:
         # credential file to materialise.
         assert info.file_secrets == ()
 
+    def test_cursor_metadata(self):
+        info = ACP_PROVIDERS["cursor"]
+        assert info.key == "cursor"
+        assert info.display_name == "Cursor"
+        # Preinstalled binary, not an npx package.
+        assert info.default_command == ("agent", "acp")
+        assert info.binary_name == "agent"
+        assert info.api_key_env_var == "CURSOR_API_KEY"
+        assert info.base_url_env_var == "CURSOR_API_ENDPOINT"
+        assert info.default_session_mode == "agent"
+        assert "cursor-agent" in info.agent_name_patterns
+        assert "agent" in info.agent_name_patterns
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        assert info.default_model == "default[]"
+        model_ids = [m.id for m in info.available_models]
+        assert "default[]" in model_ids
+        assert "composer-2.5[fast=true]" in model_ids
+        # Login lives under ~/.cursor; no dedicated relocation lever.
+        assert info.data_dir_env_var is None
+        assert info.file_secrets == ()
+
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
         with pytest.raises((AttributeError, TypeError)):
@@ -272,12 +299,19 @@ class TestDetectACPProviderByAgentName:
         assert info is not None
         assert info.key == "opencode"
 
+    def test_detects_cursor_by_agent_name(self):
+        # initialize currently omits agentInfo.name; the unwrapped binary
+        # basename is still ``cursor-agent``.
+        info = detect_acp_provider_by_agent_name("cursor-agent")
+        assert info is not None
+        assert info.key == "cursor"
+
     def test_case_insensitive_detection(self):
         assert detect_acp_provider_by_agent_name("CLAUDE-AGENT-ACP") is not None
         assert detect_acp_provider_by_agent_name("Gemini-CLI") is not None
 
     def test_returns_none_for_unknown_agent_name(self):
-        assert detect_acp_provider_by_agent_name("some-unknown-agent") is None
+        assert detect_acp_provider_by_agent_name("some-unknown-cli") is None
 
     def test_returns_none_for_empty_string(self):
         assert detect_acp_provider_by_agent_name("") is None
@@ -316,6 +350,16 @@ class TestDetectACPProviderByCommand:
         info = detect_acp_provider_by_command(["/opt/acp-wrappers/kimi", "acp"])
         assert info is not None
         assert info.key == "kimi-code"
+
+    def test_detects_cursor_by_command(self):
+        info = detect_acp_provider_by_command(["agent", "acp"])
+        assert info is not None
+        assert info.key == "cursor"
+        info = detect_acp_provider_by_command(
+            ["/Users/me/.local/share/cursor-agent/versions/2026.09.02/cursor-agent", "acp"]
+        )
+        assert info is not None
+        assert info.key == "cursor"
 
     def test_returns_none_for_custom_command(self):
         assert detect_acp_provider_by_command(["my-custom-acp", "serve"]) is None
