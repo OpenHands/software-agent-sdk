@@ -301,6 +301,37 @@ await conversation.updateSecrets({
 
 ## API Reference
 
+### Standalone prompt enhancement
+
+Use `PromptEnhancementClient` to improve a draft before creating a conversation.
+The server resolves the saved profile's credentials and does not run an agent or
+tools. Call `checkAvailability` before presenting the feature; it verifies the
+server capability and whether the selected profile resolves, but does not test
+provider availability.
+
+```typescript
+const prompts = new PromptEnhancementClient({
+  host: 'http://localhost:3000',
+  apiKey: 'your-session-api-key',
+});
+const availability = await prompts.checkAvailability('default');
+
+if (availability.available) {
+  const controller = new AbortController();
+  const result = await prompts.enhancePrompt(
+    { profile_name: 'default', text: 'Find the cause of this error.' },
+    { signal: controller.signal }
+  );
+  console.log(result.enhanced_text);
+}
+```
+
+Aborting rejects the client request promptly. A disconnected client may not
+cancel the provider request; the Agent Server enforces its own timeout.
+Prompt enhancement is unavailable while LLM tracing or payload logging is enabled.
+Context-only OpenTelemetry instrumentation can still record private text in
+provider exceptions, so it is also rejected.
+
 ### Conversation
 
 Factory function that creates conversations with OpenHands agents.

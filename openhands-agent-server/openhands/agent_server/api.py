@@ -71,6 +71,7 @@ from openhands.agent_server.openai.router import (
 )
 from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
+from openhands.agent_server.prompt_enhancement_router import prompt_enhancement_router
 from openhands.agent_server.provider_connections_router import (
     provider_connections_router,
 )
@@ -474,6 +475,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
+    api_router.include_router(prompt_enhancement_router)
     api_router.include_router(agent_profiles_router)
     api_router.include_router(meta_profiles_router)
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
@@ -535,7 +537,9 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
             return RedirectResponse(url="/static/", status_code=302)
 
 
-def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
+def _sanitize_validation_errors(
+    errors: Sequence[Any], *, include_input: bool = True
+) -> list[dict]:
     """Sanitize validation error details to remove sensitive input values.
 
     FastAPI's default 422 response includes the raw request ``input`` in each
@@ -547,13 +551,16 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
         errors: The list of error dicts produced by ``exc.errors()``.
 
     Returns:
-        A new list with ``input`` values sanitized through ``sanitize_dict``.
+        A new list with input values sanitized or omitted when ``include_input``
+        is false.
     """
     sanitized: list[dict] = []
     for error in errors:
         error = dict(error)  # shallow copy so we don't mutate the original
-        if "input" in error:
+        if "input" in error and include_input:
             error["input"] = sanitize_dict(error["input"])
+        elif not include_input:
+            error.pop("input", None)
         if isinstance(error.get("ctx"), dict) and isinstance(
             error["ctx"].get("error"), Exception
         ):
@@ -604,9 +611,16 @@ def _add_exception_handlers(api: FastAPI) -> None:
             request.url.path,
             len(exc.errors()),
         )
+        # Draft text is private user content, so this route omits every raw
+        # request value from validation responses instead of just redacting secrets.
+        redact_inputs = request.url.path.startswith("/api/prompt-enhancement/")
         return JSONResponse(
             status_code=422,
-            content={"detail": _sanitize_validation_errors(exc.errors())},
+            content={
+                "detail": _sanitize_validation_errors(
+                    exc.errors(), include_input=not redact_inputs
+                )
+            },
         )
 
     @api.exception_handler(Exception)
