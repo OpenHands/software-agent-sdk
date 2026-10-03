@@ -49,6 +49,38 @@ def test_llm_provider_handles_unknown_model_without_provider():
     assert provider.as_litellm_call_kwargs() == {"model": "unknown-model"}
 
 
+def test_llm_provider_resolves_unrecognized_model_against_custom_api_base():
+    # A custom router/self-hosted endpoint (e.g. LM Studio, a personal
+    # OpenAI-compatible gateway) whose model id's first "/" segment isn't a
+    # LiteLLM-recognized provider (e.g. "auto/coding") must still resolve to
+    # the "openai" custom_llm_provider, and the model id must survive intact
+    # since "auto/" is not a prefix LiteLLM strips. See regression: without
+    # this fallback, this raises "LLM Provider NOT provided" deep inside the
+    # actual completion call instead of resolving here.
+    provider = LLMProvider.from_model(
+        model="auto/coding",
+        api_base="https://omniroute.example.com/v1",
+    )
+
+    assert provider.name == "openai"
+    assert provider.model == "auto/coding"
+    assert provider.as_litellm_call_kwargs() == {
+        "model": "auto/coding",
+        "custom_llm_provider": "openai",
+    }
+
+
+def test_llm_provider_does_not_force_openai_without_api_base():
+    # Without a custom api_base there is no OpenAI-compatible endpoint to
+    # infer, so an unrecognized model id must stay unresolved exactly as
+    # before this fix (matches test_llm_provider_handles_unknown_model_
+    # without_provider).
+    provider = LLMProvider.from_model(model="auto/coding", api_base=None)
+
+    assert provider.name is None
+    assert provider.model == "auto/coding"
+
+
 def test_llm_provider_keeps_requested_api_base_verbatim():
     # LiteLLM's own resolution appends "/v1" to a custom mistral base; the
     # helper must not leak that mutated value back into the forwarded kwargs.
