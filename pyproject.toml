@@ -17,6 +17,8 @@ constraint-dependencies = [
     "lupa>=2.8",  # CVE-2026-34444
     "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 49.0.0 dropped x86_64 macOS wheels; release-binaries.yml still builds on macos-15-intel
     "litellm==1.93.0",  # Workspace lock target for the requested LiteLLM upgrade
+    "anyio>=4.14.2",  # CVE-2026-63374 (GHSA-82r6-8w77-94w6)
+    "pyjwt>=2.14.0",
 ]
 
 # Workspace sources for intra-repo dependencies

@@ -10,14 +10,20 @@ and TaskToolSet (the entry-point that wires up a TaskManager-backed executor).
 """
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import Field
 from pydantic.json_schema import SkipJsonSchema
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
-from openhands.sdk.subagent import get_factory_info, get_registered_agent_definitions
+from openhands.sdk.logger import get_logger
+from openhands.sdk.subagent import (
+    AgentDefinition,
+    SubAgentScope,
+    get_factory_info,
+    get_registered_agent_definitions,
+)
 from openhands.sdk.tool import (
     Action,
     DeclaredResources,
@@ -29,9 +35,13 @@ from openhands.sdk.tool import (
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.task.impl import TaskExecutor
     from openhands.tools.task.manager import ConfirmationHandler
+
+
+logger = get_logger(__name__)
 
 
 class TaskAction(Action):
@@ -169,6 +179,8 @@ Example — Perform a multi-step task involving code editing and shell commands:
 class TaskTool(ToolDefinition[TaskAction, TaskObservation]):
     """Tool for launching (blocking) sub-agent tasks."""
 
+    user_selectable: ClassVar[bool] = False
+
     def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
         return DeclaredResources(keys=(), declared=True)
 
@@ -213,11 +225,16 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         )
     """
 
+    catalog_description: ClassVar[str] = (
+        "Delegate a self-contained sub-task to a separate agent."
+    )
+
     @classmethod
     def create(
         cls,
-        conv_state: "ConversationState",  # noqa: ARG003
+        conv_state: "ConversationState",
         confirmation_handler: "ConfirmationHandler | None" = None,
+        sub_agent_scope: SubAgentScope | dict[str, bool] | None = None,
     ) -> list[ToolDefinition]:
         """Create the task tool.
 
@@ -227,15 +244,30 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 confirmation policy requires user approval.  Receives
                 `(task_id, pending_actions)` and must return `True` to
                 approve or `False` to reject.
+            sub_agent_scope: Which of this agent's capabilities the sub-agents
+                it offers and starts must stay within.
 
         Returns:
             List containing a single TaskTool.
         """
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
-        agent_types_info = get_factory_info()
+        scope = SubAgentScope.model_validate(sub_agent_scope or {})
+        registered = {
+            d.name
+            for d in get_registered_agent_definitions()
+            if not scope.restricts or _offered(scope, conv_state.agent, d)
+        }
+        if not scope.restricts:
+            agent_types_info = get_factory_info()
+        elif registered:
+            agent_types_info = get_factory_info(lambda d: d.name in registered)
+        else:
+            agent_types_info = (
+                "- None: every registered agent uses tools or MCP servers "
+                "this agent does not have."
+            )
 
-        registered = {d.name for d in get_registered_agent_definitions()}
         task_tool_examples = "\n".join(
             ex for name, ex in TASK_TOOL_EXAMPLES.items() if name in registered
         )
@@ -245,7 +277,9 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             task_tool_examples=task_tool_examples,
         )
 
-        manager = TaskManager(confirmation_handler=confirmation_handler)
+        manager = TaskManager(
+            confirmation_handler=confirmation_handler, sub_agent_scope=scope
+        )
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []
@@ -256,6 +290,19 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             )
         )
         return tools
+
+
+def _offered(
+    scope: SubAgentScope, parent: "AgentBase", definition: AgentDefinition
+) -> bool:
+    missing = scope.missing_from(parent, definition)
+    if missing:
+        logger.info(
+            "Not offering sub-agent %r: it uses %s, which this agent lacks",
+            definition.name,
+            ", ".join(missing),
+        )
+    return not missing
 
 
 # Automatically register when this module is imported
