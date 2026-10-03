@@ -193,9 +193,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         vscode_service = get_vscode_service()
         tool_preload_service = get_tool_preload_service()
 
-        # Define async functions for starting each service
-        async def start_vscode_service():
-            if vscode_service is not None:
+        startup_tasks = []
+
+        if vscode_service is not None:
+
+            async def start_vscode_service():
                 vscode_started = await vscode_service.start()
                 if vscode_started:
                     logger.info("VSCode service started successfully")
@@ -203,8 +205,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     logger.warning(
                         "VSCode service failed to start, continuing without VSCode"
                     )
-            else:
-                logger.info("VSCode service is disabled")
+
+            startup_tasks.append(start_vscode_service())
 
         async def start_tool_preload_service():
             if tool_preload_service is not None:
@@ -216,12 +218,10 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             else:
                 logger.info("Tool preload service is disabled")
 
-        # Start all services concurrently
-        results = await asyncio.gather(
-            start_vscode_service(),
-            start_tool_preload_service(),
-            return_exceptions=True,
-        )
+        startup_tasks.append(start_tool_preload_service())
+
+        # Start services concurrently
+        results = await asyncio.gather(*startup_tasks, return_exceptions=True)
 
         # Check for any exceptions during initialization
         exceptions = [r for r in results if isinstance(r, Exception)]

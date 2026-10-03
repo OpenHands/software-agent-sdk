@@ -738,12 +738,12 @@ def test_main_resolves_install_acp_providers_from_env(
     assert captured["opts"].install_acp_providers == expected
 
 
-def test_install_capabilities_defaults_to_full_capability_set():
-    """Test that the default reproduces today's full base-image contents."""
+def test_install_capabilities_defaults_to_stripped_capability_set():
+    """Test that the default capability set excludes bundled vscode."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions()
-    assert opts.install_capabilities == "vscode,browser,docker"
+    assert opts.install_capabilities == "browser,docker"
 
 
 def test_install_capabilities_rejects_unknown_capability():
@@ -824,7 +824,7 @@ def test_build_passes_install_capabilities_build_arg(
 @pytest.mark.parametrize(
     "env_value,expected",
     [
-        (None, "vscode,browser,docker"),
+        (None, "browser,docker"),
         ("", ""),
         ("vscode", "vscode"),
     ],

@@ -163,6 +163,7 @@ async def test_scoped_vscode_defaults_to_conversation_workspace(
     root = tmp_path / "workspace"
     cid = await _create(client, root)
     service = VSCodeService(port=18765)
+    monkeypatch.setattr(service, "is_running", lambda: True)
     monkeypatch.setattr(vscode_service_module, "_vscode_service", service)
     response = await client.get(f"/api/conversations/{cid}/vscode/url")
     assert response.status_code == 200, response.text

@@ -88,6 +88,7 @@ export class ConversationManager {
   public readonly skills: SkillsClient;
   public readonly subAgents: SubAgentsClient;
   public readonly tools: ToolClient;
+  /** @deprecated Deprecated since v1.50.1 and scheduled for removal in v1.55.0. */
   public readonly vscode: VSCodeClient;
   public readonly files: FileClient;
   public readonly workspaces: WorkspacesClient;

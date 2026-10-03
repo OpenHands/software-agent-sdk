@@ -281,7 +281,6 @@ def get_vscode_service() -> VSCodeService | None:
         config = get_default_config()
 
         if not config.enable_vscode:
-            logger.info("VSCode is disabled in configuration")
             return None
         else:
             connection_token = None

@@ -11,6 +11,16 @@ from openhands.tools.preset.default import get_default_agent
 from openhands.workspace import DockerWorkspace
 
 
+"""Example: VSCode Web with Docker-sandboxed server.
+
+NOTE: Built-in OpenVSCode has been removed from default Agent Server images
+and is deprecated (scheduled for removal in v1.55.0).
+Use the standalone VSCode App extension instead.
+This example requires building the server image with
+`--install-capabilities=vscode,browser,docker` or setting
+`OH_ENABLE_VSCODE=true`.
+"""
+
 logger = get_logger(__name__)
 
 api_key = os.getenv("LLM_API_KEY")
