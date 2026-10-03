@@ -16,11 +16,14 @@ from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
     OpenAIModelListResponse,
+    OpenAIResponse,
+    OpenAIResponseRequest,
 )
 from openhands.agent_server.openai.service import (
     iter_openai_chat_completion_sse,
     list_openai_models,
     run_chat_completion,
+    run_response,
 )
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
@@ -166,4 +169,38 @@ async def create_chat_completion(
         )
 
     response.headers["X-OpenHands-ServerConversation-ID"] = conversation_id
+    return result.response
+
+
+@openai_router.post(
+    "/v1/responses",
+    response_model=OpenAIResponse,
+    response_model_exclude_none=True,
+)
+async def create_response(
+    body: OpenAIResponseRequest,
+    request: Request,
+    response: Response,
+    x_openhands_observability_span_name: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Span-Name")
+    ] = None,
+    x_openhands_observability_tags: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Tags")
+    ] = None,
+    x_openhands_observability_metadata: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Metadata")
+    ] = None,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> OpenAIResponse:
+    result = await run_response(
+        request=body,
+        config=_get_config(request),
+        conversation_service=conversation_service,
+        observability_overrides=_parse_observability_overrides(
+            span_name=x_openhands_observability_span_name,
+            tags=x_openhands_observability_tags,
+            metadata=x_openhands_observability_metadata,
+        ),
+    )
+    response.headers["X-OpenHands-ServerConversation-ID"] = str(result.conversation_id)
     return result.response

@@ -35,7 +35,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, AgentBase, Message
+from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -52,6 +52,7 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -117,6 +118,30 @@ async def test_meta_json_has_no_agent_and_reload_uses_base_state(tmp_path):
         reloaded = await service2.get_conversation(conv_id)
         assert reloaded is not None
         assert reloaded.agent.llm.model == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_server_resolved_tool_modules_are_persisted(tmp_path):
+    """A lightweight creator need not import the runtime's tool modules."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+
+    meta = json.loads((conversations_dir / info.id.hex / "meta.json").read_text())
+    assert meta["tool_module_qualnames"]["terminal"] == (
+        "openhands.tools.terminal.definition"
+    )
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
@@ -231,7 +256,7 @@ async def test_start_conversation_registers_and_injects_client_tools(
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -300,17 +325,12 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         confirmation_policy=NeverConfirm(),
         secrets_encrypted=True,
     )
-    assert (
-        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
-            "GITHUB_PERSONAL_ACCESS_TOKEN"
-        ]
-        == encrypted_mcp_token
-    )
+    assert request.agent is None
 
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -612,6 +632,58 @@ async def test_conversation_lifecycle_serializes_only_matching_ids(tmp_path):
 
     await asyncio.gather(same_id_task, other_id_task)
     assert same_id_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_conversation_read_completes_while_another_conversation_starts(
+    tmp_path,
+):
+    """A conversation-scoped read must not queue behind an unrelated start.
+
+    Lifecycle work once ran under a single process-wide lock, so any request
+    that resolved an ``EventService`` waited for a start, fork, delete or
+    eviction happening elsewhere in the process — for an unrelated
+    conversation. Drive the public API rather than the lock helper so the
+    guarantee is checked where callers actually hit it.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    def request() -> StartConversationRequest:
+        return StartConversationRequest(
+            agent=_sample_agent(),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+        )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        live, _ = await service.start_conversation(request())
+
+        start_entered = asyncio.Event()
+        release_start = asyncio.Event()
+        start_event_service = service._start_event_service
+
+        async def blocking_start(stored: StoredConversation, **kwargs) -> EventService:
+            # Wedge the *other* conversation inside its own lifecycle section.
+            if stored.id != live.id:
+                start_entered.set()
+                await release_start.wait()
+            return await start_event_service(stored, **kwargs)
+
+        with patch.object(service, "_start_event_service", side_effect=blocking_start):
+            starting = asyncio.create_task(service.start_conversation(request()))
+            await asyncio.wait_for(start_entered.wait(), timeout=5)
+            try:
+                assert (
+                    await asyncio.wait_for(
+                        service.get_event_service(live.id), timeout=5
+                    )
+                    is not None
+                )
+            finally:
+                release_start.set()
+                await asyncio.wait_for(starting, timeout=5)
 
 
 @pytest.mark.asyncio
@@ -3092,6 +3164,9 @@ class TestAutoTitle:
     _GENERATE_TITLE_PATH = (
         "openhands.agent_server.conversation_service.generate_title_from_message"
     )
+    _TITLE_WITH_LLM_PATH = (
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    )
 
     def _make_service(
         self,
@@ -3368,13 +3443,49 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_autotitle_skips_llm_for_settings_built_acp_agent(self):
+        service = self._make_service()
+        acp_agent = ACPAgentSettings(acp_model="claude-opus-4-7").create_agent()
+        service._conversation.agent.llm = acp_agent.llm
+
+        with patch(self._TITLE_WITH_LLM_PATH) as mock_llm_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        mock_llm_title.assert_not_called()
+        assert service.stored.title == "Fix the login bug"
+
+    @pytest.mark.asyncio
+    async def test_autotitle_uses_title_profile_for_settings_built_acp_agent(self):
+        service = self._make_service(title_llm_profile="cheap-model")
+        service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
+        profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
+            patch(
+                self._TITLE_WITH_LLM_PATH, return_value="Profile Title"
+            ) as mock_llm_title,
+        ):
+            MockStore.return_value.load.return_value = profile_llm
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert mock_llm_title.call_args.args[1] is profile_llm
+        assert service.stored.title == "Profile Title"
+
+    @pytest.mark.asyncio
     async def test_autotitle_integration_routes_through_profile_store(
         self, tmp_path, monkeypatch, request
     ):
         """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
 
         Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
-        to LLM.completion. Only the network boundary (LLM.completion) is mocked,
+        to LLM.generate. Only the generic dispatch boundary (LLM.generate) is mocked,
         so this catches regressions in profile loading, LLM passthrough, and the
         agent-server → SDK integration — the unit tests above only exercise
         AutoTitleSubscriber in isolation.
@@ -3405,7 +3516,7 @@ class TestAutoTitle:
 
         calls: list[str] = []
 
-        def fake_completion(self_llm, _messages, **_kwargs):
+        def fake_generate(self_llm, _messages, **_kwargs):
             calls.append(self_llm.usage_id)
             msg = LiteLLMMessage(content="✨ Generated", role="assistant")
             choice = Choices(finish_reason="stop", index=0, message=msg)
@@ -3440,9 +3551,9 @@ class TestAutoTitle:
         request.addfinalizer(reset_stores)
 
         with patch(
-            "openhands.sdk.llm.llm.LLM.completion",
+            "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
-            side_effect=fake_completion,
+            side_effect=fake_generate,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -3500,7 +3611,7 @@ class TestAutoTitle:
 
         seen_keys: list[str] = []
 
-        def fake_completion(self_llm, _messages, **_kwargs):
+        def fake_generate(self_llm, _messages, **_kwargs):
             seen_keys.append(
                 self_llm.api_key.get_secret_value() if self_llm.api_key else ""
             )
@@ -3534,9 +3645,9 @@ class TestAutoTitle:
         request.addfinalizer(reset_stores)
 
         with patch(
-            "openhands.sdk.llm.llm.LLM.completion",
+            "openhands.sdk.llm.llm.LLM.generate",
             autospec=True,
-            side_effect=fake_completion,
+            side_effect=fake_generate,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -3579,6 +3690,40 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_adds_and_removes_record(
+    tmp_path, sample_stored_conversation
+):
+    conversations_dir = tmp_path / "conversations"
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        assert (await service.search_conversations()).items == []
+
+        conversation_dir = conversations_dir / sample_stored_conversation.id.hex
+        conversation_dir.mkdir(parents=True)
+        (conversation_dir / "meta.json").write_text(
+            sample_stored_conversation.model_dump_json()
+        )
+        state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=_sample_agent(),
+            workspace=sample_stored_conversation.workspace,
+            persistence_dir=str(conversations_dir),
+        )
+        (conversation_dir / "base_state.json").write_text(state.model_dump_json())
+
+        await service.refresh_persisted_conversation(sample_stored_conversation.id)
+        info = await service.get_conversation(sample_stored_conversation.id)
+        page = await service.search_conversations()
+        (conversation_dir / "meta.json").unlink()
+        await service.refresh_persisted_conversation(sample_stored_conversation.id)
+        removed = await service.get_conversation(sample_stored_conversation.id)
+
+    assert info is not None
+    assert info.id == sample_stored_conversation.id
+    assert [item.id for item in page.items] == [sample_stored_conversation.id]
+    assert removed is None
 
 
 def _branch_events(conversation) -> list:
@@ -4112,3 +4257,249 @@ async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
             holder.join(timeout=2)
 
     assert [item.id for item in page.items] == [conversation_info.id]
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_updates_metadata_without_state_change(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    directory = conversations_dir / conversation_id.hex
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        initial = await service.search_conversations()
+        assert initial.items[0].title is None
+        state_before = (directory / "base_state.json").read_bytes()
+        metadata = json.loads((directory / "meta.json").read_text())
+        metadata["title"] = "Generated externally"
+        (directory / "meta.json").write_text(json.dumps(metadata))
+
+        await service.refresh_persisted_conversation(conversation_id)
+        info = await service.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "Generated externally"
+        assert (await service.search_conversations()).items[0].title == info.title
+        assert (directory / "base_state.json").read_bytes() == state_before
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_preserves_live_metadata(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        runtime = await service.get_event_service(conversation_id)
+        assert runtime is not None
+        runtime.stored = runtime.stored.model_copy(update={"title": "Live title"})
+        metadata_path = conversations_dir / conversation_id.hex / "meta.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["title"] = "Stale disk title"
+        metadata_path.write_text(json.dumps(metadata))
+
+        await service.refresh_persisted_conversation(conversation_id)
+        info = await service.get_conversation(conversation_id)
+        assert info is not None
+        assert info.title == "Live title"
+        assert (await service.search_conversations()).items[0].title == "Live title"
+        assert await service.get_event_service(conversation_id) is runtime
+
+
+@pytest.mark.asyncio
+async def test_refresh_persisted_conversation_only_decrypts_requested_record(
+    persisted_conversation,
+):
+    conversations_dir, conversation_id = persisted_conversation
+    reads = []
+
+    def cipher_for(cid):
+        reads.append(cid)
+        return Cipher("catalog-test-key")
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        runtime_cipher_resolver=cipher_for,
+    ) as service:
+        unrelated = uuid4()
+        directory = conversations_dir / unrelated.hex
+        directory.mkdir()
+        (directory / "meta.json").write_bytes(
+            (conversations_dir / conversation_id.hex / "meta.json").read_bytes()
+        )
+        reads.clear()
+        assert (await service.search_conversations()).items
+        assert reads == [conversation_id]
+
+        reads.clear()
+        await service.refresh_persisted_conversation(conversation_id)
+        assert reads == [conversation_id]
+        assert await service.get_conversation(conversation_id) is not None
+        assert reads == [conversation_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enable_browser", "usable", "tools", "expected"),
+    [
+        (
+            True,
+            True,
+            None,
+            ["terminal", "file_editor", "task_tracker", "browser_tool_set"],
+        ),
+        (True, False, None, ["terminal", "file_editor", "task_tracker"]),
+        (False, True, None, ["terminal", "file_editor", "task_tracker"]),
+        (True, True, [{"name": "terminal"}], ["terminal"]),
+        (
+            True,
+            True,
+            [{"name": "browser_tool_set"}, {"name": "terminal"}],
+            ["browser_tool_set", "terminal"],
+        ),
+        (
+            True,
+            False,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+        (
+            False,
+            True,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+    ],
+)
+async def test_settings_launch_resolves_tools_for_this_server(
+    conversation_service, tmp_path, enable_browser, usable, tools, expected
+):
+    conversation_service.enable_browser = enable_browser
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": tools,
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch(
+            "openhands.agent_server.launch.is_tool_usable",
+            return_value=usable,
+        ),
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == expected
+
+
+async def test_explicit_agent_wins_over_agent_settings(conversation_service, tmp_path):
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": [{"name": "file_editor"}],
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == ["terminal"]
+
+
+@pytest.mark.asyncio
+async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_path):
+    from openhands.sdk.settings import OpenHandsAgentSettings
+
+    conversation_service.enable_browser = True
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch("openhands.agent_server.launch.is_tool_usable", return_value=True),
+        patch.object(
+            OpenHandsAgentSettings,
+            "create_agent",
+            autospec=True,
+            side_effect=OpenHandsAgentSettings.create_agent,
+        ) as create_agent,
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        await conversation_service.start_conversation(request)
+
+    create_agent.assert_called_once()
+    assert "browser_tool_set" in [t.name for t in captured["agent"].tools]

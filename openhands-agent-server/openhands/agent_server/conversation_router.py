@@ -13,17 +13,19 @@ from fastapi import (
     Response,
     status,
 )
-from pydantic import SecretStr
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
+    store_errors,
 )
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
     ConversationService,
     InvalidParentConversation,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
@@ -31,10 +33,11 @@ from openhands.agent_server.models import (
     AskAgentResponse,
     ConversationInfo,
     ConversationPage,
+    ConversationRuntimeInfo,
+    ConversationRuntimeStatus,
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
-    SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
@@ -44,57 +47,68 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
-from openhands.sdk import LLM, Agent, TextContent
+from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
-from openhands.sdk.profiles.resolver import (
-    DanglingMcpServerRef,
-    ProfileNotFound,
-)
+from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
-from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.preset.default import get_default_tools
 
 
+conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 
 # Examples
 
 START_CONVERSATION_EXAMPLES = [
-    StartConversationRequest(
-        agent=Agent(
-            llm=LLM(
-                usage_id="your-llm-service",
-                model="your-model-provider/your-model-name",
-                api_key=SecretStr("your-api-key-here"),
-            ),
-            tools=get_default_tools(enable_browser=True),
-        ),
-        workspace=LocalWorkspace(working_dir="workspace/project"),
-        initial_message=SendMessageRequest(
-            role="user", content=[TextContent(text="Flip a coin!")]
-        ),
-    ).model_dump(exclude_defaults=True, mode="json")
+    {
+        "agent_settings": {
+            "llm": {
+                "usage_id": "your-llm-service",
+                "model": "your-model-provider/your-model-name",
+                "api_key": "your-api-key-here",
+            },
+        },
+        "workspace": {"working_dir": "workspace/project"},
+        "initial_message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "Flip a coin!"}],
+        },
+    }
 ]
 
 
 # Read methods
 
 
+def _with_runtime_info(
+    request: Request, conversation: ConversationInfo
+) -> ConversationInfo:
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if not isinstance(registry, ConversationRegistry):
+        return conversation
+    return conversation.model_copy(
+        update={"runtime_info": registry.runtime_info(conversation.id)}
+    )
+
+
+@conversation_catalog_router.get("/search", include_in_schema=False)
 @conversation_router.get("/search")
 async def search_conversations(
+    request: Request,
     page_id: Annotated[
         str | None,
         Query(title="Optional next_page_id from the previously returned page"),
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     status: Annotated[
         ConversationExecutionStatus | None,
@@ -108,8 +122,6 @@ async def search_conversations(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationPage:
     """Search / List conversations"""
-    assert limit > 0
-    assert limit <= 100
     page = await conversation_service.search_conversations(
         page_id, limit, status, sort_order
     )
@@ -125,9 +137,13 @@ async def search_conversations(
                 ]
             }
         )
+    page = page.model_copy(
+        update={"items": [_with_runtime_info(request, item) for item in page.items]}
+    )
     return page
 
 
+@conversation_catalog_router.get("/count", include_in_schema=False)
 @conversation_router.get("/count")
 async def count_conversations(
     status: Annotated[
@@ -146,6 +162,7 @@ async def count_conversations(
 )
 async def get_conversation(
     conversation_id: UUID,
+    request: Request,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
@@ -155,7 +172,36 @@ async def get_conversation(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not include_skills:
         conversation = trim_conversation_response_skills(conversation)
-    return conversation
+    return _with_runtime_info(request, conversation)
+
+
+@conversation_router.get("/{conversation_id}/runtime")
+async def get_local_conversation_runtime(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationRuntimeInfo:
+    """Inspect the always-available in-process runtime."""
+    if await conversation_service.get_conversation(conversation_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if isinstance(registry, ConversationRegistry):
+        return registry.runtime_info(conversation_id)
+    return ConversationRuntimeInfo(
+        runtime_status=ConversationRuntimeStatus.AVAILABLE, can_resume=True
+    )
+
+
+@conversation_router.post("/{conversation_id}/runtime/reprovision")
+async def reprovision_local_conversation_runtime(
+    conversation_id: UUID,
+    request: Request,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationRuntimeInfo:
+    """Return local runtime state; local mode has no infrastructure to provision."""
+    return await get_local_conversation_runtime(
+        conversation_id, request, conversation_service
+    )
 
 
 @conversation_router.get(
@@ -181,6 +227,7 @@ async def get_conversation_agent_final_response(
 
 @conversation_router.get("")
 async def batch_get_conversations(
+    request: Request,
     ids: Annotated[list[UUID], Query()],
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
@@ -189,6 +236,10 @@ async def batch_get_conversations(
     any missing item"""
     assert len(ids) < 100
     conversations = await conversation_service.batch_get_conversations(ids)
+    conversations = [
+        _with_runtime_info(request, conversation) if conversation is not None else None
+        for conversation in conversations
+    ]
     if not include_skills:
         return [
             trim_conversation_response_skills(c) if c is not None else None
@@ -200,7 +251,9 @@ async def batch_get_conversations(
 # Write Methods
 
 
-@conversation_router.post("")
+@conversation_router.post(
+    "", responses={429: {"description": "Server conversation run capacity is full"}}
+)
 async def start_conversation(
     request: Annotated[
         StartConversationRequest, Body(examples=START_CONVERSATION_EXAMPLES)
@@ -212,13 +265,8 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     try:
         info, is_new = await conversation_service.start_conversation(request)
-    except ProfileNotFound as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    except DanglingMcpServerRef as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
-        ) from e
+    except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
+        raise launch_http_exception(e) from e
     except ClientToolRegistrationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
@@ -286,6 +334,7 @@ async def delete_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def run_conversation(
@@ -317,6 +366,7 @@ async def run_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation run or goal loop is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def start_goal_in_conversation(
@@ -375,6 +425,7 @@ async def stop_goal_in_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation run or goal loop is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def resume_goal_in_conversation(
@@ -501,7 +552,10 @@ async def switch_conversation_llm(
     """Swap the conversation's LLM to a caller-supplied object.
 
     Used by app-servers that own the LLM directly and don't push profiles
-    to the agent-server's filesystem (see #3017).
+    to the agent-server's filesystem (see #3017), and by the frontend's
+    per-conversation model switch, which forwards a profile config that may
+    reference a saved provider connection by id instead of carrying an inline
+    API key.
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
@@ -510,6 +564,14 @@ async def switch_conversation_llm(
     cipher = get_cipher(request)
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
+    # Resolve a referenced provider connection before installing the LLM, so a
+    # profile linked to a shared connection runs with its api_key / base_url
+    # instead of a keyless config (mirrors LLMProfileStore.load). A dangling
+    # reference or missing credential surfaces as 422 before the working LLM
+    # is replaced. Inline-key configs without a provider_connection_id are
+    # byte-identical to the old path.
+    with store_errors():
+        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
     conversation.switch_llm(llm)
     return Success()
 

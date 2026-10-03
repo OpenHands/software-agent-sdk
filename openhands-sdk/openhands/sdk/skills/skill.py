@@ -47,7 +47,7 @@ from openhands.sdk.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
-from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 logger = get_logger(__name__)
@@ -847,6 +847,9 @@ class Skill(BaseModel):
 
 def load_skills_from_dir(
     skill_dir: str | Path,
+    strict: bool = True,
+    recursive: bool = True,
+    root: Path | None = None,
 ) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -856,8 +859,15 @@ def load_skills_from_dir(
 
     Note, legacy repo instructions will not be loaded here.
 
+    A skill that fails to load is logged and skipped; it never aborts the others.
+
     Args:
         skill_dir: Path to the skills directory (e.g. .openhands/skills)
+        strict: If True, enforce strict AgentSkills name validation.
+        recursive: If False, only load regular .md files that are immediate
+            children of skill_dir.
+        root: If given, skill paths that resolve outside it (e.g. through a
+            symlink) are skipped. Plugins pass their root here.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
@@ -877,27 +887,39 @@ def load_skills_from_dir(
     # Note: Third-party files (AGENTS.md, etc.) are loaded separately by
     # load_project_skills() to ensure they're loaded even when this directory
     # doesn't exist.
-    skill_md_files = find_skill_md_directories(skill_dir)
+    skill_md_files = find_skill_md_directories(skill_dir, root)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
-    regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
+    regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs, recursive, root)
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     # Wrap each load in try/except to ensure one bad skill doesn't break all loading
     for skill_md_path in skill_md_files:
         try:
             load_and_categorize(
-                skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
+                skill_md_path,
+                skill_dir,
+                repo_skills,
+                knowledge_skills,
+                agent_skills,
+                strict=strict,
+                root=root,
             )
-        except (SkillError, OSError, yaml.YAMLError) as e:
+        except Exception as e:
             logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
 
     # Load regular .md files
     for path in regular_md_files:
         try:
             load_and_categorize(
-                path, skill_dir, repo_skills, knowledge_skills, agent_skills
+                path,
+                skill_dir,
+                repo_skills,
+                knowledge_skills,
+                agent_skills,
+                strict=strict,
+                root=root,
             )
-        except (SkillError, OSError, yaml.YAMLError) as e:
+        except Exception as e:
             logger.warning(f"Failed to load skill from {path}: {e}")
 
     total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
@@ -913,8 +935,8 @@ def load_skills_from_dir(
 # Default user skills directories (in order of priority)
 USER_SKILLS_DIRS = [
     Path.home() / ".agents" / "skills",
-    Path.home() / ".openhands" / "skills",
-    Path.home() / ".openhands" / "microagents",  # Legacy support
+    get_user_persistence_dir() / "skills",
+    get_user_persistence_dir() / "microagents",  # Legacy support
 ]
 
 

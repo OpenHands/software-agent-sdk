@@ -35,6 +35,7 @@ from openhands.sdk.extensions.installation import (
     InstallationMetadata,
 )
 from openhands.sdk.extensions.installation.manager import DEFAULT_CACHE_DIR
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 # Matches the InstalledPluginInfo naming convention.
@@ -43,7 +44,7 @@ InstalledCanvasExtensionInfo = InstallationInfo
 
 def get_installed_canvas_extensions_dir() -> Path:
     """Get the default directory for installed canvas extensions."""
-    return Path.home() / ".openhands" / "canvas-extensions" / "installed"
+    return get_user_persistence_dir() / "canvas-extensions" / "installed"
 
 
 class CanvasExtensionInstallationInterface(

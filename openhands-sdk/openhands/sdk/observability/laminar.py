@@ -84,6 +84,9 @@ def maybe_init_laminar():
 
     To force HTTP instead of gRPC for Laminar communication:
     LMNR_FORCE_HTTP=true  # or 1, yes, on
+
+    To initialize only selected Laminar integrations:
+    LMNR_INSTRUMENTS=litellm,mcp
     """
     if not should_enable_observability():
         logger.debug(
@@ -99,17 +102,30 @@ def maybe_init_laminar():
 
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
+    instruments_env = get_env("LMNR_INSTRUMENTS")
+    instruments = None
+    if instruments_env is not None:
+        instruments = set()
+        for value in map(str.strip, instruments_env.split(",")):
+            if not value:
+                continue
+            try:
+                instruments.add(Instruments(value))
+            except ValueError:
+                logger.warning("Ignoring invalid LMNR_INSTRUMENTS value %r", value)
 
     if _is_otel_backend_laminar():
         Laminar.initialize(
             base_url=base_url,
             http_port=_get_int_env("LMNR_HTTP_PORT"),
             grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+            instruments=instruments,
             force_http=force_http,
         )
     else:
         # Do not enable browser session replays for non-laminar backends
         Laminar.initialize(
+            instruments=instruments,
             disabled_instruments=[
                 Instruments.BROWSER_USE_SESSION,
                 Instruments.PATCHRIGHT,
@@ -386,6 +402,34 @@ def start_child_span(
                     Laminar.set_span_tags(tags)
     except Exception:
         logger.debug("Failed to create observability child span", exc_info=True)
+
+
+@contextlib.contextmanager
+def llm_call_span(name: str) -> Iterator[Any]:
+    """Open a span that stays current for the duration of one LLM call.
+
+    lmnr's LiteLLM instrumentation builds its span with ``Laminar.start_span``
+    (detached from the OTel context) and ends it in a ``finally`` before
+    ``litellm.completion`` returns, so attributes cannot be attached to it
+    afterwards -- OTel silently drops writes to an ended span. This span is
+    *current* while the call runs, so lmnr's span nests underneath it, and it
+    stays open long enough for Telemetry to attach the authoritative cost.
+
+    Yields ``None`` when observability is disabled, so callers stay branch-free.
+    """
+    if not should_enable_observability():
+        yield None
+        return
+    try:
+        from lmnr import Laminar
+
+        cm = Laminar.start_as_current_span(name=name, span_type="LLM")
+    except Exception:
+        logger.debug("Failed to open LLM observability span", exc_info=True)
+        yield None
+        return
+    with cm as span:
+        yield span
 
 
 # Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`
