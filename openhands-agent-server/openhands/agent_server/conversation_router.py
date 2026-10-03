@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import json
 from typing import Annotated
 from uuid import UUID
 
@@ -7,12 +8,14 @@ from fastapi import (
     APIRouter,
     Body,
     Depends,
+    Header,
     HTTPException,
     Query,
     Request,
     Response,
     status,
 )
+from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
@@ -51,6 +54,11 @@ from openhands.agent_server.models import (
 from openhands.agent_server.persistence import get_llm_profile_store
 from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
+    ConversationObservabilityTags,
+)
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
@@ -64,6 +72,53 @@ from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
+_OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
+_OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
+_OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
+
+
+def _request_with_observability_headers(
+    request: StartConversationRequest,
+    *,
+    span_name: str | None,
+    tags: str | None,
+    metadata: str | None,
+    parent_span_context: str | None,
+) -> StartConversationRequest:
+    updates: dict[str, object] = {}
+    try:
+        if span_name and "observability_span_name" not in request.model_fields_set:
+            updates["observability_span_name"] = (
+                _OBSERVABILITY_SPAN_NAME_ADAPTER.validate_python(span_name)
+            )
+        if tags and "observability_tags" not in request.model_fields_set:
+            tag_values = [tag.strip() for tag in tags.split(",") if tag.strip()]
+            updates["observability_tags"] = _OBSERVABILITY_TAGS_ADAPTER.validate_python(
+                tag_values
+            )
+        if metadata:
+            metadata_payload = json.loads(metadata)
+            header_metadata = _OBSERVABILITY_METADATA_ADAPTER.validate_python(
+                metadata_payload
+            )
+            updates["observability_metadata"] = {
+                **header_metadata,
+                **request.observability_metadata,
+            }
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_context=False),
+        ) from exc
+    if parent_span_context and not request.observability_parent_span_context:
+        updates["observability_parent_span_context"] = parent_span_context
+    return request.model_copy(update=updates) if updates else request
+
 
 # Examples
 
@@ -297,9 +352,28 @@ async def start_conversation(
     ],
     response: Response,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
+    x_openhands_observability_span_name: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Span-Name")
+    ] = None,
+    x_openhands_observability_tags: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Tags")
+    ] = None,
+    x_openhands_observability_metadata: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Metadata")
+    ] = None,
+    x_openhands_observability_parent_span_context: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
+    ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
+    request = _request_with_observability_headers(
+        request,
+        span_name=x_openhands_observability_span_name,
+        tags=x_openhands_observability_tags,
+        metadata=x_openhands_observability_metadata,
+        parent_span_context=x_openhands_observability_parent_span_context,
+    )
     try:
         info, is_new = await conversation_service.start_conversation(request)
     except ConversationArchivedError as e:
