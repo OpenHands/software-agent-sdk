@@ -1,59 +1,50 @@
-"""Tests for observability environment helpers."""
+"""Tests for observability utils."""
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from openhands.sdk.observability import (
-    laminar as laminar_module,
-    utils as observability_utils,
-)
+import openhands.sdk.observability.utils as utils
 from openhands.sdk.observability.utils import get_env
 
 
-def test_get_env_prefers_environment_without_consulting_dotenv(
-    monkeypatch: pytest.MonkeyPatch,
+def test_get_env_from_environment():
+    """get_env returns the value from the process environment."""
+    with patch.dict(os.environ, {"TEST_VAR": "test_value"}):
+        assert get_env("TEST_VAR") == "test_value"
+
+
+def test_get_env_not_found():
+    """get_env returns None when the variable is not set."""
+    with patch.dict(os.environ, {}, clear=True):
+        assert get_env("NONEXISTENT_VAR") is None
+
+
+def test_get_env_does_not_use_python_dotenv():
+    """Regression guard for issue #1325.
+
+    The crash came from python-dotenv's ``find_dotenv()``, which walks the
+    call stack and executes ``assert frame.f_back is not None``. That fails in
+    deployments whose frames have no on-disk source file (packaged/frozen
+    builds, a deleted CWD, threads running exec'd code). Loading ``.env`` is
+    now the host application's responsibility, so ``get_env`` must read solely
+    from ``os.environ`` and must not import or call python-dotenv.
+
+    Reverting ``get_env`` to a ``dotenv_values()`` call makes this fail.
+    """
+    assert not hasattr(utils, "dotenv_values")
+
+
+@pytest.mark.parametrize("env_value", [None, ""])
+def test_get_env_ignores_dotenv_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_value: str | None
 ) -> None:
-    monkeypatch.setenv("OH_TEST_ENV_KEY", "from-env")
-
-    def _fail(*args: object, **kwargs: object) -> object:
-        raise AssertionError("dotenv_values must not be consulted")
-
-    monkeypatch.setattr(observability_utils, "dotenv_values", _fail)
-    assert get_env("OH_TEST_ENV_KEY") == "from-env"
-
-
-def test_get_env_empty_environment_value_wins(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OH_TEST_ENV_KEY", "")
-    assert get_env("OH_TEST_ENV_KEY") == ""
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        FileNotFoundError("No such file or directory"),
-        OSError("I/O error"),
-        AssertionError("bad frame"),
-    ],
-)
-def test_get_env_returns_none_when_dotenv_fails(
-    monkeypatch: pytest.MonkeyPatch, error: Exception
-) -> None:
-    monkeypatch.delenv("OH_TEST_ENV_KEY", raising=False)
-
-    def _fail(*args: object, **kwargs: object) -> object:
-        raise error
-
-    monkeypatch.setattr(observability_utils, "dotenv_values", _fail)
-    assert get_env("OH_TEST_ENV_KEY") is None
-
-
-def test_get_env_reads_dotenv_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("OH_TEST_ENV_KEY", raising=False)
+    if env_value is None:
+        monkeypatch.delenv("OH_TEST_ENV_KEY", raising=False)
+    else:
+        monkeypatch.setenv("OH_TEST_ENV_KEY", env_value)
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text("OH_TEST_ENV_KEY=from-dotenv\n")
     monkeypatch.chdir(tmp_path)
@@ -62,18 +53,4 @@ def test_get_env_reads_dotenv_file(
         lambda *args, **kwargs: str(dotenv_path),
         raising=True,
     )
-    assert get_env("OH_TEST_ENV_KEY") == "from-dotenv"
-
-
-def test_should_enable_observability_false_when_dotenv_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for key in laminar_module._OBSERVABILITY_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(laminar_module, "_observability_enabled", False)
-
-    def _fail(*args: object, **kwargs: object) -> object:
-        raise OSError("No such file or directory")
-
-    monkeypatch.setattr(observability_utils, "dotenv_values", _fail)
-    assert laminar_module.should_enable_observability() is False
+    assert get_env("OH_TEST_ENV_KEY") == env_value

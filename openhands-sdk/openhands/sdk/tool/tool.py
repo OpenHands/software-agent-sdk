@@ -383,6 +383,12 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # Automatic tool naming - set by __init_subclass__
     name: ClassVar[str] = ""
 
+    user_selectable: ClassVar[bool] = True
+    """Whether a user may pick this tool when configuring an agent's toolset."""
+
+    catalog_description: ClassVar[str] = ""
+    """User-facing catalog blurb; ``description`` is what the LLM reads."""
+
     def __init_subclass__(cls, **kwargs):
         """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)
@@ -400,6 +406,13 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     # runtime-only; always hidden on dumps
     executor: SkipJsonSchema[ToolExecutor | None] = Field(
         default=None, repr=False, exclude=True
+    )
+
+    prompt_guidance: SkipJsonSchema[str | None] = Field(
+        default=None,
+        repr=False,
+        exclude=True,
+        description="System-prompt guidance for this tool; deduplicated by text.",
     )
 
     response_schema: SkipJsonSchema[ResponseSchema | None] = Field(

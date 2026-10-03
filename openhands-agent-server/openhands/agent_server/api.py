@@ -105,6 +105,7 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
@@ -186,6 +187,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         api.state.telemetry_sink = await build_telemetry_sink(config)
         if not deferred:
             emit_server_started()
+
+        seal_tool_catalog()
 
         vscode_service = get_vscode_service()
         tool_preload_service = get_tool_preload_service()
@@ -313,6 +316,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
+        unseal_tool_catalog()
         backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
         if backend_manager is not None:
             await backend_manager.shutdown()
