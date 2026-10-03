@@ -531,33 +531,6 @@ class TerminalSession(TerminalSessionBase):
                 is_error=True,
             )
 
-        command_to_send = command
-        command_boundary_marker: str | None = None
-        if command:
-            # A new command supersedes any wrapper tracked from a previous one.
-            # An empty follow-up poll must keep it so it can still strip.
-            self._boundary_marker = None
-            self._wrapper_echo = None
-        if command and not is_input and not self.terminal.is_powershell():
-            command_to_send = group_heredoc_script_for_execution(command_to_send)
-            if command_to_send != command:
-                command_boundary_marker = f"__OH_COMMAND_FINISHED_{uuid.uuid4().hex}__"
-                marker_midpoint = len(command_boundary_marker) // 2
-                marker_start = command_boundary_marker[:marker_midpoint]
-                marker_end = command_boundary_marker[marker_midpoint:]
-                command_to_send += (
-                    "; (__openhands_status=$?; printf '\\n%s%s\\n' "
-                    f"'{marker_start}' '{marker_end}'; "
-                    'exit "$__openhands_status")'
-                )
-                # Remember what we wrapped so a timeout or follow-up poll can
-                # strip the echo even though it never sees this local value.
-                self._boundary_marker = command_boundary_marker
-            command_to_send = escape_bash_special_chars(command_to_send)
-            if command_boundary_marker is not None:
-                # The terminal echoes the escaped text, so match against that.
-                self._wrapper_echo = command_to_send
-
         # Get initial state before sending command
         initial_terminal_output = self.terminal.read_screen()
         initial_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
@@ -585,6 +558,7 @@ class TerminalSession(TerminalSessionBase):
             and not is_input
             and command != ""
         ):
+            last_terminal_output = self._strip_boundary_wrapper(last_terminal_output)
             _ps1_matches = CmdOutputMetadata.matches_ps1_metadata(last_terminal_output)
             # Use initial_ps1_matches if _ps1_matches is empty,
             # otherwise use _ps1_matches. This handles the case where
@@ -623,6 +597,31 @@ class TerminalSession(TerminalSessionBase):
                 is_error=True,
             )
             return obs
+
+        command_to_send = command
+        command_boundary_marker: str | None = None
+        if command and not is_input:
+            self._boundary_marker = None
+            self._wrapper_echo = None
+        if command and not is_input and not self.terminal.is_powershell():
+            command_to_send = group_heredoc_script_for_execution(command_to_send)
+            if command_to_send != command:
+                command_boundary_marker = f"__OH_COMMAND_FINISHED_{uuid.uuid4().hex}__"
+                marker_midpoint = len(command_boundary_marker) // 2
+                marker_start = command_boundary_marker[:marker_midpoint]
+                marker_end = command_boundary_marker[marker_midpoint:]
+                command_to_send += (
+                    "; (__openhands_status=$?; printf '\\n%s%s\\n' "
+                    f"'{marker_start}' '{marker_end}'; "
+                    'exit "$__openhands_status")'
+                )
+                # Remember what we wrapped so a timeout or follow-up poll can
+                # strip the echo even though it never sees this local value.
+                self._boundary_marker = command_boundary_marker
+            command_to_send = escape_bash_special_chars(command_to_send)
+            if command_boundary_marker is not None:
+                # The terminal echoes the escaped text, so match against that.
+                self._wrapper_echo = command_to_send
 
         # Send actual command/inputs to the terminal
         sent_command = command != ""

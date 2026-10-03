@@ -1265,3 +1265,39 @@ def test_no_change_timeout_strips_heredoc_wrapper(terminal_type):
             assert "__openhands_status" not in obs.text
         finally:
             session.close()
+
+
+@parametrize_terminal_types
+@pytest.mark.parametrize(
+    "follow_up", ["echo second", "cat <<'EOF'\nsecond\nEOF\necho end"]
+)
+def test_running_heredoc_rejects_new_command_without_wrapper(
+    tmp_path, terminal_type, follow_up
+):
+    session = create_terminal_session(
+        work_dir=tmp_path,
+        terminal_type=terminal_type,
+        no_change_timeout_seconds=2,
+    )
+    session.initialize()
+    try:
+        session.execute(
+            TerminalAction(command="cat <<'EOF'\nbody\nEOF\nsleep 8; echo done\n")
+        )
+        assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
+
+        obs = session.execute(TerminalAction(command=follow_up))
+        assert obs.is_error
+        assert "__openhands_status" not in obs.text
+        assert "__OH_COMMAND_FINISHED_" not in obs.text
+
+        obs = session.execute(TerminalAction(command="", timeout=10))
+        assert "done" in obs.text
+        assert "__openhands_status" not in obs.text
+        assert "__OH_COMMAND_FINISHED_" not in obs.text
+
+        obs = session.execute(TerminalAction(command="echo second"))
+        assert not obs.is_error
+        assert "second" in obs.text
+    finally:
+        session.close()
