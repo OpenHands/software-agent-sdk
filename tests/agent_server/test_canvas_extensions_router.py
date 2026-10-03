@@ -589,7 +589,7 @@ def test_icon_endpoint_returns_404_without_declared_icon(
 @pytest.mark.parametrize(
     "bad_icon", ["../icon.svg", "/etc/icon.svg", "assets/icon.png", "a\\b.svg", 42]
 )
-def test_invalid_icon_is_dropped_without_hiding_extension(
+def test_invalid_icon_is_not_served_and_does_not_hide_extension(
     client: TestClient, tmp_path: Path, bad_icon: object
 ):
     src = _write_icon_extension(tmp_path / "src" / "demo-extension", bad_icon)
@@ -599,7 +599,6 @@ def test_invalid_icon_is_dropped_without_hiding_extension(
 
     assert install.status_code == 200
     assert got.json()["manifest"] is not None
-    assert "icon" not in got.json()["manifest"]
     assert (
         client.get("/canvas-extensions/installed/demo-extension/icon").status_code
         == 404

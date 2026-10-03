@@ -194,24 +194,16 @@ class CanvasExtensionManifest(BaseModel):
     @field_validator("icon", mode="before")
     @classmethod
     def _validate_icon(cls, v: object) -> str | None:
-        """Drop an invalid icon instead of raising.
+        """Drop a non-SVG icon instead of raising.
 
         The manifest is re-validated on every read, so raising here would hide
-        the whole extension, including ones installed before this field existed.
+        the whole extension. Containment is checked at serve time by
+        :func:`resolve_icon`.
         """
-        if v is None:
-            return None
-        if (
-            not isinstance(v, str)
-            or not v.endswith(".svg")
-            or v.startswith("/")
-            or "\\" in v
-            or "\x00" in v
-            or ".." in Path(v).parts
-        ):
-            logger.warning("Ignoring invalid canvas extension icon %r", v)
-            return None
-        return v
+        if v is None or (isinstance(v, str) and v.endswith(".svg")):
+            return v
+        logger.warning("Ignoring invalid canvas extension icon %r", v)
+        return None
 
     @field_validator("schema_version")
     @classmethod
