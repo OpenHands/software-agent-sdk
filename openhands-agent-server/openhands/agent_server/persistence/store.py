@@ -703,6 +703,42 @@ class FileSecretsStore(SecretsStore):
             self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
             return successor
 
+    def update_versioned_secret(
+        self, name: str, expected_version: str | None, value: str | None
+    ) -> str | None:
+        """Compare-and-set, including creation and deletion, under the store lock.
+
+        A missing expected version means the secret must not exist. Deletion
+        removes its version too, so an old refresh can never recreate it.
+        """
+        with _file_lock(self._lock_path):
+            secrets = self.load()
+            if secrets is None:
+                if self._path.exists():
+                    raise RuntimeError("Credential store is unavailable")
+                secrets = Secrets()
+            versions = self._load_versions()
+            current = secrets.custom_secrets.get(name)
+            if (current is not None and expected_version is None) or (
+                versions.get(name) != expected_version
+            ):
+                raise ValueError("credential_version_conflict")
+            new_secrets = dict(secrets.custom_secrets)
+            successor = None
+            if value is None:
+                new_secrets.pop(name, None)
+                versions.pop(name, None)
+            else:
+                new_secrets[name] = CustomSecret(
+                    name=name,
+                    secret=SecretStr(value),
+                    description=current.description if current else None,
+                )
+                successor = secrets_module.token_urlsafe(24)
+                versions[name] = successor
+            self._save_with_versions(Secrets(custom_secrets=new_secrets), versions)
+            return successor
+
 
 class WorkspacesStore(ABC):
     """Abstract base class for workspaces storage."""

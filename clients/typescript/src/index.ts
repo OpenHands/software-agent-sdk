@@ -147,6 +147,7 @@ export type { BashWebSocketClientOptions } from './events/bash-websocket-client'
 export { HttpClient, HttpError } from './client/http-client';
 export { HooksClient } from './client/hooks-client';
 export { MCPClient } from './client/mcp-client';
+export type { CodexAuthStatus, CodexDeviceChallenge } from './models/api';
 export { WorkspacesClient } from './client/workspaces-client';
 export {
   AGENT_SERVER_VERSION_ERROR_CODE,

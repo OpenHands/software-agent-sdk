@@ -3,6 +3,7 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import { CodexAuthClient } from '../client/codex-auth-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { FileClient } from '../client/file-client';
 import { HooksClient } from '../client/hooks-client';
@@ -33,7 +34,11 @@ import {
 import { AgentBase, ConversationExecutionStatus, ConversationID, Success } from '../types/base';
 
 export class ACPConversationNamespace {
-  constructor(private readonly manager: ConversationManager) {}
+  public readonly codexAuth: CodexAuthClient;
+
+  constructor(private readonly manager: ConversationManager) {
+    this.codexAuth = new CodexAuthClient({ host: manager.host, apiKey: manager.apiKey });
+  }
 
   searchConversations(
     options: ConversationSearchRequest = {}
@@ -396,6 +401,7 @@ export class ConversationManager {
    * Close the manager and cleanup resources
    */
   close(): void {
+    this.acp.codexAuth.close();
     this.server.close();
     this.llm.close();
     this.profiles.close();

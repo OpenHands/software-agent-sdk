@@ -15,6 +15,7 @@ export { FileClient } from './client/file-client';
 export { HooksClient } from './client/hooks-client';
 export { GitClient } from './client/git-client';
 export { LLMMetadataClient } from './client/llm-client';
+export { CodexAuthClient } from './client/codex-auth-client';
 export { MCPClient } from './client/mcp-client';
 export { ProfilesClient } from './client/profiles-client';
 export { MetaProfilesClient } from './client/meta-profiles-client';

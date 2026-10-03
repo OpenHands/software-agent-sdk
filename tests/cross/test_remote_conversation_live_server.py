@@ -4,6 +4,7 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import base64
 import json
 import shutil
 import sys
@@ -14,7 +15,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import httpx
@@ -25,6 +26,7 @@ from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
 
 from openhands.agent_server.__main__ import preload_modules
+from openhands.agent_server.codex_auth import OpenAICodexOAuthProvider
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -41,6 +43,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.llm.auth.openai import DeviceCode
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
@@ -52,6 +55,53 @@ from openhands.sdk.subagent.registry import (
 )
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
+
+
+def test_codex_device_login_over_authenticated_http(tmp_path, monkeypatch):
+    """Exercise real API routing and persistence with only OAuth transport mocked."""
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + 3600}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    tokens = {
+        "id_token": "e30.e30.signature",
+        "access_token": f"e30.{payload}.signature",
+        "refresh_token": "test-only-refresh",
+    }
+    start = AsyncMock(
+        return_value=DeviceCode(
+            "https://auth.openai.com/codex/device",
+            "TEST-CODE",
+            "private-device-secret",
+            1,
+        )
+    )
+    poll = AsyncMock(side_effect=[None, tokens])
+    monkeypatch.setattr(OpenAICodexOAuthProvider, "start", start)
+    monkeypatch.setattr(OpenAICodexOAuthProvider, "poll", poll)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    with live_server_env(
+        tmp_path, monkeypatch, session_api_keys=["test-session"]
+    ) as live:
+        with httpx.Client(base_url=live["host"]) as client:
+            assert client.get("/api/acp/codex/auth/status").status_code == 401
+            client.headers["X-Session-API-Key"] = "test-session"
+            response = client.post("/api/acp/codex/auth/device/start")
+            assert response.status_code == 200
+            assert "private-device-secret" not in response.text
+            handle = {"device_code": response.json()["device_code"]}
+            assert (
+                client.post("/api/acp/codex/auth/device/poll", json=handle).json()[
+                    "state"
+                ]
+                == "pending"
+            )
+            response = client.post("/api/acp/codex/auth/device/poll", json=handle)
+            assert response.json()["connected"]
+            assert "test-only-refresh" not in response.text
+            assert client.get("/api/acp/codex/auth/status").json()["connected"]
+            assert not client.post("/api/acp/codex/auth/logout").json()["connected"]
 
 
 @contextmanager

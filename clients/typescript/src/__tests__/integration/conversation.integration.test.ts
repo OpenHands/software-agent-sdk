@@ -18,7 +18,6 @@ import {
 } from '../../index';
 import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from './test-config';
 import {
-  waitFor,
   waitForAgentIdle,
   sleep,
   workspaceFileExists,
