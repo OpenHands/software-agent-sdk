@@ -14,11 +14,13 @@ Covers:
 """
 
 import asyncio
+import errno
 import multiprocessing
 import os
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
@@ -33,7 +35,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.io import DurabilityError, LocalFileStore
+from openhands.sdk.io import DurabilityError, LocalFileStore, durability
 from openhands.sdk.io.durability import DurabilityWriter
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -93,6 +95,46 @@ def test_inline_mode_keeps_synchronous_fsync(
     fs.write("a.txt", "v")
     assert len(spy.calls) == 1
     assert spy.calls[0] == threading.current_thread().name
+
+
+@pytest.mark.parametrize("boundary", ["flush", "close"])
+def test_deferred_fsync_uses_writable_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+):
+    """Exercise real store boundaries with Windows' writable-fsync requirement."""
+    handles: dict[int, int] = {}
+    synced: list[int] = []
+
+    def open_file(path: Path, flags: int) -> int:
+        fd = os.open(path, flags)
+        handles[fd] = flags
+        return fd
+
+    def windows_fsync(fd: int) -> None:
+        if not handles[fd] & (os.O_WRONLY | os.O_RDWR):
+            raise OSError(errno.EBADF, "fsync requires a writable handle")
+        os.fsync(fd)
+        synced.append(fd)
+
+    monkeypatch.setattr(
+        durability,
+        "os",
+        SimpleNamespace(
+            open=open_file,
+            fsync=windows_fsync,
+            close=os.close,
+            O_RDONLY=os.O_RDONLY,
+            O_RDWR=os.O_RDWR,
+        ),
+    )
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        fs.write("event.json", "persisted")
+        getattr(fs, boundary)()
+        assert len(synced) == 1
+        assert (tmp_path / "event.json").read_text() == "persisted"
+    finally:
+        fs.close()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-exit test uses POSIX fork")

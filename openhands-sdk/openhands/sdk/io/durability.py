@@ -46,7 +46,8 @@ def fsync_file(path: Path) -> None:
     file needs no durability.
     """
     try:
-        fd = os.open(path, os.O_RDONLY)
+        # Windows fsync (_commit/FlushFileBuffers) requires a writable handle.
+        fd = os.open(path, os.O_RDWR)
     except FileNotFoundError:
         return
     try:

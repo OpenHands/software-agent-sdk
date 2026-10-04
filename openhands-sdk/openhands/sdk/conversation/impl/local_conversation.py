@@ -265,6 +265,7 @@ class LocalConversation(BaseConversation):
         # positional argument.
         max_budget_per_run: float | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
         mcp_tool_provider: MCPToolProvider | None = None,
@@ -331,6 +332,8 @@ class LocalConversation(BaseConversation):
             file_store: Optional FileStore to use for conversation state and EventLog
                 persistence. If provided, this takes precedence over persistence_dir
                 for state and EventLog storage.
+                The caller retains ownership: close() flushes but does not close
+                this store. The caller must close it after its last user.
             _parent_llm_call_context: Runtime LLM context inherited by an internal
                 child conversation. Conversation-local identity is always replaced.
             profile_store_dir: Optional directory containing saved LLM profiles.
@@ -581,6 +584,7 @@ class LocalConversation(BaseConversation):
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
+            parent_span_context=observability_parent_span_context,
         )
         self.delete_on_close = delete_on_close
 
@@ -2912,8 +2916,8 @@ class LocalConversation(BaseConversation):
                                 f"Error closing executor for tool '{tool.name}': {e}"
                             )
         # Durability boundary: acknowledged events must be durable once the
-        # conversation is closed, and the store's background durability writer
-        # must not linger. A durability failure is propagated to the caller
+        # conversation is closed. Owned writers stop; borrowed stores remain
+        # open for their caller. A durability failure is propagated to the caller
         # (unless a CredentialBindingError takes precedence), not swallowed.
         durability_error: Exception | None = None
         try:
@@ -3145,7 +3149,8 @@ class LocalConversation(BaseConversation):
         if rerun_log_path is not None:
             log_dir = Path(rerun_log_path)
             log_dir.mkdir(parents=True, exist_ok=True)
-            file_store = LocalFileStore(str(log_dir))
+            # This method has no long-lived store owner; keep each append durable.
+            file_store = LocalFileStore(str(log_dir), deferred_durability=False)
             rerun_log = EventLog(file_store, dir_path="events")
 
         action_count = 0
