@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import pytest
@@ -72,6 +73,11 @@ def _mock_vision_profile(monkeypatch: pytest.MonkeyPatch) -> None:
             id="explicit-default-set",
         ),
         pytest.param(
+            ["FinishTool", "ThinkTool", "SwitchLLMTool"],
+            {"finish", "think", "switch_llm"},
+            id="explicit-settings-default-set",
+        ),
+        pytest.param(
             ["InvokeSkillTool", "VisionInspectTool"],
             {"invoke_skill", VISION_INSPECT_TOOL_NAME},
             id="explicit-optional-tools",
@@ -113,34 +119,41 @@ def test_omitted_default_tool_selection_keeps_conditional_auto_attachment(
     }
 
 
+@pytest.mark.parametrize("agent_class", [AgentBase, Agent])
+@pytest.mark.parametrize("json_payload", [False, True], ids=["dict", "json"])
+@pytest.mark.parametrize("settings_generated", [False, True])
 def test_markerless_legacy_default_selection_keeps_conditional_auto_attachment(
+    agent_class: type[AgentBase],
+    json_payload: bool,
+    settings_generated: bool,
+    settings_agent: Agent,
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _mock_vision_profile(monkeypatch)
-    payload = _make_agent().model_dump()
+    original = settings_agent if settings_generated else _make_agent()
+    payload = original.model_dump(mode="json" if json_payload else "python")
     payload.pop("_include_default_tools_explicit")
 
-    agent = AgentBase.model_validate(payload)
+    agent = (
+        agent_class.model_validate_json(json.dumps(payload))
+        if json_payload
+        else agent_class.model_validate(payload)
+    )
 
-    assert _initialize(agent, tmp_path) == {
-        "finish",
-        "think",
-        "invoke_skill",
-        VISION_INSPECT_TOOL_NAME,
-    }
+    expected_tools = {"finish", "think", "invoke_skill", VISION_INSPECT_TOOL_NAME}
+    if settings_generated:
+        expected_tools.add("switch_llm")
+    assert _initialize(agent, tmp_path) == expected_tools
 
 
-def test_settings_generated_default_tool_list_keeps_auto_attachment(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _mock_vision_profile(monkeypatch)
+@pytest.fixture
+def settings_agent(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Agent:
     monkeypatch.setattr(
         "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR",
         tmp_path / "profiles",
     )
-    agent = OpenHandsAgentSettings(
+    return OpenHandsAgentSettings(
         llm=LLM(
             model="openai/gpt-4o-mini",
             api_key="dummy",
@@ -150,7 +163,15 @@ def test_settings_generated_default_tool_list_keeps_auto_attachment(
         agent_context=_agent_context(),
     ).create_agent()
 
-    assert _initialize(agent, tmp_path) == {
+
+def test_settings_generated_default_tool_list_keeps_auto_attachment(
+    settings_agent: Agent,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_vision_profile(monkeypatch)
+
+    assert _initialize(settings_agent, tmp_path) == {
         "finish",
         "think",
         "switch_llm",

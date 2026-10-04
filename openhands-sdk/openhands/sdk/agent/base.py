@@ -323,7 +323,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             and "kind" in data
             and "_include_default_tools_explicit" not in data
             and data.get("include_default_tools")
-            == list(_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES)
+            in (
+                list(_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES),
+                [*_LEGACY_IMPLICIT_DEFAULT_TOOL_NAMES, "SwitchLLMTool"],
+            )
         ):
             data = data.copy()
             data["_include_default_tools_explicit"] = False
@@ -351,7 +354,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         explicit = None
         if isinstance(data, dict):
-            data = data.copy()
+            data = cls._prepare_serialized_input(data).copy()
             explicit = data.pop("_include_default_tools_explicit", None)
 
         agent = handler(data)
