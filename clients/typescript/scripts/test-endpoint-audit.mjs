@@ -10,8 +10,8 @@ const CLIENT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const MONOREPO_ROOT = path.resolve(CLIENT_ROOT, '../..');
 const AUDIT_SCRIPT = path.join(CLIENT_ROOT, 'scripts/endpoint-audit.mjs');
 const require = createRequire(import.meta.url);
-const { postEndpointAuditReport, renderEndpointAuditReport } = require(
-  path.join(MONOREPO_ROOT, '.github/scripts/post-typescript-endpoint-audit-report.cjs')
+const { renderEndpointAuditReport } = require(
+  path.join(MONOREPO_ROOT, '.github/scripts/render-typescript-endpoint-audit-report.cjs')
 );
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'endpoint-audit-'));
 
@@ -109,29 +109,6 @@ try {
   assert(body.includes('`POST /api/client-only`'));
   assert(body.includes('`GET /api/server-only`'));
   assert(body.includes('<summary>Documented non-divergences (2)</summary>'));
-
-  let updatedComment;
-  await postEndpointAuditReport({
-    reportPath: path.join(fixtureRoot, '.audit/endpoint-audit.json'),
-    context: { repo: { owner: 'OpenHands', repo: 'typescript-client' }, issue: { number: 307 } },
-    core: { warning: assert.fail },
-    github: {
-      paginate: async () => [{ id: 123, body: '<!-- endpoint-audit-report -->old' }],
-      rest: {
-        issues: {
-          listComments: () => {},
-          updateComment: async (args) => {
-            updatedComment = args;
-          },
-          createComment: async () => assert.fail('expected the existing comment to be updated'),
-        },
-      },
-    },
-  });
-  assert.equal(updatedComment.owner, 'OpenHands');
-  assert.equal(updatedComment.repo, 'typescript-client');
-  assert.equal(updatedComment.comment_id, 123);
-  assert.equal(updatedComment.body, body);
 
   console.log('endpoint-audit tooling test passed');
 } finally {

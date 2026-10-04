@@ -1,4 +1,5 @@
 import { HttpClient, HttpError } from './http-client';
+import { getCachedAgentServerInfo } from './agent-server-compatibility';
 import { ConversationExecutionStatus, LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
@@ -9,6 +10,7 @@ import type {
   ConversationEventPage,
   ConversationEventSearchOptions,
   ConversationInfo,
+  ConversationRuntimeInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
@@ -67,8 +69,44 @@ export class ConversationClient {
   async createConversation<TConversation = ConversationInfo>(
     payload: CreateConversationPayload
   ): Promise<TConversation> {
-    const response = await this.client.post<TConversation>('/api/conversations', payload);
-    return response.data;
+    try {
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    } catch (error) {
+      // A lost response does not mean the create was not applied: the server
+      // may have committed it and the initial message may already be running.
+      // Re-sending is only safe where the server deduplicates concurrent
+      // creates for one id, which it advertises as a capability. There is no
+      // caller-supplied id to reconcile against otherwise, and even with one, a
+      // server without the capability would double-create on a re-send, so
+      // surface the original transport error instead.
+      if (
+        error instanceof HttpError ||
+        typeof payload.conversation_id !== 'string' ||
+        !(await this.supportsCreateRetry())
+      ) {
+        throw error;
+      }
+
+      const response = await this.client.post<TConversation>('/api/conversations', payload);
+      return response.data;
+    }
+  }
+
+  /**
+   * Whether the server deduplicates concurrent creates for one conversation id.
+   *
+   * A server that cannot be probed is treated as unsupported, so an older or
+   * unreachable backend keeps the previous behavior rather than risking a
+   * duplicate conversation.
+   */
+  private async supportsCreateRetry(): Promise<boolean> {
+    try {
+      const serverInfo = await getCachedAgentServerInfo(this.client);
+      return serverInfo.capabilities?.includes('idempotent_conversation_create_v1') === true;
+    } catch {
+      return false;
+    }
   }
 
   async searchConversations(
@@ -105,6 +143,21 @@ export class ConversationClient {
     conversationId: string
   ): Promise<TConversation> {
     const response = await this.client.get<TConversation>(`/api/conversations/${conversationId}`);
+    return response.data;
+  }
+
+  async getRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.get<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime`
+    );
+    return response.data;
+  }
+
+  async reprovisionRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
+    const response = await this.client.post<ConversationRuntimeInfo>(
+      `/api/conversations/${conversationId}/runtime/reprovision`,
+      {}
+    );
     return response.data;
   }
 

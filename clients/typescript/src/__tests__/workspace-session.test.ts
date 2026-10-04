@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import { RemoteWorkspace } from '../index';
 
 const originalFetch = global.fetch;
@@ -29,11 +30,11 @@ function makeWorkspace(
 describe('RemoteWorkspace.startWorkspaceSession', () => {
   afterEach(() => {
     global.fetch = originalFetch;
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('mints a workspace session cookie and returns the static asset base URL', async () => {
-    const fetchMock = jest.fn().mockResolvedValue(noContentResponse()) as jest.Mock;
+    const fetchMock = vi.fn().mockResolvedValue(noContentResponse()) as Mock;
     global.fetch = fetchMock as typeof fetch;
 
     const workspace = makeWorkspace();
@@ -52,7 +53,7 @@ describe('RemoteWorkspace.startWorkspaceSession', () => {
   });
 
   it('strips a trailing slash on the host so the base URL has exactly one separator', async () => {
-    const fetchMock = jest.fn().mockResolvedValue(noContentResponse()) as jest.Mock;
+    const fetchMock = vi.fn().mockResolvedValue(noContentResponse()) as Mock;
     global.fetch = fetchMock as typeof fetch;
 
     const workspace = makeWorkspace({ host: 'https://agent.example.com/' });
@@ -62,9 +63,9 @@ describe('RemoteWorkspace.startWorkspaceSession', () => {
   });
 
   it('propagates 401s when the session API key is rejected', async () => {
-    const fetchMock = jest
+    const fetchMock = vi
       .fn()
-      .mockResolvedValue(jsonResponse({ detail: 'Unauthorized' }, 401)) as jest.Mock;
+      .mockResolvedValue(jsonResponse({ detail: 'Unauthorized' }, 401)) as Mock;
     global.fetch = fetchMock as typeof fetch;
 
     const workspace = makeWorkspace({ apiKey: 'wrong-key' });
@@ -77,7 +78,7 @@ describe('RemoteWorkspace.startWorkspaceSession', () => {
     // workspace, without inventing a placeholder Agent + LLM just to satisfy
     // the RemoteConversation constructor. The mere fact this test compiles
     // without importing Agent / RemoteConversation is the assertion.
-    const fetchMock = jest.fn().mockResolvedValue(noContentResponse()) as jest.Mock;
+    const fetchMock = vi.fn().mockResolvedValue(noContentResponse()) as Mock;
     global.fetch = fetchMock as typeof fetch;
 
     const workspace = makeWorkspace();
@@ -87,7 +88,7 @@ describe('RemoteWorkspace.startWorkspaceSession', () => {
   });
 
   it('deletes the workspace session cookie with credentials included', async () => {
-    const fetchMock = jest.fn().mockResolvedValue(noContentResponse()) as jest.Mock;
+    const fetchMock = vi.fn().mockResolvedValue(noContentResponse()) as Mock;
     global.fetch = fetchMock as typeof fetch;
 
     const workspace = makeWorkspace();

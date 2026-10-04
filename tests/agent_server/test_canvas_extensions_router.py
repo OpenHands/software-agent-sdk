@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 
 from .canvas_extensions.conftest import write_extension
@@ -130,6 +131,56 @@ def test_patch_toggles_enabled_state(client: TestClient, tmp_path: Path):
         "/canvas-extensions/installed/demo-extension", json={"enabled": False}
     )
     assert disabled.json()["enabled"] is False
+
+
+@pytest.fixture
+def client_with_sessions(tmp_path: Path, monkeypatch) -> tuple[TestClient, object]:
+    """A TestClient with an app-scoped session store attached."""
+    store = tmp_path / "installed-store"
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions.installed."
+        "get_installed_canvas_extensions_dir",
+        lambda: store,
+    )
+    app = FastAPI()
+    app.include_router(canvas_extensions_router)
+    sessions = AppBackendSessionStore()
+    app.state.app_backend_session_store = sessions
+    return TestClient(app), sessions
+
+
+@pytest.mark.parametrize("revision_route", ["disabled", "uninstalled", "stopped"])
+def test_disable_uninstall_and_stop_revoke_app_sessions(
+    client_with_sessions, tmp_path: Path, revision_route: str
+):
+    """A live app cookie must stop authorizing once the app is torn down.
+
+    Regression test: these handlers used to call `stop()` directly, leaving
+    `revoke_app` (which also cancels attached WebSocket bridges) as dead code.
+    """
+    import asyncio
+
+    client, sessions = client_with_sessions
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    endpoint = ("127.0.0.1", 4321)
+    token, _ = asyncio.run(sessions.create("demo-extension", endpoint))
+    assert asyncio.run(sessions.authorize(token, "demo-extension", endpoint))
+
+    if revision_route == "disabled":
+        response = client.patch(
+            "/canvas-extensions/installed/demo-extension", json={"enabled": False}
+        )
+    elif revision_route == "uninstalled":
+        response = client.delete("/canvas-extensions/installed/demo-extension")
+    else:
+        response = client.post(
+            "/canvas-extensions/installed/demo-extension/backend/stop"
+        )
+    assert response.status_code == 200, response.text
+
+    assert asyncio.run(sessions.authorize(token, "demo-extension", endpoint)) is None
 
 
 def test_uninstall_removes_from_installed_list(client: TestClient, tmp_path: Path):
@@ -391,3 +442,99 @@ def test_list_installed_empty_and_multiple(client: TestClient, tmp_path: Path):
         for e in client.get("/canvas-extensions/installed").json()["canvas_extensions"]
     }
     assert names == {"ext-one", "ext-two"}
+
+
+@pytest.mark.parametrize(
+    "source_suffix,repo_path",
+    [
+        ("", "demo-extension"),
+        ("", "/demo-extension"),
+        ("/", "demo-extension"),
+        ("/", "/demo-extension"),
+    ],
+)
+def test_install_composes_local_source_and_repo_path(
+    client: TestClient, tmp_path: Path, source_suffix: str, repo_path: str
+):
+    """A parent directory as Source plus the extension dir as Path installs."""
+    repo = tmp_path / "canvas-extensions"
+    write_extension(repo / "demo-extension", name="demo-extension")
+    # A sibling that must not be picked up.
+    write_extension(repo / "other-extension", name="other-extension")
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo) + source_suffix, "repo_path": repo_path},
+    )
+
+    assert install.status_code == 200, install.json()
+    body = install.json()
+    assert body["name"] == "demo-extension"
+    assert body["repo_path"] == repo_path
+    assert body["enabled"] is False
+
+
+def test_install_with_full_extension_dir_as_source_still_works(
+    client: TestClient, tmp_path: Path
+):
+    """The pre-existing single-field flow is unchanged."""
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+
+    install = client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    assert install.status_code == 200
+    assert install.json()["name"] == "demo-extension"
+
+
+def test_install_reports_which_field_is_wrong_for_bad_repo_path(
+    client: TestClient, tmp_path: Path
+):
+    """A bad Path blames Path, not the source (the old message misattributed)."""
+    repo = tmp_path / "canvas-extensions"
+    write_extension(repo / "demo-extension", name="demo-extension")
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo), "repo_path": "demo-extensio"},
+    )
+
+    assert install.status_code == 400
+    assert "demo-extensio" in install.json()["detail"]
+    assert "not found" in install.json()["detail"]
+    # The canvas client classifies any message containing "failed to fetch" as
+    # a network outage and replaces it with a "Disconnected" toast, which would
+    # hide the reason we just went to the trouble of reporting.
+    assert "failed to fetch" not in install.json()["detail"].lower()
+
+
+def test_install_reports_missing_manifest_at_resolved_location(
+    client: TestClient, tmp_path: Path
+):
+    """Pointing Source/Path at a directory with no manifest says so."""
+    repo = tmp_path / "canvas-extensions"
+    (repo / "not-an-extension").mkdir(parents=True)
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo), "repo_path": "not-an-extension"},
+    )
+
+    assert install.status_code == 422
+    assert "canvas-extension.json" in install.json()["detail"]
+
+
+def test_install_rejects_repo_path_escaping_the_source(
+    client: TestClient, tmp_path: Path
+):
+    """A traversing Path is rejected rather than resolving outside Source."""
+    repo = tmp_path / "canvas-extensions"
+    write_extension(repo / "demo-extension", name="demo-extension")
+    write_extension(tmp_path / "outside-extension", name="outside-extension")
+
+    install = client.post(
+        "/canvas-extensions/install",
+        json={"source": str(repo), "repo_path": "../outside-extension"},
+    )
+
+    assert install.status_code == 400
+    assert "escapes" in install.json()["detail"]

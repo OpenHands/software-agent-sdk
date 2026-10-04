@@ -193,6 +193,46 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
             del os.environ["LMNR_FORCE_HTTP"]
 
 
+@pytest.mark.parametrize("is_laminar_backend", [True, False])
+@pytest.mark.parametrize(
+    ("instruments_env", "expected", "invalid"),
+    [
+        ("litellm,mcp", {"litellm", "mcp"}, None),
+        ("litellm,,unsupported,", {"litellm"}, "unsupported"),
+    ],
+)
+def test_lmnr_instruments_passed_to_laminar(
+    is_laminar_backend, instruments_env, expected, invalid, caplog
+):
+    """LMNR_INSTRUMENTS limits Laminar to the selected integrations."""
+    from lmnr import Instruments
+
+    with patch.dict(
+        os.environ,
+        {
+            "LMNR_PROJECT_API_KEY": "test-key",
+            "LMNR_INSTRUMENTS": instruments_env,
+        },
+    ):
+        with (
+            patch("lmnr.Laminar") as mock_laminar,
+            patch(
+                "openhands.sdk.observability.laminar._is_otel_backend_laminar",
+                return_value=is_laminar_backend,
+            ),
+        ):
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
+
+            maybe_init_laminar()
+
+    assert mock_laminar.initialize.call_args.kwargs["instruments"] == {
+        Instruments(value) for value in expected
+    }
+    if invalid:
+        assert f"Ignoring invalid LMNR_INSTRUMENTS value '{invalid}'" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Cross-context root-span propagation
 # ---------------------------------------------------------------------------
@@ -620,3 +660,21 @@ def test_async_agent_and_conversation_paths_are_observed():
     assert Agent.astep.__code__.co_name == "async_wrapper"
     assert LocalConversation.run.__code__.co_name == "sync_wrapper"
     assert LocalConversation.arun.__code__.co_name == "async_wrapper"
+
+
+def test_should_enable_observability_returns_true_when_env_set():
+    """should_enable_observability returns True when an observability env var is set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {"LMNR_PROJECT_API_KEY": "test_key"}, clear=True):
+        assert should_enable_observability() is True
+
+
+def test_should_enable_observability_returns_false_when_no_env():
+    """should_enable_observability returns False when no relevant env vars are set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("lmnr.Laminar") as mock_laminar:
+            mock_laminar.is_initialized.return_value = False
+            assert should_enable_observability() is False

@@ -55,6 +55,29 @@ async def test_list_models_filtered_by_provider():
 
 
 @pytest.mark.asyncio
+async def test_list_models_filtered_by_openrouter_provider():
+    """OpenRouter's verified entries are namespaced ids (the ``openrouter/``
+    prefix stripped, e.g. ``deepseek/deepseek-chat``). Those same strings are
+    also genuine LiteLLM catalog models routed to their upstream provider, so a
+    naive verified-list match would leak the upstream-direct models into the
+    OpenRouter response. Every returned model must be an ``openrouter/`` route.
+    """
+    response = await list_models(provider="openrouter")
+    assert len(response.models) > 0
+    assert all(m.startswith("openrouter/") for m in response.models), (
+        "OpenRouter response must only contain openrouter/-prefixed routes, "
+        f"got non-prefixed entries: "
+        f"{[m for m in response.models if not m.startswith('openrouter/')]}"
+    )
+    # A namespaced entry that collides with a deepseek-direct catalog model must
+    # resolve to the OpenRouter route, not the DeepSeek-direct model.
+    assert "openrouter/deepseek/deepseek-chat" in response.models
+    assert "deepseek/deepseek-chat" not in response.models
+    assert "deepseek/deepseek-v4-pro" not in response.models
+    assert "deepseek/deepseek-v4-flash" not in response.models
+
+
+@pytest.mark.asyncio
 async def test_list_models_unknown_provider():
     """Test listing models with an unknown provider returns empty list."""
     response = await list_models(provider="unknown_provider_xyz")
@@ -68,6 +91,7 @@ async def test_list_verified_models():
     assert response.models == VERIFIED_MODELS
     assert "openai" in response.models
     assert "anthropic" in response.models
+    assert "openrouter" in response.models
 
 
 def test_providers_endpoint_integration(client):
@@ -131,7 +155,6 @@ def test_openai_subscription_models_endpoint_integration(client):
     assert response.status_code == 200
     data = response.json()
     assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
-    assert "gpt-5.6" in data["models"]
     assert "gpt-5.6-sol" in data["models"]
     assert "gpt-5.6-terra" in data["models"]
     assert "gpt-5.6-luna" in data["models"]

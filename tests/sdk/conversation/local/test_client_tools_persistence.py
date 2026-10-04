@@ -1,11 +1,32 @@
 """Persistence/resume behavior for client-defined tools on LocalConversation."""
 
+import gc
 import uuid
 from pathlib import Path
 
+import pytest
+
 from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.tool import Tool, client_tool as ct, registry as reg
-from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.client_tool import ClientToolSpec, register_client_tools
+from openhands.sdk.utils.models import clear_subclass_cache
+
+
+@pytest.fixture(autouse=True)
+def _collect_dynamic_client_tool_classes():
+    """Drop the dynamic ``ClientAction_*`` classes these tests define.
+
+    Each client tool spec builds a new class, so a test that registers the same
+    tool name twice leaves two same-named classes behind. They are only
+    reachable through reference cycles, so until a cyclic collection runs they
+    stay in ``Action.__subclasses__()`` and make the duplicate-class check in
+    ``_get_checked_concrete_subclasses`` fail in *unrelated* later tests.
+    Collecting on teardown, once the test frame is gone, keeps that leak local.
+    """
+    yield
+    gc.collect()
+    clear_subclass_cache()
 
 
 def _make_agent() -> Agent:
@@ -22,7 +43,7 @@ def _wipe_client_tool_globals(names: list[str]) -> None:
     for name in names:
         reg._REG.pop(name, None)
         reg._USABILITY_REG.pop(name, None)
-        reg._MODULE_QUALNAMES.pop(name, None)
+        reg._TOOL_CLASSES.pop(name, None)
 
 
 def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> None:
@@ -86,6 +107,67 @@ def test_persisted_client_tools_resume_without_respecifying(tmp_path: Path) -> N
             assert n in reg.list_registered_tools()
     finally:
         resumed.close()
+
+
+def test_client_tool_named_like_an_unattached_builtin_resumes(
+    tmp_path: Path,
+) -> None:
+    specs = [ClientToolSpec(name="route_task_to_model", description="client")]
+    cid = uuid.uuid4()
+    ws, persist = str(tmp_path / "ws"), str(tmp_path / "persist")
+    Conversation(
+        agent=_make_agent(),
+        workspace=ws,
+        persistence_dir=persist,
+        conversation_id=cid,
+        client_tools=specs,
+        delete_on_close=False,
+    ).close()
+    _wipe_client_tool_globals(["route_task_to_model"])
+
+    resumed = Conversation(
+        agent=_make_agent(),
+        workspace=ws,
+        persistence_dir=persist,
+        conversation_id=cid,
+        delete_on_close=False,
+    )
+    try:
+        assert "route_task_to_model" in {t.name for t in resumed.agent.tools}
+    finally:
+        resumed.close()
+
+
+def test_client_tool_named_like_an_attached_builtin_is_rejected(
+    tmp_path: Path,
+) -> None:
+    convo = Conversation(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=str(tmp_path / "ws"),
+        persistence_dir=str(tmp_path / "persist"),
+        conversation_id=uuid.uuid4(),
+        client_tools=[ClientToolSpec(name="finish", description="client")],
+        delete_on_close=False,
+    )
+    try:
+        with pytest.raises(ValueError, match="Duplicate tool names"):
+            convo._ensure_agent_ready()
+    finally:
+        convo.close()
+        _wipe_client_tool_globals(["finish"])
+
+
+def test_client_tool_named_like_a_builtin_leaves_other_agents_alone() -> None:
+    register_client_tools([ClientToolSpec(name="switch_llm", description="client")])
+    try:
+        agent = OpenHandsAgentSettings(
+            llm=LLM(model="gpt-4o", usage_id="test-llm")
+        ).create_agent()
+    finally:
+        _wipe_client_tool_globals(["switch_llm"])
+
+    assert "switch_llm" not in {t.name for t in agent.tools}
+    assert "SwitchLLMTool" in agent.include_default_tools
 
 
 def test_recover_persisted_client_tools_no_state(tmp_path: Path) -> None:
