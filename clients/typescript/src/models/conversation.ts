@@ -23,8 +23,24 @@ export enum ConversationSortOrder {
   UPDATED_AT_DESC = 'UPDATED_AT_DESC',
 }
 
+export type ConversationRuntimeStatus =
+  'available' | 'starting' | 'missing' | 'ownership_lost' | 'error';
+
+export interface ConversationRuntimeError {
+  code: string;
+  message: string;
+}
+
+export interface ConversationRuntimeInfo {
+  runtime_status: ConversationRuntimeStatus;
+  can_resume: boolean;
+  runtime_error: ConversationRuntimeError | null;
+}
+
 export interface ConversationInfo {
   id: ConversationID;
+  /** Availability of the execution runtime backing this catalog entry. */
+  runtime_info?: ConversationRuntimeInfo | null;
   /**
    * Current execution status of the conversation.
    * Note: This field was renamed from agent_status to execution_status in the API.

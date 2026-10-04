@@ -3,8 +3,9 @@ import os
 import sys
 import time
 from importlib.metadata import version
+from typing import Literal
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
 from openhands.sdk.tool.registry import list_usable_tools
@@ -58,13 +59,28 @@ class ServerInfo(BaseModel):
     runtime_idle_timeout_seconds: float | None = Field(
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
+    conversation_runtime: Literal["local", "docker"] = "local"
     capabilities: list[str] = Field(
         default_factory=lambda: [
+            "conversation_runtime_routes_v1",
             "profile_secret_scope_v1",
+            "profile_persona_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
+            # Concurrent creates for one conversation id are deduplicated under
+            # the conversation's lifecycle lock, so a client may safely re-send
+            # a create whose response it never saw.
+            "idempotent_conversation_create_v1",
+            "tool_catalog_v1",
+            "agent_profile_draft_materialize_v1",
         ]
+    )
+    app_backend_ingress_url: str | None = Field(
+        default=None,
+        description=(
+            "Separate browser origin for authenticated Canvas App backend sessions"
+        ),
     )
     max_foreground_terminal_timeout_seconds: float | None = Field(
         default_factory=lambda: get_max_foreground_timeout_seconds()
@@ -82,7 +98,7 @@ def update_last_execution_time():
 def mark_initialization_complete() -> None:
     """Mark the server as fully initialized and ready to serve requests.
 
-    This should be called after all services (VSCode, desktop, tool preload, etc.)
+    This should be called after all services (VSCode, tool preload, etc.)
     have finished initializing. Until this is called, the /ready endpoint will
     return 503 Service Unavailable.
     """
@@ -115,10 +131,26 @@ async def ready(response: Response) -> dict[str, str]:
         return {"status": "initializing", "message": "Server is still initializing"}
 
 
-@server_details_router.get("/server_info")
-async def get_server_info() -> ServerInfo:
+def build_server_info(
+    conversation_runtime: Literal["local", "docker"] = "local",
+    app_backend_ingress_url: str | None = None,
+) -> ServerInfo:
     now = time.time()
-    return ServerInfo(
+    info = ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
+        conversation_runtime=conversation_runtime,
+        app_backend_ingress_url=app_backend_ingress_url,
+    )
+    if app_backend_ingress_url:
+        info.capabilities.append("canvas_app_backend_bridge_v1")
+    return info
+
+
+@server_details_router.get("/server_info")
+async def get_server_info(request: Request) -> ServerInfo:
+    config = request.app.state.config
+    return build_server_info(
+        config.conversation_runtime,
+        app_backend_ingress_url=config.app_backend_public_url,
     )
