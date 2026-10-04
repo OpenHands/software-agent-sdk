@@ -35,6 +35,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.security import risk
 from openhands.sdk.tool.schema import Action, Observation, Schema
 from openhands.sdk.utils.models import (
@@ -210,6 +211,9 @@ def _camel_to_snake(name: str) -> str:
     s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
     # Insert underscore before uppercase letters that follow lowercase letters
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
+
+logger = get_logger(__name__)
 
 
 class ToolAnnotations(BaseModel):
@@ -536,6 +540,18 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def action_from_arguments(self, arguments: dict[str, Any]) -> Action:
         """Create an action from parsed arguments."""
         action_arguments, structured_output = self._split_response_arguments(arguments)
+        # Tool JSON schemas are advertised to the model as non-strict, so an LLM may
+        # emit arguments the Action does not declare. The Action schema is extra=forbid,
+        # so one stray key (e.g. a model-added "description") would hard-fail the whole
+        # turn. Drop unknown keys here instead, keeping validation of declared fields.
+        known = set(self.action_type.model_fields)
+        unknown = [k for k in action_arguments if k not in known]
+        if unknown:
+            logger.warning(
+                "Dropping unknown argument(s) %s emitted by the model for tool '%s'",
+                unknown, self.name,
+            )
+            action_arguments = {k: v for k, v in action_arguments.items() if k in known}
         action = self.action_type.model_validate(action_arguments)
         action._structured_output = structured_output
         return action
