@@ -1,6 +1,9 @@
 import asyncio
 import subprocess
 import threading
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,17 +17,22 @@ from openhands.agent_server.docker_runtime.registry import (
 )
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
 
-def registry(tmp_path, monkeypatch) -> DockerConversationRegistry:
+def registry(
+    tmp_path, monkeypatch, idle_ttl: float | None = 1200, **config
+) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     return DockerConversationRegistry(
         Config(
             conversations_path=tmp_path / "conversations",
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
+            conversation_idle_ttl_seconds=idle_ttl,
+            **config,
         )
     )
 
@@ -35,6 +43,15 @@ def container(conversation_id: UUID) -> ConversationContainer:
         api_key="inner-key",
         container_id=f"container-{conversation_id}",
     )
+
+
+def set_execution_status(
+    runtime: DockerConversationRegistry, status: ConversationExecutionStatus
+) -> AsyncMock:
+    service = AsyncMock(spec=ConversationService)
+    service.get_conversation.return_value = SimpleNamespace(execution_status=status)
+    runtime.configure_service(cast(ConversationService, service))
+    return service
 
 
 def test_missing_container_is_already_stopped(monkeypatch):
@@ -186,9 +203,170 @@ async def test_stale_cached_container_is_replaced(tmp_path, monkeypatch):
     assert runtime.get(conversation_id) is fresh
 
 
-def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_terminal_idle_runtime_is_stopped(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()
+    runtime._containers[conversation_id] = container(conversation_id)
+    runtime._last_access[conversation_id] = 0
+    service = set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [f"container-{conversation_id}"]
+    service.refresh_persisted_conversation.assert_awaited_once_with(conversation_id)
+
+
+@pytest.mark.asyncio
+async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.RUNNING)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+
+
+@pytest.mark.asyncio
+async def test_attached_session_prevents_idle_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 100
+    )
+    runtime.attach_session(conversation_id)
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_idle_runtime_is_evicted_after_session_detaches(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    now = 100.0
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: now
+    )
+    runtime.attach_session(conversation_id)
+
+    await runtime._evict_idle_runtimes(10)
+    assert runtime.get(conversation_id) is active
+
+    runtime.detach_session(conversation_id)
+    now = 111.0
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+@pytest.mark.asyncio
+async def test_runtime_access_refreshes_idle_deadline(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(ConversationContainer, "is_running", lambda _self: True)
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    now = 20.0
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: now
+    )
+
+    assert await runtime.get_or_create(conversation_id) is active
+    now = 25
+    await runtime._evict_idle_runtimes(10)
+    assert runtime.get(conversation_id) is active
+    now = 31
+    await runtime._evict_idle_runtimes(10)
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+@pytest.mark.asyncio
+async def test_disabled_idle_ttl_does_not_start_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch, idle_ttl=None)
+    monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
+
+    await runtime.start()
+
+    assert runtime._eviction_task is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_eviction_and_stops_containers(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+
+    async def wait_forever() -> None:
+        await asyncio.Event().wait()
+
+    runtime._eviction_task = asyncio.create_task(wait_forever())
+
+    await runtime.shutdown()
+
+    assert runtime._eviction_task is None
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+def _build_container(runtime, monkeypatch, conversation_id):
     runtime.provisioning.create(conversation_id)
     commands = []
 
@@ -213,6 +391,14 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
 
     result = runtime._build_container(conversation_id)
     command, env = commands[0]
+    return result, command, env
+
+
+def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    result, command, env = _build_container(runtime, monkeypatch, conversation_id)
     assert result.host == "http://127.0.0.1:32123"
     assert ["--cap-drop", "ALL"] == command[
         command.index("--cap-drop") : command.index("--cap-drop") + 2
@@ -231,3 +417,25 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
         command.index("HOME") - 1 : command.index("HOME") + 1
     ]
     assert env["OH_SECRET_KEY"] != "outer-key"
+
+
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "flag"),
+    [(None, True, "1"), (False, True, "0"), (True, False, "0")],
+)
+def test_container_gets_the_host_browser_setting(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, flag
+):
+    runtime = registry(
+        tmp_path,
+        monkeypatch,
+        conversation_image_has_browser=image_has_browser,
+        enable_browser=enable_browser,
+    )
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert env["OH_ENABLE_BROWSER"] == flag
+    assert ["-e", "OH_ENABLE_BROWSER"] == command[
+        command.index("OH_ENABLE_BROWSER") - 1 : command.index("OH_ENABLE_BROWSER") + 1
+    ]

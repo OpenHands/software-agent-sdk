@@ -23,6 +23,7 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.agent_server.telemetry import notify_misc_settings_changed
+from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
@@ -171,6 +172,7 @@ async def get_settings(request: Request) -> SettingsResponse:
             llm_api_key_is_set=settings.llm_api_key_is_set,
             active_profile=settings.active_profile,
             active_agent_profile_id=settings.active_agent_profile_id,
+            active_meta_profile=settings.active_meta_profile,
             misc_settings=settings.misc_settings,
         )
 
@@ -217,6 +219,8 @@ async def update_settings(
         update_data["active_profile"] = payload.active_profile
     if "active_agent_profile_id" in payload.model_fields_set:
         update_data["active_agent_profile_id"] = payload.active_agent_profile_id
+    if "active_meta_profile" in payload.model_fields_set:
+        update_data["active_meta_profile"] = payload.active_meta_profile
     if not update_data:
         # No updates provided - this is a client error
         raise HTTPException(
@@ -224,7 +228,8 @@ async def update_settings(
             detail=(
                 "At least one of agent_settings_diff, "
                 "conversation_settings_diff, misc_settings_diff, "
-                "active_profile, or active_agent_profile_id must be provided"
+                "active_profile, active_agent_profile_id, or active_meta_profile "
+                "must be provided"
             ),
         )
 
@@ -234,16 +239,15 @@ async def update_settings(
     )
 
 
-def _resolve_active_profile_llm(
+def _load_active_profile_llm(
     request: Request, update_data: SettingsUpdatePayload
-) -> SettingsUpdatePayload:
-    """Fold the named profile's LLM into ``agent_settings_diff`` unless the
-    caller already gave one explicitly. Mirrors ``/activate``."""
+) -> LLM | None:
+    """Load the named profile's LLM unless the caller already gave one."""
     profile_name = update_data.get("active_profile")
     agent_diff = update_data.get("agent_settings_diff")
     explicit_llm_diff = isinstance(agent_diff, dict) and "llm" in agent_diff
     if not profile_name or explicit_llm_diff:
-        return update_data
+        return None
 
     cipher = get_cipher(request)
     profile_store = get_llm_profile_store()
@@ -258,13 +262,26 @@ def _resolve_active_profile_llm(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile '{profile_name}' not found",
         )
+    return llm
 
+
+def _with_profile_llm(
+    update_data: SettingsUpdatePayload,
+    llm: LLM | None,
+    settings: PersistedSettings,
+) -> SettingsUpdatePayload:
+    """Fold the profile's LLM into OpenHands settings. Mirrors ``/activate``."""
+    agent_diff = update_data.get("agent_settings_diff")
+    agent_diff = agent_diff if isinstance(agent_diff, dict) else {}
+    agent_kind = agent_diff.get("agent_kind") or settings.agent_settings.agent_kind
+    if llm is None or agent_kind == "acp":
+        return update_data
     return cast(
         SettingsUpdatePayload,
         {
             **update_data,
             "agent_settings_diff": {
-                **(agent_diff if isinstance(agent_diff, dict) else {}),
+                **agent_diff,
                 "llm": llm.model_dump(mode="json", context={"expose_secrets": True}),
             },
         },
@@ -276,14 +293,17 @@ def _apply_settings_update(
     update_data: SettingsUpdatePayload,
     before_update: Callable[[PersistedSettings], None] | None = None,
 ) -> SettingsResponse:
-    update_data = _resolve_active_profile_llm(request, update_data)
+    profile_llm = _load_active_profile_llm(request, update_data)
+    applied_update = update_data
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
+        nonlocal applied_update
         if before_update is not None:
             before_update(settings)
         context = {"cipher": config.cipher} if config.cipher is not None else None
-        settings.update(update_data, context=context)
+        applied_update = _with_profile_llm(update_data, profile_llm, settings)
+        settings.update(applied_update, context=context)
         return settings
 
     config = get_config(request)
@@ -296,7 +316,7 @@ def _apply_settings_update(
             "Settings updated",
             extra={
                 "client_host": client_host,
-                "agent_settings_modified": "agent_settings_diff" in update_data,
+                "agent_settings_modified": "agent_settings_diff" in applied_update,
                 "conversation_settings_modified": (
                     "conversation_settings_diff" in update_data
                 ),
@@ -342,6 +362,7 @@ def _apply_settings_update(
         llm_api_key_is_set=settings.llm_api_key_is_set,
         active_profile=settings.active_profile,
         active_agent_profile_id=settings.active_agent_profile_id,
+        active_meta_profile=settings.active_meta_profile,
         misc_settings=settings.misc_settings,
     )
 

@@ -21,6 +21,7 @@ import {
   ConversationClient,
   DeviceFlowError,
   FileClient,
+  GitClient,
   HooksClient,
   isAgentServerVersionError,
   isOpenHandsCloudHost,
@@ -34,6 +35,7 @@ import {
   SharedClient,
   SkillsClient,
   SubAgentsClient,
+  ToolClient,
   WorkspacesClient,
 } from '../clients';
 import * as http from 'node:http';
@@ -125,6 +127,7 @@ describe('Auxiliary API clients', () => {
       expect(client.server).toBeInstanceOf(ServerClient);
       expect(client.conversations).toBeInstanceOf(ConversationClient);
       expect(client.settings).toBeInstanceOf(SettingsClient);
+      expect(client.git).toBeInstanceOf(GitClient);
       expect(client.host).toBe('http://example.com');
 
       await client.request({ method: 'GET', path: '/health' });
@@ -448,6 +451,54 @@ describe('Auxiliary API clients', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
+
+    it('materializeAgentProfile sends a draft as the profile body', async () => {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ agent_kind: 'openhands', valid: true, errors: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+      const client = new AgentProfilesClient({ host: 'http://example.com' });
+      const draft = {
+        agent_kind: 'openhands' as const,
+        llm_profile_ref: 'gpt-4o',
+        tools: [{ name: 'terminal', params: {} }],
+      };
+      await client.materializeAgentProfile('draft', draft);
+
+      const [, init] = (global.fetch as Mock).mock.calls[0];
+      expect(JSON.parse(init.body)).toEqual({ profile: draft });
+    });
+  });
+
+  it('ToolClient.getToolCatalog gets /api/tools/catalog', async () => {
+    const catalog = {
+      tools: [
+        {
+          name: 'terminal',
+          user_selectable: true,
+          usable: true,
+          description: 'Run shell commands',
+          in_default_set: true,
+        },
+      ],
+    };
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(catalog), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ToolClient({ host: 'http://example.com' });
+
+    expect(await client.getToolCatalog()).toEqual(catalog);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/tools/catalog',
+      expect.objectContaining({ method: 'GET' })
+    );
   });
 
   it('Workspace exposes bash namespace', () => {
@@ -1093,6 +1144,53 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('WorkspacesClient retries agent-server info after a transient failure', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'temporarily unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: '1.23.0', uptime: 1, idle_time: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workspaces: [], workspaceParents: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      ) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+
+    await expect(client.listWorkspaces()).rejects.toMatchObject({ status: 503 });
+    await expect(client.listWorkspaces()).resolves.toEqual({
+      workspaces: [],
+      workspaceParents: [],
+    });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/workspaces',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
   it('WorkspacesClient throws AgentServerVersionError for old agent servers', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
@@ -1157,6 +1255,29 @@ describe('Auxiliary API clients', () => {
         body: JSON.stringify({ command: 'echo hi', cwd: '/tmp', timeout: 3 }),
       })
     );
+  });
+
+  it('BashClient.stopCommand POSTs to the stop endpoint and swallows 404', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new BashClient({ host: 'http://example.com' });
+    await client.stopCommand('cmd-1');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/bash/bash_commands/cmd-1/stop',
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('Not Found', { status: 404 })) as typeof fetch;
+
+    await expect(client.stopCommand('missing')).resolves.toBeUndefined();
   });
 
   it('ProfilesClient.listProfiles GETs the profiles endpoint', async () => {
@@ -1491,7 +1612,6 @@ describe('Auxiliary API clients', () => {
             {
               name: 'balanced',
               classifier_model: 'classifier',
-              default_model: 'default',
               num_classes: 2,
             },
           ],
@@ -1520,7 +1640,6 @@ describe('Auxiliary API clients', () => {
           name: 'my profile',
           config: {
             classifier_model: 'classifier',
-            default_model: 'default',
             classes: [{ description: 'UI', model: 'fast' }],
           },
         }),
@@ -1550,7 +1669,6 @@ describe('Auxiliary API clients', () => {
     const client = new MetaProfilesClient({ host: 'http://example.com' });
     const config = {
       classifier_model: 'classifier',
-      default_model: 'default',
       classes: [{ description: 'tests', model: 'slow' }],
     };
     const result = await client.saveMetaProfile('balanced', config);
@@ -2730,5 +2848,48 @@ describe('Auxiliary API clients', () => {
     expect(captured.options?.method).toBe('GET');
     expect(captured.url?.toString()).toBe('http://example.com/api/bash/bash_events/');
     expect(JSON.parse(captured.body ?? 'null')).toEqual(['e1', 'missing']);
+  });
+
+  it('GitClient searches provider repositories', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: '123',
+              full_name: 'OpenHands/software-agent-sdk',
+              git_provider: 'github',
+              is_public: true,
+              stargazers_count: 7,
+              pushed_at: '2026-09-29T12:00:00Z',
+              main_branch: 'main',
+            },
+          ],
+          next_page_id: '2',
+          missing_token: false,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new GitClient({ host: 'http://example.com', apiKey: 'secret' });
+    const result = await client.searchRepositories({
+      provider: 'github',
+      query: 'OpenHands',
+      limit: 30,
+      pageId: '1',
+    });
+
+    expect(result.items[0].full_name).toBe('OpenHands/software-agent-sdk');
+    expect(result.next_page_id).toBe('2');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/git/repositories/search?provider=github&query=OpenHands&limit=30&page_id=1',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-Session-API-Key': 'secret',
+        }),
+      })
+    );
   });
 });

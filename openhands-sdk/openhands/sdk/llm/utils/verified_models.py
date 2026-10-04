@@ -11,6 +11,8 @@ stay. When a new version lands, drop the oldest one in the same line.
 
 # GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-6-astra",
     "gpt-5.6",
     "gpt-5.6-sol",
@@ -20,10 +22,10 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5 and 4.8. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
 VERIFIED_ANTHROPIC_MODELS = [
+    "claude-opus-5-5",
     "claude-opus-5",
-    "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
@@ -82,6 +84,7 @@ VERIFIED_GLM_MODELS = [
 VERIFIED_NVIDIA_MODELS = [
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
+    "nemotron-3-nano-omni-30b-a3b-reasoning",
     "nemotron-3-super-120b-a12b",
     "nemotron-3-ultra-550b-a55b",
 ]
@@ -100,15 +103,48 @@ VERIFIED_QWEN_MODELS = [
     "qwen3-coder-flash",
 ]
 
+# OpenRouter routes other vendors' models. Entries are the OpenRouter id with
+# the ``openrouter/`` prefix stripped (so ``anthropic/claude-opus-5`` here
+# corresponds to ``openrouter/anthropic/claude-opus-5``), and every entry must
+# be a real LiteLLM catalog id (``openrouter/<entry>`` must resolve in
+# ``get_supported_llm_models()``) so the route has known context-window
+# metadata. Only the frontier routes the OpenHands proxy itself serves are
+# kept; the long tail stays in the unverified catalog.
+VERIFIED_OPENROUTER_MODELS = [
+    "anthropic/claude-opus-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-4.5",
+    "openai/gpt-6-astra",
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.3-codex",
+    "openai/gpt-5.2-codex",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.8-flash",
+    "google/gemini-3.7-flash",
+    "google/gemini-3.5-flash-lite",
+    "moonshotai/kimi-k3",
+    "moonshotai/kimi-k2.7-code",
+    "mistralai/devstral-2512",
+    "z-ai/glm-5.3",
+    "z-ai/glm-5.3-flash",
+    "z-ai/glm-5.2",
+    "minimax/minimax-m3",
+]
+
 # What the ``openhands/`` provider serves. Same rule; every entry must also be in
 # a provider list above, except OpenHands-only models.
 VERIFIED_OPENHANDS_MODELS = [
+    "claude-opus-5-5",
     "claude-opus-5",
-    "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-fable-5-1",
     "claude-fable-5",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-6-astra",
     "gpt-5.6",
     "gpt-5.3-codex",
@@ -163,4 +199,5 @@ VERIFIED_MODELS = {
     "glm": VERIFIED_GLM_MODELS,
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
+    "openrouter": VERIFIED_OPENROUTER_MODELS,
 }

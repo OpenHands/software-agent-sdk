@@ -145,6 +145,14 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Read the latest output; a missing exit code means it is still running."""
         return self._execute(self._get_command_output_generator(command_id))
 
+    def stop_command(self, command_id: str) -> None:
+        """Stop a running bash command by id.
+
+        Unknown or already-finished ids are no-ops, matching the server's
+        idempotency contract.
+        """
+        self._execute(self._stop_command_generator(command_id))
+
     def get_runtime_session_key(self) -> str:
         """Get the scoped worker credential for this conversation runtime."""
         return self._execute(self._runtime_lifecycle_generator(release=False))
@@ -416,6 +424,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             FileNotFoundError: If ``profile_name`` does not exist.
             httpx.HTTPStatusError: If the API request fails.
             RuntimeError: If the workspace host is not set.
+            ValueError: If no profile is active and the agent settings are for
+                an ACP agent, which has no LLM.
 
         Example:
             >>> with DockerWorkspace(...) as workspace:
@@ -423,6 +433,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
+        from openhands.sdk.settings import OpenHandsAgentSettings
 
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
@@ -433,6 +444,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             if resolved_profile_name in (None, ""):
                 settings_response = self._fetch_settings_response()
                 agent_settings = settings_response.get_agent_settings()
+                if not isinstance(agent_settings, OpenHandsAgentSettings):
+                    raise ValueError(
+                        "No LLM profile is active and the agent settings are for "
+                        "an ACP agent, which has no LLM; pass profile_name."
+                    )
                 if not llm_kwargs:
                     return agent_settings.llm
                 llm_data = agent_settings.llm.model_dump(
@@ -886,6 +902,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         load_project: bool = True,
         load_org: bool = True,
         timeout: float = 60.0,
+        base_context: "AgentContext | None" = None,
     ) -> tuple[list["Skill"], "AgentContext"]:
         """Load skills via the agent-server's /api/skills endpoint.
 
@@ -906,6 +923,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             load_project: Load project skills from workspace directories.
             load_org: Load organization-level skills.
             timeout: Request timeout in seconds.
+            base_context: Existing AgentContext to preserve. All of its
+                fields survive except `skills` and `load_public_skills`,
+                which this method always sets based on whether skills
+                were found. Defaults to None, which starts from a fresh
+                AgentContext — today's behavior.
 
         Returns:
             Tuple of (list of Skill objects, AgentContext).
@@ -958,11 +980,20 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if loaded_skills:
             logger.debug(f"Skills: {[s.name for s in loaded_skills]}")
 
-        # Create AgentContext - fall back to public skills if none loaded
+        # Update `base_context` (or start fresh if none given) with the
+        # newly loaded skills — every other field the caller configured is
+        # preserved. Fall back to public skills if none loaded.
+        base = base_context if base_context is not None else AgentContext()
         if loaded_skills:
-            agent_context = AgentContext(skills=loaded_skills, load_public_skills=False)
+            agent_context = base.model_copy(
+                update={"skills": loaded_skills, "load_public_skills": False}
+            )
         else:
             logger.warning("No skills loaded, falling back to public skills")
-            agent_context = AgentContext(skills=[], load_public_skills=True)
+            agent_context = base.model_copy(
+                update={"skills": [], "load_public_skills": True}
+            )
 
-        return loaded_skills, agent_context
+        # ``model_copy`` skips validators, so re-run the resolution that
+        # applies ``load_*_skills`` and the ``disabled_skills`` deny-list.
+        return loaded_skills, agent_context.resolve_auto_skills()

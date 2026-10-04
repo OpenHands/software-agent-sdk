@@ -1,11 +1,13 @@
 """Unit tests for RemoteWorkspace class."""
 
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
 
+from openhands.sdk.context import AgentContext
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
@@ -560,6 +562,26 @@ def test_get_llm_without_active_profile_falls_back_to_legacy(
         "X-Session-API-Key": "test-key",
         "X-Expose-Secrets": "plaintext",
     }
+
+
+def test_get_llm_without_active_profile_rejects_acp_settings():
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+    settings_response = Mock()
+    settings_response.json.return_value = {
+        "agent_settings": {"agent_kind": "acp", "acp_server": "claude-code"},
+        "conversation_settings": {},
+        "llm_api_key_is_set": False,
+        "active_profile": None,
+    }
+    settings_response.raise_for_status = Mock()
+    client = MagicMock()
+    client.get.return_value = settings_response
+    workspace._client = client
+
+    with pytest.raises(ValueError, match="ACP agent"):
+        workspace.get_llm()
 
 
 def test_get_llm_with_kwargs_override(monkeypatch):
@@ -1141,6 +1163,135 @@ def test_load_skills_from_agent_server_with_project_dirs():
         assert len(skills) >= 1  # At least the global skill
 
 
+def test_load_skills_from_agent_server_preserves_base_context_when_found():
+    """Test load_skills_from_agent_server preserves caller's AgentContext fields."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(
+        marketplace_path="internal/marketplace.json",
+        disabled_skills=["risky-skill"],
+        user_message_suffix="Follow the client's policy.",
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server(
+            base_context=base_context
+        )
+        assert len(skills) == 1
+        assert context.marketplace_path == "internal/marketplace.json"
+        assert context.disabled_skills == ["risky-skill"]
+        assert context.user_message_suffix == "Follow the client's policy."
+        assert context.load_public_skills is False
+
+
+def test_load_skills_from_agent_server_preserves_base_context_on_fallback():
+    """Test base context fields survive even when no skills are found."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(
+        marketplace_path="internal/marketplace.json",
+        disabled_skills=["risky-skill"],
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server(
+            base_context=base_context
+        )
+        assert len(skills) == 0
+        assert context.marketplace_path == "internal/marketplace.json"
+        assert context.disabled_skills == ["risky-skill"]
+        assert context.load_public_skills is True
+
+
+def test_load_skills_from_agent_server_without_base_context_matches_legacy():
+    """Test omitting base_context matches today's default behavior."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+        assert context.marketplace_path == AgentContext().marketplace_path
+        assert context.disabled_skills == AgentContext().disabled_skills
+        assert context.user_message_suffix == AgentContext().user_message_suffix
+
+
+def test_load_skills_from_agent_server_preserves_current_datetime():
+    """Test current_datetime from the base context is not regenerated."""
+    from datetime import datetime
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    fixed_time = datetime(2020, 1, 1, tzinfo=UTC)
+    base_context = AgentContext(current_datetime=fixed_time)
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [{"name": "test-skill", "content": "Test content"}],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server(base_context=base_context)
+        assert context.current_datetime == fixed_time
+
+
+def test_load_skills_from_agent_server_applies_disabled_skills():
+    """Test a skill named in disabled_skills is filtered out, not just carried."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    base_context = AgentContext(disabled_skills=["risky-skill"])
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [
+            {"name": "risky-skill", "content": "Denied"},
+            {"name": "ok-skill", "content": "Allowed"},
+        ],
+        "sources": {"public": 2},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server(base_context=base_context)
+        assert [s.name for s in context.skills] == ["ok-skill"]
+        assert context.disabled_skills == ["risky-skill"]
+
+
+def test_load_skills_from_agent_server_fallback_resolves_public_skills():
+    """Test the empty-skills fallback materializes public skills, as before."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+    legacy = AgentContext(skills=[], load_public_skills=True)
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        _, context = workspace.load_skills_from_agent_server()
+        assert context.load_public_skills is True
+        assert [s.name for s in context.skills] == [s.name for s in legacy.skills]
+
+
 # --- Completion callback tests ---
 
 
@@ -1190,6 +1341,49 @@ def test_send_completion_callback_on_success(monkeypatch):
         assert payload["run_id"] == "run-42"
         assert "error" not in payload
         assert headers["Authorization"] == "Bearer test-api-key"
+
+
+def test_send_completion_callback_includes_observability_headers(monkeypatch):
+    """Test _send_completion_callback propagates generic observability context."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_API_KEY", "test-api-key")
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_METADATA", '{"automation.id":"auto-1"}')
+    monkeypatch.setenv(
+        "OPENHANDS_OBSERVABILITY_TAGS", "automation,automation.trigger:cron"
+    )
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_SPAN_NAME", "automation.conversation")
+    monkeypatch.setenv(
+        "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT", "serialized-parent-context"
+    )
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer test-api-key"
+        assert headers["X-OpenHands-Observability-Metadata"] == (
+            '{"automation.id":"auto-1"}'
+        )
+        assert headers["X-OpenHands-Observability-Tags"] == (
+            "automation,automation.trigger:cron"
+        )
+        assert headers["X-OpenHands-Observability-Span-Name"] == (
+            "automation.conversation"
+        )
+        assert headers["X-OpenHands-Observability-Parent-Span-Context"] == (
+            "serialized-parent-context"
+        )
 
 
 def test_send_completion_callback_on_failure(monkeypatch):
