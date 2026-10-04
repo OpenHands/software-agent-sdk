@@ -118,7 +118,10 @@ class TmuxPanePool:
             return
 
         env = build_terminal_env(self.env)
-        self._server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
+        # Stale handles must not reach another pool after tmux restarts.
+        self._server = libtmux.Server(
+            socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}", environment=env
+        )
         session_name = f"openhands-pool-{self.username}-{uuid.uuid4()}"
         self._session = self._server.new_session(
             session_name=session_name,
