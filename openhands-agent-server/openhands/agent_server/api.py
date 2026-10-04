@@ -606,7 +606,11 @@ def _add_exception_handlers(api: FastAPI) -> None:
         )
         # Draft text is private user content, so this route omits every raw
         # request value from validation responses instead of just redacting secrets.
-        redact_inputs = request.url.path.startswith("/api/prompt-enhancement/")
+        # The matched route excludes the deployment's root_path prefix.
+        route = request.scope.get("route")
+        redact_inputs = getattr(route, "path", "").startswith(
+            "/api/prompt-enhancement/"
+        )
         return JSONResponse(
             status_code=422,
             content={

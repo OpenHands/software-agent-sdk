@@ -34,14 +34,21 @@ from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFou
 
 
 @pytest.fixture
-def client_and_store(tmp_path, monkeypatch):
+def client_and_store(tmp_path, monkeypatch, request):
     store = LLMProfileStore(base_dir=tmp_path / "profiles")
     monkeypatch.setattr(router_module, "get_llm_profile_store", lambda: store)
     monkeypatch.setattr(profiles_router_module, "get_llm_profile_store", lambda: store)
     monkeypatch.setattr(router_module, "should_enable_observability", lambda: False)
     monkeypatch.delenv("LMNR_INSTRUMENTS", raising=False)
     monkeypatch.delenv("DEBUG_LLM", raising=False)
-    app = create_app(Config(static_files_path=None, session_api_keys=[]))
+    root_path = getattr(request, "param", "")
+    app = create_app(
+        Config(
+            static_files_path=None,
+            session_api_keys=[],
+            web_url=f"https://example.com{root_path}" if root_path else None,
+        )
+    )
     with TestClient(app) as client:
         yield client, store
 
@@ -638,6 +645,9 @@ def test_prompt_enhancement_requires_the_agent_server_session_key():
     assert authenticated.json()["code"] == "profile_not_found"
 
 
+@pytest.mark.parametrize(
+    "client_and_store", ["", "/runtime/123", "/runtime/456/api"], indirect=True
+)
 def test_invalid_request_fields_are_rejected_without_echoing_values(
     client_and_store, caplog
 ):
@@ -645,11 +655,11 @@ def test_invalid_request_fields_are_rejected_without_echoing_values(
     sentinel = "invalid untrusted value a11c02"
 
     wrong_type = client.post(
-        "/api/prompt-enhancement/enhance",
+        f"{client.app.root_path}/api/prompt-enhancement/enhance",
         json={"profile_name": "draft-profile", "text": {"bad": sentinel}},
     )
     unexpected_field = client.post(
-        "/api/prompt-enhancement/enhance",
+        f"{client.app.root_path}/api/prompt-enhancement/enhance",
         json={
             "profile_name": "draft-profile",
             "text": "valid draft",
@@ -657,11 +667,15 @@ def test_invalid_request_fields_are_rejected_without_echoing_values(
         },
     )
 
-    assert wrong_type.status_code == 422
-    assert unexpected_field.status_code == 422
+    for response in (wrong_type, unexpected_field):
+        assert response.status_code == 422
+        assert all("input" not in error for error in response.json()["detail"])
     assert sentinel not in wrong_type.text + unexpected_field.text + caplog.text
 
 
+@pytest.mark.parametrize(
+    "client_and_store", ["", "/runtime/123", "/runtime/456/api"], indirect=True
+)
 @pytest.mark.parametrize(
     ("payload", "expected_status"),
     [
@@ -684,12 +698,14 @@ def test_malformed_or_resource_heavy_json_does_not_echo_request_body(
     client, _store = client_and_store
 
     response = client.post(
-        "/api/prompt-enhancement/enhance",
+        f"{client.app.root_path}/api/prompt-enhancement/enhance",
         content=payload,
         headers={"content-type": "application/json"},
     )
 
     assert response.status_code == expected_status
+    if expected_status == 422:
+        assert all("input" not in error for error in response.json()["detail"])
     assert "parser sentinel" not in response.text
     assert b"9" * 5_000 not in response.content
     assert "parser sentinel" not in caplog.text
