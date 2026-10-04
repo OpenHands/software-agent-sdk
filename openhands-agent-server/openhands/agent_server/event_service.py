@@ -130,14 +130,20 @@ class RunSlot:
         permit.refs += 1
 
     @classmethod
-    async def acquire(cls, semaphore: asyncio.Semaphore | None) -> "RunSlot":
+    async def acquire(
+        cls, semaphore: asyncio.Semaphore | None, *, wait: bool = False
+    ) -> "RunSlot":
         if semaphore is not None:
-            # acquire() cannot suspend when capacity is available, so this
-            # check-and-acquire is atomic on the server's event loop.
-            if semaphore.locked():
-                raise ConversationRunLimitExceeded(
-                    "Conversation run limit reached. Retry the request later."
-                )
+            if not wait:
+                # acquire() cannot suspend when capacity is available, so this
+                # check-and-acquire is atomic on the server's event loop.
+                if semaphore.locked():
+                    raise ConversationRunLimitExceeded(
+                        "Conversation run limit reached. Retry the request later."
+                    )
+            # ``wait=True`` is for a continuation whose message the caller was
+            # already told was accepted (a re-armed run). It blocks for a token
+            # instead of turning into a spurious 429 that would strand input.
             await semaphore.acquire()
         return cls(_RunPermit(semaphore))
 
@@ -1388,9 +1394,28 @@ class EventService:
         owner = self._run_session_slot
         if owner is None:
             return
-        successor_active = self._run_task is not None and not self._run_task.done()
-        if successor_active or self._run_session_pins > 0:
+        if self._run_session_pins > 0:
             return
+        task = self._run_task
+        if task is not None and not task.done():
+            # The run body calling this from its own ``finally`` is not a
+            # successor. Treating it as one deferred the release to the task's
+            # done callback, i.e. until after ``wait_for_pending`` and the
+            # final state publish. A conversation that is already terminal
+            # (its status is readable over REST) therefore still occupied a run
+            # slot, and a competing request was refused with a spurious
+            # ConversationRunLimitExceeded.
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:  # no running loop (sync caller)
+                current = None
+            if task is not current:
+                return
+            # A re-arm for input parked while this run was wrapping up must
+            # keep the permit: the caller was already told its message was
+            # accepted, so a refusal here would strand it.
+            if self._rerun_requested or self._acp_internal_rerun_requested:
+                return
         self._run_session_slot = None
         owner.release()
 
@@ -1399,6 +1424,7 @@ class EventService:
         acp_internal_rerun_generation: int | None = None,
         *,
         run_slot: RunSlot | None = None,
+        wait_for_capacity: bool = False,
     ):
         """Run the conversation asynchronously in the background.
 
@@ -1454,7 +1480,9 @@ class EventService:
                 owner = (
                     run_slot.share()
                     if run_slot is not None
-                    else await RunSlot.acquire(self._run_semaphore)
+                    else await RunSlot.acquire(
+                        self._run_semaphore, wait=wait_for_capacity
+                    )
                 )
                 self._run_session_slot = owner
             elif run_slot is not None:
@@ -1594,7 +1622,11 @@ class EventService:
                                 await self.run(
                                     acp_internal_rerun_generation=rerun_generation
                                     if acp_internal_rerun_still_valid
-                                    else None
+                                    else None,
+                                    # The message this re-arm picks up was
+                                    # already accepted (200), so waiting for a
+                                    # token beats a 429 that would strand it.
+                                    wait_for_capacity=True,
                                 )
                             except ValueError as e:
                                 if str(e) == "conversation_already_running":
