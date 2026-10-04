@@ -1343,6 +1343,49 @@ def test_send_completion_callback_on_success(monkeypatch):
         assert headers["Authorization"] == "Bearer test-api-key"
 
 
+def test_send_completion_callback_includes_observability_headers(monkeypatch):
+    """Test _send_completion_callback propagates generic observability context."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_API_KEY", "test-api-key")
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_METADATA", '{"automation.id":"auto-1"}')
+    monkeypatch.setenv(
+        "OPENHANDS_OBSERVABILITY_TAGS", "automation,automation.trigger:cron"
+    )
+    monkeypatch.setenv("OPENHANDS_OBSERVABILITY_SPAN_NAME", "automation.conversation")
+    monkeypatch.setenv(
+        "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT", "serialized-parent-context"
+    )
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer test-api-key"
+        assert headers["X-OpenHands-Observability-Metadata"] == (
+            '{"automation.id":"auto-1"}'
+        )
+        assert headers["X-OpenHands-Observability-Tags"] == (
+            "automation,automation.trigger:cron"
+        )
+        assert headers["X-OpenHands-Observability-Span-Name"] == (
+            "automation.conversation"
+        )
+        assert headers["X-OpenHands-Observability-Parent-Span-Context"] == (
+            "serialized-parent-context"
+        )
+
+
 def test_send_completion_callback_on_failure(monkeypatch):
     """Test _send_completion_callback POSTs FAILED status with error."""
     monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
