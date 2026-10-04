@@ -2828,7 +2828,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "openhands-tools", editable = "openhands-tools" },
-    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=6,<7" },
+    { name = "posthog", marker = "extra == 'posthog'", specifier = ">=7.60.0,<8" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "sqlalchemy", specifier = ">=2" },
     { name = "uvicorn", specifier = ">=0.54.0" },
@@ -3327,19 +3327,17 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "6.7.7"
+version = "7.60.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
     { name = "distro" },
-    { name = "python-dateutil" },
     { name = "requests" },
-    { name = "six" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/45/aa/2df04524457fe58751e850a58d1e64e092dc5ac69dde6ac532e7405c27a2/posthog-6.7.7.tar.gz", hash = "sha256:ffb7bac388f66e5c9e2e3d6028572386ad3c98bba7a9a4669db05b10ac23357a", size = 119080, upload-time = "2025-10-14T10:34:20.194Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/16/b5d1489bae5ef5bd20c85b5b95f2b44609926b4ddb6c86794213ce1a832b/posthog-7.60.0.tar.gz", hash = "sha256:6c1ab0f0d31c83b47a3cf6b6829d4ee83f250a4f8844c4c24adae329982d3f36", size = 689157, upload-time = "2026-09-23T16:34:43.475Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f5/dd/840647190da41d4290ab3ec885df248b5326b37e1cb00a0f0bb82dddc3f1/posthog-6.7.7-py3-none-any.whl", hash = "sha256:bf8187ce8e6da33d5c122ee03a759efa8f181630380260526294454dab0c8bab", size = 137298, upload-time = "2025-10-14T10:34:18.616Z" },
+    { url = "https://files.pythonhosted.org/packages/75/23/212a7007dc70dc58b4273c461dbac794844065639935573a129356f80931/posthog-7.60.0-py3-none-any.whl", hash = "sha256:48ecc52c124d8262779bef4fd3dc268ef66a08905449700c4ddfe44f5b0027d1", size = 805784, upload-time = "2026-09-23T16:34:41.242Z" },
 ]
 
 [[package]]
