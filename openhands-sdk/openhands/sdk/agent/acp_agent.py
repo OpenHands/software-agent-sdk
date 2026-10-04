@@ -43,21 +43,34 @@ from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
 from acp.helpers import image_block, text_block
 from acp.schema import (
+    AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    CreateElicitationResponse,
+    CreateTerminalResponse,
+    DeclineElicitationResponse,
+    ElicitationMode,
     EnvVariable,
     HttpHeader,
     HttpMcpServer,
     ImageContentBlock,
+    KillTerminalResponse,
     McpServerStdio,
+    PermissionOption,
     PromptResponse,
+    ReadTextFileResponse,
+    ReleaseTerminalResponse,
     RequestPermissionResponse,
     SseMcpServer,
+    TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
+    ToolCallUpdate,
     UsageUpdate,
+    WaitForTerminalExitResponse,
+    WriteTextFileResponse,
 )
 from acp.transports import default_environment
 from pydantic import (
@@ -617,14 +630,23 @@ async def _apply_acp_model(
     Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
     codex-acp exposes reasoning effort as a separate config option, so split it
     only on the config-options mechanism.
+
+    agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` extension from
+    the ACP schema and removed ``ClientSideConnection.set_session_model``. A live
+    0.12 connection therefore has no legacy RPC to call, so the ``else`` branch
+    only invokes it when the connection actually exposes the method (test
+    doubles do; real 0.12 connections do not) and otherwise no-ops rather than
+    raising ``AttributeError``.
     """
     if via_config_option:
         for config_id, value in _model_config_options(agent_name, model):
             await conn.set_config_option(
                 config_id=config_id, value=value, session_id=session_id
             )
-    else:
-        await conn.set_session_model(model_id=model, session_id=session_id)
+    elif hasattr(conn, "set_session_model"):
+        await conn.set_session_model(  # type: ignore[attr-defined]
+            model_id=model, session_id=session_id
+        )
 
 
 def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
@@ -689,7 +711,7 @@ def _extract_session_models(
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
-_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
+_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer
 
 
 def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
@@ -1579,11 +1601,11 @@ class _OpenHandsACPBridge:
 
     async def request_permission(
         self,
-        options: list[Any],
         session_id: str,  # noqa: ARG002
-        tool_call: Any,
+        tool_call: ToolCallUpdate,
+        options: list[PermissionOption],
         **kwargs: Any,  # noqa: ARG002
-    ) -> Any:
+    ) -> RequestPermissionResponse:
         """Auto-approve all permission requests from the ACP server."""
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
@@ -1596,52 +1618,74 @@ class _OpenHandsACPBridge:
             outcome=AllowedOutcome(outcome="selected", option_id=option_id),
         )
 
+    async def create_elicitation(
+        self,
+        message: str,  # noqa: ARG002
+        mode: ElicitationMode,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> CreateElicitationResponse:
+        """Decline elicitation requests; the headless bridge has no user to ask.
+
+        Added to the ``Client`` protocol in agent-client-protocol 0.12.x. None
+        of the pinned ACP providers elicit during a headless turn, so this is a
+        defensive default rather than an exercised code path.
+        """
+        return DeclineElicitationResponse(action="decline")
+
+    async def complete_elicitation(
+        self,
+        elicitation_id: str,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        """No-op completion for an elicitation the bridge always declines."""
+        return None
+
     # fs/terminal methods — raise NotImplementedError; ACP server handles its own
     async def write_text_file(
-        self, content: str, path: str, session_id: str, **kwargs: Any
-    ) -> None:
+        self, session_id: str, path: str, content: str, **kwargs: Any
+    ) -> WriteTextFileResponse | None:
         raise NotImplementedError("ACP server handles file operations")
 
     async def read_text_file(
         self,
-        path: str,
         session_id: str,
-        limit: int | None = None,
+        path: str,
         line: int | None = None,
+        limit: int | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> ReadTextFileResponse:
         raise NotImplementedError("ACP server handles file operations")
 
     async def create_terminal(
         self,
-        command: str,
         session_id: str,
+        command: str,
         args: list[str] | None = None,
+        env: list[EnvVariable] | None = None,
         cwd: str | None = None,
-        env: Any = None,
         output_byte_limit: int | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> CreateTerminalResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def terminal_output(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> Any:
+    ) -> TerminalOutputResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def release_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> None:
+    ) -> ReleaseTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def wait_for_terminal_exit(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> Any:
+    ) -> WaitForTerminalExitResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def kill_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> None:
+    ) -> KillTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def ext_method(

@@ -1,7 +1,8 @@
 """Tests for VSCode service."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import signal
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -132,40 +133,136 @@ async def test_start_port_unavailable(vscode_service, mock_openvscode_binary):
 
 @pytest.mark.asyncio
 async def test_stop_with_process(vscode_service):
-    """Test stopping VSCode service with running process."""
-    mock_process = AsyncMock()
-    mock_process.wait = AsyncMock()
-    mock_process.terminate = MagicMock()  # Regular method, not async
+    """Stopping signals the whole process group, since the launcher script
+    runs node as a child."""
+    mock_process = AsyncMock(pid=4321)
     vscode_service.process = mock_process
 
-    await vscode_service.stop()
+    with (
+        patch("openhands.agent_server.vscode_service.os.killpg") as mock_killpg,
+        patch.object(vscode_service, "_is_port_available", return_value=True),
+    ):
+        await vscode_service.stop()
 
-    mock_process.terminate.assert_called_once()
+    mock_killpg.assert_called_once_with(4321, signal.SIGTERM)
     mock_process.wait.assert_called_once()
+    assert vscode_service.process is None
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_port_release(vscode_service):
+    """The launcher exiting is not enough: stop() returns once node has
+    released the port, so a restart can bind it."""
+    vscode_service.process = AsyncMock(pid=4321)
+
+    with (
+        patch("openhands.agent_server.vscode_service.os.killpg"),
+        patch.object(
+            vscode_service, "_is_port_available", side_effect=[False, False, True]
+        ) as mock_port_check,
+    ):
+        await vscode_service.stop()
+
+    assert mock_port_check.call_count == 3
     assert vscode_service.process is None
 
 
 @pytest.mark.asyncio
 async def test_stop_with_timeout(vscode_service):
     """Test stopping VSCode service with timeout."""
-    mock_process = AsyncMock()
+    mock_process = AsyncMock(pid=4321)
     # First call to wait() should timeout, second call should succeed
     mock_process.wait.side_effect = [TimeoutError(), None]
-    mock_process.terminate = MagicMock()  # Regular method, not async
-    mock_process.kill = MagicMock()  # Regular method, not async
     vscode_service.process = mock_process
 
-    await vscode_service.stop()
+    with patch("openhands.agent_server.vscode_service.os.killpg") as mock_killpg:
+        await vscode_service.stop()
 
-    mock_process.terminate.assert_called_once()
-    mock_process.kill.assert_called_once()
+    assert mock_killpg.call_args_list == [
+        call(4321, signal.SIGTERM),
+        call(4321, signal.SIGKILL),
+    ]
     assert mock_process.wait.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_after_process_group_is_gone(vscode_service):
+    """A server that already exited is stopped without an error."""
+    vscode_service.process = AsyncMock(pid=4321)
+
+    with (
+        patch(
+            "openhands.agent_server.vscode_service.os.killpg",
+            side_effect=ProcessLookupError,
+        ),
+        patch.object(vscode_service, "_is_port_available", return_value=True),
+        patch("openhands.agent_server.vscode_service.logger") as mock_logger,
+    ):
+        await vscode_service.stop()
+
+    mock_logger.error.assert_not_called()
+    assert vscode_service.process is None
 
 
 @pytest.mark.asyncio
 async def test_stop_no_process(vscode_service):
     """Test stopping VSCode service with no running process."""
     await vscode_service.stop()  # Should not raise any exceptionz
+
+
+@pytest.mark.asyncio
+async def test_set_connection_token_restarts_running_server(
+    vscode_service, mock_openvscode_binary
+):
+    """openvscode-server reads its token only at startup, so a running server
+    is restarted with the new token."""
+    vscode_service.openvscode_server_root = mock_openvscode_binary
+    vscode_service.connection_token = "boot-token"
+    vscode_service.process = AsyncMock(pid=4321, returncode=None)
+    new_process = AsyncMock(returncode=None)
+
+    with (
+        patch("openhands.agent_server.vscode_service.os.killpg") as mock_killpg,
+        patch.object(vscode_service, "_is_port_available", return_value=True),
+        patch(
+            "asyncio.create_subprocess_shell", return_value=new_process
+        ) as mock_create,
+        patch.object(vscode_service, "_wait_for_startup"),
+    ):
+        await vscode_service.set_connection_token("session-key")
+
+    mock_killpg.assert_called_once_with(4321, signal.SIGTERM)
+    assert vscode_service.process is new_process
+    assert "--connection-token session-key " in mock_create.call_args[0][0]
+    assert vscode_service.get_vscode_url() == (
+        "http://localhost:8001/?tkn=session-key&folder=workspace"
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_connection_token_same_token_keeps_server(vscode_service):
+    """Setting the current token again leaves the server running."""
+    process = AsyncMock(returncode=None)
+    vscode_service.connection_token = "session-key"
+    vscode_service.process = process
+
+    with patch.object(vscode_service, "stop") as mock_stop:
+        await vscode_service.set_connection_token("session-key")
+
+    mock_stop.assert_not_called()
+    assert vscode_service.process is process
+
+
+@pytest.mark.asyncio
+async def test_set_connection_token_without_running_server(vscode_service):
+    """A server that is not running keeps its token, so no URL is advertised
+    for a VSCode that never started."""
+    with patch.object(vscode_service, "start") as mock_start:
+        await vscode_service.set_connection_token("session-key")
+
+    mock_start.assert_not_called()
+    assert vscode_service.connection_token is None
+    assert vscode_service.get_vscode_url() is None
 
 
 def test_get_vscode_url_no_token(vscode_service):
@@ -299,6 +396,8 @@ async def test_start_vscode_process(vscode_service, tmp_path):
         await vscode_service._start_vscode_process()
 
         mock_create.assert_called_once()
+        # Its own process group, so stop() can signal node with the launcher.
+        assert mock_create.call_args.kwargs["start_new_session"] is True
         mock_wait.assert_called_once()
         assert vscode_service.process == mock_process
 

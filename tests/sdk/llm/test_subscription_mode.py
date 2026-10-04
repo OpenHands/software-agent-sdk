@@ -43,7 +43,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 def _make_subscription_llm() -> LLM:
     """Create a minimal subscription-mode LLM for testing."""
     llm = LLM(
-        model="openai/gpt-5.2-codex",
+        model="openai/gpt-5.4",
         base_url="https://chatgpt.com/backend-api/codex",
         reasoning_effort="high",
     )
@@ -73,7 +73,7 @@ def _make_responses_api_response(text: str = "ok") -> ResponsesAPIResponse:
                 ],
             )
         ],
-        model="gpt-5.2-codex",
+        model="gpt-5.4",
         object="response",
     )
 
@@ -110,7 +110,7 @@ def test_subscription_skips_unsupported_param(param: str):
 )
 def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
     """Non-subscription GPT-5 models should still send these params."""
-    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
     llm.enable_encrypted_reasoning = True
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=None, store=None)
@@ -118,7 +118,7 @@ def test_non_subscription_keeps_scalar_param(param: str, expected_value: Any):
 
 
 def test_non_subscription_does_not_invent_temperature():
-    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
 
     opts = select_responses_options(llm, {}, include=None, store=None)
 
@@ -134,7 +134,7 @@ def test_non_subscription_does_not_invent_temperature():
 )
 def test_non_subscription_keeps_structured_param(param: str, check: Any):
     """Non-subscription LLMs should send include and reasoning normally."""
-    llm = LLM(model="openai/gpt-5.2-codex", reasoning_effort="high")
+    llm = LLM(model="openai/gpt-5.4", reasoning_effort="high")
     llm.enable_encrypted_reasoning = True
     assert not llm.is_subscription
     opts = select_responses_options(llm, {}, include=["text.output_text"], store=None)
@@ -395,7 +395,7 @@ def test_format_messages_reasoning_item_handling(
 ):
     """Subscription mode must strip reasoning item IDs (store=false means they
     can't be resolved).  Non-subscription mode must preserve them."""
-    llm = LLM(model="openai/gpt-5.2-codex")
+    llm = LLM(model="openai/gpt-5.4")
     if is_subscription:
         llm.is_subscription = True
 

@@ -64,10 +64,23 @@ class ServerInfo(BaseModel):
         default_factory=lambda: [
             "conversation_runtime_routes_v1",
             "profile_secret_scope_v1",
+            "profile_persona_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
+            # Concurrent creates for one conversation id are deduplicated under
+            # the conversation's lifecycle lock, so a client may safely re-send
+            # a create whose response it never saw.
+            "idempotent_conversation_create_v1",
+            "tool_catalog_v1",
+            "agent_profile_draft_materialize_v1",
         ]
+    )
+    app_backend_ingress_url: str | None = Field(
+        default=None,
+        description=(
+            "Separate browser origin for authenticated Canvas App backend sessions"
+        ),
     )
     max_foreground_terminal_timeout_seconds: float | None = Field(
         default_factory=lambda: get_max_foreground_timeout_seconds()
@@ -120,15 +133,24 @@ async def ready(response: Response) -> dict[str, str]:
 
 def build_server_info(
     conversation_runtime: Literal["local", "docker"] = "local",
+    app_backend_ingress_url: str | None = None,
 ) -> ServerInfo:
     now = time.time()
-    return ServerInfo(
+    info = ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
         conversation_runtime=conversation_runtime,
+        app_backend_ingress_url=app_backend_ingress_url,
     )
+    if app_backend_ingress_url:
+        info.capabilities.append("canvas_app_backend_bridge_v1")
+    return info
 
 
 @server_details_router.get("/server_info")
 async def get_server_info(request: Request) -> ServerInfo:
-    return build_server_info(request.app.state.config.conversation_runtime)
+    config = request.app.state.config
+    return build_server_info(
+        config.conversation_runtime,
+        app_backend_ingress_url=config.app_backend_public_url,
+    )
