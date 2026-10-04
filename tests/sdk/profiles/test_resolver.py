@@ -26,7 +26,8 @@ from openhands.sdk.profiles import (
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
-from openhands.sdk.tool import Tool
+from openhands.sdk.tool import Tool, registry
+from openhands.sdk.tool.builtins import BUILT_IN_TOOL_CLASSES, BUILT_IN_TOOLS
 
 
 _LLM_SECRET = "sk-LLM-SECRET-SHOULD-NOT-LEAK"
@@ -72,7 +73,6 @@ def test_openhands_resolves_to_settings_with_injected_llm(
         llm_profile_ref="default",
         agent="CodeActAgent",
         system_message_suffix="be terse",
-        enable_sub_agents=True,
         tool_concurrency_limit=3,
         mcp_server_refs=["fetch"],
     )
@@ -86,7 +86,6 @@ def test_openhands_resolves_to_settings_with_injected_llm(
 
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.agent == "CodeActAgent"
-    assert settings.enable_sub_agents is True
     assert settings.tool_concurrency_limit == 3
     assert settings.agent_context is not None
     assert settings.agent_context.system_message_suffix == "be terse"
@@ -96,28 +95,25 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     # MCP filtered to the referenced key.
     assert settings.mcp_config != {}
     assert list(settings.mcp_config.keys()) == ["fetch"]
-    # The profile's tools default (None) rides through so create_agent is the
-    # single defaulting point (#3967 / #3978); the built agent carries the
-    # standard exec set plus the sub-agent tool set (enable_sub_agents=True).
-    assert settings.tools is None
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
-    agent_tool_names = [t.name for t in agent.tools]
-    assert {"terminal", "file_editor", "task_tracker"} <= set(agent_tool_names)
-    assert "task_tool_set" in agent_tool_names
+    # Delegation is a tool the profile selects, not a switch on the side.
+    assert [t.name for t in agent.tools] == ["terminal", "file_editor", "task_tracker"]
+    assert "SwitchLLMTool" in agent.include_default_tools
 
 
+@pytest.mark.parametrize(
+    ("browser_available", "expected"),
+    [
+        (False, ["terminal", "file_editor", "task_tracker"]),
+        (True, ["terminal", "file_editor", "task_tracker", "browser_tool_set"]),
+    ],
+)
 def test_openhands_resolves_default_exec_tools(
-    llm_store: LLMProfileStore,
+    llm_store: LLMProfileStore, browser_available: bool, expected: list[str]
 ) -> None:
-    """A profile with no explicit ``tools`` resolves to ``tools=None``, and
-    ``create_agent`` attaches the standard exec set (#3967) — otherwise the
-    agent has only the Finish/Think built-ins and no way to run shell commands
-    or edit files. The sub-agent tool set stays out when ``enable_sub_agents``
-    is False (default); browser is a serving-layer injection, never part of
-    the deterministic default (see tests/sdk/tool/test_defaults.py)."""
+    """Unset ``tools`` resolves to the standard set, browser only where usable."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
-    assert profile.enable_sub_agents is False
     assert profile.tools is None
 
     settings = resolve_agent_profile(
@@ -126,28 +122,23 @@ def test_openhands_resolves_default_exec_tools(
         mcp_config={},
         available_skills=None,
         cipher=None,
+        browser_available=browser_available,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools is None
-    # The built agent carries the exec tools, not just the built-ins.
     agent = settings.create_agent()
-    assert [t.name for t in agent.tools] == [
-        "terminal",
-        "file_editor",
-        "task_tracker",
-    ]
+    assert [t.name for t in agent.tools] == expected
+    assert "SwitchLLMTool" in agent.include_default_tools
 
 
-def test_openhands_profile_tools_selection_is_passed_through(
+def test_openhands_profile_tools_selection_is_used_as_given(
     llm_store: LLMProfileStore,
 ) -> None:
-    """An explicit profile ``tools`` list is authoritative: used exactly as
-    given ([] = deliberately bare), independent of ``enable_sub_agents``."""
+    """An explicit profile ``tools`` list is used as given ([] = deliberately
+    bare) and never gets the browser."""
     picked = OpenHandsAgentProfile(
         name="picked",
         llm_profile_ref="default",
-        tools=[Tool(name="terminal")],
-        enable_sub_agents=True,
+        tools=[Tool(name="terminal", params={"username": "dev"})],
     )
     settings = resolve_agent_profile(
         picked,
@@ -155,10 +146,12 @@ def test_openhands_profile_tools_selection_is_passed_through(
         mcp_config={},
         available_skills=None,
         cipher=None,
+        browser_available=True,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools == [Tool(name="terminal")]
-    assert [t.name for t in settings.create_agent().tools] == ["terminal"]
+    assert settings.create_agent().tools == [
+        Tool(name="terminal", params={"username": "dev"})
+    ]
 
     bare = OpenHandsAgentProfile(name="bare", llm_profile_ref="default", tools=[])
     settings = resolve_agent_profile(
@@ -167,10 +160,207 @@ def test_openhands_profile_tools_selection_is_passed_through(
         mcp_config={},
         available_skills=None,
         cipher=None,
+        browser_available=True,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.tools == []
     assert settings.create_agent().tools == []
+
+
+@pytest.mark.parametrize(
+    ("browser_available", "expected"),
+    [
+        (True, ["terminal", "browser_tool_set"]),
+        (False, ["terminal"]),
+        (None, ["terminal", "browser_tool_set"]),
+    ],
+)
+def test_openhands_explicit_browser_is_launched_only_where_it_can_run(
+    llm_store: LLMProfileStore, browser_available: bool | None, expected: list[str]
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="pinned",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal"), Tool(name="browser_tool_set")],
+    )
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=browser_available,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert [tool.name for tool in settings.tools or []] == expected
+
+
+@pytest.mark.parametrize(
+    ("mcp_server_refs", "scoped_mcp"), [(None, False), ([], True), (["fetch"], True)]
+)
+def test_openhands_profile_delegation_is_scoped_to_the_profile(
+    llm_store: LLMProfileStore,
+    mcp_config: dict[str, MCPServer],
+    mcp_server_refs: list[str] | None,
+    scoped_mcp: bool,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="delegating",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal"), Tool(name="task_tool_set")],
+        mcp_server_refs=mcp_server_refs,
+    )
+
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config=mcp_config, available_skills=None
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    scope = {"tools": True, "mcp_servers": scoped_mcp}
+    assert settings.tools == [
+        Tool(name="terminal"),
+        Tool(name="task_tool_set", params={"sub_agent_scope": scope}),
+    ]
+    assert settings.create_agent().tools == settings.tools
+    assert profile.tools == [Tool(name="terminal"), Tool(name="task_tool_set")]
+
+
+def test_openhands_default_tools_are_not_scoped(llm_store: LLMProfileStore) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", mcp_server_refs=[]
+    )
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=False,
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert all(not tool.params for tool in settings.tools or [])
+
+
+def test_resolve_without_browser_availability_keeps_unset_tools_unset(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(name="default", llm_profile_ref="default")
+
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config={}, available_skills=None
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.tools is None
+
+
+@pytest.mark.parametrize(
+    ("tools", "browser_available", "unusable", "failing"),
+    [
+        ([Tool(name="browser_tool_set")], False, ["browser_tool_set"], []),
+        ([Tool(name="browser_tool_set")], True, [], []),
+        (None, False, ["browser_tool_set"], []),
+        (None, True, [], []),
+        (None, None, [], []),
+        ([Tool(name="browser_tool_set")], None, [], []),
+        (
+            [Tool(name="finish"), Tool(name="not_registered")],
+            True,
+            ["not_registered"],
+            ["not_registered"],
+        ),
+    ],
+)
+def test_dry_run_reports_selected_tools_it_cannot_run(
+    llm_store: LLMProfileStore,
+    tools: list[Tool] | None,
+    browser_available: bool | None,
+    unusable: list[str],
+    failing: list[str],
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="pinned", llm_profile_ref="default", tools=tools
+    )
+
+    diagnostics = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        browser_available=browser_available,
+    )
+
+    assert diagnostics.unusable_tools == unusable
+    assert diagnostics.valid is (failing == [])
+    assert all(name in " ".join(diagnostics.errors) for name in failing)
+
+
+@pytest.mark.parametrize(("check_usable", "unusable"), [(True, ["hello"]), (False, [])])
+def test_dry_run_reports_a_registered_tool_that_is_not_usable(
+    llm_store: LLMProfileStore,
+    monkeypatch: pytest.MonkeyPatch,
+    check_usable: bool,
+    unusable: list[str],
+) -> None:
+    monkeypatch.setitem(registry._REG, "hello", lambda _params, _state: [])
+    monkeypatch.setitem(registry._USABILITY_REG, "hello", lambda: False)
+    profile = OpenHandsAgentProfile(
+        name="pinned", llm_profile_ref="default", tools=[Tool(name="hello")]
+    )
+
+    diagnostics = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        check_usable=check_usable,
+    )
+
+    assert diagnostics.unusable_tools == unusable
+    assert diagnostics.valid is (unusable == [])
+
+
+def test_openhands_profile_persona_keeps_capability_guidance(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="explorer",
+        llm_profile_ref="default",
+        persona="You are a read-only code explorer.",
+        system_message_suffix="Cite file paths.",
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.persona == "You are a read-only code explorer."
+    static = settings.create_agent().static_system_message
+    assert static.startswith("You are a read-only code explorer.")
+    assert "<SECURITY_RISK_ASSESSMENT>" in static
+    assert "<ROLE>" not in static
+    assert "Cite file paths." in (settings.create_agent().dynamic_context or "")
+
+
+def test_openhands_profile_without_persona_keeps_builtin_prompt(
+    llm_store: LLMProfileStore,
+) -> None:
+    settings = resolve_agent_profile(
+        OpenHandsAgentProfile(name="plain", llm_profile_ref="default"),
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.persona is None
+    agent = settings.create_agent()
+    assert agent.persona is None
+    assert "<ROLE>" in agent.static_system_message
 
 
 def test_openhands_copies_verification(
@@ -226,44 +416,6 @@ def test_missing_llm_ref_raises_profile_not_found(
             available_skills=None,
             cipher=None,
         )
-
-
-# --------------------------------------------------------------------------- #
-# enable_switch_llm_tool (#3856)
-# --------------------------------------------------------------------------- #
-
-
-def test_enable_switch_llm_tool_defaults_true_threads_through(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=None,
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    # Defaults True to match the global agent settings default.
-    assert settings.enable_switch_llm_tool is True
-
-
-def test_enable_switch_llm_tool_false_threads_through(
-    llm_store: LLMProfileStore, mcp_config: dict[str, MCPServer]
-) -> None:
-    profile = OpenHandsAgentProfile(
-        name="oh", llm_profile_ref="default", enable_switch_llm_tool=False
-    )
-    settings = resolve_agent_profile(
-        profile,
-        llm_store=llm_store,
-        mcp_config=mcp_config,
-        available_skills=None,
-        cipher=None,
-    )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.enable_switch_llm_tool is False
 
 
 # --------------------------------------------------------------------------- #
@@ -372,11 +524,11 @@ def test_duplicate_named_catalog_is_deduped(
     assert skills == {"alpha": "second"}  # de-duped (last wins); beta disabled
 
 
-def test_acp_profile_gets_no_user_public_skills(
+def test_acp_profile_has_no_skill_selection_field(
     llm_store: LLMProfileStore,
 ) -> None:
-    # ACP profiles carry no skill field — the subprocess owns its context, so no
-    # user/public discovered skills are injected regardless of the catalog.
+    # An ACP profile selects no skills of its own: the catalog the caller passes
+    # is taken whole, since there is no deny-list to apply.
     acp = ACPAgentProfile(name="acp", acp_server="claude-code")
     assert not hasattr(acp, "skill_refs")
     assert not hasattr(acp, "disabled_skills")
@@ -385,6 +537,27 @@ def test_acp_profile_gets_no_user_public_skills(
         llm_store=llm_store,
         mcp_config={},
         available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(acp_settings, ACPAgentSettings)
+    assert acp_settings.agent_context is not None
+    assert {s.name for s in acp_settings.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
+
+
+def test_acp_profile_gets_no_skills_without_a_catalog(
+    llm_store: LLMProfileStore,
+) -> None:
+    # available_skills=None is how a deployment says "the ACP CLI sources its
+    # own skills" (#4019) — nothing is injected.
+    acp_settings = resolve_agent_profile(
+        ACPAgentProfile(name="acp", acp_server="claude-code"),
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
         cipher=None,
     )
     assert isinstance(acp_settings, ACPAgentSettings)
@@ -590,13 +763,12 @@ def test_acp_blank_command_resolves_empty_list(
     assert settings.acp_args == []
 
 
-def test_acp_carries_no_user_public_skills_but_keeps_load_project_skills(
+def test_acp_never_loads_project_skills(
     llm_store: LLMProfileStore,
 ) -> None:
-    """ACP profiles inject no user/public discovered skills (the subprocess owns
-    its context), but ``agent_context`` is still constructed (never ``None``) so
-    ``load_project_skills=True`` reaches ``LocalConversation``'s lazy
-    project-skill load (#4016). ACP convention: no injected datetime."""
+    """An ACP CLI reads ``AGENTS.md`` and its own project skills from the session
+    cwd, so loading them here would duplicate that content in the prompt
+    (#4019). ACP convention: no injected datetime."""
     profile = ACPAgentProfile(name="acp", acp_server="claude-code")
     settings = resolve_agent_profile(
         profile,
@@ -607,8 +779,7 @@ def test_acp_carries_no_user_public_skills_but_keeps_load_project_skills(
     )
     assert isinstance(settings, ACPAgentSettings)
     assert settings.agent_context is not None
-    assert settings.agent_context.skills == []
-    assert settings.agent_context.load_project_skills is True
+    assert settings.agent_context.load_project_skills is False
     assert settings.agent_context.current_datetime is None
 
 
@@ -757,6 +928,45 @@ def test_dry_run_verdict_matches_real_resolve(
         )
 
 
+@pytest.mark.parametrize("browser_available", [True, False])
+@pytest.mark.parametrize("tools", [None, [], [Tool(name="hello")]])
+def test_dry_run_tools_match_the_launched_agent(
+    llm_store: LLMProfileStore,
+    monkeypatch: pytest.MonkeyPatch,
+    browser_available: bool,
+    tools: list[Tool] | None,
+) -> None:
+    """``resolved_settings.tools`` is what the launch actually builds."""
+    monkeypatch.setitem(registry._REG, "hello", lambda _params, _state: [])
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", tools=tools)
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+        browser_available=browser_available,
+    )
+    agent = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+        browser_available=browser_available,
+    ).create_agent()
+
+    assert diag.resolved_settings is not None
+    launched = [t.name for t in agent.tools] + [
+        BUILT_IN_TOOL_CLASSES[name].name
+        for name in agent.include_default_tools
+        if BUILT_IN_TOOL_CLASSES[name] not in BUILT_IN_TOOLS
+    ]
+    assert sorted(t["name"] for t in diag.resolved_settings["tools"]) == sorted(
+        launched
+    )
+
+
 def test_dry_run_acp_reports_credential_channels_by_role(
     llm_store: LLMProfileStore,
 ) -> None:
@@ -778,11 +988,26 @@ def test_dry_run_acp_reports_credential_channels_by_role(
     assert diag.resolved_settings is not None
 
 
-def test_dry_run_acp_reports_no_skills(
+def test_dry_run_acp_pi_reports_its_credential_file(
     llm_store: LLMProfileStore,
 ) -> None:
-    # ACP profiles carry no skill field, so the dry-run reports no resolved
-    # skills regardless of the catalog, and stays valid.
+    profile = ACPAgentProfile(name="acp-pi", acp_server="pi")
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+    )
+    assert diag.agent_kind == "acp"
+    assert diag.valid is True
+    assert diag.acp_file_secret_names == ["PI_AUTH_JSON"]
+
+
+def test_dry_run_acp_reports_the_injected_catalog(
+    llm_store: LLMProfileStore,
+) -> None:
+    # An ACP profile has no deny-list, so the dry-run reports whatever catalog
+    # the caller injected — and none when the caller injects nothing.
     profile = ACPAgentProfile(name="acp", acp_server="codex")
     diag = resolve_agent_profile_dry_run(
         profile,
@@ -792,8 +1017,18 @@ def test_dry_run_acp_reports_no_skills(
         cipher=None,
     )
     assert diag.disabled_skills == []
-    assert diag.resolved_skills == []
+    assert set(diag.resolved_skills) == {"alpha", "beta", "gamma"}
     assert diag.valid is True
+
+    bare = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config={},
+        available_skills=None,
+        cipher=None,
+    )
+    assert bare.resolved_skills == []
+    assert bare.valid is True
 
 
 def test_dry_run_skill_verdict_matches_real_resolve(

@@ -35,6 +35,7 @@ from openhands.sdk.extensions.installation import (
     InstallationMetadata,
 )
 from openhands.sdk.extensions.installation.manager import DEFAULT_CACHE_DIR
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 # Matches the InstalledPluginInfo naming convention.
@@ -43,7 +44,7 @@ InstalledCanvasExtensionInfo = InstallationInfo
 
 def get_installed_canvas_extensions_dir() -> Path:
     """Get the default directory for installed canvas extensions."""
-    return Path.home() / ".openhands" / "canvas-extensions" / "installed"
+    return get_user_persistence_dir() / "canvas-extensions" / "installed"
 
 
 class CanvasExtensionInstallationInterface(
@@ -204,6 +205,47 @@ def get_installed_canvas_extension(
 ) -> InstalledCanvasExtensionInfo | None:
     """Get information about a specific installed canvas extension."""
     return _manager(_resolve_installed_dir(installed_dir)).get(name)
+
+
+def get_installed_canvas_extension_manifest(
+    name: str, installed_dir: Path | None = None
+) -> CanvasExtensionManifest | None:
+    """Load the validated manifest for an installed extension.
+
+    Re-reads and re-validates the stored manifest against the live install
+    path -- the copy validated at install time may have changed on disk
+    since.
+
+    Returns:
+        None if not installed, or if the install no longer validates.
+    """
+    installed_dir = _resolve_installed_dir(installed_dir)
+    if get_installed_canvas_extension(name, installed_dir) is None:
+        return None
+    try:
+        return CanvasExtensionInstallationInterface.load_from_dir(installed_dir / name)
+    except (ValidationError, ValueError, OSError):
+        return None
+
+
+def get_canvas_extension_bundle_path(
+    name: str, installed_dir: Path | None = None
+) -> Path | None:
+    """Resolve the on-disk path to *name*'s entrypoint bundle file.
+
+    Re-validates the manifest and entrypoint containment against the live
+    install path on every call -- this backs a bundle serve, so the check
+    done at install time isn't enough on its own (a symlink could change
+    between requests).
+
+    Returns:
+        None if not installed, or if the install no longer validates.
+    """
+    installed_dir = _resolve_installed_dir(installed_dir)
+    manifest = get_installed_canvas_extension_manifest(name, installed_dir)
+    if manifest is None:
+        return None
+    return resolve_entrypoint(manifest, installed_dir / name)
 
 
 class CanvasExtensionUpdateCheck(BaseModel):

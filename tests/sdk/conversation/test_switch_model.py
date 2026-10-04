@@ -52,13 +52,14 @@ def profile_store(tmp_path, monkeypatch):
     return store
 
 
-def _make_conversation() -> LocalConversation:
+def _make_conversation(profile_store_dir: Path | None = None) -> LocalConversation:
     return LocalConversation(
         agent=Agent(
             llm=_make_llm("default-model", "test-llm"),
             tools=[],
         ),
         workspace=Path.cwd(),
+        profile_store_dir=profile_store_dir,
     )
 
 
@@ -267,6 +268,17 @@ def test_switch_profile(profile_store):
     assert conv.agent.llm.model == "slow-model"
 
 
+def test_switch_profile_uses_custom_profile_store(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "profiles"
+    store = LLMProfileStore(profile_dir)
+    store.save("fast", _make_llm("fast-model", "fast"))
+
+    conv = _make_conversation(profile_store_dir=profile_dir)
+    conv.switch_profile("fast")
+
+    assert conv.agent.llm.model == "fast-model"
+
+
 def test_switch_profile_updates_state(profile_store):
     """switch_profile updates conversation state agent."""
     conv = _make_conversation()
@@ -312,20 +324,20 @@ def test_switch_nonexistent_raises(profile_store):
 
 
 def test_switch_profile_preserves_prompt_cache_key(profile_store):
-    """Regression test for #2918: switch_profile must repin _prompt_cache_key."""
+    """Regression test for #2918: switching keeps conversation cache identity."""
     conv = _make_conversation()
     expected = str(conv.id)
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
     conv.switch_profile("fast")
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
     conv.switch_profile("slow")
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
-    # Switching back to a cached registry entry must still carry the key.
+    # Switching back to a cached registry entry must not change the context.
     conv.switch_profile("fast")
-    assert conv.agent.llm._call_context.prompt_cache_key == expected
+    assert conv.get_llm_call_context().prompt_cache_key == expected
 
 
 def test_switch_then_send_message(profile_store):
@@ -364,8 +376,8 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     # Caller's usage_id is preserved as the registry key.
     assert conv.agent.llm.usage_id == "caller-supplied-id"
     assert conv.llm_registry.get("caller-supplied-id").model == "inline-model"
-    # Cache-key must be repinned (regression guard for #2918 on the new path).
-    assert conv.agent.llm._call_context.prompt_cache_key == str(conv.id)
+    # Cache identity belongs to the conversation, not the selected LLM.
+    assert conv.get_llm_call_context().prompt_cache_key == str(conv.id)
 
 
 def test_switch_llm_refreshes_llm_condenser_credentials(
@@ -692,7 +704,7 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     assert conv.agent.llm.model == "fast-model"
 
 
-def test_switch_llm_to_subscription_profile_disables_condenser(
+def test_switch_llm_to_subscription_profile_keeps_condenser(
     monkeypatch, empty_profile_store
 ):
     import openhands.sdk.conversation.impl.local_conversation as local_conversation
@@ -726,7 +738,7 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
 
     conv.switch_llm(
         LLM(
-            model="gpt-5.2-codex",
+            model="gpt-5.4",
             usage_id="profile:codex",
             auth_type="subscription",
             subscription_vendor="openai",
@@ -734,8 +746,10 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     )
 
     assert conv.agent.llm.is_subscription
-    assert conv.agent.condenser is None
-    assert conv.state.agent.condenser is None
+    # Condenser must NOT be disabled for subscription LLMs — the condenser's
+    # own LLM config differs from the agent's, so it is preserved as-is.
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
 
     conv.switch_llm(_make_llm("regular-model", "regular"))
 

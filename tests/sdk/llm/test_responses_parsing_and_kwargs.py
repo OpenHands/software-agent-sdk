@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,8 +18,8 @@ from openai.types.responses.response_reasoning_item import (
 )
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM
-from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm import LLM, LLMCallContext
+from openhands.sdk.llm.exceptions import LLMTimeoutError
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
@@ -302,11 +303,14 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
 def test_responses_options_forwards_prompt_cache_key_when_set():
     """Regression test for #2904."""
     llm = LLM(model="openai/gpt-5.1")
-    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
-        select_responses_options(llm, {}, include=None, store=None).get(
-            "prompt_cache_key"
-        )
+        select_responses_options(
+            llm,
+            {},
+            include=None,
+            store=None,
+            call_context=LLMCallContext(prompt_cache_key="conv-abc123"),
+        ).get("prompt_cache_key")
         == "conv-abc123"
     )
 
@@ -596,3 +600,69 @@ async def test_aresponses_streaming_accepts_async_generator(mock_aresponses):
     assert [chunk.choices[0].delta.content for chunk in received] == [
         "Hello wrapped stream"
     ]
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_hung_stream_idle_timeout_retries(mock_aresponses):
+    async def _events():
+        await asyncio.Event().wait()
+        yield
+
+    mock_aresponses.side_effect = lambda **_: _events()
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        timeout=1,
+        stream_idle_timeout=0.01,
+        num_retries=2,
+        retry_min_wait=0,
+        retry_max_wait=0,
+        retry_multiplier=0,
+    )
+
+    with pytest.raises(LLMTimeoutError, match="stream idle timeout"):
+        await llm.aresponses(
+            [Message(role="user", content=[TextContent(text="Hello")])],
+            stream=True,
+            on_token=lambda _: None,
+        )
+
+    assert mock_aresponses.call_count == 2
+
+
+def test_stream_delta_chunks_carry_the_output_item_id():
+    """All deltas of one output item must share a chunk id.
+
+    A changed chunk id reads as a retry (``StreamContext._emit_delta``), which
+    resets the slot and drops text the stream masker is holding.
+    """
+    llm = LLM(model="gpt-5-mini", usage_id="test-stream-id")
+
+    ids = []
+    for text in ("one ", "two ", "three"):
+        event = OutputTextDeltaEvent(
+            type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+            item_id="msg_abc",
+            output_index=0,
+            content_index=0,
+            delta=text,
+        )
+        _, chunk = llm._process_stream_event(event, emit_deltas=True)
+        assert chunk is not None
+        ids.append(chunk.id)
+
+    assert ids == ["msg_abc"] * 3
+
+    # A different output item is a different stream, so its id must differ.
+    other = OutputTextDeltaEvent(
+        type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
+        item_id="msg_def",
+        output_index=1,
+        content_index=0,
+        delta="four",
+    )
+    _, chunk = llm._process_stream_event(other, emit_deltas=True)
+    assert chunk is not None
+    assert chunk.id == "msg_def"
