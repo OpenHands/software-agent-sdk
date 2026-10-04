@@ -23,8 +23,12 @@ from openhands.sdk.profiles.resolver import (
     _build_acp_settings,
     _build_openhands_settings,
     _compute_mcp_filter,
+    condenser_llm_profile_ref,
 )
-from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.settings.model import (
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
+)
 from openhands.sdk.skills import Skill
 
 
@@ -122,12 +126,29 @@ def _resolve_openhands(
     dangling_mcp: list[str],
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
     llm = _load_llm(stores, profile.llm_profile_ref)
+    condenser_ref = condenser_llm_profile_ref(profile.condenser)
+    # A ref naming the agent's own LLM profile is a no-op: the condenser already
+    # follows the agent LLM, so skip the second store read and keep the
+    # usage_id="condenser" dedup key rather than duplicating the agent's.
+    if condenser_ref == profile.llm_profile_ref:
+        condenser_ref = None
+    condenser_llm = _load_llm(stores, condenser_ref) if condenser_ref else None
     meta_profile, meta_llms, dangling_meta, dangling_meta_llms = _load_meta_profile(
         profile, stores
     )
-    if llm is None or dangling_mcp or dangling_meta or dangling_meta_llms:
+    dangling_condenser_ref = (
+        condenser_ref if condenser_ref is not None and condenser_llm is None else None
+    )
+    if (
+        llm is None
+        or dangling_condenser_ref is not None
+        or dangling_mcp
+        or dangling_meta
+        or dangling_meta_llms
+    ):
         raise UnresolvedProfileReferences(
             llm_profile_ref=profile.llm_profile_ref if llm is None else None,
+            condenser_llm_profile_ref=dangling_condenser_ref,
             mcp_server_refs=dangling_mcp,
             meta_profile_ref=dangling_meta,
             meta_profile_llm_refs=dangling_meta_llms,
@@ -143,6 +164,7 @@ def _resolve_openhands(
             browser_available=None,
             meta_profile=meta_profile,
             meta_profile_llms=meta_llms,
+            condenser_llm=condenser_llm,
         )
     except ValueError as exc:
         raise AgentLaunchError(str(exc)) from exc

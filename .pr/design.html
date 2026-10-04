@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design — dedicated condenser LLM (#5469)</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d2129; --text: #d8dee9;
+    --muted: #8b94a3; --accent: #7aa2f7; --green: #9ece6a; --red: #f7768e;
+    --amber: #e0af68; --border: #2a2f3a; --code-bg: #12141a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 24px 80px; background: var(--bg); color: var(--text);
+         font: 15px/1.65 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: .2px; }
+  h2 { font-size: 19px; margin: 44px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); color: var(--accent); }
+  h3 { font-size: 15px; margin: 24px 0 8px; color: var(--text); }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 10px; border-radius: 999px; margin-right: 6px; }
+  .b-green { background: rgba(158,206,106,.15); color: var(--green); border: 1px solid rgba(158,206,106,.4); }
+  .b-red { background: rgba(247,118,142,.12); color: var(--red); border: 1px solid rgba(247,118,142,.35); }
+  .b-amber { background: rgba(224,175,104,.12); color: var(--amber); border: 1px solid rgba(224,175,104,.35); }
+  .b-blue { background: rgba(122,162,247,.12); color: var(--accent); border: 1px solid rgba(122,162,247,.35); }
+  pre, code { font: 12.5px/1.55 ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin: 10px 0; }
+  code.inline { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .panel.before { border-left: 3px solid var(--red); }
+  .panel.after { border-left: 3px solid var(--green); }
+  .panel h3 { margin-top: 0; }
+  .tag-before { color: var(--red); font-weight: 700; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+  .tag-after { color: var(--green); font-weight: 700; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+  .add { color: var(--green); } .del { color: var(--red); } .cm { color: var(--muted); }
+  ul { margin: 8px 0; padding-left: 22px; } li { margin: 5px 0; }
+  .flow { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+  .comment { color: var(--muted); }
+  .kw { color: var(--accent); } .str { color: var(--green); .st { color: var(--green); } }
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Run the summarizing condenser on its own LLM profile</h1>
+<p class="sub">Adds <code class="inline">llm_profile_ref</code> to <code class="inline">LLMSummarizingCondenserSettings</code>, resolved at launch into an embedded <code class="inline">llm</code> — <a href="https://github.com/OpenHands/software-agent-sdk/issues/5469" style="color:var(--accent)">#5469</a>.</p>
+
+<p>
+<span class="badge b-green">compat: additive</span>
+<span class="badge b-blue">no schema_version bump</span>
+<span class="badge b-green">defaults unchanged</span>
+<span class="badge b-amber">one field: ref on condenser settings</span>
+</p>
+
+<h2>1 · Problem, in one line</h2>
+<p>
+<code class="inline">build_condenser()</code> copies the agent's own LLM (<code class="inline">usage_id="condenser"</code>), so compaction always runs on the model driving the agent loop. Users on local hardware want the split the pre-SDK server supported (<code class="inline">llm_config = "condenser_llm"</code>): a strong model <em>thinking</em>, a cheap fast model <em>summarizing</em>.
+</p>
+
+<h2>2 · The shape (as agreed in the issue thread)</h2>
+<div class="grid">
+  <div class="panel before">
+    <span class="tag-before">Before</span>
+    <h3>One LLM for everything</h3>
+<pre><code><span class="kw">class</span> LLMSummarizingCondenserSettings:
+    enabled, max_size, max_tokens,
+    keep_first, minimum_progress, ...
+
+<span class="cm"># build_condenser():</span>
+condenser_llm = llm.model_copy(
+    update={<span class="str">"usage_id"</span>: <span class="str">"condenser"</span>})</code></pre>
+    <p class="cm">The condenser is structurally welded to the agent model. Switching the agent model mid-session also switches the summarizer — the only way to get a cheap condenser was to cheapen the whole agent.</p>
+  </div>
+  <div class="panel after">
+    <span class="tag-after">After</span>
+    <h3>Opt-in dedicated summarizer</h3>
+<pre><code><span class="kw">class</span> LLMSummarizingCondenserSettings:
+    ...
+    llm_profile_ref: str | None = <span class="str">None</span>  <span class="cm"># portable ref</span>
+    llm: LLM | None = <span class="str">None</span>               <span class="cm"># launch-resolved</span>
+
+<span class="cm"># build_condenser():</span>
+<span class="kw">if</span> self.llm <span class="kw">is not</span> None:
+    condenser_llm = self.llm  <span class="cm"># keeps its usage_id</span>
+<span class="kw">else</span>:
+    condenser_llm = llm.model_copy(
+        update={<span class="str">"usage_id"</span>: <span class="str">"condenser"</span>})  <span class="cm"># unchanged</span></code></pre>
+    <p class="cm">Unset = byte-for-byte the old behavior. Set = summarize on the named profile, survive agent model switches.</p>
+  </div>
+</div>
+
+<p><strong>Two fields, one story.</strong> <code class="inline">llm_profile_ref</code> is what a user writes and a profile stores (secret-free, portable). <code class="inline">llm</code> is the resolved payload the launch embeds — exactly the <code class="inline">meta_profile_ref → meta_profile_llm</code>s precedent already in this codebase. Keeping <code class="inline">build_condenser(self, llm)</code> store-free preserves the invariant that a resolved <code class="inline">AgentSettings</code> runs without the profile store; the settings own the LLM they consume.</p>
+
+<h2>3 · Data flow, grounded to the code</h2>
+<div class="flow">
+<pre><code> OpenHandsAgentProfile.condenser.llm_profile_ref = "cheap"   <span class="cm">(secret-free at rest)</span>
+        │
+        ├─ launch/resolve.py  _resolve_openhands()
+        │     condenser_ref == profile.llm_profile_ref → <span class="kw">no-op</span> (condenser already follows agent)
+        │     <span class="kw">else</span> _load_llm(stores, "cheap")  →  missing ⇒ UnresolvedProfileReferences
+        │                                             .condenser_llm_profile_ref=<span class="str">"cheap"</span>  <span class="cm">(reported with all other dangling refs)</span>
+        │
+        ├─ profiles/resolver.py  _build_openhands_settings(condenser_llm=…)
+        │     embeds: condenser.llm = loaded LLM (usage_id=<span class="str">"cheap"</span> = store-key marker)
+        │     resolved settings stay store-free ✔ (mirrors meta_profile_llms)
+        │
+        ├─ profiles/resolver.py  resolve_agent_profile() + resolve_agent_profile_dry_run()
+        │     legacy resolver and editor preview get the same resolution
+        │     diagnostics: condenser_llm_profile_ref / condenser_llm_profile_resolved
+        │
+        └─ settings/model.py  create_agent() → build_condenser(llm)
+              condenser = LLMSummarizingCondenser(llm=condenser_llm, …)
+              max_tokens inherits the <span class="kw">condenser</span> LLM's effective_max_input_tokens <span class="cm">(was: agent's)</span>
+              usage_id collision with the agent LLM → re-keyed to "condenser"
+              <span class="cm">(same dedup rule as subagent/registry.py)</span>
+</code></pre>
+</div>
+
+<h2>4 · The interactions this change had to answer</h2>
+<table>
+  <tr><th>Interaction</th><th>Behavior</th></tr>
+  <tr><td><code class="inline">switch_llm()</code> while a dedicated condenser LLM is set</td>
+      <td>The existing guard (<code class="inline">condenser_config != current_config</code>) already recognizes a condenser on a <em>different</em> config and leaves it alone — this PR adds a regression test pinning exactly that; no change to the conversation code. A condenser following the agent is refreshed as before.</td></tr>
+  <tr><td>Ref names the agent's own LLM profile</td>
+      <td>No-op at resolve time: no second store read, <code class="inline">usage_id="condenser"</code> dedup key kept instead of duplicating the agent's registry key.</td></tr>
+  <tr><td>Dangling ref</td>
+      <td>Launch fails with <code class="inline">UnresolvedProfileReferences</code> — <code class="inline">to_detail()</code> gains <code class="inline">dangling_condenser_llm_profile_ref</code> (additive JSON key), reported together with the existing dangling refs.</td></tr>
+  <tr><td>Token-budget inheritance</td>
+      <td>Unset <code class="inline">max_tokens</code> now inherits from <b>the model that actually summarizes</b>, not the agent. This is the fix's safety property: a 64k summarizer must not be handed a 1M agent window. (For the default path both are the same object, so the change is inert unless the split is on.)</td></tr>
+  <tr><td>Secret-free-at-rest profiles</td>
+      <td>A profile-level <code class="inline">field_validator("condenser")</code> strips any embedded <code class="inline">llm</code> on ingest — the ref survives, the payload doesn't. Every write path (<code class="inline">save()</code>, rename, direct validation) inherits the guarantee.</td></tr>
+  <tr><td>Persisted conversation settings</td>
+      <td>The embedded LLM round-trips like the top-level <code class="inline">llm</code>: the agent-server's <code class="inline">_SecretProbeCipher</code> sees its key (<span class="add">probe returns True</span>, verified locally), so a settings row carrying it is encrypted at rest; a no-expose dump redacts it. No golden-fixture or migration changes — additive, both fields nullable, <code class="inline">exclude_none=True</code> dumps omit them for existing producers.</td></tr>
+  <tr><td>Settings schema export / GUI</td>
+      <td><code class="inline">condenser.llm_profile_ref</code> exports (label "Condenser LLM profile", MAJOR prominence, depends_on enabled); <code class="inline">condenser.llm</code> carries no field metadata and stays internal — matching how <code class="inline">meta_profile</code>/<code class="inline">meta_profile_llms</code> are treated.</td></tr>
+  <tr><td>Sub-agents / <code class="inline">AgentDefinition</code></td>
+      <td>Untouched by design: sub-agents take a concrete <code class="inline">CondenserBase</code> (frontmatter), not settings; they already support a distinct model via <code class="inline">agent_def.model</code> + their own condenser path. Extending refs there is a separate concern.</td></tr>
+</table>
+
+<h2>5 · Config example</h2>
+<pre><code><span class="cm"># profile (saved via the profiles store — ref only, no credential)</span>
+condenser:
+  condenser_kind: llm_summarizing
+  llm_profile_ref: cheap     <span class="cm"># ~/.openhands/llm-profiles/cheap.json</span>
+
+<span class="cm"># resolved (embedded at launch — runs without the store)</span>
+condenser:
+  condenser_kind: llm_summarizing
+  llm_profile_ref: <span class="str">"cheap"</span>
+  llm: { model: <span class="str">"litellm_proxy/ollama/qwen3:4b"</span>, usage_id: <span class="str">"cheap"</span>, … }
+</code></pre>
+
+<h2>6 · Compatibility statement</h2>
+<ul>
+  <li><strong>Additive Python API.</strong> Two optional fields on a settings model, all with <code class="inline">default=None</code> → existing construction, serialization, and dumps are unchanged. No removals, no renames, no behavior change on the default path.</li>
+  <li><strong>No schema_version bump.</strong> Old payloads (v5–v8 baselines) load unchanged; verified against the golden-fixture + PyPI 1.51.0 baseline checker (<code class="inline">check_persisted_settings_compat.py</code> passes as-is).</li>
+  <li><strong>Server contract additive.</strong> <code class="inline>/api/settings</code> condenser dumps gain <code class="inline">llm_profile_ref</code>/<code class="inline">llm</code> (both <code class="inline">null</code> by default); <code class="inline">UnresolvedProfileReferences.to_detail()</code> gains one key; diagnostics gain two fields. <code class="inline">clients/typescript</code> regenerates from the release OpenAPI artifact via the normal bump flow — no handwritten interface changes are required (the condenser surface is already <code class="inline">unknown</code> passthrough there).</li>
+  <li><strong>Tests:</strong> 25 new — settings/build level (fallback, split, copy-semantics, re-key, budget inheritance, validation mismatch), launch (<code class="inline">resolve()</code> embed/no-op/dangling), legacy resolver + dry-run diagnostics, store round-trips, and 3 conversation-level switch-preservation regression tests. Full SDK suite: 6852 passed; agent-server profile/settings/switch/condenser: 474 passed.</li>
+</ul>
+
+<p class="cm" style="margin-top:40px">Artifacts under <code class="inline">.pr/</code> are removed by <code class="inline">pr-artifacts.yml</code> on approval — this page is PR-only.</p>
+
+</div></body>
+</html>

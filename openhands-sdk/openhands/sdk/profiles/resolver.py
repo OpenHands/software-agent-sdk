@@ -45,6 +45,8 @@ from openhands.sdk.settings.acp_providers import get_acp_provider
 from openhands.sdk.settings.model import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     AgentSettingsConfig,
+    CondenserSettingsConfig,
+    LLMSummarizingCondenserSettings,
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill
@@ -108,6 +110,11 @@ class AgentProfileDiagnostics(BaseModel):
     llm_profile_ref: str | None = None
     llm_profile_resolved: bool = False
     llm_api_key_set: bool = False
+
+    # Condenser LLM reference (#5469): the dedicated summarization profile,
+    # when the condenser settings name one.
+    condenser_llm_profile_ref: str | None = None
+    condenser_llm_profile_resolved: bool = False
 
     # MCP composition (both variants).
     mcp_server_refs: list[str] | None = None
@@ -251,6 +258,7 @@ def _build_openhands_settings(
     browser_available: bool | None,
     meta_profile: MetaProfile | None = None,
     meta_profile_llms: Mapping[str, LLM] | None = None,
+    condenser_llm: LLM | None = None,
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
@@ -262,7 +270,21 @@ def _build_openhands_settings(
     same deny-list. ``load_user_skills`` / ``load_public_skills`` stay False on
     purpose: user/public skills already arrive via ``filtered_skills``, so
     enabling the flags would double-load them.
+
+    ``condenser_llm`` is the resolved LLM named by
+    ``profile.condenser.llm_profile_ref`` (the dedicated summarization model),
+    when the profile asks for one; it is embedded into the condenser settings so
+    the resolved settings stay store-free, mirroring ``meta_profile_llms``.
     """
+    condenser = profile.condenser
+    condenser_ref = condenser_llm_profile_ref(condenser)
+    if condenser_llm is not None and condenser_ref is not None:
+        # Rebuild, don't mutate: profile objects are caller-owned and Pydantic
+        # models validate the whole tree on assignment anyway. The embedded LLM's
+        # usage_id names the store key so switch_llm can recognize it later.
+        condenser = condenser.model_copy(
+            update={"llm": condenser_llm.model_copy(update={"usage_id": condenser_ref})}
+        )
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "openhands",
@@ -282,7 +304,7 @@ def _build_openhands_settings(
             load_project_skills=True,
             disabled_skills=profile.disabled_skills,
         ),
-        "condenser": profile.condenser,
+        "condenser": condenser,
         "verification": profile.verification.model_dump(),
         "enable_classify_and_switch_llm_tool": (
             profile.enable_classify_and_switch_llm_tool
@@ -410,17 +432,54 @@ def resolve_agent_profile(
             raise ProfileNotFound(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             ) from e
+        condenser_llm = _load_condenser_llm(profile, llm_store, cipher=cipher)
         return _build_openhands_settings(
             profile,
             llm,
             filtered_mcp,
             filtered_skills,
             browser_available=browser_available,
+            condenser_llm=condenser_llm,
         )
 
     return _build_acp_settings(
         profile, filtered_mcp, _apply_disabled_skills(available_skills, [])
     )
+
+
+def condenser_llm_profile_ref(
+    condenser: CondenserSettingsConfig | object,
+) -> str | None:
+    """The LLM profile a condenser settings object asks for, if any.
+
+    Only ``LLMSummarizingCondenserSettings`` carries the field; the union's
+    other variants condense without an LLM. The ``| object`` keeps the helper
+    usable from the ``AgentProfile.condenser`` union without a cast.
+    """
+    if not isinstance(condenser, LLMSummarizingCondenserSettings):
+        return None
+    return condenser.llm_profile_ref or None
+
+
+def _load_condenser_llm(
+    profile: OpenHandsAgentProfile,
+    llm_store: LLMProfileLoader,
+    *,
+    cipher: Cipher | None = None,
+) -> LLM | None:
+    """Resolve ``condenser.llm_profile_ref`` against the LLM profile store.
+
+    Returns ``None`` when the profile's condenser names no dedicated LLM (or
+    names the agent's own profile, which the condenser already follows). A
+    dangling ref raises ``ProfileNotFound`` — same contract as ``llm_profile_ref``.
+    """
+    ref = condenser_llm_profile_ref(profile.condenser)
+    if not ref or ref == profile.llm_profile_ref:
+        return None
+    try:
+        return llm_store.load(ref, cipher=cipher)
+    except FileNotFoundError as e:
+        raise ProfileNotFound(f"LLM profile {ref!r} not found") from e
 
 
 def resolve_agent_profile_dry_run(
@@ -504,7 +563,23 @@ def resolve_agent_profile_dry_run(
             diagnostics.errors.append(
                 f"Could not load LLM profile {profile.llm_profile_ref!r}: {e}"
             )
+        # Condenser LLM reference (#5469). Same resolution rules as
+        # resolve_agent_profile: unset or equal to the agent ref -> no-op.
+        condenser_ref = condenser_llm_profile_ref(profile.condenser)
+        condenser_llm: LLM | None = None
+        if condenser_ref and condenser_ref != profile.llm_profile_ref:
+            diagnostics.condenser_llm_profile_ref = condenser_ref
+            try:
+                condenser_llm = llm_store.load(condenser_ref, cipher=cipher)
+                diagnostics.condenser_llm_profile_resolved = True
+            except FileNotFoundError:
+                diagnostics.errors.append(f"LLM profile {condenser_ref!r} not found")
+            except Exception as e:
+                diagnostics.errors.append(
+                    f"Could not load LLM profile {condenser_ref!r}: {e}"
+                )
     else:
+        condenser_llm = None
         (
             diagnostics.acp_api_key_secret_name,
             diagnostics.acp_base_url_secret_name,
@@ -531,6 +606,7 @@ def resolve_agent_profile_dry_run(
                     filtered_mcp,
                     filtered_skills,
                     browser_available=browser_available,
+                    condenser_llm=condenser_llm,
                 )
             else:
                 settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)
