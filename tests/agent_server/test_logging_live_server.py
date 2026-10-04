@@ -18,6 +18,7 @@ import pytest
 from pydantic import SecretStr
 from websockets.sync.client import connect
 
+from openhands.agent_server.models import ServerErrorEvent
 from openhands.sdk import LLM, Agent
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -38,12 +39,15 @@ def test_cyclic_failure_keeps_server_responsive(tmp_path: Path, probe: str):
         )
     )
     env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("OH_") and key != "SESSION_API_KEY"
+        key: os.environ[key]
+        for key in ("PATH", "LANG", "LC_ALL", "TMPDIR")
+        if key in os.environ
     }
     env.update(
         {
+            "HOME": str(tmp_path),
+            "DEBUG": "false",
+            "LOG_LEVEL": "INFO",
             "OPENHANDS_AGENT_SERVER_CONFIG_PATH": str(config),
             "OH_PERSISTENCE_DIR": str(tmp_path / "persist"),
             "LOG_AUTO_CONFIG": "true",
@@ -129,7 +133,10 @@ def test_cyclic_failure_keeps_server_responsive(tmp_path: Path, probe: str):
                             socket.recv(timeout=max(0, deadline - time.monotonic()))
                         )
                         if event.get("code") == "RuntimeError":
-                            assert event["detail"] == "injected cyclic exception"
+                            assert event["kind"] == "ServerErrorEvent"
+                            error_event = ServerErrorEvent.model_validate(event)
+                            assert error_event.source == "environment"
+                            assert error_event.detail == "injected cyclic exception"
                             break
                     for path in (
                         "/alive",
@@ -144,6 +151,11 @@ def test_cyclic_failure_keeps_server_responsive(tmp_path: Path, probe: str):
             process.send_signal(signal.SIGTERM)
             process.wait(timeout=5)
             assert process.returncode in (0, -signal.SIGTERM)
+            server_log = " ".join(log_path.read_text().split())
+            assert "error_in_subscription" in server_log
+            assert "traceback omitted" in server_log
+            if probe == "handler":
+                assert "handler probe" in server_log
             print(
                 f"{probe}: 5 error replies, 15 HTTP probes OK, "
                 f"RSS delta={rss_growth}; SIGTERM={process.returncode}"

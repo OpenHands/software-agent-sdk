@@ -1,6 +1,6 @@
 """Explicitly loaded by the logging regression subprocess, never by production.
 
-Inject the reported exception shape at the service boundary; HTTP, WebSocket,
+Inject a synthetic cyclic exception shape at the service boundary; HTTP, WebSocket,
 logging configuration and signal handling use the stock server entry point.
 """
 

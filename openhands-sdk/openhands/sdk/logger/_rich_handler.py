@@ -7,7 +7,7 @@ from types import TracebackType
 from rich.logging import RichHandler
 
 
-_MAX_EXCEPTIONS = 32
+_MAX_EXCEPTION_VISITS = 32
 _MAX_FRAMES = 256
 
 
@@ -18,7 +18,7 @@ def _can_render(error: BaseException, traceback: TracebackType | None) -> bool:
     while pending:
         error, traceback = pending.pop()
         exceptions += 1
-        if exceptions > _MAX_EXCEPTIONS:
+        if exceptions > _MAX_EXCEPTION_VISITS:
             return False
         while traceback is not None:
             frames += 1
@@ -26,13 +26,18 @@ def _can_render(error: BaseException, traceback: TracebackType | None) -> bool:
                 return False
             traceback = traceback.tb_next
         if isinstance(error, BaseExceptionGroup):
-            if len(error.exceptions) + len(pending) + exceptions > _MAX_EXCEPTIONS:
+            if (
+                len(error.exceptions) + len(pending) + exceptions
+                > _MAX_EXCEPTION_VISITS
+            ):
                 return False
             pending.extend((child, child.__traceback__) for child in error.exceptions)
         cause = error.__cause__
         if cause is not None and cause is not error:
             pending.append((cause, cause.__traceback__))
-        elif not error.__suppress_context__ and error.__context__ is not None:
+        # Rich formats with stdlib first, which may follow context when a shared
+        # cause was already visited. Both unsuppressed edges need a budget.
+        if not error.__suppress_context__ and error.__context__ is not None:
             context = error.__context__
             pending.append((context, context.__traceback__))
     return True

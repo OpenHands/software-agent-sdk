@@ -206,7 +206,9 @@ async def test_bash_events_socket_uses_app_state_bash_event_service():
 
 
 @pytest.mark.parametrize("send_fails", [False, True])
-async def test_events_socket_error_reporting_without_traceback(caplog, send_fails):
+async def test_events_socket_preserves_diagnostics_without_extra_stack(
+    caplog, send_fails
+):
     event_service = MagicMock(spec=EventService)
     subscriber_id = uuid4()
     event_service.subscribe_to_events = AsyncMock(return_value=subscriber_id)
@@ -238,8 +240,15 @@ async def test_events_socket_error_reporting_without_traceback(caplog, send_fail
         record for record in caplog.records if record.name == sockets_mod.__name__
     ]
     assert records
-    assert all(
-        record.exc_info is None and record.stack_info is None for record in records
-    )
-    expected = "Event websocket disconnected" if send_fails else "error_in_subscription"
-    assert any(expected in record.getMessage() for record in records)
+    assert all(record.stack_info is None for record in records)
+    if send_fails:
+        assert all(record.exc_info is None for record in records)
+        assert any("Event websocket disconnected" in r.getMessage() for r in records)
+    else:
+        error_record = next(
+            r for r in records if r.getMessage().startswith("error_in_subscription")
+        )
+        assert error_record.exc_info is not None
+        assert isinstance(error_record.exc_info[1], ValueError)
+        assert str(error_record.exc_info[1]) == "invalid input"
+        assert error_record.exc_info[2] is not None
