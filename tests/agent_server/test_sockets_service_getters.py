@@ -203,3 +203,43 @@ async def test_bash_events_socket_uses_app_state_bash_event_service():
 
     per_app_bash_svc.subscribe_to_events.assert_called_once()
     per_app_bash_svc.unsubscribe_from_events.assert_called_once()
+
+
+@pytest.mark.parametrize("send_fails", [False, True])
+async def test_events_socket_error_reporting_without_traceback(caplog, send_fails):
+    event_service = MagicMock(spec=EventService)
+    subscriber_id = uuid4()
+    event_service.subscribe_to_events = AsyncMock(return_value=subscriber_id)
+    event_service.unsubscribe_from_events = AsyncMock()
+    service = MagicMock(spec=ConversationService)
+    service.get_event_service = AsyncMock(return_value=event_service)
+    ws = _make_ws(
+        {
+            "conversation_service": service,
+            "config": Config(session_api_keys=[]),
+        }
+    )
+    ws.headers = {}
+    ws.accept = AsyncMock()
+    ws.receive_json = AsyncMock(
+        side_effect=[ValueError("invalid input"), WebSocketDisconnect()]
+    )
+    ws.send_json = AsyncMock(side_effect=RuntimeError("closed") if send_fails else None)
+    ws.close = AsyncMock()
+    caplog.set_level("DEBUG", logger=sockets_mod.__name__)
+
+    await sockets_mod.events_socket(uuid4(), ws)
+
+    payload = ws.send_json.call_args.args[0]
+    assert payload["code"] == "ValueError"
+    assert payload["detail"] == "invalid input"
+    event_service.unsubscribe_from_events.assert_awaited_once_with(subscriber_id)
+    records = [
+        record for record in caplog.records if record.name == sockets_mod.__name__
+    ]
+    assert records
+    assert all(
+        record.exc_info is None and record.stack_info is None for record in records
+    )
+    expected = "Event websocket disconnected" if send_fails else "error_in_subscription"
+    assert any(expected in record.getMessage() for record in records)

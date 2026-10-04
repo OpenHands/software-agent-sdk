@@ -253,7 +253,7 @@ async def test_websocket_general_exception_continues_loop(
             "openhands.agent_server.sockets.conversation_service"
         ) as mock_conv_service,
         patch("openhands.agent_server.sockets.get_default_config") as mock_config,
-        patch("openhands.agent_server.sockets.logger.exception") as log_exception,
+        patch("openhands.agent_server.sockets.logger.error") as log_error,
     ):
         mock_config.return_value.session_api_keys = None
         mock_conv_service.get_event_service = AsyncMock(return_value=mock_event_service)
@@ -264,7 +264,7 @@ async def test_websocket_general_exception_continues_loop(
             sample_conversation_id, mock_websocket, session_api_key=None
         )
 
-        log_exception.assert_called_once()
+        log_error.assert_called_once_with("error_in_subscription: %s", "ValueError")
 
     assert mock_websocket.receive_json.call_count == 2
     mock_event_service.unsubscribe_from_events.assert_called_once()
