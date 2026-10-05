@@ -449,6 +449,22 @@ def test_user_skills_survive_symlink_loop_next_to_installed_dir(tmp_path, monkey
     assert [entry.name for entry in load_user_skills()] == ["good"]
 
 
+def test_installed_dir_excluded_through_symlinked_user_skills_dir(
+    tmp_path, monkeypatch
+):
+    skills_dir = tmp_path / "openhands" / "skills"
+    installed_dir = skills_dir / "installed"
+    (installed_dir / "pkg" / "references").mkdir(parents=True)
+    (installed_dir / "pkg" / "references" / "notes.md").write_text("Package notes.")
+    agents_skills_dir = tmp_path / "agents" / "skills"
+    agents_skills_dir.parent.mkdir()
+    agents_skills_dir.symlink_to(skills_dir, target_is_directory=True)
+    monkeypatch.setattr(skill, "USER_SKILLS_DIRS", [agents_skills_dir, skills_dir])
+    monkeypatch.setattr(installed, "DEFAULT_INSTALLED_SKILLS_DIR", installed_dir)
+
+    assert load_user_skills() == []
+
+
 def test_load_skills_from_dir_keeps_installed_dir_without_exclusion(tmp_path):
     skills_dir = tmp_path / "skills"
     (skills_dir / "installed" / "pkg" / "references").mkdir(parents=True)

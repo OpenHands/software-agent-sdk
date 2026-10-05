@@ -892,8 +892,16 @@ def load_skills_from_dir(
     # doesn't exist.
     skill_md_files = find_skill_md_directories(skill_dir, root)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
+    # Rebase exclusions onto skill_dir so they still match when skill_dir is
+    # reached through a symlink (e.g. ~/.agents/skills -> ~/.openhands/skills).
+    real_skill_dir = skill_dir.resolve()
+    rebased_exclude_dirs = {
+        skill_dir / real.relative_to(real_skill_dir)
+        for d in exclude_dirs or ()
+        if (real := d.resolve()).is_relative_to(real_skill_dir)
+    }
     regular_md_files = find_regular_md_files(
-        skill_dir, skill_md_dirs | (exclude_dirs or set()), recursive, root
+        skill_dir, skill_md_dirs | rebased_exclude_dirs, recursive, root
     )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
