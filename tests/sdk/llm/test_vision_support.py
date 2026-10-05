@@ -103,6 +103,38 @@ def test_chat_serializes_images_when_vision_supported(model):
     assert len(parts) >= 1
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_deepseek_vision_models_keep_images_in_chat_payload(model):
+    """Image-bearing user messages survive serialization for DeepSeek vision ids.
+
+    Regression for #5523: the bare ``"deepseek"`` entry in
+    FORCE_STRING_SERIALIZER_MODELS forced the string serializer, which drops
+    ImageContent, so a vision request reached the model without its image.
+    """
+    llm = LLM(model=model, api_key=SecretStr("k"), usage_id="t")
+    assert llm.vision_is_active() is True
+    assert llm._model_features().force_string_serializer is False
+
+    msg = Message(
+        role="user",
+        content=[
+            TextContent(text="see image"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+    formatted = llm.format_messages_for_llm([msg])
+    assert isinstance(formatted[0]["content"], list)
+    assert len(_collect_image_url_parts(formatted[0])) == 1
+
+
 @patch(
     "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
