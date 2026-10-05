@@ -25,6 +25,7 @@ Publisher workflows do not listen for GitHub release events. This avoids relying
 The workflow will automatically:
 - ✅ Create a new branch named `rel-X.Y.Z`
 - ✅ Update all package versions using `make set-package-version`
+- ✅ Pin the TypeScript client to `agent-server:X.Y.Z-python` and regenerate its types from the branch's OpenAPI contract, so the npm package matches its release
 - ✅ Commit the changes
 - ✅ Push the branch
 - ✅ Create a PR with labels `integration-tests` and `test-examples`
@@ -101,7 +102,7 @@ After successful PyPI publication, the workflow will automatically create PRs to
 
 - **[OpenHands-CLI](https://github.com/OpenHands/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
 - **[automation](https://github.com/OpenHands/automation)** - Updates `openhands-sdk` and `openhands-workspace` versions. Opened with a `fix:` title so the repo's release-please cuts a patch release, publishing an `openhands-automation` build pinned to this SDK (which the agent-canvas `sdk-version-sync` check requires).
-- **TypeScript client (`clients/typescript`)** - Opens a PR in this repository after both the exact GHCR image and release `openapi.json` are available, updates `config.agentServerImage`, regenerates the checked-in transport types, and includes an API-change summary.
+- **TypeScript client (`clients/typescript`)** - Normally a no-op: the release PR already pins the client. It only opens a PR in this repository if the client is behind the release. It waits for the exact GHCR image and release `openapi.json`, updates `config.agentServerImage`, regenerates the checked-in transport types, and includes an API-change summary.
 
 These PRs will:
 - Be created automatically with branch name `bump-sdk-X.Y.Z` (`bump-agent-server-X.Y.Z` for typescript-client)

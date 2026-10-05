@@ -43,7 +43,7 @@
         "GET /api/conversations/{}/voice/realtime/{}",
         "DELETE /api/conversations/{}/voice/realtime/{}"
       ],
-      "reason": "Voice broker endpoints are implemented in this PR but not in the pinned 1.51.0 server release.",
+      "reason": "Voice broker endpoints are implemented in this PR but not in the pinned server release.",
       "owner": "OpenHands SDK maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/5180"
     }
