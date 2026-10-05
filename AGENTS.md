@@ -38,7 +38,7 @@ The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript`
 All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
 
 For issue triage, read [the review guide](.agents/skills/custom-codereview-guide.md#issue-triage-ownership-and-scope)
-for ownership, scope, and the distinction between issue readiness and PR review.
+for ownership and scope; PR evidence is not an issue-readiness requirement.
 
 ## Review-Facing Implementation Checklist
 

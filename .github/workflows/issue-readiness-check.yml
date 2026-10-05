@@ -1,8 +1,8 @@
 ---
 name: Ready-for-dev Label Policy
 
-# Only actors with write, maintain, or admin permission may grant ready-for-dev,
-# including issue-triage automation. This workflow does not assess issue content.
+# Granting ready-for-dev requires write, maintain, or admin permission, even for bots.
+# This workflow checks permission, not issue content.
 
 on:
     issues:

@@ -167,11 +167,10 @@ body:
       attributes:
           label: Evidence and Additional Context
           description: |
-              For nonvisual bugs, include logs, API responses, or a minimal reproducer.
-              Screenshots/video are optional and useful for visual symptoms.
-              Include environment details and dependency versions; redact secrets.
+              Include logs, API responses, or a small reproducer; media is optional.
+              Add environment and dependency versions. Remove secrets.
 
-          placeholder: Paste reproduction output or links, or attach media for visual symptoms.
+          placeholder: Paste output or links, or attach screenshots.
 
     - type: markdown
       attributes:

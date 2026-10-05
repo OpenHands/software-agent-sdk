@@ -13,22 +13,17 @@ that should affect the review decision; it does not replace those sources.
 
 ## Issue triage: ownership and scope
 
-Read this guide during issue triage before recommending an owner or scope.
-Implementation checkpoints below are conditional review aids, not extra issue
-readiness gates. Do not require a patch, PR, implementation design, or
-before-and-after test evidence to make an otherwise actionable issue ready.
-Use the problem, expected outcome, reproduction/context where relevant, and
-explicit acceptance criteria and non-goals; ask only for missing information
-that prevents a scope or readiness decision.
+Use the ownership guidance below to choose the repository and scope. Ask only
+for missing details needed to understand the problem, expected result,
+reproduction, or agreed scope (including non-goals). Review checks are not issue
+readiness requirements: do not demand a patch, PR, design, or before/after tests.
+Logs, API responses, or a small reproducer can explain nonvisual bugs; media is
+optional.
 
-The authoritative label policy is
-[`.github/workflows/issue-readiness-check.yml`](../../.github/workflows/issue-readiness-check.yml):
-`ready-for-dev` grants require repository `write`, `maintain`, or `admin`
-permission, including for automation actors. The workflow enforces who may grant
-the label; it does not assess issue content. Do not invent additional readiness
-rules or override an authorized writer's decision with PR evidence requirements.
-Nonvisual bugs can be supported by logs, API responses, or a minimal reproducer;
-screenshots/video are useful for visual symptoms, not a universal requirement.
+The [label workflow](../../.github/workflows/issue-readiness-check.yml) requires
+`write`, `maintain`, or `admin` permission to grant `ready-for-dev`, even for bots.
+It checks permission, not issue content. Do not add readiness rules or overturn
+an authorized writer's decision by demanding PR evidence.
 
 ## Implementation review: decision
 
@@ -81,34 +76,27 @@ client is incomplete if another supported path drops, renames, or ignores it.
 
 ## Acceptance review
 
-Separate acceptance from implementation correctness: map each claimed outcome to
-what the current head actually delivers. An issue's alternative approach is not
-proof that its primary outcome is satisfied; identify any agreed scope change
-rather than claiming full acceptance. Honor explicit defaults and non-goals.
-Distinguish introduced regressions, required acceptance gaps, and pre-existing
-bugs; do not expand a focused PR to repair unrelated existing defects.
+Check that the current head delivers each agreed outcome, default, and non-goal.
+An alternative approach does not prove the original goal was met; note any
+agreed scope change. Separate new bugs and unmet requirements from unrelated
+existing bugs; do not require fixing the latter.
 
 ## Blocking architecture checkpoints
 
-Apply only checkpoints relevant to changed behavior and affected supported paths;
-this is not a requirement to exercise every backend or construction path on
-unrelated PRs.
+Check only changed behavior and affected supported paths; report concrete failures.
 
-### Version-aware construction and capability boundaries
+### Versions and agent construction
 
-Establish the affected SDK, Agent Server, client, and downstream application
-versions before assigning cross-repository ownership or claiming parity. A fix
-on another repository's main branch is not necessarily in the consumer's pinned
-release. Coordinate contract changes rather than duplicating the owning layer.
+When a change crosses repositories, check the SDK, server, client, and app
+versions actually used. A fix on `main` may not be in a pinned release.
+Coordinate API changes with consumers.
 
-For settings, tools, or delegation changes, trace direct constructors, saved
-profiles, REST requests, factories, and nested delegation as applicable. Check
-both bare tools and toolsets (for example `workflow` and `workflow_tool_set`).
-Validate the agent actually built, not only its requested configuration: an
-OpenHands `Agent` and an opaque `ACPAgent` do not expose equivalent capability
-boundaries. A visible `tools` list alone cannot prove that an ACP factory obeys a
-restricting tool/MCP scope. Check supported rejection and unrestricted paths,
-including inheritance into nested delegates.
+When settings, tools, or delegation change, extend the cross-layer checks above
+to saved profiles and nested delegates. Check individual tools and toolsets
+(e.g. `workflow` and `workflow_tool_set`) and the agent actually built.
+An `ACPAgent` delegates execution externally: its visible `tools` list does not
+prove tool/MCP restrictions are enforced. Check restricted, rejected, and
+unrestricted requests, including restrictions inherited by nested delegates.
 
 ### Public and persisted compatibility
 
@@ -140,19 +128,18 @@ the change. Verify that:
 - resumed or forked conversations preserve the same observable configuration
   and behavior as newly created conversations.
 
-Start the lifecycle trace at the first external mutation, including persistence
-writes before service registration or lock acquisition. Distinguish harmless
-preparation from a losing create/fork overwriting the winner's artifacts; inspect
-the actual locked recheck and publication before alleging duplicate registration.
-Check rollback when initialization fails after partial parent attachment or
-resource acquisition. On resume, old waiters and workers must retain their run
-identity and receive atomic settlement; do not clear/reuse their completion
-signals. Join only owned worker threads, not borrowed caller/pool threads.
+Start at the first file/database write or resource creation, even before a lock
+or service registration. Check that a losing create/fork cannot overwrite the
+winner's files. Inspect the locked recheck and registration before claiming a
+race. Check rollback after failed startup attaches to a parent or acquires resources.
+On resume, keep old waiters and workers tied to their original run; record its
+result and notify waiters together, without clearing or reusing completion
+signals. Join only owned worker threads, not caller or pool threads.
 
-For changes to archive, resume, or storage, compare affected local, Docker, and
-Cloud backend contracts: response/error status, retained history, freshest
-metadata at shutdown/archive, and matching search/count filters. Derive parity
-from the promised behavior, not identical internal implementation.
+When archive, resume, or storage changes, check affected local, Docker, and Cloud
+backends for promised status/error responses, retained history, up-to-date
+shutdown/archive metadata, and matching search/count filters. Their internals
+need not match.
 
 Do not require a speculative cleanup abstraction. Identify a resource that can
 actually outlive its owner or a state transition that produces a wrong result.
@@ -166,20 +153,19 @@ redaction sentinels or one-off serializers. Verify that secrets cannot appear in
 logs, exceptions, command strings, persisted plaintext, or ordinary model dumps,
 and that resume and plugin-loading paths apply the same policy as creation.
 
-For authentication or redaction changes, follow the deployed request path:
-mounted `root_path`, matched routes, and forwarded headers from trusted versus
-untrusted proxies. Exercise relevant nested decoding/normalization boundaries
-before trusting paths or hosts, and established connections when credentials
-expire, not only a fresh handshake. Use the actual configured trust and expiry
-contract, not a hypothetical deployment requirement.
+When authentication or redaction changes, check the deployed request path:
+`root_path`, route matching, trusted versus untrusted proxy headers, and repeated
+path/host decoding or normalization before trusting either. Check expiry on existing
+connections, not just new handshakes. Use configured trust and expiry rules,
+not hypothetical deployments.
 
-### Timeout provenance
+### Timeouts and cancellation
 
-For timeout/cancellation changes, identify which layer owns each deadline and
-exception (provider/transport, per-attempt retry, stream idle, or outer run).
-Check propagation, retry classification, and cleanup without converting an inner
-failure into the wrong timeout. Preserve explicitly disabled timers (`None` or
-zero where documented); test only the relevant enabled/disabled paths.
+When timeouts or cancellation change, check which layer sets each deadline and
+raises each error: provider/transport, retry attempt, stream idle, or whole run.
+Check error propagation, retries, and cleanup; do not misreport an inner error
+as an outer timeout. Preserve disabled timers (`None` or zero where documented)
+and test the affected enabled/disabled paths.
 
 ### Production runtime parity
 

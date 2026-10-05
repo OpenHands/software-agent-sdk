@@ -16,11 +16,9 @@ AI agents: you must not edit this section.
 
 AGENT:
 <!-- AI/LLM agents:
-In the AGENT section and the template fields below, provide evidence appropriate
-to the change and the review guide. Runtime lifecycle/integration bug fixes need
-real-path evidence beyond constructed unit state. Nonvisual evidence can be
-commands, logs, API responses, or reproduction notes; media is not mandatory.
-For documentation-only changes, describe document validation and its limits.
+Follow the review guide's evidence requirements in the fields below.
+For lifecycle/integration fixes, exercise the real workflow, not just constructed
+unit-test state. For docs-only changes, state what you validated and its limits.
 -->
 
 ## Why
@@ -46,8 +44,8 @@ If you could not test this, say why.
 ## Video/Screenshots
 
 <!--
-For visual changes, provide useful video or screenshots. For nonvisual changes,
-use logs, API responses, or reproduction notes in How to Test; media is optional.
+For visual changes, show video or screenshots. Otherwise, use logs, API responses,
+or reproduction notes in How to Test; media is optional.
 
 -->
 

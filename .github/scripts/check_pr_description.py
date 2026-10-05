@@ -24,12 +24,9 @@ AGENT_HEADING_RE = re.compile(r"(?im)^\s*AGENT:\s*$")
 ISSUE_REF_RE = re.compile(r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+)")
 BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)")
 READY_FOR_DEV_LABEL = "ready-for-dev"
-# Issues created before the `ready-for-dev` rollout are grandfathered: the
-# rollout did not retroactively evaluate older issues. Requiring the label retroactively would block
-# existing PRs linked to those issues. The cutoff is the UTC day AFTER the
-# rollout/deployment day (2026-08-12), so every issue predating deployment —
-# including ones opened earlier that same day, before the workflow existed —
-# is exempt. Issues created on or after 2026-08-13 must carry the label.
+# Older issues are exempt: the rollout did not evaluate them retroactively.
+# The cutoff is the UTC day after deployment (2026-08-12), so issues opened
+# earlier on deployment day are also exempt. Issues from 2026-08-13 need the label.
 READY_FOR_DEV_ROLLOUT_ISO = "2026-08-13"
 
 
