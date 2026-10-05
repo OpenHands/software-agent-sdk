@@ -17,6 +17,7 @@ two security-critical checks around it:
 import re
 from pathlib import Path
 from typing import Final, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -89,16 +90,26 @@ BackendPlatform = Literal["linux-amd64", "linux-arm64"]
 
 
 class CanvasExtensionBackendArtifact(BaseModel):
-    """Immutable backend artifact for one supported platform."""
+    """Immutable local or HTTPS backend artifact for one platform."""
 
-    path: str = Field(description="Package-relative .tar.gz artifact path")
+    path: str | None = Field(
+        default=None, description="Package-relative .tar.gz artifact path"
+    )
+    url: str | None = Field(
+        default=None, description="Public HTTPS .tar.gz artifact URL"
+    )
     sha256: str = Field(
         pattern=r"^[0-9a-f]{64}$", description="Lowercase SHA-256 checksum"
+    )
+    strip_components: int = Field(
+        default=0, ge=0, le=16, description="Leading archive path components to remove"
     )
 
     @field_validator("path")
     @classmethod
-    def _validate_path(cls, value: str) -> str:
+    def _validate_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if (
             not value
             or value.startswith("/")
@@ -107,6 +118,31 @@ class CanvasExtensionBackendArtifact(BaseModel):
         ):
             raise ValueError("artifact path must be a relative .tar.gz path")
         return value
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or not parsed.path.endswith(".tar.gz")
+        ):
+            raise ValueError("artifact url must be a credential-free HTTPS .tar.gz URL")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "CanvasExtensionBackendArtifact":
+        if (self.path is None) == (self.url is None):
+            raise ValueError("artifact must declare exactly one of path or url")
+        if self.path is not None and self.strip_components:
+            raise ValueError("strip_components is supported only for remote artifacts")
+        return self
 
 
 class CanvasExtensionBackendHealth(BaseModel):
