@@ -196,7 +196,7 @@ jobs:
             - name: Install Node.js
               uses: actions/setup-node@v7
               with:
-                  node-version: 22
+                  node-version: '24'
 
             - name: Install dependencies
               run: uv sync --frozen --dev
