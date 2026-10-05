@@ -1,0 +1,32 @@
+# AFTER fix: #5495 reproduction
+
+$ uv run python repro.py   # export_agent_settings_schema() + discriminator contract
+
+condenser section fields:
+  condenser.enabled                                label='Enable memory condensation' choices=None
+  condenser.max_size                               label='Max size' choices=None
+  condenser.max_tokens                             label='Max tokens' choices=None
+  condenser.keep_first                             label='Keep first' choices=None
+  condenser.minimum_progress                       label='Minimum progress' choices=None
+  condenser.hard_context_reset_max_retries         label='Hard reset retries' choices=None
+  condenser.hard_context_reset_context_scaling     label='Hard reset scaling' choices=None
+
+condenser.condenser_kind exported: False
+condenser fields with RST markup or 'discriminator' in description: []
+
+discriminator contract:
+  payload without condenser_kind -> LLMSummarizingCondenserSettings llm_summarizing
+  payload with condenser_kind=no_op -> NoOpCondenserSettings {'enabled': True, 'condenser_kind': 'no_op'}
+  model_dump keeps condenser_kind: True True
+
+$ python -m openhands.agent_server --port 18495; curl -H 'X-Session-API-Key: ...' /api/settings/agent-schema
+HTTP 200
+GET /api/settings/agent-schema -> condenser section fields:
+  condenser.enabled                                label='Enable memory condensation'
+  condenser.max_size                               label='Max size'
+  condenser.max_tokens                             label='Max tokens'
+  condenser.keep_first                             label='Keep first'
+  condenser.minimum_progress                       label='Minimum progress'
+  condenser.hard_context_reset_max_retries         label='Hard reset retries'
+  condenser.hard_context_reset_context_scaling     label='Hard reset scaling'
+condenser.condenser_kind present: False
