@@ -96,9 +96,7 @@ BackendPlatform = Literal["linux-amd64", "linux-arm64"]
 class CanvasExtensionBackendArtifact(BaseModel):
     """Immutable local or HTTPS backend artifact for one platform."""
 
-    path: str | None = Field(
-        default=None, description="Package-relative .tar.gz artifact path"
-    )
+    path: str = Field(default="", description="Package-relative .tar.gz artifact path")
     url: str | None = Field(
         default=None, description="Public HTTPS .tar.gz artifact URL"
     )
@@ -111,12 +109,9 @@ class CanvasExtensionBackendArtifact(BaseModel):
 
     @field_validator("path")
     @classmethod
-    def _validate_path(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if (
-            not value
-            or value.startswith("/")
+    def _validate_path(cls, value: str) -> str:
+        if value and (
+            value.startswith("/")
             or ".." in Path(value).parts
             or not value.endswith(".tar.gz")
         ):
@@ -142,9 +137,9 @@ class CanvasExtensionBackendArtifact(BaseModel):
 
     @model_validator(mode="after")
     def _validate_source(self) -> "CanvasExtensionBackendArtifact":
-        if (self.path is None) == (self.url is None):
+        if bool(self.path) == (self.url is not None):
             raise ValueError("artifact must declare exactly one of path or url")
-        if self.path is not None and self.strip_components:
+        if self.path and self.strip_components:
             raise ValueError("strip_components is supported only for remote artifacts")
         return self
 

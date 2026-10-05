@@ -47,7 +47,8 @@ _MAX_ARTIFACT_REDIRECTS: Final[int] = 5
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, _req, _fp, _code, _msg, _headers, _newurl):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        del req, fp, code, msg, headers, newurl
         return None
 
 
@@ -358,7 +359,7 @@ class CanvasExtensionBackendManager:
             assert parts is not None
             _, artifact, current_platform = parts
             package_root = self.installed_dir / name
-            if artifact.path is not None:
+            if artifact.path:
                 archive = self._resolve_contained(package_root, artifact.path)
                 actual_sha256 = await asyncio.to_thread(self._sha256, archive)
                 if actual_sha256 != artifact.sha256:

@@ -176,6 +176,7 @@ def test_backend_artifact_accepts_local_or_remote_source():
         strip_components=1,
     )
     assert local.path == "backend/tool.tar.gz"
+    assert remote.url is not None
     assert remote.url.startswith("https://github.com/")
     assert remote.strip_components == 1
 
