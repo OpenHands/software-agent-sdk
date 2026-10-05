@@ -55,6 +55,11 @@ jobs:
                     echo "Package version $current_version does not match requested version $VERSION"
                     exit 1
                   fi
+                  current_image=$(node -p "require('./package.json').config.agentServerImage")
+                  if [ "$current_image" != "ghcr.io/openhands/agent-server:${VERSION}-python" ]; then
+                    echo "Agent Server image $current_image does not match requested version $VERSION"
+                    exit 1
+                  fi
 
             - name: Build package
               run: npm run build

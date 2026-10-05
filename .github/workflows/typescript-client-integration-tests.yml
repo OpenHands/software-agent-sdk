@@ -214,6 +214,26 @@ jobs:
               run: |
                   echo "AGENT_SERVER_IMAGE=$(node -p 'require("./package.json").config.agentServerImage')" >> "$GITHUB_ENV"
 
+            - name: Resolve pinned Agent Server
+              id: pinned
+              working-directory: .
+              run: python3 .github/scripts/resolve_typescript_client_agent_server.py
+
+            # A release PR pins an image that is pushed only after merge; integration-test
+            # already covers the branch-built server. Any other missing pin still fails.
+            - name: Check pinned image is published
+              id: image
+              run: |
+                  if docker manifest inspect "$AGENT_SERVER_IMAGE" > /dev/null 2>&1; then
+                    echo "published=true" >> "$GITHUB_OUTPUT"
+                  elif [ "${{ steps.pinned.outputs.pinned_is_source }}" = "true" ]; then
+                    echo "::notice::$AGENT_SERVER_IMAGE is not published yet; skipping the release-image smoke test."
+                    echo "published=false" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "::error::$AGENT_SERVER_IMAGE does not exist."
+                    exit 1
+                  fi
+
             - name: Build package
               run: npm run build
 
@@ -223,6 +243,7 @@ jobs:
                   chmod 777 /tmp/agent-workspace
 
             - name: Pull and start agent-server
+              if: steps.image.outputs.published == 'true'
               run: |
                   docker pull ${{ env.AGENT_SERVER_IMAGE }}
                   docker run -d \
@@ -235,6 +256,7 @@ jobs:
                   sleep 10
 
             - name: Smoke test - server health
+              if: steps.image.outputs.published == 'true'
               run: |
                   # Test server is responding
                   curl -f http://localhost:8010/alive
@@ -242,6 +264,7 @@ jobs:
                   curl http://localhost:8010/server_info
 
             - name: Smoke test - workspace command execution
+              if: steps.image.outputs.published == 'true'
               env:
                   AGENT_SERVER_URL: http://localhost:8010
                   HOST_WORKSPACE_DIR: /tmp/agent-workspace
