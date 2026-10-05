@@ -36,6 +36,9 @@
         gap: 40px;
         padding: 40px 28px 80px;
       }
+      main {
+        min-width: 0;
+      }
       nav {
         position: sticky;
         top: 24px;
@@ -210,7 +213,7 @@
       }
       @media (max-width: 850px) {
         .wrap {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
           padding: 24px 18px;
           gap: 10px;
         }
@@ -226,7 +229,7 @@
           margin: 0;
         }
         .split {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
         }
       }
     </style>
@@ -260,7 +263,7 @@
             then speaks the result. Hanging up preserves already accepted work.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L513"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:513</a
             >
           </p>
@@ -289,14 +292,14 @@
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L62"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
                   >voice_router.py:62</a
                 >
               </li>
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py#L228"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py"
                   >config.py:228</a
                 >
               </li>
@@ -310,7 +313,7 @@
                 run, and condense. It has no voice router or call broker.
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-agent-server/openhands/agent_server/api.py#L420"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-agent-server/openhands/agent_server/api.py"
                   >api.py:420</a
                 >
               </p>
@@ -324,12 +327,12 @@
                 <code>codex</code> is explicit opt-in.
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L424"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
                   >api.py:424</a
                 >
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py#L228"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py"
                   >config.py:228</a
                 >
               </p>
@@ -381,22 +384,22 @@
             Sources:
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L145"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:145</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L183"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:183</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L290"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:290</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L305"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:305</a
             >
           </p>
@@ -407,12 +410,12 @@
             delegates on the server.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L104"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:104</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L183"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:183</a
             >
           </p>
@@ -774,14 +777,14 @@ index 000000000..b1340c40c
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L160"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
                   >codex_voice.py:160</a
                 >
               </li>
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L119"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
                   >voice_router.py:119</a
                 >
               </li>
@@ -794,12 +797,12 @@ index 000000000..b1340c40c
             another destination.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L119"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:119</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L410"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:410</a
             >
           </p>
@@ -833,7 +836,7 @@ index 000000000..b1340c40c
                 </marker>
               </defs>
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts#L73"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts"
               >
                 <g>
                   <rect
@@ -859,7 +862,7 @@ index 000000000..b1340c40c
                 marker-end="url(#arr-new-setup-path--the-server-binds-the-offer-to-the-saved-controller-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L183"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >
                 <g>
                   <rect
@@ -887,7 +890,7 @@ index 000000000..b1340c40c
                 marker-end="url(#arr-new-setup-path--the-server-binds-the-offer-to-the-saved-controller-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L680"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >
                 <g>
                   <rect
@@ -945,7 +948,7 @@ index 000000000..b1340c40c
                 </marker>
               </defs>
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L435"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >
                 <g>
                   <rect
@@ -971,7 +974,7 @@ index 000000000..b1340c40c
                 marker-end="url(#arr-new-handoff-path--reserve-the-handoff-id--run-the-saved-request--then-speak-its-result-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L513"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >
                 <g>
                   <rect
@@ -999,7 +1002,7 @@ index 000000000..b1340c40c
                 marker-end="url(#arr-new-handoff-path--reserve-the-handoff-id--run-the-saved-request--then-speak-its-result-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L475"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >
                 <g>
                   <rect
@@ -1035,12 +1038,12 @@ index 000000000..b1340c40c
             <code>connection_failed</code>.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L435"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:435</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L492"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:492</a
             >
           </p>
@@ -1772,14 +1775,14 @@ index 000000000..4bd4581c4
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L716"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
                   >api.py:716</a
                 >
               </li>
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L618"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
                   >codex_voice.py:618</a
                 >
               </li>
@@ -1793,17 +1796,17 @@ index 000000000..4bd4581c4
             cannot split an accepted save from its run.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L731"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
               >api.py:731</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L313"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
               >api.py:313</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L548"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:548</a
             >
           </p>
@@ -1834,7 +1837,7 @@ index 000000000..4bd4581c4
                 </marker>
               </defs>
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-agent-server/openhands/agent_server/api.py#L711"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-agent-server/openhands/agent_server/api.py"
               >
                 <g>
                   <rect
@@ -1858,7 +1861,7 @@ index 000000000..4bd4581c4
                 marker-end="url(#arr-existing-server-lifecycle-gains-an-owned-voice-manager-and-awaited-cleanup-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L731"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
               >
                 <g>
                   <rect
@@ -1882,7 +1885,7 @@ index 000000000..4bd4581c4
                 marker-end="url(#arr-existing-server-lifecycle-gains-an-owned-voice-manager-and-awaited-cleanup-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L313"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
               >
                 <g>
                   <rect
@@ -1912,12 +1915,12 @@ index 000000000..4bd4581c4
             conversation-to-call binding; credentials remain server-side.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L596"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:596</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L305"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
               >voice_router.py:305</a
             >
           </p>
@@ -2002,19 +2005,19 @@ index b517a5fad..b883a982e 100644
           <p class="note">
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py#L228"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py"
               >config.py:228</a
             >
             Ordinary Codex homes are rejected, and the experimental app-server
             protocol is pinned to 0.154.0.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L119"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:119</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L188"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:188</a
             >
           </p>
@@ -2060,14 +2063,14 @@ index 735cadad7..20b842bae 100644
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2968"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
                   >local_conversation.py:2968</a
                 >
               </li>
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py#L773"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py"
                   >conversation_router.py:773</a
                 >
               </li>
@@ -2079,12 +2082,12 @@ index 735cadad7..20b842bae 100644
             under the conversation state lock and emits its condensation result.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2967"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
               >local_conversation.py:2967</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2968"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
               >local_conversation.py:2968</a
             >
           </p>
@@ -2114,7 +2117,7 @@ index 735cadad7..20b842bae 100644
                 </marker>
               </defs>
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2967"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
               >
                 <g>
                   <rect
@@ -2142,7 +2145,7 @@ index 735cadad7..20b842bae 100644
                 marker-end="url(#arr-before--forcing-compaction-advanced-an-agent-step-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L3017"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
               >
                 <g>
                   <rect
@@ -2168,7 +2171,7 @@ index 735cadad7..20b842bae 100644
                 marker-end="url(#arr-before--forcing-compaction-advanced-an-agent-step-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-agent-server/openhands/agent_server/conversation_router.py#L770"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/b66c724361571aa5c982883173c71b04739b247d/openhands-agent-server/openhands/agent_server/conversation_router.py"
               >
                 <g>
                   <rect
@@ -2225,7 +2228,7 @@ index 735cadad7..20b842bae 100644
                 </marker>
               </defs>
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L2968"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
               >
                 <g>
                   <rect
@@ -2253,7 +2256,7 @@ index 735cadad7..20b842bae 100644
                 marker-end="url(#arr-after--compaction-only-invokes-the-condenser--incompatibility-is-a-409-response-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L3015"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
               >
                 <g>
                   <rect
@@ -2281,7 +2284,7 @@ index 735cadad7..20b842bae 100644
                 marker-end="url(#arr-after--compaction-only-invokes-the-condenser--incompatibility-is-a-409-response-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py#L773"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py"
               >
                 <g>
                   <rect
@@ -2315,12 +2318,12 @@ index 735cadad7..20b842bae 100644
             response; pending approvals remain pending.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py#L773"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py"
               >conversation_router.py:773</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/sdk/conversation/test_condense.py#L191"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/sdk/conversation/test_condense.py"
               >test_condense.py:191</a
             >
           </p>
@@ -2426,14 +2429,14 @@ index e57ae2b12..b3fe2b5a8 100644
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts#L54"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts"
                   >voice-client.ts:54</a
                 >
               </li>
               <li>
                 <a
                   class="src"
-                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/conversation/conversation-manager.ts#L93"
+                  href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/conversation/conversation-manager.ts"
                   >conversation-manager.ts:93</a
                 >
               </li>
@@ -2447,12 +2450,12 @@ index e57ae2b12..b3fe2b5a8 100644
             from <code>@openhands/typescript-client/clients</code>.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts#L54"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts"
               >voice-client.ts:54</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/clients.ts#L27"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/clients.ts"
               >clients.ts:27</a
             >
           </p>
@@ -2485,7 +2488,7 @@ index e57ae2b12..b3fe2b5a8 100644
                 </marker>
               </defs>
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/conversation/conversation-manager.ts#L126"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/conversation/conversation-manager.ts"
               >
                 <g>
                   <rect
@@ -2513,7 +2516,7 @@ index e57ae2b12..b3fe2b5a8 100644
                 marker-end="url(#arr-new-typed-path--callers-supply-a-saved-conversation-id-and-retain-webrtc-ownership-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts#L54"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts"
               >
                 <g>
                   <rect
@@ -2539,7 +2542,7 @@ index e57ae2b12..b3fe2b5a8 100644
                 marker-end="url(#arr-new-typed-path--callers-supply-a-saved-conversation-id-and-retain-webrtc-ownership-)"
               />
               <a
-                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/http-client.ts#L88"
+                href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/http-client.ts"
               >
                 <g>
                   <rect
@@ -2572,12 +2575,12 @@ index e57ae2b12..b3fe2b5a8 100644
             server or package versions.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/endpoint-audit.config.json#L46"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/endpoint-audit.config.json"
               >endpoint-audit.config.json:46</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/package.json#L50"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/package.json"
               >package.json:50</a
             >
           </p>
@@ -2754,22 +2757,22 @@ index 8ce95d6ea..fa07b77de 100644
             unused integration-test declarations that blocked full lint.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/clients.ts#L27"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/clients.ts"
               >clients.ts:27</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/README.md#L190"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/README.md"
               >README.md:190</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L1"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/conversation.integration.test.ts"
               >conversation.integration.test.ts:1</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L1"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/websocket.integration.test.ts"
               >websocket.integration.test.ts:1</a
             >
           </p>
@@ -2839,12 +2842,12 @@ index 8ce95d6ea..fa07b77de 100644
             check.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/voice-client.test.ts#L1"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/voice-client.test.ts"
               >voice-client.test.ts:1</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/cross/test_remote_conversation_live_server.py#L174"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/cross/test_remote_conversation_live_server.py"
               >test_remote_conversation_live_server.py:174</a
             >
           </p>
@@ -2895,12 +2898,12 @@ npm run audit:endpoints</pre>
             checks.
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L349"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:349</a
             >
             <a
               class="src"
-              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L188"
+              href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
               >codex_voice.py:188</a
             >
           </p>
@@ -2926,7 +2929,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/README.md#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/README.md"
                       >README.md:1</a
                     >
                   </td>
@@ -2937,7 +2940,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/endpoint-audit.config.json#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/endpoint-audit.config.json"
                       >endpoint-audit.config.json:1</a
                     >
                   </td>
@@ -2948,7 +2951,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/conversation.integration.test.ts#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/conversation.integration.test.ts"
                       >conversation.integration.test.ts:1</a
                     >
                   </td>
@@ -2959,7 +2962,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/websocket.integration.test.ts#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/integration/websocket.integration.test.ts"
                       >websocket.integration.test.ts:1</a
                     >
                   </td>
@@ -2970,7 +2973,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/voice-client.test.ts#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/__tests__/voice-client.test.ts"
                       >voice-client.test.ts:1</a
                     >
                   </td>
@@ -2981,7 +2984,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/client/voice-client.ts"
                       >voice-client.ts:1</a
                     >
                   </td>
@@ -2992,7 +2995,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/clients.ts#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/clients.ts"
                       >clients.ts:1</a
                     >
                   </td>
@@ -3003,7 +3006,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/conversation/conversation-manager.ts#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/clients/typescript/src/conversation/conversation-manager.ts"
                       >conversation-manager.ts:1</a
                     >
                   </td>
@@ -3014,7 +3017,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/api.py"
                       >api.py:1</a
                     >
                   </td>
@@ -3025,7 +3028,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/codex_voice.py"
                       >codex_voice.py:1</a
                     >
                   </td>
@@ -3036,7 +3039,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/config.py"
                       >config.py:1</a
                     >
                   </td>
@@ -3047,7 +3050,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/conversation_router.py"
                       >conversation_router.py:1</a
                     >
                   </td>
@@ -3058,7 +3061,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-agent-server/openhands/agent_server/voice_router.py"
                       >voice_router.py:1</a
                     >
                   </td>
@@ -3069,7 +3072,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py"
                       >local_conversation.py:1</a
                     >
                   </td>
@@ -3080,7 +3083,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_api.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_api.py"
                       >test_api.py:1</a
                     >
                   </td>
@@ -3091,7 +3094,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_codex_voice.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_codex_voice.py"
                       >test_codex_voice.py:1</a
                     >
                   </td>
@@ -3102,7 +3105,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_codex_voice_protocol.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_codex_voice_protocol.py"
                       >test_codex_voice_protocol.py:1</a
                     >
                   </td>
@@ -3113,7 +3116,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_init_router.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_init_router.py"
                       >test_init_router.py:1</a
                     >
                   </td>
@@ -3124,7 +3127,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_voice_router.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/agent_server/test_voice_router.py"
                       >test_voice_router.py:1</a
                     >
                   </td>
@@ -3135,7 +3138,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/cross/test_remote_conversation_live_server.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/cross/test_remote_conversation_live_server.py"
                       >test_remote_conversation_live_server.py:1</a
                     >
                   </td>
@@ -3146,7 +3149,7 @@ npm run audit:endpoints</pre>
                   <td>
                     <a
                       class="src"
-                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/sdk/conversation/test_condense.py#L1"
+                      href="https://github.com/OpenHands/software-agent-sdk/blob/f7de3c373689e36261e6097518dbf9a7e1786e0d/tests/sdk/conversation/test_condense.py"
                       >test_condense.py:1</a
                     >
                   </td>
@@ -3158,6 +3161,7 @@ npm run audit:endpoints</pre>
           </div>
         </section>
         <footer>
+          Source links open pinned files; the labels retain exact line numbers.
           Temporary .pr/ review artifact. The repository’s verified PR Artifacts
           workflow removes it after approval for this same-repository PR. A
           commit-pinned preview remains accessible after cleanup.
