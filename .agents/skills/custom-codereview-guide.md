@@ -15,15 +15,13 @@ that should affect the review decision; it does not replace those sources.
 
 Use the ownership guidance below to choose the repository and scope. Ask only
 for missing details needed to understand the problem, expected result,
-reproduction, or agreed scope (including non-goals). Review checks are not issue
-readiness requirements: do not demand a patch, PR, design, or before/after tests.
-Logs, API responses, or a small reproducer can explain nonvisual bugs; media is
-optional.
+reproduction, or agreed scope (including non-goals). Logs, API responses, or a
+small reproducer can explain nonvisual bugs; media is optional.
 
-The [label workflow](../../.github/workflows/issue-readiness-check.yml) requires
-`write`, `maintain`, or `admin` permission to grant `ready-for-dev`, even for bots.
-It checks permission, not issue content. Do not add readiness rules or overturn
-an authorized writer's decision by demanding PR evidence.
+Issue readiness means the work is clear enough to start—not that the fix is
+complete. Do not require a PR, passing implementation tests, or before-and-after
+fix evidence. Reconsider readiness when new information leaves scope or expected
+behavior unresolved.
 
 ## Implementation review: decision
 
