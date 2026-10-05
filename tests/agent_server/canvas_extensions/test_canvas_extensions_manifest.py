@@ -170,15 +170,19 @@ def test_manifest_round_trips_through_json_dict():
 def test_backend_artifact_accepts_local_or_remote_source():
     checksum = "a" * 64
     local = CanvasExtensionBackendArtifact(path="backend/tool.tar.gz", sha256=checksum)
-    remote = CanvasExtensionBackendArtifact(
-        url="https://github.com/example/tool/releases/download/v1/tool.tar.gz",
-        sha256=checksum,
-        strip_components=1,
+    remote = CanvasExtensionBackendArtifact.model_validate(
+        {
+            "url": "https://github.com/example/tool/releases/download/v1/tool.tar.gz",
+            "sha256": checksum,
+            "strip_components": 1,
+        }
     )
     assert local.path == "backend/tool.tar.gz"
+    assert remote.path == ""
     assert remote.url is not None
     assert remote.url.startswith("https://github.com/")
     assert remote.strip_components == 1
+    assert "path" in CanvasExtensionBackendArtifact.model_json_schema()["required"]
 
 
 @pytest.mark.parametrize(

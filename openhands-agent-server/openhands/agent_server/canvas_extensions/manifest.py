@@ -96,7 +96,7 @@ BackendPlatform = Literal["linux-amd64", "linux-arm64"]
 class CanvasExtensionBackendArtifact(BaseModel):
     """Immutable local or HTTPS backend artifact for one platform."""
 
-    path: str = Field(default="", description="Package-relative .tar.gz artifact path")
+    path: str = Field(description="Package-relative .tar.gz artifact path")
     url: str | None = Field(
         default=None, description="Public HTTPS .tar.gz artifact URL"
     )
@@ -106,6 +106,13 @@ class CanvasExtensionBackendArtifact(BaseModel):
     strip_components: int = Field(
         default=0, ge=0, le=16, description="Leading archive path components to remove"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_remote_path(cls, value: object) -> object:
+        if isinstance(value, dict) and "path" not in value and value.get("url"):
+            return {**value, "path": ""}
+        return value
 
     @field_validator("path")
     @classmethod
