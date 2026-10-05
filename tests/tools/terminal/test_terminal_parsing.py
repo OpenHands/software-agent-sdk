@@ -2,7 +2,7 @@ import pytest
 
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
-    group_heredoc_script_for_execution,
+    needs_heredoc_completion_boundary,
     split_bash_commands,
 )
 
@@ -117,18 +117,27 @@ def test_heredoc_script_is_not_split(input_commands):
     assert split_bash_commands(input_commands) == [input_commands]
 
 
-def test_post_heredoc_statements_are_grouped_for_one_completion_prompt():
-    command = "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done\n"
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done",
+        "cat <<A <<B\na\nA\nb\nB\necho done",
+        'cat <<E"OF"\nbody\nEOF\necho done',
+        "cat <<EOF &\nbody\nEOF\nwait",
+    ],
+)
+def test_heredoc_scripts_need_completion_boundary(command):
+    assert needs_heredoc_completion_boundary(command)
 
-    assert group_heredoc_script_for_execution(command) == (
-        "{\ncat <<'EOF'\nbody\nEOF\nsleep 1; echo done\n}"
-    )
 
-
-def test_single_heredoc_is_not_grouped_for_execution():
+def test_single_heredoc_does_not_need_completion_boundary():
     command = "cat <<'EOF'\nbody\nEOF\n"
 
-    assert group_heredoc_script_for_execution(command) == command
+    assert not needs_heredoc_completion_boundary(command)
+
+
+def test_incomplete_heredoc_does_not_need_completion_boundary():
+    assert not needs_heredoc_completion_boundary("cat <<EOF\nbody")
 
 
 @pytest.mark.parametrize(

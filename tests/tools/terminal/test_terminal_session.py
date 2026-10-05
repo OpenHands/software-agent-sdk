@@ -881,6 +881,63 @@ def test_chained_heredoc_script_preserves_trailing_exit_status(terminal_type):
 
 
 @parametrize_terminal_types
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<A <<B\na\nA\nb\nB\nsleep 0.2; touch completion-marker",
+        'cat <<E"OF"\nbody\nEOF\nsleep 0.2; touch completion-marker',
+        "cat <<EOF &\nbody\nEOF\nsleep 0.2; touch completion-marker",
+    ],
+)
+def test_parser_fallback_heredocs_wait_for_trailing_command(terminal_type, command):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.metadata.exit_code == 0
+            assert Path(temp_dir, "completion-marker").exists()
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
+    terminal_type,
+):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(
+                session,
+                "alias oh_test='echo alias-expanded'; cat <<EOF\nbody\nEOF\noh_test",
+            )
+            assert obs.metadata.exit_code == 0
+            assert "alias-expanded" in obs.text
+
+            obs = _run_bash_action(
+                session,
+                "cat <<EOF\nbody\nEOF\nexec > redirected.txt; false",
+                timeout=3,
+            )
+            assert obs.metadata.exit_code == 1
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert (
+                "__OH_COMMAND_FINISHED_"
+                not in Path(temp_dir, "redirected.txt").read_text()
+            )
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
 def test_multiple_multiline_commands(terminal_type):
     """Test that multiple commands separated by newlines are rejected."""
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -26,7 +26,7 @@ from openhands.tools.terminal.terminal.interface import (
 from openhands.tools.terminal.timeout_policy import foreground_timeout_rejection_for
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
-    group_heredoc_script_for_execution,
+    needs_heredoc_completion_boundary,
     split_bash_commands,
 )
 from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
@@ -82,6 +82,16 @@ def _remove_command_prefix(command_output: str, command: str) -> str:
     return "\n".join(out_lines[len(cmd_lines) :]).lstrip()
 
 
+def _remove_echoed_line(command_output: str, command: str) -> str:
+    """Remove one generated command echo wherever it appears in the output."""
+    target = _normalize_echo_line(command)
+    return "".join(
+        line
+        for line in command_output.splitlines(keepends=True)
+        if _normalize_echo_line(line) != target
+    )
+
+
 def _remove_powershell_echo(command_output: str, command: str) -> str:
     command_output = command_output.lstrip()
     command = command.lstrip()
@@ -126,11 +136,10 @@ class TerminalSession(TerminalSessionBase):
         # Store the last command for interactive input handling
         self.prev_status = None
         self.prev_output = ""
-        # Wrapper sent to delimit a grouped heredoc script: the completion
-        # marker and the exact text echoed for it. Kept on the session so that
-        # a timeout, or a follow-up poll with an empty command, can strip both
-        # from the screen the same way a completed command does.
-        self._boundary_marker: str | None = None
+        # Completion suffix for a heredoc script. Keep it on the session so a
+        # timeout or follow-up poll can recognize and strip it too.
+        self._boundary_marker: re.Pattern[str] | None = None
+        self._boundary_echo: str | None = None
         self._wrapper_echo: str | None = None
         # Stateful filter for terminal query sequences (handles split sequences)
         self._query_filter = TerminalQueryFilter()
@@ -234,6 +243,7 @@ class TerminalSession(TerminalSessionBase):
         terminal_content: str,
         ps1_matches: list[re.Match],
         echoed_command: str | None = None,
+        boundary_exit_code: int | None = None,
     ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
@@ -243,7 +253,7 @@ class TerminalSession(TerminalSessionBase):
         # output or scrolled off-screen), fall back gracefully instead of
         # crashing. The command likely completed but we can't extract the
         # exit code or working directory.
-        if len(ps1_matches) == 0:
+        if len(ps1_matches) == 0 and boundary_exit_code is None:
             logger.warning(
                 "No PS1 metadata found in terminal output. "
                 "Command output may have overwritten the markers "
@@ -275,35 +285,36 @@ class TerminalSession(TerminalSessionBase):
                 exit_code=metadata.exit_code,
             )
 
-        metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
-
-        # Special case where the previous command output is truncated
-        # due to history limit
-        get_content_before_last_match = bool(len(ps1_matches) == 1)
-
-        # Update the current working directory if it has changed
-        if metadata.working_dir != self._cwd and metadata.working_dir:
-            self._cwd: str = metadata.working_dir
+        if boundary_exit_code is not None:
+            metadata = CmdOutputMetadata(
+                exit_code=boundary_exit_code, working_dir=self._cwd
+            )
+            get_content_before_last_match = False
+            raw_command_output = self._combine_outputs_between_matches(
+                terminal_content, ps1_matches
+            )
+        else:
+            metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
+            get_content_before_last_match = bool(len(ps1_matches) == 1)
+            if metadata.working_dir != self._cwd and metadata.working_dir:
+                self._cwd = metadata.working_dir
+            raw_command_output = self._combine_outputs_between_matches(
+                terminal_content,
+                ps1_matches,
+                get_content_before_last_match=get_content_before_last_match,
+            )
+            if get_content_before_last_match:
+                num_lines = len(raw_command_output.splitlines())
+                metadata.prefix = (
+                    f"[Previous command outputs are truncated. "
+                    f"Showing the last {num_lines} lines of the output below.]\n"
+                )
 
         logger.debug(
             "Parsed terminal output (previous_ps1_not_matched=%s, content_length=%s)",
             get_content_before_last_match,
             len(terminal_content),
         )
-        # Extract the command output between the two PS1 prompts
-        raw_command_output = self._combine_outputs_between_matches(
-            terminal_content,
-            ps1_matches,
-            get_content_before_last_match=get_content_before_last_match,
-        )
-
-        if get_content_before_last_match:
-            # Count the number of lines in the truncated output
-            num_lines = len(raw_command_output.splitlines())
-            metadata.prefix = (
-                f"[Previous command outputs are truncated. "
-                f"Showing the last {num_lines} lines of the output below.]\n"
-            )
 
         metadata.suffix = (
             f"\n[The command completed with exit code {metadata.exit_code}.]"
@@ -421,17 +432,16 @@ class TerminalSession(TerminalSessionBase):
         self.terminal.clear_screen()
 
     def _strip_boundary_wrapper(self, terminal_content: str) -> str:
-        """Remove the grouped-heredoc wrapper from a raw screen read.
-
-        A completed command strips the completion marker before parsing, but
-        the timeout paths and a follow-up poll (empty command) read the screen
-        directly. Without this, the wrapper echo and both halves of the marker
-        leak into the observation the agent sees.
-        """
+        """Remove the heredoc completion suffix from a raw screen read."""
         if self._boundary_marker is not None:
-            terminal_content = terminal_content.replace(self._boundary_marker, "")
+            terminal_content = self._boundary_marker.sub("", terminal_content)
             terminal_content = terminal_content.replace("\x1b[?2004l", "").replace(
                 "\x1b[?2004h", ""
+            )
+        if self._boundary_echo:
+            terminal_content = terminal_content.replace(self._boundary_echo, "")
+            terminal_content = _remove_echoed_line(
+                terminal_content, self._boundary_echo
             )
         if self._wrapper_echo:
             terminal_content = _remove_command_prefix(
@@ -599,28 +609,29 @@ class TerminalSession(TerminalSessionBase):
             return obs
 
         command_to_send = command
-        command_boundary_marker: str | None = None
+        boundary_command: str | None = None
+        command_boundary_marker: re.Pattern[str] | None = None
         if command and not is_input:
             self._boundary_marker = None
+            self._boundary_echo = None
             self._wrapper_echo = None
         if command and not is_input and not self.terminal.is_powershell():
-            command_to_send = group_heredoc_script_for_execution(command_to_send)
-            if command_to_send != command:
-                command_boundary_marker = f"__OH_COMMAND_FINISHED_{uuid.uuid4().hex}__"
-                marker_midpoint = len(command_boundary_marker) // 2
-                marker_start = command_boundary_marker[:marker_midpoint]
-                marker_end = command_boundary_marker[marker_midpoint:]
-                command_to_send += (
-                    "; (__openhands_status=$?; printf '\\n%s%s\\n' "
-                    f"'{marker_start}' '{marker_end}'; "
-                    'exit "$__openhands_status")'
+            if needs_heredoc_completion_boundary(command_to_send):
+                marker_id = uuid.uuid4().hex
+                marker_start = f"__OH_COMMAND_FINISHED_{marker_id}_"
+                marker_end = "__"
+                command_boundary_marker = re.compile(
+                    rf"{re.escape(marker_start)}(?P<exit_code>\d+){marker_end}"
                 )
-                # Remember what we wrapped so a timeout or follow-up poll can
-                # strip the echo even though it never sees this local value.
+                boundary_command = (
+                    "(__openhands_status=$?; printf '\\n%s%s%s\\n' "
+                    f"'{marker_start}' \"$__openhands_status\" '{marker_end}' "
+                    '> /dev/tty; exit "$__openhands_status")'
+                )
                 self._boundary_marker = command_boundary_marker
             command_to_send = escape_bash_special_chars(command_to_send)
-            if command_boundary_marker is not None:
-                # The terminal echoes the escaped text, so match against that.
+            if boundary_command is not None:
+                self._boundary_echo = boundary_command
                 self._wrapper_echo = command_to_send
 
         # Send actual command/inputs to the terminal
@@ -643,6 +654,8 @@ class TerminalSession(TerminalSessionBase):
                     command_to_send,
                     enter=not is_special_key,
                 )
+                if boundary_command is not None:
+                    self.terminal.send_keys(boundary_command)
 
         # Loop until the command completes or times out
         while True:
@@ -660,9 +673,14 @@ class TerminalSession(TerminalSessionBase):
             output_changed_since_command = (
                 cur_terminal_output != initial_terminal_output
             )
+            active_boundary_marker = command_boundary_marker or self._boundary_marker
+            boundary_match = (
+                active_boundary_marker.search(cur_terminal_output)
+                if active_boundary_marker is not None
+                else None
+            )
             command_reached_boundary = (
-                command_boundary_marker is None
-                or command_boundary_marker in cur_terminal_output
+                active_boundary_marker is None or boundary_match is not None
             )
 
             if cur_terminal_output != last_terminal_output:
@@ -670,46 +688,32 @@ class TerminalSession(TerminalSessionBase):
                 last_change_time = time.time()
                 logger.debug(f"CONTENT UPDATED DETECTED at {last_change_time}")
 
-            # 1) Execution completed:
-            # Condition 1: A new prompt has appeared since the command started.
-            # Condition 2: The prompt count hasn't increased (potentially because the
-            # initial one scrolled off), BUT the *current* visible terminal ends with a
-            # prompt, indicating completion.
+            # 1) Execution completed when a prompt appears, or when a heredoc
+            # suffix reaches its tty boundary after stdout has been redirected.
+            prompt_reached = current_ps1_count > initial_ps1_count or (
+                cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
+            )
             if (
                 command_reached_boundary
                 and (not sent_command or output_changed_since_command)
-                and (
-                    current_ps1_count > initial_ps1_count
-                    or cur_terminal_output.rstrip().endswith(
-                        CMD_OUTPUT_PS1_END.rstrip()
-                    )
-                )
+                and (prompt_reached or boundary_match is not None)
             ):
                 completed_terminal_output = cur_terminal_output
-                completed_ps1_matches = ps1_matches
-                # A follow-up poll sends no command, so fall back to the wrapper
-                # tracked on the session to strip it from the screen.
-                effective_marker = command_boundary_marker or self._boundary_marker
-                effective_echo = (
-                    command_to_send
-                    if command_boundary_marker is not None
-                    else self._wrapper_echo
-                )
-                if effective_marker is not None:
-                    completed_terminal_output = completed_terminal_output.replace(
-                        effective_marker, ""
-                    )
-                    completed_terminal_output = completed_terminal_output.replace(
-                        "\x1b[?2004l", ""
-                    ).replace("\x1b[?2004h", "")
-                    completed_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+                boundary_exit_code = None
+                if active_boundary_marker is not None:
+                    completed_terminal_output = self._strip_boundary_wrapper(
                         completed_terminal_output
                     )
+                    if not prompt_reached and boundary_match is not None:
+                        boundary_exit_code = int(boundary_match.group("exit_code"))
+                completed_ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+                    completed_terminal_output
+                )
                 obs = self._handle_completed_command(
                     command,
                     terminal_content=completed_terminal_output,
                     ps1_matches=completed_ps1_matches,
-                    echoed_command=effective_echo,
+                    boundary_exit_code=boundary_exit_code,
                 )
                 return obs
 

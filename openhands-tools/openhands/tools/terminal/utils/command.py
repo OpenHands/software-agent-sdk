@@ -1,6 +1,7 @@
 """Command splitting and escape utilities backed by tree-sitter-bash."""
 
 import re
+import subprocess
 
 from tree_sitter import Node
 
@@ -45,32 +46,39 @@ def _ends_with_heredoc(node: Node) -> bool:
     return last.type == "heredoc_end" and last.end_byte == node.end_byte
 
 
-def group_heredoc_script_for_execution(commands: str) -> str:
-    """Group scripts whose post-heredoc statements share an input submission.
-
-    Interactive bash emits a prompt after each top-level statement. When a complete
-    script is pasted at once, that intermediate prompt can appear before bash reads
-    a statement buffered after a heredoc terminator. A brace group gives the script
-    one completion prompt while preserving its effects in the current shell.
-    """
+def needs_heredoc_completion_boundary(commands: str) -> bool:
+    """Whether interactive Bash may prompt before this input is fully consumed."""
     source = commands.encode()
     result = parse(commands)
+    root = result.tree.root_node
     if result.has_error:
-        return commands
+        stack = [root]
+        has_heredoc = False
+        while stack:
+            node = stack.pop()
+            has_heredoc = has_heredoc or node.type.startswith("heredoc_")
+            stack.extend(node.named_children)
+        if not has_heredoc:
+            return False
+        try:
+            syntax_check = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-n", "-c", commands],
+                capture_output=True,
+                env={"LC_ALL": "C"},
+                timeout=1,
+            )
+            return syntax_check.returncode == 0 and b"here-document" not in (
+                syntax_check.stderr
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
 
-    statements = [
-        child
-        for child in result.tree.root_node.named_children
-        if child.type != "comment"
-    ]
-    needs_group = any(
+    statements = [child for child in root.named_children if child.type != "comment"]
+    return any(
         _ends_with_heredoc(current)
         and b"\n" in source[current.end_byte : following.start_byte]
         for current, following in zip(statements, statements[1:])
     )
-    if not needs_group:
-        return commands
-    return "{\n" + commands.rstrip("\n") + "\n}"
 
 
 def split_bash_commands(commands: str) -> list[str]:
