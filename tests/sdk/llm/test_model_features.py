@@ -16,6 +16,7 @@ from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
     REASONING_EFFORT_MODEL_OVERRIDES,
+    VISION_CAPABLE_MODELS,
     VISION_MODEL_OVERRIDES,
     _normalized_supported_openai_params,
     get_features,
@@ -442,6 +443,36 @@ def test_vision_overrides_are_not_redundant():
     for pattern, litellm_model in VISION_MODEL_OVERRIDES.items():
         assert not supports_vision(litellm_model), (
             f"Remove {pattern!r}: LiteLLM now supports {litellm_model!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_vision_capable_models_supports_vision(model: str):
+    """Verified vision ids LiteLLM cannot resolve still report vision.
+
+    Regression for #5523: ``deepseek-v4.1-flash`` has no LiteLLM registry entry,
+    so the capability comes from the SDK's own list.
+    """
+    assert get_features(model).supports_vision is True
+
+
+def test_vision_capable_models_stay_out_of_litellm_resolvable_ids():
+    """Every entry must be one LiteLLM cannot already resolve.
+
+    Mirrors ``test_vision_overrides_are_not_redundant``: once LiteLLM reports the
+    model, the SDK entry is redundant and should be removed.
+    """
+    for pattern in VISION_CAPABLE_MODELS:
+        assert not supports_vision(pattern), (
+            f"Remove {pattern!r}: LiteLLM now reports it as vision-capable"
         )
 
 

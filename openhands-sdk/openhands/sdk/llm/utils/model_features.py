@@ -307,13 +307,28 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 VISION_MODEL_OVERRIDES: dict[str, str] = {}
 
 
+# Vision-capable models that LiteLLM's live registry does not report as
+# vision-capable (no entry, or `supports_vision` absent/false). These ids are
+# vouched for in VERIFIED_MODELS, so assert the capability here rather than
+# silently treating them as text-only. Keep this minimal and remove an entry
+# once LiteLLM starts reporting the model correctly. See issue #5523; the
+# broader fix for outsourcing capabilities is tracked in #4880.
+VISION_CAPABLE_MODELS: list[str] = [
+    # OpenHands-verified (see #4940); LiteLLM has no `deepseek-v4.1-flash`
+    # entry, only `baseten/deepseek-ai/DeepSeek-V4.1-Flash` (vision=true).
+    "deepseek-v4.1-flash",
+]
+
+
 @cache
 def _model_supports_vision(model: str | None) -> bool:
-    """Return whether LiteLLM marks the model as visual."""
+    """Return whether LiteLLM or our verified list marks the model as visual."""
     normalized = _normalize_model_for_litellm(model)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return bool(normalized and litellm_supports_vision(normalized))
+        if normalized and litellm_supports_vision(normalized):
+            return True
+    return model_matches(model, VISION_CAPABLE_MODELS)
 
 
 # Models whose API rejects http(s) image URLs and only accepts base64

@@ -22,6 +22,11 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         "moonshot/kimi-k3",
         "litellm_proxy/moonshot/kimi-k3",
         "openhands/kimi-k3",
+        # Vision-capable but absent from LiteLLM's live registry (#5523).
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
     ],
 )
 def test_vision_is_active_supported_models(model):
