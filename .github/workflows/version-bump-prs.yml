@@ -19,7 +19,7 @@ jobs:
             SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
 
             - name: Get version from release or input
               id: get_version
@@ -748,7 +748,7 @@ jobs:
             GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
         steps:
             - name: Checkout SDK release tooling
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   # The default GITHUB_TOKEN cannot push the bump branch.
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
@@ -954,7 +954,7 @@ jobs:
                   repositories: OpenHands-Cloud
 
             - name: Checkout chart repo
-              uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   repository: OpenHands/OpenHands-Cloud
                   ref: main

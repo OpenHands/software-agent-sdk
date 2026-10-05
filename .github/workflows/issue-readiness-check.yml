@@ -65,7 +65,7 @@ jobs:
             actions: write
         steps:
             - name: Checkout trusted workflow scripts
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
 
             - name: Re-run PR description checks for linked open PRs
               env:
