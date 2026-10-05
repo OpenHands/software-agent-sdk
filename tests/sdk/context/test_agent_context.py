@@ -1,6 +1,7 @@
 """Tests for AgentContext template rendering functionality."""
 
 import re
+from datetime import datetime
 
 import pytest
 from pydantic import SecretStr
@@ -1045,8 +1046,11 @@ templates.",
         restored = AgentContext.model_validate(serialized)
 
         assert "current_datetime" not in serialized
-        assert restored.current_datetime != "2024-03-15T14:30:00Z"
         assert restored.current_datetime is not None
+        assert isinstance(restored.current_datetime, datetime)
+        assert restored.current_datetime != datetime.fromisoformat(
+            "2024-03-15T14:30:00+00:00"
+        )
 
     def test_explicit_current_datetime_include_is_serialized(self):
         context = AgentContext(current_datetime="2024-03-15T14:30:00Z")

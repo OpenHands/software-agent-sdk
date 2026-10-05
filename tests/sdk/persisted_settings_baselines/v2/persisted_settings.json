@@ -2,11 +2,15 @@
   "__expected__": {
     "active_profile": "fixture-v2-profile",
     "agent_settings.agent_kind": "openhands",
-    "agent_settings.schema_version": 7,
+    "agent_settings.schema_version": 9,
     "agent_settings.llm.model": "fixture-v2-persisted-llm",
     "agent_settings.tools": [
       {
         "name": "TerminalTool",
+        "params": {}
+      },
+      {
+        "name": "switch_llm",
         "params": {}
       }
     ],

@@ -1,12 +1,26 @@
 {
   "__expected__": {
-    "schema_version": 7,
+    "schema_version": 9,
     "agent_kind": "openhands",
-    "llm.model": "fixture-v7-llm"
+    "llm.model": "fixture-v7-llm",
+    "tools": [
+      {
+        "name": "terminal",
+        "params": {}
+      }
+    ]
   },
   "schema_version": 7,
   "agent_kind": "openhands",
   "llm": {
     "model": "fixture-v7-llm"
-  }
+  },
+  "tools": [
+    {
+      "name": "terminal",
+      "params": {}
+    }
+  ],
+  "enable_sub_agents": false,
+  "enable_switch_llm_tool": false
 }

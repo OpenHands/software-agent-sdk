@@ -1,24 +1,30 @@
 {
   "__expected__": {
-    "schema_version": 4,
-    "agent_settings.schema_version": 7,
+    "schema_version": 6,
+    "active_profile": "fixture-v4-profile",
+    "agent_settings.schema_version": 9,
     "agent_settings.agent_kind": "acp",
-    "agent_settings.acp_server": "codex",
-    "agent_settings.agent_context.current_datetime": null
+    "agent_settings.acp_model": "fixture-v4-acp-model",
+    "agent_settings.agent_context.current_datetime": null,
+    "conversation_settings.max_iterations": 120,
+    "misc_settings.theme": "light"
   },
   "schema_version": 4,
   "agent_settings": {
     "schema_version": 7,
     "agent_kind": "acp",
-    "acp_server": "codex",
+    "acp_server": "claude-code",
+    "acp_model": "fixture-v4-acp-model",
     "agent_context": {
       "current_datetime": null
     }
   },
   "conversation_settings": {
-    "schema_version": 1
+    "schema_version": 1,
+    "max_iterations": 120
   },
-  "active_profile": null,
-  "active_agent_profile_id": null,
-  "misc_settings": {}
+  "active_profile": "fixture-v4-profile",
+  "misc_settings": {
+    "theme": "light"
+  }
 }

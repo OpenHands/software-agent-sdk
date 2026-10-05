@@ -21,6 +21,13 @@ from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.canvas_extensions.backend import (
+    CanvasExtensionBackendManager,
+)
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
+from openhands.agent_server.canvas_extensions_bridge_router import (
+    app_backend_bridge_router,
+)
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 from openhands.agent_server.config import (
     Config,
@@ -44,6 +51,7 @@ from openhands.agent_server.dependencies import (
     check_session_api_key,
     check_workspace_session,
 )
+from openhands.agent_server.event_service import ConversationRunLimitExceeded
 from openhands.agent_server.file_router import file_discovery_router, file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
@@ -97,6 +105,7 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
@@ -124,33 +133,26 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
 
 
 def _cleanup_stale_tmux_sessions() -> None:
-    """Clean up any stale tmux sessions on server startup.
-
-    Tmux sessions live in a separate process that survives agent-server restarts.
-    This function kills all existing sessions on the shared OpenHands tmux socket
-    to prevent accumulation of orphaned sessions.
-    """
-    try:
-        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
-        sessions = server.sessions
-        if not sessions:
-            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
-            return
-
-        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
-
-        for session in sessions:
-            try:
-                logger.debug("Killing tmux session: %s", session.name)
-                session.kill()
-            except Exception as e:
-                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
-
-        logger.info("Tmux cleanup completed")
-
-    except Exception as e:
-        # Don't let tmux cleanup failures prevent server startup
-        logger.warning("Failed to cleanup tmux sessions: %s", e)
+    """Clean up legacy and isolated terminal sockets on server startup."""
+    if os.name != "posix":
+        return
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    socket_names = [TMUX_SOCKET_NAME]
+    socket_names.extend(
+        path.name
+        for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
+        if path.is_socket()
+    )
+    for socket_name in socket_names:
+        try:
+            server = libtmux.Server(socket_name=socket_name)
+            for session in server.sessions:
+                try:
+                    session.kill()
+                except Exception as e:
+                    logger.warning("Failed to kill tmux session %s: %s", session, e)
+        except Exception as e:
+            logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
 
 
 @asynccontextmanager
@@ -178,6 +180,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         api.state.telemetry_sink = await build_telemetry_sink(config)
         if not deferred:
             emit_server_started()
+
+        seal_tool_catalog()
 
         vscode_service = get_vscode_service()
         tool_preload_service = get_tool_preload_service()
@@ -290,6 +294,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 yield
             finally:
+                session_store = getattr(api.state, "app_backend_session_store", None)
+                if session_store is not None:
+                    await session_store.shutdown()
                 await conversation_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
@@ -302,6 +309,10 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
+        unseal_tool_catalog()
+        backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
+        if backend_manager is not None:
+            await backend_manager.shutdown()
         emit_server_stopped()
         await shutdown_telemetry_sink()
 
@@ -475,6 +486,7 @@ def _add_api_routes(app: FastAPI) -> None:
     app.include_router(workspace_api_router)
     app.include_router(api_router)
 
+    app.include_router(app_backend_bridge_router)
     app.include_router(conversation_registry.sockets_router)
 
 
@@ -545,6 +557,12 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
+
+    @api.exception_handler(ConversationRunLimitExceeded)
+    async def _run_limit_handler(
+        _request: Request, exc: ConversationRunLimitExceeded
+    ) -> JSONResponse:
+        return JSONResponse(status_code=429, content={"detail": str(exc)})
 
     @api.exception_handler(CredentialBindingActivationRequired)
     async def _credential_binding_activation_required_handler(
@@ -704,6 +722,8 @@ def create_app(config: Config | None = None) -> FastAPI:
     app = _create_fastapi_instance(config)
     app.state.config = config
     app.state.conversation_registry = create_conversation_registry(config)
+    app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
+    app.state.app_backend_session_store = AppBackendSessionStore()
 
     _add_api_routes(app)
     _setup_static_files(app, config)

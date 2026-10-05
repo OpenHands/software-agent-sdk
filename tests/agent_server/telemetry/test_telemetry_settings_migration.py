@@ -16,10 +16,11 @@ from openhands.agent_server.persistence.models import (
     PersistedSettings,
 )
 from openhands.agent_server.telemetry.policy import resolve
+from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 
 
 def test_schema_version_tracks_nested_agent_settings_change():
-    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 4
+    assert PERSISTED_SETTINGS_SCHEMA_VERSION == 6
 
 
 def test_there_is_no_typed_consent_field():
@@ -54,7 +55,7 @@ def test_v2_settings_migrate_nested_runtime_datetime():
     after = datetime.now().astimezone()
 
     assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
-    assert settings.agent_settings.schema_version == 7
+    assert settings.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_settings.agent_context is not None
     current_datetime = settings.agent_settings.agent_context.current_datetime
     assert isinstance(current_datetime, datetime)
@@ -79,7 +80,7 @@ def test_v3_settings_migrate_nested_runtime_datetime():
     after = datetime.now().astimezone()
 
     assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
-    assert settings.agent_settings.schema_version == 7
+    assert settings.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_settings.agent_context is not None
     current_datetime = settings.agent_settings.agent_context.current_datetime
     assert isinstance(current_datetime, datetime)
@@ -102,7 +103,7 @@ def test_v3_settings_preserve_nested_explicit_no_datetime():
     )
 
     assert settings.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
-    assert settings.agent_settings.schema_version == 7
+    assert settings.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_settings.agent_context is not None
     assert settings.agent_settings.agent_context.current_datetime is None
     payload = settings.model_dump(mode="json")
