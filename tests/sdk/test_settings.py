@@ -123,10 +123,22 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert (
         condenser_fields["condenser.enabled"].prominence is SettingProminence.CRITICAL
     )
-    assert condenser_fields["condenser.condenser_kind"].default == "llm_summarizing"
-    assert [
-        choice.value for choice in condenser_fields["condenser.condenser_kind"].choices
-    ] == ["llm_summarizing", "no_op"]
+    # The condenser_kind union discriminator is not a user-facing setting,
+    # like agent_kind: payloads still carry it, but the schema omits it.
+    assert "condenser.condenser_kind" not in condenser_fields
+    assert set(condenser_fields) == {
+        "condenser.enabled",
+        "condenser.max_size",
+        "condenser.max_tokens",
+        "condenser.keep_first",
+        "condenser.minimum_progress",
+        "condenser.hard_context_reset_max_retries",
+        "condenser.hard_context_reset_context_scaling",
+    }
+    for field in condenser_fields.values():
+        assert field.description is not None
+        assert "``" not in field.description
+        assert "discriminator" not in field.description.lower()
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
     assert condenser_fields["condenser.max_tokens"].default is None

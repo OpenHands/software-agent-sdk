@@ -102,6 +102,14 @@ def test_get_agent_settings_schema():
     assert "confirmation_mode" not in verification_field_keys
     assert "security_analyzer" not in verification_field_keys
 
+    # The condenser_kind union discriminator is not a user-facing field.
+    condenser_section = next(
+        section for section in body["sections"] if section["key"] == "condenser"
+    )
+    condenser_field_keys = {field["key"] for field in condenser_section["fields"]}
+    assert "condenser.enabled" in condenser_field_keys
+    assert "condenser.condenser_kind" not in condenser_field_keys
+
     # agent_context is curated: only the annotated load_memory field
     # surfaces, never the raw context model.
     assert "agent_context" in section_keys
