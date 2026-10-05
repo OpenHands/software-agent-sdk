@@ -21,6 +21,7 @@ from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TaskObservation
 from openhands.tools.task.manager import TaskManager
+from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.workflow import WorkflowToolSet
 from openhands.tools.workflow.definition import WorkflowObservation, WorkflowTool
 
@@ -183,6 +184,56 @@ def test_a_scope_refuses_a_sub_agent_whose_tools_it_cannot_see(
     assert isinstance(unscoped._get_sub_agent("cli"), ACPAgent)
 
 
+def test_a_scope_lets_a_sub_agent_keep_its_conversation_local_tools(
+    tmp_path: Path,
+) -> None:
+    _register("planner", ["terminal", TaskTrackerTool.name])
+    parent = LocalConversation(
+        agent=_parent(Tool(name="terminal")), workspace=str(tmp_path), visualizer=None
+    )
+    manager = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+    manager.attach_parent(parent)
+
+    sub_agent = manager._get_sub_agent("planner")
+
+    assert "**planner**" in _offered(parent.agent, TOOLS_ONLY)
+    assert [tool.name for tool in sub_agent.tools] == ["terminal", "task_tracker"]
+
+
+def test_a_profile_without_task_tracker_delegates_to_general_purpose(
+    tmp_path: Path,
+) -> None:
+    register_builtins_agents(enable_browser=False)
+    store = LLMProfileStore(base_dir=tmp_path / "llm")
+    store.save(
+        "default",
+        LLM(model="gpt-4o", api_key=SecretStr("k"), usage_id="x"),
+        include_secrets=True,
+    )
+    profile = OpenHandsAgentProfile(
+        name="coder",
+        llm_profile_ref="default",
+        tools=[
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
+            Tool(name=TaskToolSet.name),
+        ],
+    )
+    settings = resolve_agent_profile(
+        profile, llm_store=store, mcp_config={}, available_skills=None
+    )
+    parent = LocalConversation(
+        agent=settings.create_agent(), workspace=str(tmp_path), visualizer=None
+    )
+    manager = TaskManager(sub_agent_scope=SubAgentScope(tools=True))
+    manager.attach_parent(parent)
+
+    sub_agent = manager._get_sub_agent("general-purpose")
+
+    assert "**general-purpose**" in _offered(parent.agent, TOOLS_ONLY)
+    assert {tool.name for tool in sub_agent.tools} >= {"terminal", "task_tracker"}
+
+
 def test_a_sub_agent_delegates_within_the_same_scope(tmp_path: Path) -> None:
     _register("orchestrator", ["task_tool_set", "workflow_tool_set"])
     parent = LocalConversation(
@@ -240,7 +291,7 @@ def test_a_scoped_workflow_refuses_a_sub_agent_beyond_the_parent(
 @pytest.mark.parametrize(
     ("subagent", "missing"),
     [
-        ("general-purpose", "file_editor, task_tracker, terminal"),
+        ("general-purpose", "file_editor, terminal"),
         ("bash-runner", "terminal"),
         ("code-explorer", "terminal"),
         ("web-researcher", "browser_tool_set"),

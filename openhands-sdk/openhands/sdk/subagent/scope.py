@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING, Final
 from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.tool.defaults import SUB_AGENT_TOOL_NAME, canonical_tool_name
+from openhands.sdk.tool.defaults import (
+    SUB_AGENT_TOOL_NAME,
+    canonical_tool_name,
+    effective_builtin_class,
+)
+from openhands.sdk.tool.registry import registered_tool_class
 from openhands.sdk.tool.spec import Tool
 
 
@@ -37,10 +42,18 @@ class SubAgentScope(BaseModel):
     def missing_from(
         self, parent: AgentBase, sub_agent: AgentBase | AgentDefinition
     ) -> list[str]:
-        """Return what ``sub_agent`` uses, within this scope, that ``parent`` lacks."""
+        """Return what ``sub_agent`` uses, within this scope, that ``parent`` lacks.
+
+        Conversation-local tools never count: they reach nothing outside the
+        sub-agent's own conversation.
+        """
         missing: list[str] = []
         if self.tools:
-            missing += sorted(_tool_names(sub_agent) - _tool_names(parent))
+            missing += sorted(
+                name
+                for name in _tool_names(sub_agent) - _tool_names(parent)
+                if not _conversation_local(name)
+            )
         if self.mcp_servers:
             missing += [
                 f"MCP server {name!r}"
@@ -79,3 +92,8 @@ def _tool_names(agent: AgentBase | AgentDefinition) -> set[str]:
     else:
         names = [*(tool.name for tool in agent.tools), *agent.include_default_tools]
     return {canonical_tool_name(name) for name in names}
+
+
+def _conversation_local(name: str) -> bool:
+    tool_class = registered_tool_class(name) or effective_builtin_class(name)
+    return tool_class is not None and tool_class.conversation_local
