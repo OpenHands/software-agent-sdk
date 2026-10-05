@@ -1,0 +1,28 @@
+head: 45259c484a9b37d79c73a10cb457b076a9395fb3
+$ uv run python .pr/proxy-request-params/repro.py --fixture
+credential supplied: True
+proxy /v1/model/info: {"http_status": 200, "entry": {"model_name": "deepseek-v4.1-flash", "litellm_params.allowed_openai_params": ["reasoning_effort"], "model_info.supports_reasoning": true}}
+SDK model_info found: True
+SDK model_info.allowed_openai_params: ['reasoning_effort']
+SDK features: {"supports_reasoning_effort": true, "supports_prompt_cache_key": true, "supports_vision": false}
+supports_reasoning_effort from advertised request params alone: True
+features changed by advertised params [without, with]: {'supports_reasoning_effort': [False, True]}
+chat request reasoning_effort: low
+$ uv run python .pr/proxy-request-params/repro.py --fixture --no-key
+credential supplied: False
+proxy /v1/model/info: {"http_status": 401}
+SDK model_info found: False
+SDK model_info.allowed_openai_params: None
+SDK features: {"supports_reasoning_effort": false, "supports_prompt_cache_key": false, "supports_vision": false}
+supports_reasoning_effort from advertised request params alone: False
+features changed by advertised params [without, with]: {}
+chat request reasoning_effort: None
+$ uv run python .pr/proxy-request-params/repro.py --base-url https://llm-proxy.app.all-hands.dev   # LLM_API_KEY unavailable in this sandbox
+credential supplied: False
+proxy /v1/model/info: {"http_status": 401}
+SDK model_info found: False
+SDK model_info.allowed_openai_params: None
+SDK features: {"supports_reasoning_effort": false, "supports_prompt_cache_key": false, "supports_vision": false}
+supports_reasoning_effort from advertised request params alone: False
+features changed by advertised params [without, with]: {}
+chat request reasoning_effort: None

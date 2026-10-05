@@ -1,0 +1,11 @@
+$ uv run pytest tests/sdk/llm/test_model_info_proxy_lookup.py tests/sdk/llm/test_model_features.py -q   # base 7999acf source + new tests
+FAILED tests/sdk/llm/test_model_info_proxy_lookup.py::test_authenticated_proxy_advertised_param_reaches_request
+FAILED tests/sdk/llm/test_model_info_proxy_lookup.py::test_authless_proxy_advertised_params_are_consumed
+FAILED tests/sdk/llm/test_model_info_proxy_lookup.py::test_advertised_params_must_hold_for_every_matching_deployment[deployments0-expected0]
+FAILED tests/sdk/llm/test_model_info_proxy_lookup.py::test_advertised_params_must_hold_for_every_matching_deployment[deployments3-expected3]
+FAILED tests/sdk/llm/test_model_info_proxy_lookup.py::test_proxy_metadata_is_cached_per_key
+FAILED tests/sdk/llm/test_model_features.py::test_advertised_request_param_enables_only_its_capability[reasoning_effort-supports_reasoning_effort]
+FAILED tests/sdk/llm/test_model_features.py::test_advertised_request_param_enables_only_its_capability[prompt_cache_key-supports_prompt_cache_key]
+FAILED tests/sdk/llm/test_model_features.py::test_advertised_request_param_enables_only_its_capability[prompt_cache_retention-supports_prompt_cache_retention]
+FAILED tests/sdk/llm/test_model_features.py::test_advertised_param_precedence
+======================== 9 failed, 232 passed in 6.33s =========================
