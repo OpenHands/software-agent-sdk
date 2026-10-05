@@ -11,6 +11,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SESSION_WIDTH,
 )
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
 def test_tmux_session_viewport_is_bounded():
@@ -255,3 +256,44 @@ def test_checkin_foreign_pane_is_ignored(pool):
 
     fake = TmuxTerminal.__new__(TmuxTerminal)
     pool.checkin(fake)  # should log warning, not crash
+
+
+@pytest.mark.parametrize("pooled", [True, False])
+@pytest.mark.parametrize("operation", ["read", "write", "close"])
+def test_stale_terminal_cannot_access_restarted_server(
+    tmp_path, monkeypatch, pooled, operation
+):
+    # Only redirect the socket namespace; all terminal/tmux operations are real.
+    with tempfile.TemporaryDirectory(prefix="oh-tmux-") as socket_dir:
+        monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
+        first = TmuxPanePool(str(tmp_path)) if pooled else TmuxTerminal(str(tmp_path))
+        second = TmuxPanePool(str(tmp_path)) if pooled else TmuxTerminal(str(tmp_path))
+        try:
+            first.initialize()
+            stale = first.checkout() if isinstance(first, TmuxPanePool) else first
+            stale.server.cmd("kill-server")
+            second.initialize()
+            current = second.checkout() if isinstance(second, TmuxPanePool) else second
+            current.send_keys("printf 'SECOND_%s\\n' CONVERSATION_MARKER")
+            deadline = time.monotonic() + 5
+            while "SECOND_CONVERSATION_MARKER" not in current.read_screen():
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+
+            if operation == "read":
+                assert "SECOND_CONVERSATION_MARKER" not in stale.read_screen()
+            elif operation == "write":
+                marker = tmp_path / "wrong-conversation"
+                stale.send_keys(f"touch {marker}")
+                current.send_keys("printf 'WRITE_%s\\n' BARRIER")
+                deadline = time.monotonic() + 5
+                while "WRITE_BARRIER" not in current.read_screen():
+                    assert time.monotonic() < deadline
+                    time.sleep(0.05)
+                assert not marker.exists()
+            else:
+                first.close()
+                assert "SECOND_CONVERSATION_MARKER" in current.read_screen()
+        finally:
+            first.close()
+            second.close()

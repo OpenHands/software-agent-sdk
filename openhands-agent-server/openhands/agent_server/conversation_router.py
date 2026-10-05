@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import json
 from typing import Annotated
 from uuid import UUID
 
@@ -7,17 +8,19 @@ from fastapi import (
     APIRouter,
     Body,
     Depends,
+    Header,
     HTTPException,
     Query,
     Request,
     Response,
     status,
 )
-from pydantic import SecretStr
+from pydantic import TypeAdapter, ValidationError
 
 from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
+    store_errors,
 )
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import (
@@ -25,6 +28,7 @@ from openhands.agent_server.conversation_service import (
     InvalidParentConversation,
 )
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
@@ -37,7 +41,6 @@ from openhands.agent_server.models import (
     ConversationSortOrder,
     ForkConversationRequest,
     NavigateConversationRequest,
-    SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
@@ -47,43 +50,92 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
     trim_conversation_response_skills,
 )
-from openhands.sdk import LLM, Agent, TextContent
+from openhands.agent_server.persistence import get_llm_profile_store
+from openhands.sdk import LLM
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
+    ConversationObservabilityTags,
+)
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.marketplace.registry import (
     MarketplaceNotFoundError,
     PluginNotFoundError,
     PluginResolutionError,
 )
 from openhands.sdk.plugin import PluginFetchError
-from openhands.sdk.profiles.resolver import (
-    DanglingMcpServerRef,
-    ProfileNotFound,
-)
+from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
-from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.preset.default import get_default_tools
 
 
 conversation_catalog_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
+_OBSERVABILITY_SPAN_NAME_ADAPTER = TypeAdapter(ConversationObservabilitySpanName)
+_OBSERVABILITY_TAGS_ADAPTER = TypeAdapter(ConversationObservabilityTags)
+_OBSERVABILITY_METADATA_ADAPTER = TypeAdapter(ConversationObservabilityMetadata)
+
+
+def _request_with_observability_headers(
+    request: StartConversationRequest,
+    *,
+    span_name: str | None,
+    tags: str | None,
+    metadata: str | None,
+    parent_span_context: str | None,
+) -> StartConversationRequest:
+    updates: dict[str, object] = {}
+    try:
+        if span_name and "observability_span_name" not in request.model_fields_set:
+            updates["observability_span_name"] = (
+                _OBSERVABILITY_SPAN_NAME_ADAPTER.validate_python(span_name)
+            )
+        if tags and "observability_tags" not in request.model_fields_set:
+            tag_values = [tag.strip() for tag in tags.split(",") if tag.strip()]
+            updates["observability_tags"] = _OBSERVABILITY_TAGS_ADAPTER.validate_python(
+                tag_values
+            )
+        if metadata:
+            metadata_payload = json.loads(metadata)
+            header_metadata = _OBSERVABILITY_METADATA_ADAPTER.validate_python(
+                metadata_payload
+            )
+            updates["observability_metadata"] = {
+                **header_metadata,
+                **request.observability_metadata,
+            }
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="X-OpenHands-Observability-Metadata must be a JSON object",
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_context=False),
+        ) from exc
+    if parent_span_context and not request.observability_parent_span_context:
+        updates["observability_parent_span_context"] = parent_span_context
+    return request.model_copy(update=updates) if updates else request
+
 
 # Examples
 
 START_CONVERSATION_EXAMPLES = [
-    StartConversationRequest(
-        agent=Agent(
-            llm=LLM(
-                usage_id="your-llm-service",
-                model="your-model-provider/your-model-name",
-                api_key=SecretStr("your-api-key-here"),
-            ),
-            tools=get_default_tools(enable_browser=True),
-        ),
-        workspace=LocalWorkspace(working_dir="workspace/project"),
-        initial_message=SendMessageRequest(
-            role="user", content=[TextContent(text="Flip a coin!")]
-        ),
-    ).model_dump(exclude_defaults=True, mode="json")
+    {
+        "agent_settings": {
+            "llm": {
+                "usage_id": "your-llm-service",
+                "model": "your-model-provider/your-model-name",
+                "api_key": "your-api-key-here",
+            },
+        },
+        "workspace": {"working_dir": "workspace/project"},
+        "initial_message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "Flip a coin!"}],
+        },
+    }
 ]
 
 
@@ -254,25 +306,41 @@ async def batch_get_conversations(
 # Write Methods
 
 
-@conversation_router.post("")
+@conversation_router.post(
+    "", responses={429: {"description": "Server conversation run capacity is full"}}
+)
 async def start_conversation(
     request: Annotated[
         StartConversationRequest, Body(examples=START_CONVERSATION_EXAMPLES)
     ],
     response: Response,
     include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
+    x_openhands_observability_span_name: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Span-Name")
+    ] = None,
+    x_openhands_observability_tags: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Tags")
+    ] = None,
+    x_openhands_observability_metadata: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Metadata")
+    ] = None,
+    x_openhands_observability_parent_span_context: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
+    ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
+    request = _request_with_observability_headers(
+        request,
+        span_name=x_openhands_observability_span_name,
+        tags=x_openhands_observability_tags,
+        metadata=x_openhands_observability_metadata,
+        parent_span_context=x_openhands_observability_parent_span_context,
+    )
     try:
         info, is_new = await conversation_service.start_conversation(request)
-    except ProfileNotFound as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    except DanglingMcpServerRef as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
-        ) from e
+    except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
+        raise launch_http_exception(e) from e
     except ClientToolRegistrationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
@@ -340,6 +408,7 @@ async def delete_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def run_conversation(
@@ -371,6 +440,7 @@ async def run_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation run or goal loop is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def start_goal_in_conversation(
@@ -429,6 +499,7 @@ async def stop_goal_in_conversation(
     responses={
         404: {"description": "Item not found"},
         409: {"description": "Conversation run or goal loop is already running"},
+        429: {"description": "Server conversation run capacity is full"},
     },
 )
 async def resume_goal_in_conversation(
@@ -555,7 +626,10 @@ async def switch_conversation_llm(
     """Swap the conversation's LLM to a caller-supplied object.
 
     Used by app-servers that own the LLM directly and don't push profiles
-    to the agent-server's filesystem (see #3017).
+    to the agent-server's filesystem (see #3017), and by the frontend's
+    per-conversation model switch, which forwards a profile config that may
+    reference a saved provider connection by id instead of carrying an inline
+    API key.
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
@@ -564,6 +638,14 @@ async def switch_conversation_llm(
     cipher = get_cipher(request)
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
+    # Resolve a referenced provider connection before installing the LLM, so a
+    # profile linked to a shared connection runs with its api_key / base_url
+    # instead of a keyless config (mirrors LLMProfileStore.load). A dangling
+    # reference or missing credential surfaces as 422 before the working LLM
+    # is replaced. Inline-key configs without a provider_connection_id are
+    # byte-identical to the old path.
+    with store_errors():
+        llm = get_llm_profile_store().resolve_provider_connection(llm, cipher=cipher)
     conversation.switch_llm(llm)
     return Success()
 

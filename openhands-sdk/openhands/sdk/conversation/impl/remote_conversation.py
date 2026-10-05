@@ -1,5 +1,6 @@
 import asyncio
 import bisect
+import importlib
 import json
 import os
 import threading
@@ -52,7 +53,13 @@ from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
-from openhands.sdk.observability.laminar import OPERATION_METADATA_KEY, observe
+from openhands.sdk.observability.laminar import (
+    OPERATION_METADATA_KEY,
+    default_observability_span_name_from_env,
+    merge_observability_metadata,
+    observability_parent_span_context_from_env,
+    observe,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -83,6 +90,18 @@ def _validate_remote_agent(agent_data: dict) -> AgentBase:
 
         return ACPAgent.model_validate(agent_data)
     return AgentBase.model_validate(agent_data)
+
+
+def _restore_tool_registrations(tool_module_qualnames: Mapping[str, str]) -> None:
+    """Import the tool modules persisted with a remote conversation."""
+    for tool_name, module_qualname in tool_module_qualnames.items():
+        try:
+            importlib.import_module(module_qualname)
+        except ImportError as exc:
+            raise ImportError(
+                f"Cannot attach to a conversation that uses tool {tool_name!r}: "
+                f"failed to import module {module_qualname!r}: {exc}"
+            ) from exc
 
 
 def _websocket_close_code(exc: ConnectionClosed) -> int | None:
@@ -726,6 +745,7 @@ class RemoteConversation(BaseConversation):
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         observability_span_name: str = "conversation",
+        observability_parent_span_context: str | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -764,11 +784,24 @@ class RemoteConversation(BaseConversation):
             observability_span_name: Optional child span name for observability
                       backends. The root span remains named "conversation".
         """
+        observability_metadata = merge_observability_metadata(observability_metadata)
+        observability_parent_span_context = (
+            observability_parent_span_context
+            or observability_parent_span_context_from_env()
+        )
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and observability_span_name == "conversation":
+            observability_span_name = default_span_name
+
         # Client tool specs the server already has persisted for this
         # conversation (populated when re-attaching to an existing one). These
         # must be registered locally before the initial event sync so that
         # persisted ``ClientAction_*`` events can be deserialized.
         attached_client_tools: list[ClientToolSpec] = []
+        # Tool modules persisted with the existing conversation. Importing them
+        # registers the dynamic action types the persisted events reference, so
+        # this has to happen before ``_initialize_connection`` syncs events.
+        attached_tool_module_qualnames: Mapping[str, str] = {}
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -795,6 +828,7 @@ class RemoteConversation(BaseConversation):
                     attached_client_tools.append(
                         ClientToolSpec.model_validate(raw_spec)
                     )
+                attached_tool_module_qualnames = info.get("tool_module_qualnames") or {}
 
         if should_create:
             # Import here to avoid circular imports
@@ -842,6 +876,7 @@ class RemoteConversation(BaseConversation):
                 if observability_tags is not None
                 else [],
                 "observability_span_name": observability_span_name,
+                "observability_parent_span_context": observability_parent_span_context,
                 "user_id": user_id,
             }
             if user_id:
@@ -876,6 +911,10 @@ class RemoteConversation(BaseConversation):
             workspace.register_conversation(str(conversation_id))
 
         assert conversation_id is not None
+        # Register the persisted tools before connecting so that events synced
+        # during ``_initialize_connection`` can be deserialized. ``_from_info``
+        # does the same for the ``attach``/``create`` entry points.
+        _restore_tool_registrations(attached_tool_module_qualnames)
         self._initialize_connection(
             agent=agent,
             workspace=workspace,
@@ -899,6 +938,7 @@ class RemoteConversation(BaseConversation):
             metadata=observability_metadata,
             tags=observability_tags,
             conversation_tags=tags,
+            parent_span_context=observability_parent_span_context,
         )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
@@ -917,10 +957,27 @@ class RemoteConversation(BaseConversation):
     ) -> Self:
         """Submit a creation request and connect to the returned conversation.
 
-        The request selects the agent or saved server profile and all server
-        options. A supplied conversation ID follows the server's idempotency
-        contract; this method does not probe for an existing conversation.
+        The request selects the agent source (``agent``, ``agent_settings`` or a
+        saved ``agent_profile_id``) and all server options. A supplied
+        conversation ID follows the server's idempotency contract; this method
+        does not probe for an existing conversation.
         """
+        updates: dict[str, object] = {
+            "observability_metadata": merge_observability_metadata(
+                request.observability_metadata
+            ),
+        }
+        default_span_name = default_observability_span_name_from_env()
+        if default_span_name and request.observability_span_name == "conversation":
+            updates["observability_span_name"] = default_span_name
+        parent_span_context = (
+            request.observability_parent_span_context
+            or observability_parent_span_context_from_env()
+        )
+        if parent_span_context:
+            updates["observability_parent_span_context"] = parent_span_context
+        request = request.model_copy(update=updates)
+
         response = _send_request(
             workspace.client,
             "POST",
@@ -939,6 +996,7 @@ class RemoteConversation(BaseConversation):
             metadata=request.observability_metadata,
             tags=request.observability_tags,
             conversation_tags=request.tags,
+            parent_span_context=request.observability_parent_span_context,
         )
         return conversation
 
@@ -974,6 +1032,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ),
     ) -> Self:
+        _restore_tool_registrations(info.get("tool_module_qualnames") or {})
         conversation = cls.__new__(cls)
         conversation._initialize_connection(
             agent=_validate_remote_agent(info["agent"]),
