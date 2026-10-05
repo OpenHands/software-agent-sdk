@@ -344,6 +344,27 @@ def _optional_bool(source: Mapping[str, Any] | None, key: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+# Model-info key holding the request params a LiteLLM proxy deployment forwards
+# upstream, copied from its ``litellm_params.allowed_openai_params``. The list
+# only extends the provider's native params, so absence is not a denial.
+ALLOWED_OPENAI_PARAMS_KEY = "allowed_openai_params"
+
+# Capabilities that are exactly "the request accepts this param". Only these
+# can be enabled by an advertised param.
+_REQUEST_PARAM_CAPABILITIES: dict[str, str] = {
+    "supports_reasoning_effort": "reasoning_effort",
+    "supports_prompt_cache_key": "prompt_cache_key",
+    "supports_prompt_cache_retention": "prompt_cache_retention",
+}
+
+
+def _advertised_request_params(metadata: Mapping[str, Any] | None) -> frozenset[str]:
+    params = (metadata or {}).get(ALLOWED_OPENAI_PARAMS_KEY)
+    if not isinstance(params, (list, tuple)):
+        return frozenset()
+    return frozenset(p for p in params if isinstance(p, str))
+
+
 def _resolved_bool(
     key: str,
     *,
@@ -356,6 +377,8 @@ def _resolved_bool(
     override = _optional_bool(overrides, key)
     if override is not None:
         return override
+    if _REQUEST_PARAM_CAPABILITIES.get(key) in _advertised_request_params(metadata):
+        return True
     discovered = _optional_bool(metadata, metadata_key or key)
     if discovered is not None:
         return discovered

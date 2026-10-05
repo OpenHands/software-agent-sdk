@@ -11,6 +11,8 @@ no SDK rule behind it is upstream's to change, and pinning one here fails the
 day it does (#4877).
 """
 
+from dataclasses import asdict
+
 import pytest
 from litellm.utils import supports_vision
 
@@ -623,6 +625,79 @@ def test_provider_hint_does_not_leak_into_reasoning_effort():
     assert features.supports_prompt_cache_key is True
     # ... but reasoning_effort stays on the unhinted bare-name lookup.
     assert features.supports_reasoning_effort is False
+
+
+# Unknown to LiteLLM's registry and to every SDK model-name list, so proxy
+# metadata is the only possible source of a capability.
+_UNKNOWN_PROXY_ALIAS = "litellm_proxy/acme-reasoner-7"
+
+
+@pytest.mark.parametrize(
+    "param,capability",
+    [
+        ("reasoning_effort", "supports_reasoning_effort"),
+        ("prompt_cache_key", "supports_prompt_cache_key"),
+        ("prompt_cache_retention", "supports_prompt_cache_retention"),
+    ],
+)
+def test_advertised_request_param_enables_only_its_capability(param, capability):
+    """A proxy-advertised request param enables exactly its capability (#5499)."""
+    without = asdict(get_features(_UNKNOWN_PROXY_ALIAS, model_info={}))
+    advertised = asdict(
+        get_features(
+            _UNKNOWN_PROXY_ALIAS, model_info={"allowed_openai_params": [param]}
+        )
+    )
+
+    assert {k for k in without if without[k] != advertised[k]} == {capability}
+    assert advertised[capability] is True
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    [
+        ["supports_vision", "image_url", "thinking", "tools"],
+        "reasoning_effort",
+        [None, 1, {"name": "reasoning_effort"}],
+        None,
+    ],
+)
+def test_unmapped_or_malformed_advertised_params_change_nothing(allowed):
+    """Vision and other non-request-param capabilities can never be advertised."""
+    assert get_features(
+        _UNKNOWN_PROXY_ALIAS, model_info={"allowed_openai_params": allowed}
+    ) == get_features(_UNKNOWN_PROXY_ALIAS, model_info={})
+
+
+def test_advertised_param_precedence():
+    """Advertised params beat generic metadata; overrides beat both.
+
+    Absence from the advertised list is not a denial.
+    """
+    advertised = {"allowed_openai_params": ["reasoning_effort"]}
+
+    assert (
+        get_features(
+            _UNKNOWN_PROXY_ALIAS,
+            model_info={**advertised, "supports_reasoning": False},
+        ).supports_reasoning_effort
+        is True
+    )
+    assert (
+        get_features(
+            _UNKNOWN_PROXY_ALIAS,
+            model_info=advertised,
+            overrides={"supports_reasoning_effort": False},
+        ).supports_reasoning_effort
+        is False
+    )
+    assert (
+        get_features(
+            _UNKNOWN_PROXY_ALIAS,
+            model_info={"allowed_openai_params": [], "supports_reasoning": True},
+        ).supports_reasoning_effort
+        is True
+    )
 
 
 @pytest.mark.parametrize(
