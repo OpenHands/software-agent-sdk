@@ -1134,48 +1134,65 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType | None = None,
     ) -> bool:
-        """
-        Decide whether user confirmation is needed to proceed.
+        """Analyze actions and record the verdict before applying the policy."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None and on_event is not None:
+            on_event(state.secret_registry.mask_secrets_in_model(event))
+        return self._set_confirmation_status(state, risks)
 
-        Rules:
-            1. Confirmation mode is enabled
-            2. Every action requires confirmation
-            3. A single `FinishAction` never requires confirmation
-            4. A single `ThinkAction` never requires confirmation
-        """
+    async def _arequires_user_confirmation(
+        self,
+        conversation: LocalConversation,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Resolve audit secrets without blocking the loop or holding state."""
+        risks, event = self._analyze_for_confirmation(state, action_events)
+        if event is not None:
+            while True:
+                sources = dict(state.secret_registry.secret_sources)
+                async with conversation._released_state_lock_during_io():
+                    event = await asyncio.to_thread(
+                        state.secret_registry.mask_secrets_in_model, event
+                    )
+                if sources == state.secret_registry.secret_sources:
+                    break
+            on_event(event)
+        return self._set_confirmation_status(state, risks)
+
+    def _analyze_for_confirmation(
+        self, state: ConversationState, action_events: list[ActionEvent]
+    ) -> tuple[list[risk.SecurityRisk], SecurityAnalysisEvent | None]:
         # A single `FinishAction` or `ThinkAction` never requires confirmation
         if len(action_events) == 1 and isinstance(
             action_events[0].action, (FinishAction, ThinkAction)
         ):
-            return False
+            return [], None
 
-        # If there are no actions there is nothing to confirm
-        if len(action_events) == 0:
-            return False
+        if not action_events:
+            return [], None
 
-        # If a security analyzer is registered, use it to grab the risks of the actions
-        # involved. If not, we'll set the risks to UNKNOWN.
-        if state.security_analyzer is not None:
-            analyses = state.security_analyzer.analyze_actions(action_events)
-            risks = [analysis.risk for _, analysis in analyses]
-            # Record the verdict regardless of what the policy does with it, so
-            # the log and UI show what the analyzer said even under NeverConfirm.
-            if on_event is not None:
-                event = SecurityAnalysisEvent(
-                    analyzer=state.security_analyzer.__class__.__name__,
-                    policy=state.confirmation_policy.__class__.__name__,
-                    risks={action.id: analysis.risk for action, analysis in analyses},
-                    details={
-                        action.id: analysis.details
-                        for action, analysis in analyses
-                        if analysis.details is not None
-                    },
-                )
-                on_event(state.secret_registry.mask_secrets_in_model(event))
-        else:
-            risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
+        if state.security_analyzer is None:
+            return [risk.SecurityRisk.UNKNOWN] * len(action_events), None
 
-        # Grab the confirmation policy from the state and pass in the risks.
+        analyses = state.security_analyzer.analyze_actions(action_events)
+        event = SecurityAnalysisEvent(
+            analyzer=state.security_analyzer.__class__.__name__,
+            policy=state.confirmation_policy.__class__.__name__,
+            risks={action.id: analysis.risk for action, analysis in analyses},
+            details={
+                action.id: analysis.details
+                for action, analysis in analyses
+                if analysis.details is not None
+            },
+        )
+        return [analysis.risk for _, analysis in analyses], event
+
+    @staticmethod
+    def _set_confirmation_status(
+        state: ConversationState, risks: list[risk.SecurityRisk]
+    ) -> bool:
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
             state.execution_status = (
                 ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
