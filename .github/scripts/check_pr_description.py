@@ -25,8 +25,7 @@ ISSUE_REF_RE = re.compile(r"(?i)\b(?:fix|clos|resolv)(?:e?(?:s|d)?|ing)?\s+#(\d+
 BARE_ISSUE_REF_RE = re.compile(r"(?<!\w)#(\d+)")
 READY_FOR_DEV_LABEL = "ready-for-dev"
 # Issues created before the `ready-for-dev` rollout are grandfathered: the
-# issue-readiness workflow only labels issues on `issues` events, so long-open
-# issues were never evaluated. Requiring the label retroactively would block
+# rollout did not retroactively evaluate older issues. Requiring the label retroactively would block
 # existing PRs linked to those issues. The cutoff is the UTC day AFTER the
 # rollout/deployment day (2026-08-12), so every issue predating deployment —
 # including ones opened earlier that same day, before the workflow existed —

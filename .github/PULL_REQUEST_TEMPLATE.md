@@ -16,9 +16,11 @@ AI agents: you must not edit this section.
 
 AGENT:
 <!-- AI/LLM agents:
-In the AGENT section and the template fields below, provide evidence that the
-code runs properly end-to-end. Just running unit tests is NOT sufficient. Explain
-exactly what command you ran and include logs, screenshots, or reproduction notes.
+In the AGENT section and the template fields below, provide evidence appropriate
+to the change and the review guide. Runtime lifecycle/integration bug fixes need
+real-path evidence beyond constructed unit state. Nonvisual evidence can be
+commands, logs, API responses, or reproduction notes; media is not mandatory.
+For documentation-only changes, describe document validation and its limits.
 -->
 
 ## Why
@@ -44,7 +46,8 @@ If you could not test this, say why.
 ## Video/Screenshots
 
 <!--
-Provide a video or screenshots of testing your PR. e.g. you added a new feature to the gui, show us the video of you testing it successfully.
+For visual changes, provide useful video or screenshots. For nonvisual changes,
+use logs, API responses, or reproduction notes in How to Test; media is optional.
 
 -->
 

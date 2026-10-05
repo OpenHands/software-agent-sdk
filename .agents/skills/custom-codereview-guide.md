@@ -11,7 +11,26 @@ Apply this guide with the general code-review skill and the closest `AGENTS.md`
 for every changed package. This file identifies the repository-specific checks
 that should affect the review decision; it does not replace those sources.
 
-## Review decision
+## Issue triage: ownership and scope
+
+Read this guide during issue triage before recommending an owner or scope.
+Implementation checkpoints below are conditional review aids, not extra issue
+readiness gates. Do not require a patch, PR, implementation design, or
+before-and-after test evidence to make an otherwise actionable issue ready.
+Use the problem, expected outcome, reproduction/context where relevant, and
+explicit acceptance criteria and non-goals; ask only for missing information
+that prevents a scope or readiness decision.
+
+The authoritative label policy is
+[`.github/workflows/issue-readiness-check.yml`](../../.github/workflows/issue-readiness-check.yml):
+`ready-for-dev` grants require repository `write`, `maintain`, or `admin`
+permission, including for automation actors. The workflow enforces who may grant
+the label; it does not assess issue content. Do not invent additional readiness
+rules or override an authorized writer's decision with PR evidence requirements.
+Nonvisual bugs can be supported by logs, API responses, or a minimal reproducer;
+screenshots/video are useful for visual symptoms, not a universal requirement.
+
+## Implementation review: decision
 
 Use **APPROVE** when the current PR head has no material correctness, security,
 compatibility, or acceptance-criterion defect. Use **COMMENT** when there is a
@@ -60,7 +79,36 @@ serialization, REST/WebSocket transport, the TypeScript client, and resume or
 fork paths as applicable. A field added to one model or a method added to one
 client is incomplete if another supported path drops, renames, or ignores it.
 
+## Acceptance review
+
+Separate acceptance from implementation correctness: map each claimed outcome to
+what the current head actually delivers. An issue's alternative approach is not
+proof that its primary outcome is satisfied; identify any agreed scope change
+rather than claiming full acceptance. Honor explicit defaults and non-goals.
+Distinguish introduced regressions, required acceptance gaps, and pre-existing
+bugs; do not expand a focused PR to repair unrelated existing defects.
+
 ## Blocking architecture checkpoints
+
+Apply only checkpoints relevant to changed behavior and affected supported paths;
+this is not a requirement to exercise every backend or construction path on
+unrelated PRs.
+
+### Version-aware construction and capability boundaries
+
+Establish the affected SDK, Agent Server, client, and downstream application
+versions before assigning cross-repository ownership or claiming parity. A fix
+on another repository's main branch is not necessarily in the consumer's pinned
+release. Coordinate contract changes rather than duplicating the owning layer.
+
+For settings, tools, or delegation changes, trace direct constructors, saved
+profiles, REST requests, factories, and nested delegation as applicable. Check
+both bare tools and toolsets (for example `workflow` and `workflow_tool_set`).
+Validate the agent actually built, not only its requested configuration: an
+OpenHands `Agent` and an opaque `ACPAgent` do not expose equivalent capability
+boundaries. A visible `tools` list alone cannot prove that an ACP factory obeys a
+restricting tool/MCP scope. Check supported rejection and unrestricted paths,
+including inheritance into nested delegates.
 
 ### Public and persisted compatibility
 
@@ -92,6 +140,20 @@ the change. Verify that:
 - resumed or forked conversations preserve the same observable configuration
   and behavior as newly created conversations.
 
+Start the lifecycle trace at the first external mutation, including persistence
+writes before service registration or lock acquisition. Distinguish harmless
+preparation from a losing create/fork overwriting the winner's artifacts; inspect
+the actual locked recheck and publication before alleging duplicate registration.
+Check rollback when initialization fails after partial parent attachment or
+resource acquisition. On resume, old waiters and workers must retain their run
+identity and receive atomic settlement; do not clear/reuse their completion
+signals. Join only owned worker threads, not borrowed caller/pool threads.
+
+For changes to archive, resume, or storage, compare affected local, Docker, and
+Cloud backend contracts: response/error status, retained history, freshest
+metadata at shutdown/archive, and matching search/count filters. Derive parity
+from the promised behavior, not identical internal implementation.
+
 Do not require a speculative cleanup abstraction. Identify a resource that can
 actually outlive its owner or a state transition that produces a wrong result.
 
@@ -103,6 +165,21 @@ the helpers in `openhands.sdk.utils.pydantic_secrets`; do not accept custom
 redaction sentinels or one-off serializers. Verify that secrets cannot appear in
 logs, exceptions, command strings, persisted plaintext, or ordinary model dumps,
 and that resume and plugin-loading paths apply the same policy as creation.
+
+For authentication or redaction changes, follow the deployed request path:
+mounted `root_path`, matched routes, and forwarded headers from trusted versus
+untrusted proxies. Exercise relevant nested decoding/normalization boundaries
+before trusting paths or hosts, and established connections when credentials
+expire, not only a fresh handshake. Use the actual configured trust and expiry
+contract, not a hypothetical deployment requirement.
+
+### Timeout provenance
+
+For timeout/cancellation changes, identify which layer owns each deadline and
+exception (provider/transport, per-attempt retry, stream idle, or outer run).
+Check propagation, retry classification, and cleanup without converting an inner
+failure into the wrong timeout. Preserve explicitly disabled timers (`None` or
+zero where documented); test only the relevant enabled/disabled paths.
 
 ### Production runtime parity
 

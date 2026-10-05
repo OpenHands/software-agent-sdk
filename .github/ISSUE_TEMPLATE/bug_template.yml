@@ -165,11 +165,13 @@ body:
     - type: textarea
       id: additional-context
       attributes:
-          label: Screenshots and Additional Context
+          label: Evidence and Additional Context
           description: |
-              Add screenshots, environment details, dependency versions, or other context that helps explain the issue.
+              For nonvisual bugs, include logs, API responses, or a minimal reproducer.
+              Screenshots/video are optional and useful for visual symptoms.
+              Include environment details and dependency versions; redact secrets.
 
-          placeholder: Drag and drop screenshots here, paste links, or add additional context.
+          placeholder: Paste reproduction output or links, or attach media for visual symptoms.
 
     - type: markdown
       attributes:
