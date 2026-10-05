@@ -42,6 +42,27 @@ accepted the list-format `tool` message and the model saw the image, so the
 `!deepseek-v4-flash` / `!deepseek-v4.1-flash` exclusions are compatible with the
 serving route for tool results, not just for user messages.
 
+## Finding 3 — the vision inspection tool delivers its image
+
+The finding also claims `vision_inspect.py` "selects the profile but cannot
+deliver its image". Ran `VisionInspectExecutor` end-to-end against a real
+`Conversation` whose latest user message carried a 128x128 PNG (green field,
+white triangle), routing `get_or_create_profile_llm` to the live
+`openhands/deepseek-v4.1-flash` LLM:
+
+```
+is_error: False
+model: openhands/deepseek-v4.1-flash
+ANSWER: A white triangle centered on a solid green background.
+```
+
+The executor builds a `user` message with `ImageContent` and calls
+`vision_llm.generate(...)`, which for this model uses the Chat Completions path
+(`uses_responses_api() == False`). The image is serialized as list content and
+reaches the model. The deterministic equivalent
+(`test_vision_profile_tool_keeps_image_for_deepseek_vision_model`) is in
+`tests/sdk/agent/test_non_multimodal_image_input.py`.
+
 ## Scope
 
 Only `openhands/deepseek-v4.1-flash` was exercised live. The exclusion rules also
