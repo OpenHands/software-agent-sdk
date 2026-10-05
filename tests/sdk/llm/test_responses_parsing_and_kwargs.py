@@ -677,6 +677,44 @@ async def test_aresponses_hung_stream_idle_timeout_retries(mock_aresponses):
     assert mock_aresponses.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_aresponses_ignored_events_keep_stream_alive():
+    stream_events, completed = _make_wrapped_response_stream_events()
+
+    async def events():
+        # Total duration exceeds the idle timeout; each provider event resets it.
+        for _ in range(6):
+            await asyncio.sleep(0.1)
+            yield SimpleNamespace(type="response.in_progress")
+        yield stream_events[-1]
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        timeout=2,
+        stream_idle_timeout=0.5,
+        num_retries=0,
+    )
+    chunks = []
+    with patch(
+        "openhands.sdk.llm.llm.litellm_aresponses",
+        new_callable=AsyncMock,
+        return_value=events(),
+    ):
+        result = await llm.aresponses(
+            [
+                Message(role="system", content=[TextContent(text="Be helpful")]),
+                Message(role="user", content=[TextContent(text="Hello")]),
+            ],
+            stream=True,
+            on_token=chunks.append,
+        )
+
+    assert result.raw_response is completed
+    assert result.message.content == [TextContent(text="Hello wrapped stream")]
+    assert chunks == []
+
+
 def test_stream_delta_chunks_carry_the_output_item_id():
     """All deltas of one output item must share a chunk id.
 
