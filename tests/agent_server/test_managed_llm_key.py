@@ -23,6 +23,7 @@ from openhands.agent_server.managed_llm_key import (
     REFRESH_URL_ENV,
     _load_headers,
     register_managed_llm_key_refresh,
+    register_managed_llm_key_refresh_on_llms,
 )
 from openhands.sdk import LLM, Agent
 from openhands.sdk.llm import Message, TextContent
@@ -266,3 +267,57 @@ def test_headers_bare_dollar_reference_expands(monkeypatch):
     assert _load_headers('{"X-Session-API-Key": "$OH_SESSION_API_KEYS_0"}') == {
         "X-Session-API-Key": "sess-xyz"
     }
+
+
+# ---------------------------------------------------------------------------
+# register_managed_llm_key_refresh_on_llms: used for LLMs not reached via
+# agent.get_all_llms(), notably the title-generation LLM loaded from a profile
+# store (OpenHands/software-agent-sdk#5528).
+# ---------------------------------------------------------------------------
+
+
+def test_on_llms_registers_and_feeds_sdk_resolution(monkeypatch):
+    # A profile-loaded title LLM (not part of any agent) must still self-heal.
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    title_llm = _llm("title", MANAGED_BASE_URL)
+
+    assert register_managed_llm_key_refresh_on_llms([title_llm]) == 1
+
+    with _served_key(REFRESH_URL, "fresh_key"):
+        refreshed = title_llm._resolve_refreshed_api_key(_auth_error())
+    assert refreshed is not None
+    assert refreshed.get_secret_value() == "fresh_key"
+
+
+def test_on_llms_scopes_to_managed_base_url(monkeypatch):
+    # A title LLM pointed at a direct provider (BYOK base_url) stays untouched.
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    byok_title = _llm("title", BYOK_BASE_URL)
+
+    assert register_managed_llm_key_refresh_on_llms([byok_title]) == 0
+    with _served_key(REFRESH_URL, "fresh_key"):
+        assert byok_title._resolve_refreshed_api_key(_auth_error()) is None
+
+
+def test_on_llms_noop_when_feature_off(monkeypatch):
+    # Feature disabled (no env): no hook, exact current behaviour preserved.
+    monkeypatch.delenv(REFRESH_URL_ENV, raising=False)
+    title_llm = _llm("title", MANAGED_BASE_URL)
+
+    assert register_managed_llm_key_refresh_on_llms([title_llm]) == 0
+    assert title_llm._resolve_refreshed_api_key(_auth_error()) is None
+
+
+def test_agent_wrapper_delegates_to_on_llms(monkeypatch):
+    # The agent entry point is a thin wrapper over the per-LLM helper.
+    monkeypatch.setenv(REFRESH_URL_ENV, REFRESH_URL)
+    monkeypatch.setenv(REFRESH_BASE_URLS_ENV, MANAGED_BASE_URL)
+    llm = _llm("m", MANAGED_BASE_URL)
+
+    assert register_managed_llm_key_refresh(_agent(llm)) == 1
+    with _served_key(REFRESH_URL, "fresh_key"):
+        refreshed = llm._resolve_refreshed_api_key(_auth_error())
+    assert refreshed is not None
+    assert refreshed.get_secret_value() == "fresh_key"

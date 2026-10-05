@@ -2540,13 +2540,27 @@ class AutoTitleSubscriber(Subscriber):
             )
 
             profile_store = get_llm_profile_store()
-            return profile_store.load(profile_name, cipher=self.service.cipher)
+            title_llm = profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
                 "Falling back to the agent's LLM."
             )
             return None
+
+        # The title LLM is loaded fresh from the profile store, so it is not part
+        # of agent.get_all_llms() and never received the managed-key refresh hook
+        # that register_managed_llm_key_refresh() attaches at conversation start.
+        # Without it, a managed-proxy title LLM whose key rotated (or was never
+        # hydrated) hits 401 token_not_found_in_db and cannot self-heal. Register
+        # the hook here too; it is a no-op for BYOK / out-of-scope LLMs and when
+        # the refresh feature is disabled. See software-agent-sdk#5528.
+        from openhands.agent_server.managed_llm_key import (
+            register_managed_llm_key_refresh_on_llms,
+        )
+
+        register_managed_llm_key_refresh_on_llms([title_llm])
+        return title_llm
 
 
 @dataclass

@@ -17,7 +17,10 @@ from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
 )
-from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
+from openhands.agent_server.managed_llm_key import (
+    register_managed_llm_key_refresh,
+    register_managed_llm_key_refresh_on_llms,
+)
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -2146,6 +2149,15 @@ class EventService:
             except KeyError:
                 self._conversation.llm_registry.add(llm)
                 resolved_llm = llm
+
+        if resolved_llm is not None:
+            # A control-plane-supplied title LLM is resolved here rather than
+            # through the agent, so it misses the refresh hook that
+            # register_managed_llm_key_refresh() attaches to agent.get_all_llms().
+            # Attach it so a managed-proxy title LLM self-heals on a 401 like the
+            # agent's LLM. No-op for BYOK / out-of-scope LLMs. See
+            # software-agent-sdk#5528.
+            register_managed_llm_key_refresh_on_llms([resolved_llm])
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
