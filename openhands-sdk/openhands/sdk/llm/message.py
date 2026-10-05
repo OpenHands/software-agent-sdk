@@ -14,6 +14,7 @@ from openhands.sdk.llm._message_normalization import (
     MessageOutput,
     ReasoningOutput,
     normalize_response_output,
+    normalize_text_part,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
@@ -552,19 +553,22 @@ class Message(BaseModel):
         for raw_item in output or []:
             item = normalize_response_output(raw_item)
             if isinstance(item, MessageOutput):
-                for part in item.content or []:
-                    if part.type == "output_text" and part.text:
+                for raw_part in item.content or []:
+                    part = normalize_text_part(raw_part)
+                    if part is not None and part.text:
                         assistant_text_parts.append(part.text)
             elif isinstance(item, (OutputFunctionToolCall, ResponseFunctionToolCall)):
                 tc = MessageToolCall.from_responses_function_call(item)
                 tool_calls.append(tc)
             elif isinstance(item, FunctionOutput):
-                tc = MessageToolCall(
-                    id=item.call_id or item.id or "",
-                    responses_item_id=item.id or None,
-                    name=item.name,
-                    arguments=item.arguments,
-                    origin="responses",
+                tc = MessageToolCall.model_validate(
+                    {
+                        "id": item.call_id or item.id or "",
+                        "responses_item_id": str(item.id) if item.id else None,
+                        "name": item.name,
+                        "arguments": item.arguments,
+                        "origin": "responses",
+                    }
                 )
                 tool_calls.append(tc)
             elif isinstance(item, ReasoningOutput):

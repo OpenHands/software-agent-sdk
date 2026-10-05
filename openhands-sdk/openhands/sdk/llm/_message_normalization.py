@@ -1,8 +1,6 @@
-from typing import Any
-
 from litellm import ResponseFunctionToolCall
 from litellm.types.responses.main import OutputFunctionToolCall
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 
 class _ProviderFields(BaseModel):
@@ -14,7 +12,11 @@ class ChatMessageMetadata(_ProviderFields):
 
     reasoning_content: str | None = None
     thinking_blocks: list[dict[str, object]] | None = None
-    provider_specific_fields: dict[str, Any] | None = None
+
+
+class NonNativeMessageMetadata(_ProviderFields):
+    reasoning_content: str | None = None
+    provider_specific_fields: object = None
 
 
 class _OutputKind(_ProviderFields):
@@ -24,13 +26,18 @@ class _OutputKind(_ProviderFields):
 class _TextPart(_OutputKind):
     text: str | None = None
 
+    @field_validator("text", mode="before")
+    @classmethod
+    def ignore_empty_text(cls, value: object) -> object:
+        return value or None
+
 
 class MessageOutput(_ProviderFields):
-    content: list[_TextPart] | None = None
+    content: list[object] | None = None
 
 
 class FunctionOutput(_ProviderFields):
-    id: str | None = None
+    id: object = None
     call_id: str | None = None
     name: str = ""
     arguments: str = ""
@@ -55,6 +62,16 @@ ResponseOutput = (
     | ResponseFunctionToolCall
     | OutputFunctionToolCall
 )
+
+
+def normalize_text_part(part: object) -> _TextPart | None:
+    try:
+        kind = _OutputKind.model_validate(part).type
+    except ValidationError:
+        return None
+    if kind == "output_text":
+        return _TextPart.model_validate(part)
+    return None
 
 
 def normalize_response_output(item: object) -> ResponseOutput | None:

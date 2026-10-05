@@ -1,12 +1,15 @@
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import Protocol, runtime_checkable
 
+from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
     ReasoningSummaryTextDeltaEvent,
     RefusalDeltaEvent,
     ResponseCompletedEvent,
+    ResponsesAPIStreamEvents,
 )
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 
@@ -24,6 +27,15 @@ class OutputItemEvent(Protocol):
 class _CompletionSource(Protocol):
     @property
     def completed_response(self) -> object: ...
+
+
+class _GenericOutputItemEvent(BaseModel):
+    # Pydantic extras are exposed dynamically, so runtime Protocol checks
+    # cannot see them on Python 3.12+. Project only the fields we consume.
+    model_config = ConfigDict(from_attributes=True)
+
+    type: str = ""
+    item: object = None
 
 
 ResponseStreamEvent = (
@@ -61,6 +73,13 @@ def _response_event(event: object) -> ResponseStreamEvent | None:
         ),
     ):
         return event
+    if isinstance(event, BaseLiteLLMOpenAIResponseObject):
+        try:
+            normalized = _GenericOutputItemEvent.model_validate(event)
+        except ValidationError:
+            return None
+        if normalized.type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+            return normalized
     return None
 
 

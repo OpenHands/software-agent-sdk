@@ -22,7 +22,9 @@ def main():
         stderr=subprocess.DEVNULL,
     )
     try:
-        deadline = time.monotonic() + 25
+        # A one-file PyInstaller artifact can spend ~45 seconds unpacking on a
+        # cold macOS run before application startup begins.
+        deadline = time.monotonic() + 75
         while time.monotonic() < deadline:
             if server.poll() is not None:
                 raise RuntimeError(
@@ -35,7 +37,7 @@ def main():
                         return
             except (HTTPError, URLError, TimeoutError):
                 time.sleep(0.25)
-        raise TimeoutError("Packaged server did not become healthy within 25 seconds")
+        raise TimeoutError("Packaged server did not become healthy within 75 seconds")
     finally:
         server.terminate()
         try:

@@ -49,6 +49,21 @@ def create_mock_response(content: str = "Test response", response_id: str = "tes
     )
 
 
+@pytest.mark.parametrize("non_native", [False, True])
+def test_opaque_provider_metadata_does_not_reject_valid_chat_text(non_native):
+    # LiteLLM accepts opaque provider values at runtime despite its annotation.
+    provider_fields: dict[str, Any] = {"provider_specific_fields": ["extra"]}
+    message = LiteLLMMessage(role="assistant", content="hello", **provider_fields)
+    if non_native:
+        response = create_mock_response("hello")
+        response.choices[0].message = message
+        llm = LLM(model="gpt-4o", native_tool_calling=False)
+        response = llm.post_response_prompt_mock(response, nonfncall_msgs=[], tools=[])
+        assert response.choices[0].message.provider_specific_fields == ["extra"]
+        message = response.choices[0].message
+    assert Message.from_llm_chat_message(message).content == [TextContent(text="hello")]
+
+
 # Helper tool classes for testing
 class _ArgsBasic(Action):
     """Basic action for testing."""

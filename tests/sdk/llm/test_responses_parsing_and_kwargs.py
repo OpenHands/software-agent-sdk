@@ -3,7 +3,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
+from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
+    GenericEvent,
     OutputTextDeltaEvent,
     ResponseAPIUsage,
     ResponseCompletedEvent,
@@ -17,7 +19,7 @@ from openai.types.responses.response_reasoning_item import (
     ResponseReasoningItem,
     Summary,
 )
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.llm import LLM, LLMCallContext
 from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMTimeoutError
@@ -38,6 +40,48 @@ def build_responses_message_output(texts: list[str]) -> ResponseOutputMessage:
         status="completed",
         content=parts,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.parametrize(
+    "ignored_part",
+    [
+        {"type": "future_part", "text": 42},
+        SimpleNamespace(type="future_part", text=42),
+        None,
+        {"type": "output_text", "text": 0},
+    ],
+)
+def test_responses_ignores_unused_or_empty_text_parts(ignored_part):
+    message = Message.from_llm_responses_output(
+        [
+            {
+                "type": "message",
+                "content": [ignored_part, {"type": "output_text", "text": "hello"}],
+            }
+        ]
+    )
+    assert message.content == [TextContent(text="hello")]
+
+
+@pytest.mark.parametrize("call_id", ["call_1", None])
+def test_responses_generic_numeric_item_id_preserves_validation(call_id):
+    output = [
+        {
+            "type": "function_call",
+            "id": 42,
+            "call_id": call_id,
+            "name": "foo",
+            "arguments": "{}",
+        }
+    ]
+    if call_id is None:
+        with pytest.raises(ValidationError):
+            Message.from_llm_responses_output(output)
+    else:
+        message = Message.from_llm_responses_output(output)
+        assert message.tool_calls is not None
+        assert message.tool_calls[0].id == "call_1"
+        assert message.tool_calls[0].responses_item_id == "42"
 
 
 def test_from_llm_responses_output_parsing():
@@ -735,16 +779,17 @@ async def test_responses_stream_completion_state(mode, completion_source):
         )
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-async def test_responses_reconstructs_output_without_callback(asynchronous):
+@pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
+@pytest.mark.parametrize(
+    "event_type", [SimpleNamespace, BaseLiteLLMOpenAIResponseObject, GenericEvent]
+)
+async def test_responses_reconstructs_output_without_callback(mode, event_type):
     events, completed = _make_wrapped_response_stream_events()
     output_item = completed.output[0]
     completed.output = []
     events.insert(
         0,
-        SimpleNamespace(
-            type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE, item=output_item
-        ),
+        event_type(type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE, item=output_item),
     )
 
     async def async_events():
@@ -755,11 +800,11 @@ async def test_responses_reconstructs_output_without_callback(asynchronous):
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
     with patch.object(LLM, "requires_streaming", new_callable=PropertyMock) as required:
         required.return_value = True
-        if asynchronous:
+        if mode != "sync":
             with patch(
                 "openhands.sdk.llm.llm.litellm_aresponses",
                 new_callable=AsyncMock,
-                return_value=async_events(),
+                return_value=async_events() if mode == "async" else iter(events),
             ):
                 result = await llm.aresponses(messages, stream=True)
         else:
@@ -768,4 +813,5 @@ async def test_responses_reconstructs_output_without_callback(asynchronous):
             ):
                 result = llm.responses(messages, stream=True)
     assert result.raw_response is completed
+    assert completed.output[0] is output_item
     assert result.message.content == [TextContent(text="Hello wrapped stream")]
