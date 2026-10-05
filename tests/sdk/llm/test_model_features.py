@@ -464,6 +464,27 @@ def test_vision_capable_models_supports_vision(model: str):
     assert get_features(model).supports_vision is True
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "openhands/deepseek-v4.1-flash",
+        "litellm_proxy/deepseek/deepseek-v4.1-flash",
+    ],
+)
+def test_vision_capable_models_do_not_force_string_serializer(model: str):
+    """Vision-capable DeepSeek ids must keep list serialization.
+
+    Regression for #5523: the broad ``"deepseek"`` entry in
+    FORCE_STRING_SERIALIZER_MODELS otherwise drops image content because
+    ``Message.to_chat_dict`` takes the string branch.
+    """
+    features = get_features(model)
+    assert features.supports_vision is True
+    assert features.force_string_serializer is False
+
+
 def test_vision_capable_models_stay_out_of_litellm_resolvable_ids():
     """Every entry must be one LiteLLM cannot already resolve.
 
@@ -539,6 +560,9 @@ def test_force_string_serializer_full_model_names():
     should only match when provider-prefixed with groq/.
     """
     assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
+    # Non-vision DeepSeek variants keep the string serializer.
+    for model in ("deepseek-v3", "deepseek-chat", "deepseek-v4-pro"):
+        assert get_features(model).force_string_serializer is True
     assert get_features("GLM-4.5").force_string_serializer is True
     # Provider-agnostic Kimi should not force string serializer
     assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False

@@ -277,10 +277,15 @@ RESPONSES_API_MODELS: list[str] = [
 # Models that require string serializer for tool messages
 # These models don't support structured content format [{"type":"text","text":"..."}]
 # and need plain strings instead
-# NOTE: model_matches uses case-insensitive substring matching, not globbing.
-#       Keep these entries as bare substrings without wildcards.
+# NOTE: evaluated with apply_ordered_model_rules, which uses case-insensitive
+#       substring matching (not globbing) and honors "!" exclude rules with
+#       last-match-wins semantics. Keep entries as bare substrings.
 FORCE_STRING_SERIALIZER_MODELS: list[str] = [
     "deepseek",  # e.g., DeepSeek-V3.2-Exp
+    # Vision-capable DeepSeek variants must NOT force the string serializer,
+    # otherwise image content is dropped. See #5523.
+    "!deepseek-v4.1-flash",
+    "!deepseek-v4-flash",
     "glm",  # e.g., GLM-4.5 / GLM-4.6
     # Kimi K2-Instruct requires string serialization only on Groq
     "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs
@@ -495,7 +500,9 @@ def get_features(
             fallback=not model_matches(model, SUPPORTS_STOP_WORDS_FALSE_MODELS),
         ),
         supports_responses_api=_supports_responses_api(model, model_info, overrides),
-        force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_MODELS),
+        force_string_serializer=apply_ordered_model_rules(
+            model, FORCE_STRING_SERIALIZER_MODELS
+        ),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_MODELS),
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
         supports_prompt_cache_retention=_resolved_bool(
