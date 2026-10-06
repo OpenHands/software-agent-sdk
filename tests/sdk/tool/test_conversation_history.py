@@ -178,6 +178,36 @@ def test_history_long_query_and_empty_end_pages(history_conversation_factory):
         assert page["next_offset"] is None
 
 
+@pytest.mark.parametrize(
+    ("source", "role"),
+    [("agent", "system"), ("environment", "user"), ("hook", "user")],
+)
+def test_history_does_not_expose_internal_message_events(
+    history_conversation_factory, source, role
+):
+    conversation = history_conversation_factory()
+    conversation.send_message("Visible request.")
+    event = MessageEvent(
+        source=source,
+        llm_message=Message(
+            role=role, content=[TextContent(text="internal-message-only")]
+        ),
+    )
+    with conversation.state:
+        conversation._on_event(event)
+    assert (
+        read_history(conversation, command="search", query="internal-message-only")[
+            "matches"
+        ]
+        == []
+    )
+    result = conversation.execute_tool(
+        "conversation_history",
+        ConversationHistoryAction(command="read", event_id=event.id),
+    )
+    assert result.is_error
+
+
 def test_history_excludes_internal_reasoning_and_its_own_results(
     history_conversation_factory,
 ):

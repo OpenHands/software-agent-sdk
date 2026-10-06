@@ -89,6 +89,11 @@ def history_event_text(event: Event) -> str | None:
 
     if not isinstance(event, (MessageEvent, ActionEvent, ObservationBaseEvent)):
         return None
+    if isinstance(event, MessageEvent) and (
+        event.source not in {"user", "agent"}
+        or event.llm_message.role not in {"user", "assistant"}
+    ):
+        return None
     if isinstance(event, (ActionEvent, ObservationBaseEvent)):
         if event.tool_name == "conversation_history":
             return None
