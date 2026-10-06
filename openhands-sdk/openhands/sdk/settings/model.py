@@ -485,7 +485,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 8
+AGENT_SETTINGS_SCHEMA_VERSION = 9
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -747,6 +747,30 @@ def _migrate_agent_settings_v7_to_v8_request(
 ) -> dict[str, Any]:
     """Advance a request to v8, leaving its switches to be folded as input."""
     return {**payload, "schema_version": 8}
+
+
+def _migrate_agent_settings_v8_to_v9(payload: dict[str, Any]) -> dict[str, Any]:
+    """Store a ``no_op`` condenser as the disabled summarizing condenser.
+
+    ``condenser_kind`` is no longer in the exported settings schema, so a
+    settings form cannot show or change a stored ``no_op`` condenser. At run
+    time ``no_op`` matches the summarizing condenser with ``enabled: false``:
+    neither condenses. Rewrite it to that shape, with the summarizer fields at
+    their defaults, so the ``enabled`` switch is the only control.
+    """
+    migrated = dict(payload)
+    condenser = migrated.get("condenser")
+    if isinstance(condenser, Mapping) and condenser.get("condenser_kind") == "no_op":
+        migrated["condenser"] = {"condenser_kind": "llm_summarizing", "enabled": False}
+    migrated["schema_version"] = 9
+    return migrated
+
+
+def _migrate_agent_settings_v8_to_v9_request(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Advance a request to v9, keeping a ``no_op`` condenser it asks for."""
+    return {**payload, "schema_version": 9}
 
 
 def _migrate_agent_settings_payload(
@@ -1071,10 +1095,12 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     5: _migrate_agent_settings_v5_to_v6,
     6: _migrate_agent_settings_v6_to_v7,
     7: _migrate_agent_settings_v7_to_v8,
+    8: _migrate_agent_settings_v8_to_v9,
 }
 _REQUEST_AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     **_AGENT_SETTINGS_MIGRATIONS,
     7: _migrate_agent_settings_v7_to_v8_request,
+    8: _migrate_agent_settings_v8_to_v9_request,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,

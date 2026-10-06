@@ -1,0 +1,34 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v9-llm",
+    "condenser": {
+      "enabled": true,
+      "condenser_kind": "llm_summarizing",
+      "max_size": 120,
+      "max_tokens": 64000,
+      "keep_first": 4,
+      "minimum_progress": 0.1,
+      "hard_context_reset_max_retries": 5,
+      "hard_context_reset_context_scaling": 0.8
+    }
+  },
+  "schema_version": 9,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v9-llm"
+  },
+  "tools": [
+    {
+      "name": "terminal",
+      "params": {}
+    }
+  ],
+  "condenser": {
+    "enabled": true,
+    "condenser_kind": "llm_summarizing",
+    "max_size": 120,
+    "max_tokens": 64000,
+    "keep_first": 4
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "__expected__": {
+    "schema_version": 9,
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v8-no-op-llm",
+    "condenser": {
+      "enabled": false,
+      "condenser_kind": "llm_summarizing",
+      "max_size": 240,
+      "max_tokens": null,
+      "keep_first": 2,
+      "minimum_progress": 0.1,
+      "hard_context_reset_max_retries": 5,
+      "hard_context_reset_context_scaling": 0.8
+    }
+  },
+  "schema_version": 8,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "fixture-v8-no-op-llm"
+  },
+  "condenser": {
+    "enabled": true,
+    "condenser_kind": "no_op"
+  }
+}

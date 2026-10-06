@@ -144,7 +144,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 5
+PERSISTED_SETTINGS_SCHEMA_VERSION = 6
 
 
 class PersistedSettings(BaseModel):
@@ -400,8 +400,10 @@ class PersistedSettings(BaseModel):
           step with the nested shape change.
         - **v4**: nested ``agent_settings`` advanced to schema v7
           (dropped the deprecated ``llm`` from ACP settings).
-        - **v5** (current): nested ``agent_settings`` advanced to schema v8
+        - **v5**: nested ``agent_settings`` advanced to schema v8
           (retired tool switches folded into ``tools``).
+        - **v6** (current): nested ``agent_settings`` advanced to schema v9
+          (a ``no_op`` condenser stored as the disabled summarizing condenser).
         """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)

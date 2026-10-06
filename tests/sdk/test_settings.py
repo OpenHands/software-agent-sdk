@@ -590,6 +590,111 @@ def test_validate_agent_settings_migrates_v6_keeps_openhands_llm() -> None:
     assert settings.llm.model == "gpt-4o"
 
 
+_DISABLED_SUMMARIZER = {
+    "enabled": False,
+    "condenser_kind": "llm_summarizing",
+    "max_size": 240,
+    "max_tokens": None,
+    "keep_first": 2,
+    "minimum_progress": 0.1,
+    "hard_context_reset_max_retries": 5,
+    "hard_context_reset_context_scaling": 0.8,
+}
+
+
+@pytest.mark.parametrize("schema_version", [1, 7, 8])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_validate_agent_settings_migrates_v8_no_op_condenser(
+    schema_version: int, enabled: bool
+) -> None:
+    """A stored ``no_op`` condenser becomes the disabled summarizer.
+
+    Both condense nothing, and ``enabled`` is the only condenser control the
+    settings schema offers once ``condenser_kind`` is hidden.
+    """
+    settings = validate_agent_settings(
+        {
+            "schema_version": schema_version,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "condenser": {"enabled": enabled, "condenser_kind": "no_op"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert isinstance(settings.condenser, LLMSummarizingCondenserSettings)
+    assert settings.condenser.model_dump() == _DISABLED_SUMMARIZER
+    assert settings.create_agent().condenser is None
+
+
+def test_unversioned_persisted_no_op_condenser_migrates_as_a_legacy_row() -> None:
+    payload = {
+        "agent_kind": "openhands",
+        "llm": {"model": "m"},
+        "condenser": {"enabled": True, "condenser_kind": "no_op"},
+    }
+
+    settings = validate_agent_settings(payload, persisted=True)
+    concrete = OpenHandsAgentSettings.from_persisted(payload)
+
+    for loaded in (settings, concrete):
+        assert isinstance(loaded, OpenHandsAgentSettings)
+        assert loaded.condenser.model_dump() == _DISABLED_SUMMARIZER
+
+
+def test_validate_agent_settings_v8_keeps_summarizing_condenser() -> None:
+    condenser = {
+        "enabled": True,
+        "condenser_kind": "llm_summarizing",
+        "max_size": 120,
+        "max_tokens": 64000,
+        "keep_first": 4,
+        "minimum_progress": 0.3,
+        "hard_context_reset_max_retries": 2,
+        "hard_context_reset_context_scaling": 0.5,
+    }
+
+    settings = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "openhands",
+            "llm": {"model": "test-model"},
+            "condenser": condenser,
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.condenser.model_dump() == condenser
+
+
+@pytest.mark.parametrize(
+    "schema_version", ["absent", None, AGENT_SETTINGS_SCHEMA_VERSION]
+)
+def test_current_no_op_condenser_is_not_migrated(
+    schema_version: str | int | None,
+) -> None:
+    """The v8 -> v9 rewrite runs once, on stored payloads older than v9.
+
+    A current payload, or a request without ``schema_version``, keeps a
+    ``no_op`` condenser that a caller chose on purpose.
+    """
+    payload: dict[str, object] = {
+        "agent_kind": "openhands",
+        "llm": {"model": "test-model"},
+        "condenser": {"enabled": True, "condenser_kind": "no_op"},
+    }
+    if schema_version != "absent":
+        payload["schema_version"] = schema_version
+
+    settings = validate_agent_settings(payload)
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert isinstance(settings.condenser, NoOpCondenserSettings)
+    assert isinstance(settings.create_agent().condenser, NoOpCondenser)
+
+
 def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
     settings = validate_agent_settings(
         {
@@ -1296,7 +1401,7 @@ def test_v6_settings_fold_the_retired_switches(
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 8
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert [t.name for t in settings.tools or []] == expected
 
 
@@ -1414,7 +1519,7 @@ def test_unversioned_settings_get_no_retired_switch_defaults(
     settings = validate_agent_settings(payload)
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 8
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert (
         None if settings.tools is None else [t.name for t in settings.tools]
     ) == expected

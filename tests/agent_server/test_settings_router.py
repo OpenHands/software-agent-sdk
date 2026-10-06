@@ -378,6 +378,77 @@ def test_get_settings_migrates_acp_settings_and_drops_persisted_llm(
     assert reloaded.conversation_settings.max_iterations == 88
 
 
+def test_get_settings_migrates_v8_no_op_condenser_once(
+    client_with_settings, temp_persistence_dir, secret_key
+):
+    """A stored ``no_op`` condenser loads as the disabled summarizer, once.
+
+    The settings file is in the released v5 format (nested agent settings
+    v8). The first save writes the current versions, and a ``no_op`` condenser
+    that an API client then sets on purpose is kept.
+    """
+    _write_settings_file(
+        temp_persistence_dir,
+        {
+            "schema_version": 5,
+            "agent_settings": {
+                "schema_version": 8,
+                "agent_kind": "openhands",
+                "llm": {"model": "no-op-model"},
+                "condenser": {"enabled": True, "condenser_kind": "no_op"},
+            },
+            "conversation_settings": {"schema_version": 1, "max_iterations": 77},
+        },
+    )
+    disabled_summarizer = {
+        "enabled": False,
+        "condenser_kind": "llm_summarizing",
+        "max_size": 240,
+        "max_tokens": None,
+        "keep_first": 2,
+        "minimum_progress": 0.1,
+        "hard_context_reset_max_retries": 5,
+        "hard_context_reset_context_scaling": 0.8,
+    }
+
+    response = client_with_settings.get("/api/settings")
+    assert response.status_code == 200
+    agent_settings = response.json()["agent_settings"]
+    assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    assert agent_settings["condenser"] == disabled_summarizer
+
+    patch_response = client_with_settings.patch(
+        "/api/settings", json={"conversation_settings_diff": {"max_iterations": 88}}
+    )
+    assert patch_response.status_code == 200, patch_response.text
+
+    on_disk = json.loads((temp_persistence_dir / "settings.json").read_text())
+    assert on_disk["schema_version"] == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert on_disk["agent_settings"]["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    assert on_disk["agent_settings"]["condenser"] == disabled_summarizer
+
+    patch_response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "condenser": {"condenser_kind": "no_op", "enabled": True}
+            }
+        },
+    )
+    assert patch_response.status_code == 200, patch_response.text
+    no_op = {"enabled": True, "condenser_kind": "no_op"}
+    assert patch_response.json()["agent_settings"]["condenser"] == no_op
+
+    on_disk = json.loads((temp_persistence_dir / "settings.json").read_text())
+    assert on_disk["agent_settings"]["condenser"] == no_op
+    store = FileSettingsStore(
+        persistence_dir=temp_persistence_dir, cipher=Cipher(secret_key)
+    )
+    reloaded = store.load()
+    assert reloaded is not None
+    assert reloaded.agent_settings.model_dump(mode="json")["condenser"] == no_op
+
+
 def test_persisted_settings_from_persisted_rejects_newer_schema_version() -> None:
     with pytest.raises(ValueError, match="newer than supported"):
         PersistedSettings.from_persisted(
