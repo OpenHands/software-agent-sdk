@@ -62,9 +62,7 @@ def _run_with_deadline[T](
         except Exception as e:
             logger.debug("Model-info probe raised; ignoring: %s", e)
 
-    thread = threading.Thread(
-        target=_target, name="model-info-discovery", daemon=True
-    )
+    thread = threading.Thread(target=_target, name="model-info-discovery", daemon=True)
     try:
         thread.start()
     except RuntimeError:
