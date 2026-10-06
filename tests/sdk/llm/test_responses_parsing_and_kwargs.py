@@ -1,8 +1,11 @@
 import asyncio
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
+from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
 from litellm.types.llms.openai import (
+    GenericEvent,
     OutputTextDeltaEvent,
     ResponseAPIUsage,
     ResponseCompletedEvent,
@@ -16,10 +19,10 @@ from openai.types.responses.response_reasoning_item import (
     ResponseReasoningItem,
     Summary,
 )
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.llm import LLM, LLMCallContext
-from openhands.sdk.llm.exceptions import LLMTimeoutError
+from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMTimeoutError
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
@@ -37,6 +40,48 @@ def build_responses_message_output(texts: list[str]) -> ResponseOutputMessage:
         status="completed",
         content=parts,  # type: ignore[arg-type]
     )
+
+
+@pytest.mark.parametrize(
+    "ignored_part",
+    [
+        {"type": "future_part", "text": 42},
+        SimpleNamespace(type="future_part", text=42),
+        None,
+        {"type": "output_text", "text": 0},
+    ],
+)
+def test_responses_ignores_unused_or_empty_text_parts(ignored_part):
+    message = Message.from_llm_responses_output(
+        [
+            {
+                "type": "message",
+                "content": [ignored_part, {"type": "output_text", "text": "hello"}],
+            }
+        ]
+    )
+    assert message.content == [TextContent(text="hello")]
+
+
+@pytest.mark.parametrize("call_id", ["call_1", None])
+def test_responses_generic_numeric_item_id_preserves_validation(call_id):
+    output = [
+        {
+            "type": "function_call",
+            "id": 42,
+            "call_id": call_id,
+            "name": "foo",
+            "arguments": "{}",
+        }
+    ]
+    if call_id is None:
+        with pytest.raises(ValidationError):
+            Message.from_llm_responses_output(output)
+    else:
+        message = Message.from_llm_responses_output(output)
+        assert message.tool_calls is not None
+        assert message.tool_calls[0].id == "call_1"
+        assert message.tool_calls[0].responses_item_id == "42"
 
 
 def test_from_llm_responses_output_parsing():
@@ -632,6 +677,44 @@ async def test_aresponses_hung_stream_idle_timeout_retries(mock_aresponses):
     assert mock_aresponses.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_aresponses_ignored_events_keep_stream_alive():
+    stream_events, completed = _make_wrapped_response_stream_events()
+
+    async def events():
+        # Total duration exceeds the idle timeout; each provider event resets it.
+        for _ in range(6):
+            await asyncio.sleep(0.1)
+            yield SimpleNamespace(type="response.in_progress")
+        yield stream_events[-1]
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        timeout=2,
+        stream_idle_timeout=0.5,
+        num_retries=0,
+    )
+    chunks = []
+    with patch(
+        "openhands.sdk.llm.llm.litellm_aresponses",
+        new_callable=AsyncMock,
+        return_value=events(),
+    ):
+        result = await llm.aresponses(
+            [
+                Message(role="system", content=[TextContent(text="Be helpful")]),
+                Message(role="user", content=[TextContent(text="Hello")]),
+            ],
+            stream=True,
+            on_token=chunks.append,
+        )
+
+    assert result.raw_response is completed
+    assert result.message.content == [TextContent(text="Hello wrapped stream")]
+    assert chunks == []
+
+
 def test_stream_delta_chunks_carry_the_output_item_id():
     """All deltas of one output item must share a chunk id.
 
@@ -666,3 +749,107 @@ def test_stream_delta_chunks_carry_the_output_item_id():
     _, chunk = llm._process_stream_event(other, emit_deltas=True)
     assert chunk is not None
     assert chunk.id == "msg_def"
+
+
+@pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
+@pytest.mark.parametrize(
+    "completion_source", ["yielded", "wrapper", "both", "initial", "missing"]
+)
+async def test_responses_stream_completion_state(mode, completion_source):
+    events, yielded_response = _make_wrapped_response_stream_events("yielded")
+    wrapper_events, wrapper_response = _make_wrapped_response_stream_events("wrapper")
+
+    class CompletionStream:
+        completed_response = (
+            wrapper_events[-1] if completion_source == "initial" else None
+        )
+
+        def __iter__(self):
+            if completion_source in ("yielded", "both"):
+                yield from events
+            if completion_source in ("wrapper", "both"):
+                self.completed_response = wrapper_events[-1]
+            elif completion_source == "initial":
+                self.completed_response = None
+
+        async def __aiter__(self):
+            for event in self:
+                yield event
+
+    class SyncCompletionStream:
+        def __init__(self):
+            self.inner = CompletionStream()
+
+        @property
+        def completed_response(self):
+            return self.inner.completed_response
+
+        def __iter__(self):
+            return iter(self.inner)
+
+    stream = CompletionStream() if mode == "async" else SyncCompletionStream()
+    llm = LLM(model="gpt-4o", api_key=SecretStr("test_key"), num_retries=0)
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    received = []
+
+    async def invoke():
+        if mode == "sync":
+            with patch("openhands.sdk.llm.llm.litellm_responses", return_value=stream):
+                return llm.responses(messages, stream=True, on_token=received.append)
+        with patch(
+            "openhands.sdk.llm.llm.litellm_aresponses",
+            new_callable=AsyncMock,
+            return_value=stream,
+        ):
+            return await llm.aresponses(messages, stream=True, on_token=received.append)
+
+    if completion_source == "missing":
+        with pytest.raises(LLMNoResponseError, match="without a completed response"):
+            await invoke()
+    else:
+        response = await invoke()
+        expected = (
+            yielded_response if completion_source == "yielded" else wrapper_response
+        )
+        assert response.raw_response is expected
+        assert [chunk.choices[0].delta.content for chunk in received] == (
+            ["yielded"] if completion_source in ("yielded", "both") else []
+        )
+
+
+@pytest.mark.parametrize("mode", ["sync", "async", "async-with-sync-stream"])
+@pytest.mark.parametrize(
+    "event_type", [SimpleNamespace, BaseLiteLLMOpenAIResponseObject, GenericEvent]
+)
+async def test_responses_reconstructs_output_without_callback(mode, event_type):
+    events, completed = _make_wrapped_response_stream_events()
+    output_item = completed.output[0]
+    completed.output = []
+    events.insert(
+        0,
+        event_type(type=ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE, item=output_item),
+    )
+
+    async def async_events():
+        for event in events:
+            yield event
+
+    llm = LLM(model="gpt-4o", num_retries=0)
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    with patch.object(LLM, "requires_streaming", new_callable=PropertyMock) as required:
+        required.return_value = True
+        if mode != "sync":
+            with patch(
+                "openhands.sdk.llm.llm.litellm_aresponses",
+                new_callable=AsyncMock,
+                return_value=async_events() if mode == "async" else iter(events),
+            ):
+                result = await llm.aresponses(messages, stream=True)
+        else:
+            with patch(
+                "openhands.sdk.llm.llm.litellm_responses", return_value=iter(events)
+            ):
+                result = llm.responses(messages, stream=True)
+    assert result.raw_response is completed
+    assert completed.output[0] is output_item
+    assert result.message.content == [TextContent(text="Hello wrapped stream")]
