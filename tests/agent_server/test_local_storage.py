@@ -1,22 +1,18 @@
+"""Deleting host-local conversations, against a real server and real git."""
+
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
-from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
 
-from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import StartConversationRequest
-from openhands.sdk import LLM, Agent
-from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation.state import (
-    ConversationExecutionStatus,
-    ConversationState,
+from openhands.agent_server import (
+    config as config_module,
+    conversation_service as service_module,
 )
-from openhands.sdk.security.confirmation_policy import NeverConfirm
-from openhands.sdk.workspace import LocalWorkspace
+from openhands.agent_server.api import create_app
 
 
 def git(repo: Path, *args: str) -> str:
@@ -38,56 +34,141 @@ def make_repo(repo: Path) -> Path:
     return repo
 
 
-def service(tmp_path: Path) -> ConversationService:
-    svc = ConversationService(
-        conversations_dir=tmp_path / "conversations",
-        conversation_worktree_root=tmp_path / "conversation-worktrees",
+def worktrees(repo: Path) -> list[str]:
+    return [
+        line.removeprefix("worktree ")
+        for line in git(repo, "worktree", "list", "--porcelain").splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch) -> Iterator[TestClient]:
+    """A local-mode server configured by environment, as the CLI does."""
+    for name, value in {
+        "OH_CONVERSATION_RUNTIME": "local",
+        "OH_CONVERSATIONS_PATH": str(tmp_path / "conversations"),
+        "OH_CONVERSATION_WORKTREE_ROOT": str(tmp_path / "worktrees"),
+        "OH_PERSISTENCE_DIR": str(tmp_path / "persistence"),
+        "OH_SECRET_KEY": "key",
+    }.items():
+        monkeypatch.setenv(name, value)
+    # Both are process-wide and would keep another test's paths.
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    with TestClient(create_app()) as client:
+        yield client
+
+
+def start(client: TestClient, repo: Path, worktree: bool = True) -> tuple[UUID, Path]:
+    response = client.post(
+        "/api/conversations",
+        json={
+            "agent": {"kind": "Agent", "llm": {"model": "test"}, "tools": []},
+            "workspace": {"kind": "LocalWorkspace", "working_dir": str(repo)},
+            "worktree": worktree,
+        },
     )
-    svc._event_services = {}
-    return svc
+    assert response.status_code == 201, response.text
+    body = response.json()
+    return UUID(body["id"]), Path(body["workspace"]["working_dir"])
 
 
-@pytest.mark.asyncio
-async def test_delete_removes_worktree_and_keeps_branch(tmp_path):
+def delete(client: TestClient, conversation_id: UUID) -> None:
+    response = client.delete(f"/api/conversations/{conversation_id}")
+    assert response.status_code == 200, response.text
+
+
+def test_delete_removes_the_worktree_and_keeps_the_branch(client, tmp_path):
     repo = make_repo(tmp_path / "repo")
-    svc = service(tmp_path)
-    conversation_id = uuid4()
+    conversation_id, worktree = start(client, repo)
+    assert worktree != repo and str(worktree) in worktrees(repo)
+    (worktree / "agent.py").write_text("work")
+    git(worktree, "add", "agent.py")
+    git(worktree, "commit", "-qm", "agent work")
+    (worktree / "node_modules" / "dep").mkdir(parents=True)
 
-    def factory(**kwargs):
-        stored = kwargs["stored"]
-        event_service = AsyncMock(spec=EventService)
-        event_service.stored = stored
-        event_service.conversation_dir = tmp_path / "conversations" / stored.id.hex
-        event_service.get_state.return_value = ConversationState(
-            id=stored.id,
-            agent=cast(AgentBase, kwargs.get("agent")),
-            workspace=stored.workspace,
-            execution_status=ConversationExecutionStatus.IDLE,
-            confirmation_policy=stored.confirmation_policy,
-        )
-        return event_service
+    delete(client, conversation_id)
 
-    with patch(
-        "openhands.agent_server.conversation_service.EventService",
-        side_effect=factory,
-    ):
-        await svc.start_conversation(
-            StartConversationRequest(
-                conversation_id=conversation_id,
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="t"), tools=[]),
-                workspace=LocalWorkspace(working_dir=repo),
-                confirmation_policy=NeverConfirm(),
-                worktree=True,
-            )
-        )
-        worktree = svc.conversation_worktree_root / str(conversation_id) / repo.name
-        (worktree / "agent.txt").write_text("work")
-        git(worktree, "add", "agent.txt")
-        git(worktree, "commit", "-qm", "agent work")
-        assert await svc.delete_conversation(conversation_id)
-
+    assert not worktree.exists()
+    assert not (tmp_path / "worktrees" / str(conversation_id)).exists()
+    assert worktrees(repo) == [str(repo.resolve())]
     branch = f"openhands/{conversation_id}"
-    assert not (svc.conversation_worktree_root / str(conversation_id)).exists()
-    assert str(worktree) not in git(repo, "worktree", "list")
-    # The agent's commit is still reachable from its branch.
     assert git(repo, "log", "-1", "--format=%s", branch) == "agent work"
+    # The user's own checkout is untouched.
+    assert git(repo, "status", "--porcelain") == ""
+    assert git(repo, "branch", "--show-current") == "main"
+
+
+def test_uncommitted_work_goes_with_the_conversation(client, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    conversation_id, worktree = start(client, repo)
+    (worktree / "draft.py").write_text("not committed")
+    (worktree / "README.md").write_text("edited, not committed")
+
+    delete(client, conversation_id)
+
+    # Only what the agent committed survives, on its branch.
+    branch = f"openhands/{conversation_id}"
+    assert git(repo, "show", f"{branch}:README.md") == "hi"
+    assert "draft.py" not in git(repo, "ls-tree", "--name-only", branch)
+    assert not worktree.exists()
+
+
+def test_delete_succeeds_when_the_source_repository_is_gone(client, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    conversation_id, worktree = start(client, repo)
+    subprocess.run(["rm", "-rf", str(repo)], check=True)
+
+    delete(client, conversation_id)
+
+    assert not worktree.exists()
+    assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
+
+
+def test_a_link_in_place_of_the_worktree_dir_is_not_followed(client, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    conversation_id, _ = start(client, repo)
+    conversation_dir = tmp_path / "worktrees" / str(conversation_id)
+    subprocess.run(["rm", "-rf", str(conversation_dir)], check=True)
+    precious = tmp_path / "precious"
+    make_repo(precious / "checkout")
+    conversation_dir.symlink_to(precious, target_is_directory=True)
+
+    delete(client, conversation_id)
+
+    assert (precious / "checkout" / "README.md").read_text() == "hi"
+    assert git(precious / "checkout", "status", "--porcelain") == ""
+
+
+def test_deleting_one_conversation_leaves_other_worktrees_alone(client, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    users_own = tmp_path / "users-own"
+    git(repo, "worktree", "add", "-q", "-b", "feature", str(users_own))
+    deleted, deleted_worktree = start(client, repo)
+    kept, kept_worktree = start(client, repo)
+    (kept_worktree / "wip.py").write_text("in progress")
+
+    delete(client, deleted)
+
+    assert not deleted_worktree.exists()
+    assert (kept_worktree / "wip.py").read_text() == "in progress"
+    assert sorted(worktrees(repo)) == sorted(
+        str(p.resolve()) for p in (repo, users_own, kept_worktree)
+    )
+    assert client.get(f"/api/conversations/{kept}").status_code == 200
+
+
+def test_a_conversation_without_a_worktree_leaves_the_repository_alone(
+    client, tmp_path
+):
+    repo = make_repo(tmp_path / "repo")
+    (repo / "local.txt").write_text("user's file")
+    conversation_id, workspace = start(client, repo, worktree=False)
+    assert workspace.resolve() == repo.resolve()
+
+    delete(client, conversation_id)
+
+    assert (repo / "local.txt").read_text() == "user's file"
+    assert (repo / "README.md").read_text() == "hi"
+    assert worktrees(repo) == [str(repo.resolve())]
