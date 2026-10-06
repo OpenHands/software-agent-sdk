@@ -583,6 +583,53 @@ def test_download_trajectory_omits_in_progress_atomic_save_temp_files(
     assert secret.encode() not in blob
 
 
+def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
+    client, monkeypatch, tmp_path
+):
+    """A save that lands after a JSON file is read cannot slip in a secret.
+
+    ``base_state.json`` holds no secret when it is read and is replaced right
+    afterwards by a version holding a Fernet token. The archive must contain
+    the content that was read, not the newer file.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    base_state = conversation_dir / "base_state.json"
+    first_save = b'{"secret_registry": {"secret_sources": {}}}'
+    base_state.write_bytes(first_save)
+    token = "gAAAAABnewly-saved-fernet-token"
+    replaced = False
+
+    def replace_after_first_read(read):
+        def read_then_save(self, *args, **kwargs):
+            nonlocal replaced
+            content = read(self, *args, **kwargs)
+            if self == base_state and not replaced:
+                replaced = True
+                newer = conversation_dir / ".base_state.json.newsave0"
+                newer.write_text(
+                    '{"secret_registry": {"secret_sources": '
+                    '{"GITHUB_TOKEN": "' + token + '"}}}'
+                )
+                os.replace(newer, base_state)
+            return content
+
+        return read_then_save
+
+    # Hook both read methods so the test does not depend on which one is used.
+    monkeypatch.setattr(Path, "read_bytes", replace_after_first_read(Path.read_bytes))
+    monkeypatch.setattr(Path, "read_text", replace_after_first_read(Path.read_text))
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    assert replaced
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        archived = archive.read(f"{conversation_id.hex}/base_state.json")
+        blob = b"\n".join(archive.read(name) for name in archive.namelist())
+    assert archived == first_save
+    assert token.encode() not in blob
+
+
 def test_download_file_with_special_characters_in_path(client, tmp_path):
     """Test download with special characters in path (via query param)."""
     test_file = tmp_path / "file with spaces.txt"

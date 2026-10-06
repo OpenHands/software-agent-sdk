@@ -6,7 +6,6 @@ material — neither plaintext nor recoverable Fernet ciphertext.
 """
 
 import json
-from pathlib import Path
 
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX
@@ -20,6 +19,10 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 TRAJECTORY_SECRET_FIELDS: frozenset[str] = frozenset(
     (*LLM_SECRET_FIELDS, "llm_api_key")
 )
+
+# Suffixes of the persisted conversation files that ``redacted_json_bytes``
+# handles: JSON and newline-delimited JSON.
+REDACTED_SUFFIXES: frozenset[str] = frozenset((".json", ".jsonl"))
 
 
 def _is_secret_value(key: object, value: object) -> bool:
@@ -60,20 +63,21 @@ def redact_secrets_in_obj(obj: object) -> bool:
     return changed
 
 
-def redacted_file_bytes(path: Path) -> bytes | None:
-    """Return redacted bytes for a JSON/JSONL file, or ``None`` if unchanged.
+def redacted_json_bytes(data: bytes, suffix: str) -> bytes | None:
+    """Return redacted ``data``, or ``None`` if nothing needed redacting.
 
-    Persisted conversation files are JSON (``*.json``) or newline-delimited
-    JSON (``*.jsonl``/the per-event log files). Anything that does not parse as
-    JSON is left untouched (returns ``None``) so the archive is byte-identical
-    for non-secret content.
+    ``data`` is the content of a persisted conversation file and ``suffix`` is
+    that file's suffix: JSON (``.json``) or newline-delimited JSON
+    (``.jsonl``/the per-event log files). Anything else, and anything that does
+    not parse as JSON, is left untouched (returns ``None``) so the archive is
+    byte-identical for non-secret content.
     """
-    suffix = path.suffix.lower()
-    if suffix not in (".json", ".jsonl"):
+    suffix = suffix.lower()
+    if suffix not in REDACTED_SUFFIXES:
         return None
     try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        raw = data.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
     if suffix == ".jsonl":

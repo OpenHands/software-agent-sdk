@@ -25,7 +25,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from openhands.agent_server._secret_redaction import redacted_file_bytes
+from openhands.agent_server._secret_redaction import (
+    REDACTED_SUFFIXES,
+    redacted_json_bytes,
+)
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
@@ -157,28 +160,33 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
 
     Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
     are redacted on the way into the archive so a downloaded trajectory never
-    leaks API keys — see ``redacted_file_bytes``.
+    leaks API keys — see ``redacted_json_bytes``.
 
     The conversation may still be running and saving state while this walks
     it, so in-progress atomic-save temp files are skipped, and so are entries
-    that disappear between listing and reading.
+    that disappear between listing and reading. Each JSON file is read once,
+    so the bytes checked for secrets are the bytes that get archived.
     """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
-                # Unfinished atomic save: possibly half-written, and its name
-                # does not end in .json, so redaction would not see it.
                 if is_atomic_write_temp_file(path):
+                    # In-progress atomic save; the file it replaces is archived.
                     continue
                 arcname = str(path.relative_to(source_dir.parent))
                 try:
-                    if path.is_file():
-                        redacted = redacted_file_bytes(path)
-                        if redacted is not None:
-                            archive.writestr(arcname, redacted)
-                            continue
-                    archive.write(path, arcname)
+                    if path.suffix.lower() in REDACTED_SUFFIXES and path.is_file():
+                        zinfo = zipfile.ZipInfo.from_file(path, arcname)
+                        data = path.read_bytes()
+                        redacted = redacted_json_bytes(data, path.suffix)
+                        archive.writestr(
+                            zinfo,
+                            data if redacted is None else redacted,
+                            compress_type=zipfile.ZIP_DEFLATED,
+                        )
+                    else:
+                        archive.write(path, arcname)
                 except FileNotFoundError:
                     # Removed or renamed away after rglob listed it.
                     continue
