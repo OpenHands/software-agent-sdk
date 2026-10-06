@@ -508,6 +508,40 @@ def test_landlock_add_rule_failure_raises_runtime_error(
         )
 
 
+def test_landlock_open_path_failure_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Failure to open path in Landlock rule raises RuntimeError (fail-closed)."""
+    mock_libc = MagicMock()
+    mock_libc.syscall.return_value = 99
+    mock_libc.prctl.return_value = 0
+
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: mock_libc)
+    monkeypatch.setattr(
+        "os.open", MagicMock(side_effect=OSError(13, "Permission denied"))
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Failed to open read-only path '/nonexistent'"
+    ):
+        _apply_landlock_and_group(
+            read_only_paths=["/nonexistent"],
+            read_write_paths=[],
+            abi_version=1,
+            enable_process_group=False,
+        )
+
+    with pytest.raises(
+        RuntimeError, match="Failed to open read-write path '/nonexistent'"
+    ):
+        _apply_landlock_and_group(
+            read_only_paths=[],
+            read_write_paths=["/nonexistent"],
+            abi_version=1,
+            enable_process_group=False,
+        )
+
+
 def test_execute_command_reader_retains_output_without_data_loss(tmp_path: Path):
     """Verify stdout readers read to EOF when descendant retains pipes."""
     ws = LandlockWorkspace(working_dir=tmp_path)

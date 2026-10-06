@@ -31,6 +31,10 @@ LANDLOCK_CREATE_RULESET_VERSION: Final[int] = 1 << 0
 LANDLOCK_RULE_PATH_BENEATH: Final[int] = 1
 PR_SET_NO_NEW_PRIVS: Final[int] = 38
 
+# Standard Linux open flags
+O_PATH: Final[int] = 0o10000000
+O_CLOEXEC: Final[int] = 0o2000000
+
 # ABI 1 filesystem access flags
 LANDLOCK_ACCESS_FS_EXECUTE: Final[int] = 1 << 0
 LANDLOCK_ACCESS_FS_WRITE_FILE: Final[int] = 1 << 1
@@ -241,14 +245,11 @@ def _apply_landlock_and_group(
         errno = ctypes.get_errno()
         raise RuntimeError(f"landlock_create_ruleset failed with errno {errno}")
 
-    o_path = getattr(os, "O_PATH", 0o10000000)
-    o_cloexec = getattr(os, "O_CLOEXEC", 0o2000000)
-
     try:
         # Apply read-only rules for system and dependency paths
         for path_str in read_only_paths:
             try:
-                fd = os.open(path_str, o_path | o_cloexec)
+                fd = os.open(path_str, O_PATH | O_CLOEXEC)
             except OSError as err:
                 raise RuntimeError(
                     f"Failed to open read-only path '{path_str}' "
@@ -283,7 +284,7 @@ def _apply_landlock_and_group(
         # Apply full read-write rules for workspace paths and devices
         for path_str in read_write_paths:
             try:
-                fd = os.open(path_str, o_path | o_cloexec)
+                fd = os.open(path_str, O_PATH | O_CLOEXEC)
             except OSError as err:
                 raise RuntimeError(
                     f"Failed to open read-write path '{path_str}' "
