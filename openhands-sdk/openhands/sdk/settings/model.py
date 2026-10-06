@@ -34,6 +34,7 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
 from openhands.sdk.conversation.types import (
@@ -91,7 +92,6 @@ from .metadata import (
 
 if TYPE_CHECKING:
     from openhands.sdk.agent import ACPAgent, Agent
-    from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
 
@@ -162,6 +162,9 @@ CriticMode = Literal["finish_and_message", "all_actions"]
 SecurityAnalyzerType = Literal["llm", "none"]
 
 
+type CondenserKind = Literal["llm_summarizing", "no_op"]
+
+
 class CondenserSettings(BaseModel):
     """Shared base for condenser-settings variants.
 
@@ -169,6 +172,11 @@ class CondenserSettings(BaseModel):
     condenser-settings variant.
     """
 
+    condenser_kind: CondenserKind = Field(
+        default="llm_summarizing",
+        description="Discriminator for the condenser settings union.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
     enabled: bool = Field(
         default=True,
         description="Enable conversation memory condensation.",
@@ -206,7 +214,7 @@ class CondenserSettings(BaseModel):
 class LLMSummarizingCondenserSettings(CondenserSettings):
     """Settings for the default LLM summarizing condenser."""
 
-    condenser_kind: Literal["llm_summarizing"] = Field(
+    condenser_kind: Literal["llm_summarizing"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="llm_summarizing",
         description=(
             "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
@@ -313,7 +321,7 @@ class NoOpCondenserSettings(CondenserSettings):
     """Settings for a condenser that leaves conversation views unchanged."""
 
     max_size: ClassVar[int] = 240  # type: ignore[reportIncompatibleVariableOverride]
-    condenser_kind: Literal["no_op"] = Field(
+    condenser_kind: Literal["no_op"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="no_op",
         description=(
             "Discriminator for the condenser settings union. ``'no_op'`` selects "
@@ -339,8 +347,8 @@ def _condenser_settings_discriminator(value: Any) -> str:
     LLM summarizing condenser fields. Treat missing discriminators as
     ``'llm_summarizing'`` so those payloads continue to validate.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "condenser_kind", "llm_summarizing")
+    if isinstance(value, CondenserSettings):
+        return value.condenser_kind
     if isinstance(value, dict):
         return value.get("condenser_kind", "llm_summarizing")
     return "llm_summarizing"
@@ -485,6 +493,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
+type AgentKind = Literal["openhands", "llm", "acp"]
 AGENT_SETTINGS_SCHEMA_VERSION = 8
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
@@ -509,6 +518,10 @@ class AgentSettingsBase(BaseModel):
     """
 
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+    agent_kind: AgentKind = Field(
+        default="openhands",
+        description="Discriminator for the agent settings union.",
+    )
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
@@ -1255,9 +1268,10 @@ class ConversationSettings(BaseModel):
         # agents without AgentContext.
         agent = payload.get("agent")
         if "secrets" not in payload and agent is not None:
-            ctx = getattr(agent, "agent_context", None)
-            if ctx is not None and getattr(ctx, "secrets", None):
-                payload["secrets"] = ctx.secrets
+            if isinstance(agent, AgentBase) and agent.agent_context is not None:
+                secrets = agent.agent_context.secrets
+                if secrets:
+                    payload["secrets"] = secrets
 
         # --- runtime fields -------------------------------------------------
         if self.workspace is not None:
@@ -1301,8 +1315,6 @@ class ConversationSettings(BaseModel):
         return request_type(**self._start_request_kwargs(**kwargs))
 
 
-AgentKind = Literal["openhands", "llm", "acp"]
-
 ACPServerKind = Literal[
     "claude-code", "codex", "gemini-cli", "kimi-code", "pi", "opencode", "custom"
 ]
@@ -1321,7 +1333,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     the default ``Agent`` (LLM + tools + MCP + condenser + critic).
     """
 
-    agent_kind: Literal["openhands"] = Field(
+    agent_kind: Literal["openhands"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="openhands",
         description=(
             "Discriminator for the ``AgentSettings`` union. ``'openhands'`` selects "
@@ -1641,7 +1653,7 @@ class ACPAgentSettings(AgentSettingsBase):
     keyed by the provider's env var name (:attr:`api_key_env_var`).
     """
 
-    agent_kind: Literal["acp"] = Field(
+    agent_kind: Literal["acp"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="acp",
         description=(
             "Discriminator for the ``AgentSettings`` union. ``'acp'`` selects "
@@ -2070,8 +2082,8 @@ def _agent_settings_discriminator(value: Any) -> str:
     ``'llm'`` is still a valid tag, routed to the deprecated
     :class:`LLMAgentSettings` subclass.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, AgentSettingsBase):
+        return value.agent_kind
     if isinstance(value, dict):
         return value.get("agent_kind", "openhands")
     return "openhands"
@@ -2296,7 +2308,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
             key=metadata.key,
             label=metadata.label or _humanize_name(metadata.key),
             fields=[],
-            variant=getattr(metadata, "variant", None),
+            variant=metadata.variant,
         )
         sections_by_key[metadata.key] = section
         sections.append(section)
@@ -2330,10 +2342,11 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                                 existing_choice_values.add(choice.value)
                         continue
                     default_value = None
-                    if isinstance(section_default, BaseModel) and hasattr(
-                        section_default, nested_key
+                    if (
+                        isinstance(section_default, BaseModel)
+                        and nested_key in type(section_default).model_fields
                     ):
-                        default_value = getattr(section_default, nested_key)
+                        default_value = dict(section_default).get(nested_key)
                     field_schema = SettingsFieldSchema(
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(

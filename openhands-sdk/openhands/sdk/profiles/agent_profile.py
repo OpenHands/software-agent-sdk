@@ -27,6 +27,7 @@ from pydantic import (
 
 from openhands.sdk.settings.model import (
     ACPServerKind,
+    AgentKind,
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
@@ -95,6 +96,10 @@ class AgentProfileBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = Field(default=AGENT_PROFILE_SCHEMA_VERSION, ge=1)
+    agent_kind: AgentKind = Field(
+        default="openhands",
+        description="Discriminator for the agent profile union.",
+    )
     id: UUID = Field(
         default_factory=uuid4,
         description=(
@@ -152,7 +157,7 @@ class OpenHandsAgentProfile(AgentProfileBase):
     :attr:`~AgentProfileBase.mcp_server_refs`.
     """
 
-    agent_kind: Literal["openhands"] = Field(
+    agent_kind: Literal["openhands"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="openhands",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'openhands'`` "
@@ -272,7 +277,7 @@ class ACPAgentProfile(AgentProfileBase):
     value rides the conversation secrets channel, never the profile.
     """
 
-    agent_kind: Literal["acp"] = Field(
+    agent_kind: Literal["acp"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="acp",
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'acp'`` selects an "
@@ -367,8 +372,8 @@ def _agent_profile_discriminator(value: Any) -> str:
     OpenHands variant, mirroring
     :func:`~openhands.sdk.settings.model._agent_settings_discriminator`.
     """
-    if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, AgentProfileBase):
+        return value.agent_kind
     if isinstance(value, Mapping):
         return value.get("agent_kind", "openhands")
     return "openhands"
