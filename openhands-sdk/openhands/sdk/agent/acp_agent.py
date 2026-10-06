@@ -295,6 +295,11 @@ def _make_dummy_llm() -> LLM:
 # uses bypassPermissions mode instead of API key authentication.
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "gemini-api-key": "GEMINI_API_KEY",
+    # devin acp advertises a single ``devin-browser`` method. Despite the
+    # name, it completes headlessly: the server reads the key from
+    # ``_meta.api_key`` on the ``authenticate`` request (passed below),
+    # deliberately ignoring the local CLI login to avoid misattribution.
+    "devin-browser": "WINDSURF_API_KEY",
 }
 # Gemini CLI personal (Google OAuth) login, cached by ``gemini login`` /
 # ``gemini --acp``. Its presence lets us select the server's ``oauth-personal``
@@ -3141,6 +3146,12 @@ class ACPAgent(AgentBase):
                             base_url = env.get(base_url_var)
                             if base_url:
                                 auth_kwargs["gateway"] = {"baseUrl": base_url}
+                    elif method_id == "devin-browser":
+                        # Unlike the env-var readers above, devin acp expects
+                        # the key on the request itself: ``_meta.api_key``.
+                        api_key = env.get("WINDSURF_API_KEY")
+                        if api_key:
+                            auth_kwargs["api_key"] = api_key
                     try:
                         await asyncio.wait_for(
                             conn.authenticate(method_id=method_id, **auth_kwargs),

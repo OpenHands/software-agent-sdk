@@ -558,6 +558,39 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
             data_dir_env_var="CODEX_HOME",
         ),
+        "devin": ACPProviderInfo(
+            key="devin",
+            display_name="Devin",
+            # Devin CLI is a standalone binary, not an npm package, so it has
+            # no ACP_INSTALL_CATALOG entry — ``devin acp`` speaks ACP directly.
+            default_command=("devin", "acp"),
+            # The lone ``devin-browser`` auth method completes headlessly when
+            # the key is passed as ``_meta.api_key`` on the ``authenticate``
+            # request — see that method's special case in ACPAgent's
+            # handshake. Devin deliberately ignores its local CLI credentials
+            # in ACP mode, so the env-var channel is the only credential path.
+            api_key_env_var="WINDSURF_API_KEY",
+            base_url_env_var=None,
+            # Session modes: accept-edits (server default), smart, ask, plan,
+            # bypass. The client bridge auto-approves permission requests, so
+            # no mode needs forcing at session creation.
+            default_session_mode=None,
+            # ``devin acp`` reports ``agentInfo.name = "affogato"``
+            # (``agentInfo.title = "Devin Agent"``); ``devin`` covers the
+            # binary name for command-time detection.
+            agent_name_patterns=("affogato", "devin"),
+            supports_set_session_model=True,
+            supports_runtime_model_switch=True,
+            session_meta_key=None,
+            # Deliberately uncurated, like kimi-code: the ``model`` select
+            # devin reports at ``session/new`` (a large catalogue including
+            # fusion combos) is account-dependent — clients render the live
+            # select instead of a snapshot.
+            available_models=(),
+            default_model=None,
+            binary_name=None,
+            data_dir_env_var=None,
+        ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
