@@ -87,8 +87,7 @@ class DockerRuntimeStorage:
         return [self.provisioning.runtime_dir(conversation_id)]
 
     async def on_retired(self, conversation_id: UUID) -> None:
-        if self.registry._service is not None:
-            await self.registry._service.refresh_persisted_conversation(conversation_id)
+        await self.registry.refresh_conversation(conversation_id)
 
 
 def _parse_id(name: str) -> UUID | None:

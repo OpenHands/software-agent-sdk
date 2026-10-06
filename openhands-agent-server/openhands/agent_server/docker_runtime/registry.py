@@ -98,6 +98,11 @@ class DockerConversationRegistry(ConversationRegistry):
         self._service = service
         service.runtime_cipher_resolver = self.resolve_persisted_cipher
 
+    async def refresh_conversation(self, conversation_id: UUID) -> None:
+        """Re-read the conversation from disk after its runtime changed."""
+        if self._service is not None:
+            await self._service.refresh_persisted_conversation(conversation_id)
+
     def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
         """Resolve persisted state without weakening per-runtime isolation.
 

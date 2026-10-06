@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import shutil
 import time
 from contextlib import AbstractAsyncContextManager, suppress
@@ -118,16 +119,13 @@ class Reclaimer:
 
     async def _enforce_retention(self) -> int:
         """Retire runtimes inactive for longer than the retention period."""
-        days = self.retention_days
-        if not days:
+        if not self.retention_days:
             return 0
-        cutoff = time.time() - days * 86400
-        retired = 0
-        for runtime in await asyncio.to_thread(self.storage.runtimes):
-            if runtime.last_active > cutoff:
-                break
-            if await self.reclaim(runtime, Tier.RUNTIME):
-                retired += 1
+        cutoff = time.time() - self.retention_days * 86400
+        runtimes = await asyncio.to_thread(self.storage.runtimes)
+        # Least recently active first, so the stale ones are a prefix.
+        stale = itertools.takewhile(lambda r: r.last_active <= cutoff, runtimes)
+        retired = sum([await self.reclaim(r, Tier.RUNTIME) for r in stale])
         if retired:
             self.trash.empty_soon()
         return retired
