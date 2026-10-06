@@ -23,6 +23,7 @@ from openhands.agent_server import file_router as file_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.file_router import ARCHIVE_MANIFEST_NAME, _upload_file
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 
 @pytest.fixture
@@ -500,6 +501,35 @@ def _mutate_after_listing(monkeypatch, directory: Path, mutate) -> None:
         return iter(entries)
 
     monkeypatch.setattr(Path, "rglob", rglob)
+
+
+def test_download_trajectory_redacts_json_and_jsonl_files_only(
+    client, monkeypatch, tmp_path
+):
+    """``.json`` and ``.jsonl`` files, in any letter case, are redacted.
+
+    Other files are archived byte for byte, even when they hold JSON.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    line = json.dumps({"llm": {"api_key": "sk-plaintext-main-0123456789"}})
+    (conversation_dir / "events.jsonl").write_text(f"{line}\n{line}\n")
+    (conversation_dir / "STATE.JSON").write_text(line)
+    (conversation_dir / "notes.txt").write_text(line)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    root = conversation_id.hex
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        jsonl = archive.read(f"{root}/events.jsonl").decode().splitlines()
+        state = json.loads(archive.read(f"{root}/STATE.JSON"))
+        notes = archive.read(f"{root}/notes.txt")
+    assert [json.loads(row)["llm"]["api_key"] for row in jsonl] == [
+        REDACTED_SECRET_VALUE,
+        REDACTED_SECRET_VALUE,
+    ]
+    assert state["llm"]["api_key"] == REDACTED_SECRET_VALUE
+    assert notes == line.encode()
 
 
 def test_download_trajectory_survives_state_save_during_zip(

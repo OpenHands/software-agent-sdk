@@ -27,8 +27,8 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from openhands.agent_server._secret_redaction import (
-    REDACTED_SUFFIXES,
     redacted_json_bytes,
+    should_redact,
 )
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
@@ -178,10 +178,10 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
                 arcname = str(path.relative_to(source_dir.parent))
                 # Skip entries removed or renamed away after rglob listed them.
                 with contextlib.suppress(FileNotFoundError):
-                    if path.suffix.lower() in REDACTED_SUFFIXES and path.is_file():
+                    if should_redact(path) and path.is_file():
                         zinfo = zipfile.ZipInfo.from_file(path, arcname)
                         data = path.read_bytes()
-                        redacted = redacted_json_bytes(data, path.suffix)
+                        redacted = redacted_json_bytes(data, path)
                         archive.writestr(
                             zinfo,
                             data if redacted is None else redacted,
