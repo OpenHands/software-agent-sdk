@@ -17,19 +17,34 @@ uv run pytest -m docker_live tests/agent_server/docker_runtime/test_storage_scen
 branch. The test is deselected by default (`docker_live` marker) and skips
 when Docker or the image is missing.
 
-It runs the real app in-process against real containers:
+Each test configures the server through `OH_*` environment variables, as the
+CLI does, and drives real containers. Every one checks what must survive next
+to what must go:
 
-1. Start two conversations, A and B. Inside each container, write what installs
-   would: `~/.cache/uv`, `~/.npm`, a git-ignored `node_modules/` and a tracked
-   `main.py` in `/workspace`.
-2. Stop A (`DELETE /api/conversations/{A}/runtime`).
-   - A's `~/.cache` and `~/.npm` are gone.
-   - A's `node_modules/` and `main.py` are kept.
-   - B, still running, keeps everything.
-3. Put the server over its disk budget and run one maintenance pass.
-   - A's `node_modules/` is gone; `main.py` and `.gitignore` are kept.
-   - B, still running, keeps everything.
-   - The trash is empty afterwards.
+1. **Only rebuildable files go.** Two conversations write caches, shell
+   history, a config file, a committed repo with untracked notes, an ignored
+   `.env`, `node_modules/`, `.venv/`, `build/`, a clone inside an ignored
+   `vendor/`, and a nested checkout with its own `node_modules/`. Stopping one
+   drops its `~/.cache` and `~/.npm` only. A pass over the disk budget then
+   sheds its four dependency dirs and nothing else. The running conversation is
+   unchanged, file for file.
+2. **Planted links are removed, never followed.** The sandbox points `~/.npm`
+   and an ignored `build` at host paths outside the runtime, and `~/.cache` at
+   a relative path that lands in its own workspace on the host. All targets
+   survive.
+3. **A caller-supplied workspace is never shed**, even over budget; the
+   sandbox's own caches still go.
+4. **A reclaimed conversation resumes and works**: reading a workspace file
+   through the API restarts it, its commit is there, and it can write caches
+   and dependencies again.
+5. **An archived conversation is read-only until deleted** (retention 1 day,
+   one conversation aged 2 days): its runtime is gone, its history still reads,
+   the runtime routes answer 410, the recent one is kept, and delete still
+   removes everything.
+
+Mutation-checked: breaking the cache drop, the budget pass, the clone
+protection, the running-runtime guard, symlink unlinking, the caller-workspace
+rule or the 410 each fails the matching test.
 
 ## By hand
 
