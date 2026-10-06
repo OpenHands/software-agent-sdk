@@ -14,7 +14,8 @@ logger = get_logger(__name__)
 
 
 class ReclaimableStorage(Protocol):
-    """How one runtime mode stores conversations on this host."""
+    """How one ``Config.conversation_runtime`` (local, docker) stores
+    conversations on this host."""
 
     @property
     def root(self) -> Path:
