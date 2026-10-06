@@ -105,6 +105,7 @@ from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
@@ -132,33 +133,26 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
 
 
 def _cleanup_stale_tmux_sessions() -> None:
-    """Clean up any stale tmux sessions on server startup.
-
-    Tmux sessions live in a separate process that survives agent-server restarts.
-    This function kills all existing sessions on the shared OpenHands tmux socket
-    to prevent accumulation of orphaned sessions.
-    """
-    try:
-        server = libtmux.Server(socket_name=TMUX_SOCKET_NAME)
-        sessions = server.sessions
-        if not sessions:
-            logger.debug("No tmux sessions found on %s socket", TMUX_SOCKET_NAME)
-            return
-
-        logger.info("Cleaning up %d stale tmux session(s) on startup", len(sessions))
-
-        for session in sessions:
-            try:
-                logger.debug("Killing tmux session: %s", session.name)
-                session.kill()
-            except Exception as e:
-                logger.warning("Failed to kill tmux session %s: %s", session.name, e)
-
-        logger.info("Tmux cleanup completed")
-
-    except Exception as e:
-        # Don't let tmux cleanup failures prevent server startup
-        logger.warning("Failed to cleanup tmux sessions: %s", e)
+    """Clean up legacy and isolated terminal sockets on server startup."""
+    if os.name != "posix":
+        return
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+    socket_names = [TMUX_SOCKET_NAME]
+    socket_names.extend(
+        path.name
+        for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
+        if path.is_socket()
+    )
+    for socket_name in socket_names:
+        try:
+            server = libtmux.Server(socket_name=socket_name)
+            for session in server.sessions:
+                try:
+                    session.kill()
+                except Exception as e:
+                    logger.warning("Failed to kill tmux session %s: %s", session, e)
+        except Exception as e:
+            logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
 
 
 @asynccontextmanager
@@ -186,6 +180,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         api.state.telemetry_sink = await build_telemetry_sink(config)
         if not deferred:
             emit_server_started()
+
+        seal_tool_catalog()
 
         vscode_service = get_vscode_service()
         tool_preload_service = get_tool_preload_service()
@@ -313,6 +309,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
+        unseal_tool_catalog()
         backend_manager = getattr(api.state, "canvas_extension_backend_manager", None)
         if backend_manager is not None:
             await backend_manager.shutdown()
