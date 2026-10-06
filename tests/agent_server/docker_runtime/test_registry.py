@@ -792,6 +792,31 @@ async def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_startup_prune_skips_runtime_deleted_mid_listing(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    # No state file, so its age falls back to the runtime dir's own mtime.
+    gone_id, _ = seed_runtime(runtime, status=None)
+    healthy_id, _ = seed_runtime(runtime)
+    gone_dir = runtime.provisioning.runtime_dir(gone_id)
+    real_is_dir = Path.is_dir
+
+    def is_dir(path: Path, **kwargs) -> bool:
+        exists = real_is_dir(path, **kwargs)
+        if exists and path == gone_dir:
+            # A concurrent DELETE removes it right after the check.
+            shutil.rmtree(path)
+        return exists
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+
+    assert not gone_dir.exists()
+    assert not cache_dir(runtime, healthy_id).exists()
+
+
+@pytest.mark.asyncio
 async def test_resume_after_prune_mounts_a_fresh_cache_location(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime)

@@ -7,7 +7,8 @@ import hashlib
 import os
 import subprocess
 import time
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -178,6 +179,21 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def is_starting(self, conversation_id: UUID) -> bool:
         return conversation_id in self._starts
+
+    @asynccontextmanager
+    async def runtime_idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
+        """Hold the lifecycle lock; True if no container runs or starts for the
+        runtime and it is not being deleted.
+
+        Nothing can start a container until the block exits, so files moved
+        inside it are not in use.
+        """
+        async with self._lock:
+            yield not (
+                self.get(conversation_id)
+                or self.is_starting(conversation_id)
+                or conversation_id in self._deleting
+            )
 
     def attach_session(self, conversation_id: UUID) -> None:
         """Record an outer proxied session attached to this runtime.
