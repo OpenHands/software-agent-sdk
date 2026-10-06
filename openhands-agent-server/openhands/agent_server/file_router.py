@@ -174,6 +174,14 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
         raise
 
 
+class _TemporaryFileResponse(FileResponse):
+    async def __call__(self, *args: Any, **kwargs: Any) -> None:
+        try:
+            await super().__call__(*args, **kwargs)
+        finally:
+            Path(self.path).unlink(missing_ok=True)
+
+
 ArchiveFormat = Literal["git-delta", "tar.gz"]
 
 _ARCHIVE_SUFFIX: dict[str, str] = {
@@ -889,7 +897,6 @@ async def download_trajectory(
 ) -> FileResponse:
     """Download a zip archive of a conversation trajectory."""
     config = get_default_config()
-    temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
 
     if not conversation_dir.is_dir():
@@ -898,12 +905,24 @@ async def download_trajectory(
             detail="Conversation not found",
         )
 
-    await asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
-    return FileResponse(
+    fd, tmp_name = tempfile.mkstemp(suffix=".zip", dir=config.conversations_path)
+    os.close(fd)
+    temp_file = Path(tmp_name)
+    zip_task = asyncio.create_task(
+        asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
+    )
+    try:
+        await asyncio.shield(zip_task)
+    except BaseException:
+        try:
+            await zip_task
+        finally:
+            temp_file.unlink(missing_ok=True)
+        raise
+    return _TemporaryFileResponse(
         path=temp_file,
-        filename=temp_file.name,
+        filename=f"{conversation_id.hex}.zip",
         media_type="application/octet-stream",
-        background=BackgroundTask(temp_file.unlink),
     )
 
 
