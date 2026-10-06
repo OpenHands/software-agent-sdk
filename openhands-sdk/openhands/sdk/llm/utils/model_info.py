@@ -196,8 +196,14 @@ def _get_model_info_from_litellm_proxy(
             underlying_model = current.get("litellm_params", {}).get("model")
             underlying_model_info = None
             if isinstance(underlying_model, str) and underlying_model != stripped:
+                # Bound this probe too: like the discovery calls below, it is a
+                # synchronous, network-bound litellm lookup with no timeout, and
+                # it runs inside ``LLM._post_init`` -- so an unreachable
+                # underlying endpoint here would reintroduce the same deadlock.
                 try:
-                    underlying_model_info = get_model_info(underlying_model)
+                    underlying_model_info = _run_with_deadline(
+                        get_model_info, underlying_model
+                    )
                 except Exception as e:
                     logger.debug(
                         f"get_model_info(underlying={underlying_model}) failed: {e}"
