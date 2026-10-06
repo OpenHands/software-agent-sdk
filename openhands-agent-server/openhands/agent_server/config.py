@@ -402,6 +402,21 @@ class Config(BaseModel):
             "touched. Unset (the default) disables it."
         ),
     )
+    conversation_storage_retention_days: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Days a stopped conversation may stay inactive before its runtime "
+            "(sandbox home and workspace) is deleted and the conversation is "
+            "archived: its history and encryption identity are kept, so it "
+            "stays readable but can no longer be resumed. A workspace the "
+            "server did not create is never deleted. Unset (the default) keeps "
+            "runtimes until the conversation is deleted. Leave it unset when "
+            "the server runs in a sandbox that its provider pauses: no pass "
+            "runs while paused, so the first pass after a resume archives "
+            "every conversation that crossed the limit in the meantime."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",

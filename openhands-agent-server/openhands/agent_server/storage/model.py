@@ -11,6 +11,8 @@ class Tier(IntEnum):
     CACHES = 1
     # Git-ignored dirs in the workspace (node_modules, .venv, build output).
     DEPENDENCIES = 2
+    # The whole runtime; the conversation's history and identity are kept.
+    RUNTIME = 3
 
 
 @dataclass(frozen=True, slots=True)

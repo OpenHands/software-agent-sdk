@@ -47,6 +47,10 @@ _WORKSPACE_DIR: Final[str] = "/workspace"
 _OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
 
 
+class RuntimeArchivedError(RuntimeError):
+    """Retention deleted the runtime; the conversation is read-only."""
+
+
 @dataclass(slots=True)
 class ConversationContainer:
     host: str
@@ -87,11 +91,17 @@ class DockerConversationRegistry(ConversationRegistry):
         self.reclaimer = Reclaimer(
             DockerRuntimeStorage(self),
             disk_budget=config.conversation_storage_disk_budget,
+            retention_days=config.conversation_storage_retention_days,
         )
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service
         service.runtime_cipher_resolver = self.resolve_persisted_cipher
+
+    async def refresh_conversation(self, conversation_id: UUID) -> None:
+        """Re-read the conversation from disk after its runtime changed."""
+        if self._service is not None:
+            await self._service.refresh_persisted_conversation(conversation_id)
 
     def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
         """Resolve persisted state without weakening per-runtime isolation.
@@ -103,9 +113,17 @@ class DockerConversationRegistry(ConversationRegistry):
         identity = self.provisioning.load_optional(conversation_id)
         return identity.cipher if identity is not None else self.provisioning.cipher
 
+    def archived_marker(self, conversation_id: UUID) -> Path:
+        # Beside the manifest, not in it: the manifest must stay loadable by
+        # older builds, and it holds the key to the conversation's history.
+        return self.provisioning.control_root / f"{conversation_id.hex}.archived.json"
+
+    def is_archived(self, conversation_id: UUID) -> bool:
+        return self.archived_marker(conversation_id).exists()
+
     def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
         identity = self.provisioning.load_optional(conversation_id)
-        if identity is None:
+        if identity is None or self.is_archived(conversation_id):
             return ConversationRuntimeInfo(
                 runtime_status=ConversationRuntimeStatus.MISSING,
                 can_resume=False,
@@ -236,6 +254,8 @@ class DockerConversationRegistry(ConversationRegistry):
         async with self._lock:
             if conversation_id in self._deleting:
                 raise RuntimeError("Conversation is being deleted")
+            if self.is_archived(conversation_id):
+                raise RuntimeArchivedError("Conversation runtime was archived")
             self._last_access[conversation_id] = time.monotonic()
             container = self._containers.get(conversation_id)
 

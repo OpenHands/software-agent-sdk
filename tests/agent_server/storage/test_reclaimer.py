@@ -38,6 +38,12 @@ class FakeStorage:
     async def idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
         yield conversation_id not in self.busy
 
+    def archive(self, conversation_id: UUID) -> list[Path]:
+        return []
+
+    async def on_archived(self, conversation_id: UUID) -> None:
+        pass
+
 
 @pytest.mark.asyncio
 async def test_on_stop_drops_caches_and_keeps_the_rest(tmp_path):

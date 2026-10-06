@@ -1,5 +1,7 @@
+import json
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -76,6 +78,16 @@ class DockerRuntimeStorage:
 
     def idle(self, conversation_id: UUID) -> AbstractAsyncContextManager[bool]:
         return self.registry.runtime_idle(conversation_id)
+
+    def archive(self, conversation_id: UUID) -> list[Path]:
+        # Marker first: if the move never happens, the next pass retries it.
+        self.registry.archived_marker(conversation_id).write_text(
+            json.dumps({"archived_at": datetime.now(UTC).isoformat()})
+        )
+        return [self.provisioning.runtime_dir(conversation_id)]
+
+    async def on_archived(self, conversation_id: UUID) -> None:
+        await self.registry.refresh_conversation(conversation_id)
 
 
 def _parse_id(name: str) -> UUID | None:
