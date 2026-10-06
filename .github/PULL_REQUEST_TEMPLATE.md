@@ -16,9 +16,9 @@ AI agents: you must not edit this section.
 
 AGENT:
 <!-- AI/LLM agents:
-In the AGENT section and the template fields below, provide evidence that the
-code runs properly end-to-end. Just running unit tests is NOT sufficient. Explain
-exactly what command you ran and include logs, screenshots, or reproduction notes.
+Follow the review guide's evidence requirements in the fields below.
+For lifecycle/integration fixes, exercise the real workflow, not just constructed
+unit-test state. For docs-only changes, state what you validated and its limits.
 -->
 
 ## Why
@@ -44,7 +44,8 @@ If you could not test this, say why.
 ## Video/Screenshots
 
 <!--
-Provide a video or screenshots of testing your PR. e.g. you added a new feature to the gui, show us the video of you testing it successfully.
+For visual changes, show video or screenshots. Otherwise, use logs, API responses,
+or reproduction notes in How to Test; media is optional.
 
 -->
 
