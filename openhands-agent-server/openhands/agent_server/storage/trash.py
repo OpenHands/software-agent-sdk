@@ -44,7 +44,11 @@ class Trash:
             await asyncio.shield(self._emptying)
 
     async def close(self) -> None:
-        """Abandon deletion; the next start picks up what is left."""
+        """Abandon deletion; the next start picks up what is left.
+
+        A deletion already running in a worker thread cannot be interrupted:
+        it finishes after this returns. Only the entries not yet started wait.
+        """
         if self._emptying is not None:
             self._emptying.cancel()
             await asyncio.gather(self._emptying, return_exceptions=True)
