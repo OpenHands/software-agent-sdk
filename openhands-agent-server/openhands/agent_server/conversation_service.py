@@ -32,6 +32,7 @@ from openhands.agent_server.launch import (
     scoped_secrets,
     server_launch_stores,
 )
+from openhands.agent_server.local_storage import remove_conversation_worktree
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -1763,6 +1764,11 @@ class ConversationService:
             safe_rmtree(
                 event_service.conversation_dir,
                 f"conversation directory for {conversation_id}",
+            )
+            await asyncio.to_thread(
+                remove_conversation_worktree,
+                self.conversation_worktree_root,
+                conversation_id,
             )
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
