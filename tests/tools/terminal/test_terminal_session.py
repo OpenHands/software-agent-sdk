@@ -60,6 +60,24 @@ def test_session_initialization(terminal_type):
     session.close()
 
 
+def test_tmux_waits_for_slow_shell_initialization(tmp_path):
+    (tmp_path / ".bashrc").write_text("sleep 0.4\n")
+    session = create_terminal_session(
+        work_dir=str(tmp_path),
+        no_change_timeout_seconds=1,
+        terminal_type="tmux",
+        env={"HOME": str(tmp_path)},
+    )
+    session.initialize()
+    try:
+        obs = session.execute(TerminalAction(command="sleep 2"))
+
+        assert obs.metadata.exit_code == -1
+        assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
+    finally:
+        session.close()
+
+
 @parametrize_terminal_types
 def test_cwd_property(tmp_path, terminal_type):
     session = create_terminal_session(work_dir=tmp_path, terminal_type=terminal_type)

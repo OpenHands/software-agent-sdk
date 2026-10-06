@@ -10,6 +10,7 @@ import libtmux
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
 from openhands.tools.terminal.constants import (
+    CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
@@ -86,6 +87,7 @@ _TMUX_SPECIALS: dict[str, str] = {
     "C-D": "C-d",
     "C-C": "C-c",
 }
+_SHELL_PROMPT_TIMEOUT_SECONDS = 10
 
 
 class TmuxTerminal(TerminalInterface):
@@ -163,16 +165,45 @@ class TmuxTerminal(TerminalInterface):
         logger.debug(f"pane: {self.pane}; history_limit: {self.session.history_limit}")
         _initial_window.kill()
 
-        # Configure bash to use simple PS1 and disable PS2
-        # Disable history expansion to avoid ! mangling
-        self.pane.send_keys(
-            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
-        )
-        time.sleep(0.1)  # Wait for command to take effect
+        try:
+            self._initialize_shell()
+        except Exception:
+            self.session.kill()
+            raise
 
         logger.debug(f"Tmux terminal initialized with work dir: {self.work_dir}")
         self._initialized: bool = True
-        self.clear_screen()
+
+    def _initialize_shell(self) -> None:
+        """Configure Bash and wait until its prompt is ready for input."""
+        command = (
+            f"set +H; export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+            'export PS2=""; clear'
+        )
+        self._run_shell_command_and_wait(command)
+        self.pane.cmd("clear-history")
+
+    def _run_shell_command_and_wait(self, command: str) -> None:
+        marker_id = uuid.uuid4().hex
+        marker_start = f"__OH_TMUX_READY_{marker_id}_"
+        marker_end = "__"
+        self.pane.send_keys(
+            f'{command}; printf "%s%s\\n" "{marker_start}" "{marker_end}" > /dev/tty'
+        )
+
+        deadline = time.monotonic() + _SHELL_PROMPT_TIMEOUT_SECONDS
+        marker = marker_start + marker_end
+        while time.monotonic() < deadline:
+            content = self._capture_pane(self.pane)
+            marker_position = content.find(marker)
+            if (
+                marker_position >= 0
+                and content.find(CMD_OUTPUT_PS1_END, marker_position + len(marker)) >= 0
+            ):
+                return
+            time.sleep(0.01)
+
+        raise RuntimeError("Timed out waiting for the tmux shell prompt")
 
     def close(self) -> None:
         """Clean up the tmux session."""
@@ -225,6 +256,12 @@ class TmuxTerminal(TerminalInterface):
         if enter and not text.endswith("\n"):
             self.pane.send_keys("Enter", enter=False)
 
+    @staticmethod
+    def _capture_pane(pane: libtmux.Pane) -> str:
+        return "\n".join(
+            line.rstrip() for line in pane.cmd("capture-pane", "-J", "-pS", "-").stdout
+        )
+
     def read_screen(self) -> str:
         """Read the current tmux pane content.
 
@@ -234,14 +271,7 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
-        content = "\n".join(
-            map(
-                # avoid double newlines
-                lambda line: line.rstrip(),
-                self.pane.cmd("capture-pane", "-J", "-pS", "-").stdout,
-            )
-        )
-        return content
+        return self._capture_pane(self.pane)
 
     def clear_screen(self) -> None:
         """Clear the tmux pane screen and history.
@@ -287,8 +317,6 @@ class TmuxTerminal(TerminalInterface):
         try:
             content = self.read_screen()
             # If the screen ends with our PS1 prompt, no command is running
-            from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
-
             return not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
         except Exception:
             return False
