@@ -1,23 +1,37 @@
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.docker_runtime.mediation import (
-    prepare_start,
-    serialize_start,
+from openhands.agent_server.config import DEFAULT_CONVERSATION_IMAGE, Config
+from openhands.agent_server.docker_runtime.provisioning import (
+    RuntimeIdentity,
+    RuntimeProvisioningStore,
 )
-from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.routers import _prepare_forward
+from openhands.agent_server.launch import launch_source, target_launch_runtime
 from openhands.agent_server.persistence import (
+    PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
+    get_settings_store,
 )
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
-from openhands.sdk.conversation.request import StartConversationRequest
+from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
+    StartConversationRequest,
+)
+from openhands.sdk.launch import LaunchRuntime, LaunchStores, ResolvedLaunch, finalize
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -30,6 +44,21 @@ def config(tmp_path, monkeypatch) -> Config:
         secret_key=SecretStr("outer-key"),
         session_api_keys=["outer-session"],
     )
+
+
+async def _forward(
+    request: StartConversationRequest, runtime_config: Config, *, existing=False
+) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
+    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    body = request.model_dump(mode="json", context={"expose_secrets": True})
+    payload, launched = await _prepare_forward(body, registry, existing=existing)
+    provisioning = RuntimeProvisioningStore(runtime_config)
+    identity = provisioning.create(uuid4())
+    return payload(identity.cipher), launched, identity
+
+
+def _no_stores() -> LaunchStores:
+    raise AssertionError("the container reads no store")
 
 
 @pytest.mark.asyncio
@@ -53,21 +82,22 @@ async def test_materializes_request_secret_sources(tmp_path, monkeypatch):
         },
     )
 
-    prepared, launched = await prepare_start(
-        request.model_dump(mode="json"), runtime_config
-    )
+    payload, launched, identity = await _forward(request, runtime_config)
+
     assert launched is None
     assert looked_up == ["http://127.0.0.1:8123/api/settings/secrets/SELECTED"]
-    assert isinstance(prepared.secrets["SELECTED"], StaticSecret)
-
-    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
-    payload = serialize_start(prepared, identity)
     assert "selected-value" not in str(payload)
     assert "outer-session" not in str(payload)
+    assert "model-key" not in str(payload)
     received = StartConversationRequest.model_validate(
         payload, context={"cipher": identity.cipher}
     )
     assert received.secrets["SELECTED"].get_value() == "selected-value"
+    agent = launch_source(received, _no_stores, identity.cipher)
+    assert isinstance(agent, Agent)
+    assert agent.llm.api_key is not None
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "model-key"
 
 
 @pytest.mark.asyncio
@@ -83,17 +113,52 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
             ),
         ),
     )
-    prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
-    context = prepared.agent.agent_context
-    assert context is not None
-    assert context.secrets is not None
+
+    payload, _, identity = await _forward(request, runtime_config)
+
+    received = StartConversationRequest.model_validate(payload)
+    agent = launch_source(received, _no_stores, identity.cipher)
+    assert isinstance(agent, Agent)
+    context = agent.agent_context
+    assert context is not None and context.secrets is not None
     source = context.secrets["CONTEXT_SECRET"]
     assert isinstance(source, StaticSecret)
     assert source.get_value() == "context-value"
 
 
 @pytest.mark.asyncio
-async def test_profile_uses_existing_resolver_and_secret_allowlist(
+async def test_every_encrypted_field_reaches_the_container_decryptable(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch)
+    helper = AgentDefinition(
+        name="helper",
+        mcp_config={
+            "srv": MCPServer(command="echo", env={"TOKEN": SecretStr("mcp-token")})
+        },
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
+        agent_definitions=[helper],
+        secrets_encrypted=True,
+    )
+    body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
+    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+
+    payload, _ = await _prepare_forward(body, registry, existing=False)
+    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
+    received = StartConversationRequest.model_validate(
+        payload(identity.cipher), context={"cipher": identity.cipher}
+    )
+
+    servers = received.agent_definitions[0].mcp_config
+    assert servers is not None and servers["srv"].env is not None
+    assert servers["srv"].env["TOKEN"].get_secret_value() == "mcp-token"
+
+
+@pytest.mark.asyncio
+async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
@@ -106,14 +171,12 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     profile = OpenHandsAgentProfile(
         name="docker-test-profile",
         llm_profile_ref="docker-test-model",
-        tools=[],
         mcp_server_refs=[],
         secret_refs=["ALLOWED"],
     )
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
-        "openhands.agent_server.conversation_service.discover_profile_skills",
-        lambda: [],
+        "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
     monkeypatch.setattr(
         LookupSecret, "get_value", lambda secret: secret.url.rsplit("/", 1)[-1]
@@ -121,16 +184,156 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
         agent_profile_id=profile.id,
+        agent_launch_additions=AgentLaunchAdditions(
+            system_message_suffix_append="RUNTIME"
+        ),
         secrets={
             name: LookupSecret(url=f"/api/settings/secrets/{name}")
             for name in ("ALLOWED", "UNRELATED")
         },
     )
 
-    prepared, launched = await prepare_start(
-        request.model_dump(mode="json"), runtime_config
-    )
-    assert set(prepared.secrets) == {"ALLOWED"}
-    assert prepared.agent_profile_id is None
+    payload, launched, identity = await _forward(request, runtime_config)
+
     assert launched is not None
     assert launched.agent_profile_id == profile.id
+    assert "agent_profile_id" not in payload
+    # The host leaves the default tool set, and so the browser, to the container.
+    assert payload["agent_settings"]["tools"] is None
+    received = StartConversationRequest.model_validate(
+        payload, context={"cipher": identity.cipher}
+    )
+    assert set(received.secrets) == {"ALLOWED"}
+    source = launch_source(received, _no_stores, identity.cipher)
+    assert isinstance(source, ResolvedLaunch)
+    agent = finalize(
+        source,
+        LaunchRuntime(browser_available=True, acp_skill_sourcing="openhands_managed"),
+        additions=received.agent_launch_additions,
+    ).agent
+    assert isinstance(agent, Agent)
+    assert agent.llm.model == "test"
+    assert agent.llm.stream is True
+    assert "browser_tool_set" in {tool.name for tool in agent.tools}
+    assert agent.agent_context is not None
+    assert agent.agent_context.system_message_suffix == "RUNTIME"
+
+
+@pytest.mark.asyncio
+async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
+    runtime_config = config(tmp_path, monkeypatch)
+    get_settings_store(runtime_config).save(
+        PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
+    )
+    get_llm_profile_store().save("fast", LLM(model="fast-model"))
+    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="fast")
+    get_agent_profile_store().save(profile)
+    monkeypatch.setattr(
+        "openhands.agent_server.launch.discover_profile_skills", lambda: []
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=profile.id,
+    )
+
+    payload, _, identity = await _forward(request, runtime_config)
+
+    assert payload["agent_settings"]["agent_context"]["load_memory"] is True
+    received = StartConversationRequest.model_validate(payload)
+    source = launch_source(received, _no_stores, identity.cipher)
+    agent = finalize(
+        source, LaunchRuntime(), additions=received.agent_launch_additions
+    ).agent
+    assert isinstance(agent, Agent)
+    assert agent.llm.model == "fast-model"
+    assert agent.agent_context is not None
+    assert agent.agent_context.load_memory is True
+
+
+@pytest.mark.asyncio
+async def test_an_existing_conversation_is_not_resolved_again(tmp_path, monkeypatch):
+    runtime_config = config(tmp_path, monkeypatch)
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=uuid4(),
+    )
+
+    payload, launched, _ = await _forward(request, runtime_config, existing=True)
+
+    assert launched is None
+    assert payload["agent_profile_id"] == str(request.agent_profile_id)
+    assert "agent_settings" not in payload
+
+
+def _docker_host_browser(host: Config) -> bool:
+    # The host's own chromium says nothing about the container's.
+    with patch("openhands.agent_server.launch.is_tool_usable", return_value=False):
+        runtime = target_launch_runtime(host)
+    assert runtime.acp_skill_sourcing == "openhands_managed"
+    return runtime.browser_available
+
+
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "has_browser"),
+    [(None, True, True), (False, True, False), (True, False, False)],
+)
+def test_the_host_config_decides_the_container_browser(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, has_browser
+):
+    host = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": image_has_browser,
+            "enable_browser": enable_browser,
+        }
+    )
+
+    assert _docker_host_browser(host) is has_browser
+
+
+_STOCK_REPO = DEFAULT_CONVERSATION_IMAGE.rsplit(":", 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("image", "has_browser"),
+    [
+        (DEFAULT_CONVERSATION_IMAGE, True),
+        (f"{_STOCK_REPO}:1.50.0-python", True),
+        (f"{_STOCK_REPO}:latest-python-minimal", False),
+        (f"{_STOCK_REPO}:abc1234-python-minimal-amd64", False),
+        (f"{_STOCK_REPO}@sha256:" + "0" * 64, True),
+        (f"{_STOCK_REPO}-custom:tag", False),
+        ("example.com/custom:tag", False),
+        ("localhost:5000/agent-server", False),
+    ],
+)
+def test_an_unset_image_browser_is_on_only_for_the_stock_image(
+    tmp_path, monkeypatch, image, has_browser
+):
+    host = config(tmp_path, monkeypatch).model_copy(
+        update={"conversation_runtime": "docker", "conversation_image": image}
+    )
+
+    assert _docker_host_browser(host) is has_browser
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_agent_is_forwarded_instead_of_agent_settings(
+    tmp_path, monkeypatch
+):
+    request = StartConversationRequest.model_validate(
+        {
+            "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+            "agent": {"kind": "Agent", "llm": {"model": "test"}, "tools": []},
+            "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+        }
+    )
+
+    payload, _, _ = await _forward(request, config(tmp_path, monkeypatch))
+
+    assert payload["agent"]["tools"] == []
+    assert "agent_settings" not in payload

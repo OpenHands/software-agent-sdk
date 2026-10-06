@@ -4,7 +4,9 @@ import io
 import json
 import os
 import tarfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -74,14 +76,8 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
     manifest["backend"] = {
         "schema_version": 1,
         "artifacts": {
-            "linux-amd64": {
-                "path": archive.name,
-                "sha256": checksum,
-            },
-            "linux-arm64": {
-                "path": archive.name,
-                "sha256": checksum,
-            },
+            "linux-amd64": {"path": archive.name, "sha256": checksum},
+            "linux-arm64": {"path": archive.name, "sha256": checksum},
         },
         "argv": [
             "{artifact_dir}/server.py",
@@ -97,6 +93,21 @@ def _write_backend_extension(directory: Path, *, timeout: float = 3) -> Path:
     }
     manifest_path.write_text(json.dumps(manifest))
     return directory
+
+
+class _ArtifactHandler(BaseHTTPRequestHandler):
+    archive: bytes = b""
+    requests = 0
+
+    def do_GET(self):
+        type(self).requests += 1
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(self.archive)))
+        self.end_headers()
+        self.wfile.write(self.archive)
+
+    def log_message(self, format, *args):
+        pass
 
 
 @pytest.mark.asyncio
@@ -131,6 +142,9 @@ async def test_prepare_start_logs_stop_and_preserve_data(
     runtime = json.loads(runtime_file.read_text())
     assert runtime["cwd"] == str((installed_dir / "my-extension").resolve())
     assert runtime["artifact_dir"] == str(artifact_dir)
+    assert runtime["environment"]["HOME"] == str(
+        manager.data_dir / "my-extension" / "home"
+    )
     assert "OH_SECRET_KEY" not in runtime["environment"]
     child_pid = runtime["child_pid"]
 
@@ -150,6 +164,48 @@ async def test_prepare_start_logs_stop_and_preserve_data(
     assert disable_canvas_extension("my-extension", installed_dir=installed_dir)
     assert uninstall_canvas_extension("my-extension", installed_dir=installed_dir)
     assert runtime_file.is_file()
+
+
+@pytest.mark.asyncio
+async def test_remote_artifact_download_strip_cache_and_home(tmp_path: Path):
+    archive = tmp_path / "remote.tar.gz"
+    script = _SERVER.encode()
+    with tarfile.open(archive, "w:gz") as tar:
+        directory = tarfile.TarInfo("upstream")
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        tar.addfile(directory)
+        info = tarfile.TarInfo("upstream/server.py")
+        info.mode = 0o755
+        info.size = len(script)
+        tar.addfile(info, io.BytesIO(script))
+
+    _ArtifactHandler.archive = archive.read_bytes()
+    _ArtifactHandler.requests = 0
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _ArtifactHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/tool.tar.gz"
+        manager = CanvasExtensionBackendManager(
+            state_dir=tmp_path / "state",
+            allow_insecure_artifact_urls=True,
+        )
+        checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+        first = await asyncio.to_thread(manager._download_archive, url, checksum)
+        second = await asyncio.to_thread(manager._download_archive, url, checksum)
+        assert first == second
+        assert _ArtifactHandler.requests == 1
+
+        artifact_dir = tmp_path / "extracted"
+        artifact_dir.mkdir()
+        await asyncio.to_thread(manager._extract_archive, first, artifact_dir, 1)
+        assert (artifact_dir / "server.py").is_file()
+        assert not (artifact_dir / "upstream").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 @pytest.mark.asyncio

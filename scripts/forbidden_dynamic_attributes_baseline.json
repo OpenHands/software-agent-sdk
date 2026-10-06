@@ -235,79 +235,9 @@
         "hash": "78f8ec7ea04cc59e459c05dcd493ea2130576872db521152af8522537ba36759"
     },
     {
-        "file": "openhands-sdk/openhands/sdk/llm/auth/openai.py",
-        "name": "getattr",
-        "hash": "e8aaa9f7c905a0577ca827eb2b980493e75fa15576fb36ea3caedec465952a44"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "1d0d7334f8d3cbf5ce405a9ebeeee696ee3cd6ab1f3f3a3ec090281e87c26a0e"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "33f6fe273fcfcda244277c7d4aa17986ba7d99a42405ccc17e9345ec68222537"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "33f6fe273fcfcda244277c7d4aa17986ba7d99a42405ccc17e9345ec68222537"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "5a80cf21fe817b05c844205796ac76fed3a6a1d042f5c4367d5c39b388457dc6"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "5f6d2f400daee58255781c296e9c4026364e2874d45332ceadc3b346ff7b9d32"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "5f6d2f400daee58255781c296e9c4026364e2874d45332ceadc3b346ff7b9d32"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "9672c13062337d7dfb0a64e85dae4a6047b9b472f81aa8c63731b2dd3ccc1897"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "c4e5024ff23b196f9a60499e789bae6bd0186db335aa1880609061175f829c12"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/llm.py",
-        "name": "getattr",
-        "hash": "d4dc7589836524abc1e8a26c10bdbdf84be115c935a0931e4f5a4a79bd4fd7db"
-    },
-    {
         "file": "openhands-sdk/openhands/sdk/llm/llm.py",
         "name": "getattr",
         "hash": "d4ddba252ea12924b2dd05cb4fb5ebcbf7b22685fc0a9b6ce305015b9cdd81d0"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/message.py",
-        "name": "getattr",
-        "hash": "1a2ef4748a97e7d2722b1355156c007372e94b28f026ba05d030164012fc2493"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/message.py",
-        "name": "getattr",
-        "hash": "48bf373a29427605f13467bb9a458397957110a13bc0368fbf2fbfc95a9e126b"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/message.py",
-        "name": "getattr",
-        "hash": "a04f50426bd6b5af685f0bd5ea2450de70cdc290c0ee90f1eec530b43a444cf6"
-    },
-    {
-        "file": "openhands-sdk/openhands/sdk/llm/mixins/non_native_fc.py",
-        "name": "getattr",
-        "hash": "2a87adf20dc79edbdd0c81c0c4ec8891939073de00d9ff355acf3b81013870f8"
     },
     {
         "file": "openhands-sdk/openhands/sdk/llm/router/base.py",

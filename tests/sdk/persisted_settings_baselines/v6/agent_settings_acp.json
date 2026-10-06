@@ -1,6 +1,6 @@
 {
   "__expected__": {
-    "schema_version": 7,
+    "schema_version": 8,
     "agent_kind": "acp",
     "acp_server": "claude-code",
     "acp_model": "fixture-v6-acp-model"
