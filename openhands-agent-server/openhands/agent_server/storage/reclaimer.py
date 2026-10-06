@@ -40,11 +40,11 @@ class ReclaimableStorage(Protocol):
         """Hold the runtime still; True if nothing runs or starts in it."""
         ...
 
-    def retire(self, conversation_id: UUID) -> list[Path]:
-        """Record the runtime as retired; return what to discard. Called idle."""
+    def archive(self, conversation_id: UUID) -> list[Path]:
+        """Record the runtime as archived; return what to discard. Called idle."""
         ...
 
-    async def on_retired(self, conversation_id: UUID) -> None: ...
+    async def on_archived(self, conversation_id: UUID) -> None: ...
 
 
 class Reclaimer:
@@ -87,18 +87,18 @@ class Reclaimer:
     async def run_pass(self) -> None:
         """Apply the configured policies once; log only if something was freed."""
         free_before = _free_bytes(self.storage.root)
-        # Retention first: what it retires no longer counts against the budget.
-        retired = await self._enforce_retention()
+        # Retention first: what it archives no longer counts against the budget.
+        archived = await self._enforce_retention()
         shed = await self._enforce_disk_budget()
-        if not (retired or shed):
+        if not (archived or shed):
             return
         await self.trash.drain()
         logger.info(
-            "Conversation storage: freed %.1f GB (retired %d runtimes, shed "
+            "Conversation storage: freed %.1f GB (archived %d runtimes, shed "
             "dependencies of %d), %s at %.0f%%",
             # Other writes on the filesystem can outweigh a small reclaim.
             max(0, _free_bytes(self.storage.root) - free_before) / 1e9,
-            retired,
+            archived,
             shed,
             self.storage.root,
             disk_usage(self.storage.root) * 100,
@@ -118,17 +118,17 @@ class Reclaimer:
                 logger.exception("error_reclaiming_conversation_storage")
 
     async def _enforce_retention(self) -> int:
-        """Retire runtimes inactive for longer than the retention period."""
+        """Archive runtimes inactive for longer than the retention period."""
         if not self.retention_days:
             return 0
         cutoff = time.time() - self.retention_days * 86400
         runtimes = await asyncio.to_thread(self.storage.runtimes)
         # Least recently active first, so the stale ones are a prefix.
         stale = itertools.takewhile(lambda r: r.last_active <= cutoff, runtimes)
-        retired = sum([await self.reclaim(r, Tier.RUNTIME) for r in stale])
-        if retired:
+        archived = sum([await self.reclaim(r, Tier.RUNTIME) for r in stale])
+        if archived:
             self.trash.empty_soon()
-        return retired
+        return archived
 
     async def _enforce_disk_budget(self) -> int:
         """Shed dependencies of stopped runtimes, oldest first, until under budget."""
@@ -159,20 +159,20 @@ class Reclaimer:
 
     async def reclaim(self, runtime: StoredRuntime, tier: Tier) -> bool:
         """Discard what ``tier`` allows, unless the runtime is in use."""
-        retiring = tier >= Tier.RUNTIME
-        # Retiring takes the whole runtime, so there is nothing to select.
-        paths = [] if retiring else await asyncio.to_thread(_select, runtime, tier)
-        if not (paths or retiring):
+        archiving = tier >= Tier.RUNTIME
+        # Archiving takes the whole runtime, so there is nothing to select.
+        paths = [] if archiving else await asyncio.to_thread(_select, runtime, tier)
+        if not (paths or archiving):
             return False
         async with self.storage.idle(runtime.id) as idle:
             if not idle:
                 return False
-            if retiring:
-                paths = self.storage.retire(runtime.id)
+            if archiving:
+                paths = self.storage.archive(runtime.id)
             # Only renames here: the lock is held for microseconds.
             moved = [path for path in paths if self.trash.discard(path)]
-        if retiring and moved:
-            await self.storage.on_retired(runtime.id)
+        if archiving and moved:
+            await self.storage.on_archived(runtime.id)
         return bool(moved)
 
 

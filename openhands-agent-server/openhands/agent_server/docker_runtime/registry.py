@@ -47,7 +47,7 @@ _WORKSPACE_DIR: Final[str] = "/workspace"
 _OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
 
 
-class RuntimeRetiredError(RuntimeError):
+class RuntimeArchivedError(RuntimeError):
     """Retention deleted the runtime; the conversation is read-only."""
 
 
@@ -113,17 +113,17 @@ class DockerConversationRegistry(ConversationRegistry):
         identity = self.provisioning.load_optional(conversation_id)
         return identity.cipher if identity is not None else self.provisioning.cipher
 
-    def retired_marker(self, conversation_id: UUID) -> Path:
+    def archived_marker(self, conversation_id: UUID) -> Path:
         # Beside the manifest, not in it: the manifest must stay loadable by
         # older builds, and it holds the key to the conversation's history.
-        return self.provisioning.control_root / f"{conversation_id.hex}.retired.json"
+        return self.provisioning.control_root / f"{conversation_id.hex}.archived.json"
 
-    def is_retired(self, conversation_id: UUID) -> bool:
-        return self.retired_marker(conversation_id).exists()
+    def is_archived(self, conversation_id: UUID) -> bool:
+        return self.archived_marker(conversation_id).exists()
 
     def runtime_info(self, conversation_id: UUID) -> ConversationRuntimeInfo:
         identity = self.provisioning.load_optional(conversation_id)
-        if identity is None or self.is_retired(conversation_id):
+        if identity is None or self.is_archived(conversation_id):
             return ConversationRuntimeInfo(
                 runtime_status=ConversationRuntimeStatus.MISSING,
                 can_resume=False,
@@ -254,8 +254,8 @@ class DockerConversationRegistry(ConversationRegistry):
         async with self._lock:
             if conversation_id in self._deleting:
                 raise RuntimeError("Conversation is being deleted")
-            if self.is_retired(conversation_id):
-                raise RuntimeRetiredError("Conversation runtime was retired")
+            if self.is_archived(conversation_id):
+                raise RuntimeArchivedError("Conversation runtime was archived")
             self._last_access[conversation_id] = time.monotonic()
             container = self._containers.get(conversation_id)
 
