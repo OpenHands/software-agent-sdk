@@ -93,6 +93,9 @@ from openhands.sdk.tool.builtins import (
     FinishTool,
     ThinkAction,
 )
+from openhands.sdk.tool.builtins.conversation_history import (
+    conversation_history_snapshot,
+)
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 
@@ -632,15 +635,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     ) -> None:
         """Prepare a batch, emit results, and handle finish."""
         state = conversation.state
-        batch = _ActionBatch.prepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-            span_owner=conversation,
-        )
+        with conversation_history_snapshot(conversation, action_events):
+            batch = _ActionBatch.prepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+                span_owner=conversation,
+            )
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
@@ -667,15 +671,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
-        batch = await _ActionBatch.aprepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-            span_owner=conversation,
-        )
+        with conversation_history_snapshot(conversation, action_events):
+            batch = await _ActionBatch.aprepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+                span_owner=conversation,
+            )
         batch.emit(conversation, on_event)
         batch.finalize(
             on_event=on_event,
