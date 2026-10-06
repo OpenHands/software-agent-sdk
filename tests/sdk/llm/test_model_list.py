@@ -15,7 +15,7 @@ from openhands.sdk.llm.utils.verified_models import (
 
 def test_organize_models_and_providers():
     models = [
-        "openai/gpt-5.6",
+        "openai/gpt-6.1-sol",
         "anthropic/claude-sonnet-5",
         "gpt-5.3-codex",
         "gpt-6-astra",
@@ -110,12 +110,11 @@ def test_openhands_models_all_have_provider_list():
     )
 
 
-def test_gpt_5_6_models_are_verified_for_openai():
+def test_gpt_6_models_are_verified_for_openai():
     assert {
-        "gpt-5.6",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-6-astra",
     }.issubset(VERIFIED_OPENAI_MODELS)
 
@@ -191,7 +190,19 @@ def test_verified_lists_keep_two_latest_versions_per_line():
     lands.
     """
     expectations = {
-        "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
+        "openai": (
+            {"gpt-6.1-sol", "gpt-6-astra"},
+            {
+                "gpt-5.6",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.6-luna",
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-4o",
+                "o3",
+            },
+        ),
         "anthropic": (
             {"claude-opus-5-5", "claude-opus-5"},
             {"claude-opus-4-8", "claude-opus-4-7"},
@@ -219,12 +230,16 @@ def test_verified_lists_keep_two_latest_versions_per_line():
         models = set(VERIFIED_MODELS[provider])
         assert present <= models, f"{provider}: missing {present - models}"
         assert not (absent & models), f"{provider}: stale {absent & models}"
-    assert {"gpt-6-astra", "gpt-5.6", "claude-opus-5-5", "claude-opus-5"} <= set(
+    assert {"gpt-6-astra", "claude-opus-5-5", "claude-opus-5"} <= set(
         VERIFIED_OPENHANDS_MODELS
     )
-    assert not {"gpt-5.5", "claude-opus-4-8", "claude-opus-4-7", "minimax-m2.5"} & set(
-        VERIFIED_OPENHANDS_MODELS
-    )
+    assert not {
+        "gpt-5.6",
+        "gpt-5.5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "minimax-m2.5",
+    } & set(VERIFIED_OPENHANDS_MODELS)
 
 
 def test_trinity_model_is_openhands_only():
