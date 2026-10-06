@@ -1,23 +1,27 @@
 import os
-import re
 import tempfile
 from pathlib import Path
 
 
-# ``atomic_write_text`` writes to ``.<name>.<8 random chars>`` (``mkstemp`` with
-# that prefix; the random part uses ``[a-z0-9_]``) and then renames it to
-# ``<name>``.
-_ATOMIC_WRITE_TEMP_NAME = re.compile(r"\..+\.[a-z0-9_]{8}")
+# Suffix that marks a file as still being written. ``atomic_write_text`` writes
+# to ``.<name>.<random>.tmp`` next to ``path`` and then renames it to ``<name>``.
+_TEMP_SUFFIX = ".tmp"
 
 
-def is_atomic_write_temp_file(path: Path) -> bool:
-    """Return True if ``path`` is named like an ``atomic_write_text`` temp file."""
-    return _ATOMIC_WRITE_TEMP_NAME.fullmatch(path.name) is not None
+def is_temp_file(path: Path) -> bool:
+    """Return True if ``path`` is named like a file that is still being written.
+
+    That is any ``*.tmp`` name: ``atomic_write_text``'s temp files, and those of
+    other writers that use the same suffix for a file they rename into place.
+    """
+    return path.suffix == _TEMP_SUFFIX
 
 
 def atomic_write_text(path: Path, value: str, mode: int = 0o600) -> None:
     """Atomically write text with owner-only permissions."""
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=_TEMP_SUFFIX, dir=path.parent
+    )
     temporary_path = Path(temporary_name)
     try:
         fchmod = getattr(os, "fchmod", None)

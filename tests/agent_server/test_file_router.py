@@ -537,7 +537,7 @@ def test_download_trajectory_survives_state_save_during_zip(
 ):
     """An atomic base-state save that lands mid-zip must not cause a 500."""
     conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
-    temp_file = conversation_dir / ".base_state.json.4867ztqe"
+    temp_file = conversation_dir / ".base_state.json.4867ztqe.tmp"
     temp_file.write_text('{"v": 2}')
 
     _mutate_after_listing(
@@ -551,7 +551,7 @@ def test_download_trajectory_survives_state_save_during_zip(
     assert response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.read(f"{conversation_id.hex}/base_state.json") == b'{"v": 2}'
-        assert f"{conversation_id.hex}/.base_state.json.4867ztqe" not in (
+        assert f"{conversation_id.hex}/.base_state.json.4867ztqe.tmp" not in (
             archive.namelist()
         )
 
@@ -582,20 +582,21 @@ def test_download_trajectory_skips_entries_removed_while_zipping(
     assert not [name for name in names if "gone" in name]
 
 
-def test_download_trajectory_omits_in_progress_atomic_save_temp_files(
-    client, monkeypatch, tmp_path
-):
-    """A temp file from an unfinished atomic save is not archived.
+def test_download_trajectory_omits_tmp_files(client, monkeypatch, tmp_path):
+    """Files still being written (``*.tmp``) are not archived.
 
-    It may be half-written, and its name does not end in ``.json``, so it
-    would also bypass secret redaction.
+    That covers ``atomic_write_text`` temp files and the conversation lease's
+    ``owner_lease.tmp``. They may be half-written, and their names do not end
+    in ``.json``, so they would also bypass secret redaction.
     """
     conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
     secret = "sk-in-progress-save-0123456789"
-    (conversation_dir / ".base_state.json.4867ztqe").write_text(
+    (conversation_dir / ".base_state.json.4867ztqe.tmp").write_text(
         '{"agent": {"llm": {"api_key": "' + secret + '"'
     )
-    (conversation_dir / "events" / ".event-00001-abc.json.k2_9xq0z").write_text("{")
+    events_dir = conversation_dir / "events"
+    (events_dir / ".event-00001-abc.json.k2_9xq0z.tmp").write_text("{")
+    (conversation_dir / "owner_lease.tmp").write_text('{"owner_instance_id": "')
 
     response = client.get(f"/api/file/download-trajectory/{conversation_id}")
 
@@ -611,6 +612,23 @@ def test_download_trajectory_omits_in_progress_atomic_save_temp_files(
         f"{root}/events/event-00000.json",
     ]
     assert secret.encode() not in blob
+
+
+def test_download_trajectory_keeps_dotfiles_that_are_not_tmp_files(
+    client, monkeypatch, tmp_path
+):
+    """Only ``*.tmp`` files are left out; other dotfiles are archived."""
+    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    kept = [".env.template", ".cache.metadata", "events/.eventlog-len-1.marker"]
+    for name in kept:
+        (conversation_dir / name).write_text(name)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        for name in kept:
+            assert archive.read(f"{conversation_id.hex}/{name}") == name.encode()
 
 
 def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
@@ -635,7 +653,7 @@ def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
             content = read(self, *args, **kwargs)
             if self == base_state and not replaced:
                 replaced = True
-                newer = conversation_dir / ".base_state.json.newsave0"
+                newer = conversation_dir / ".base_state.json.newsave0.tmp"
                 newer.write_text(
                     '{"secret_registry": {"secret_sources": '
                     '{"GITHUB_TOKEN": "' + token + '"}}}'

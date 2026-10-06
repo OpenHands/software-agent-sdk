@@ -42,7 +42,7 @@ from openhands.sdk.git.utils import (
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.files import is_atomic_write_temp_file
+from openhands.sdk.utils.files import is_temp_file
 
 
 class SubdirectoryEntry(BaseModel):
@@ -164,16 +164,19 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     leaks API keys — see ``redacted_json_bytes``.
 
     The conversation may still be running and saving state while this walks
-    it, so in-progress atomic-save temp files are skipped, and so are entries
-    that disappear between listing and reading. Each JSON file is read once,
-    so the bytes checked for secrets are the bytes that get archived.
+    it, so files that are still being written (``*.tmp``) are skipped, and so
+    are entries that disappear between listing and reading. Each JSON file is
+    read once, so the bytes checked for secrets are the bytes that get
+    archived.
     """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
-                if is_atomic_write_temp_file(path):
-                    # In-progress atomic save; the file it replaces is archived.
+                if is_temp_file(path):
+                    # A save in progress (or left by a crash), from
+                    # atomic_write_text or the lease's owner_lease.tmp; the
+                    # file it replaces is archived.
                     continue
                 arcname = str(path.relative_to(source_dir.parent))
                 # Skip entries removed or renamed away after rglob listed them.
