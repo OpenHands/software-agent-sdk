@@ -12,7 +12,7 @@ from openhands.agent_server.docker_runtime import routers
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
-    RuntimeRetiredError,
+    RuntimeArchivedError,
 )
 from openhands.agent_server.models import ConversationRuntimeStatus
 
@@ -55,7 +55,7 @@ def provision(
 
 
 @pytest.mark.asyncio
-async def test_inactive_runtime_is_retired_and_history_kept(tmp_path, monkeypatch):
+async def test_inactive_runtime_is_archived_and_history_kept(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, workspace = provision(runtime, days_inactive=8)
     persisted = runtime.resolve_persisted_cipher(conversation_id).encrypt(
@@ -99,11 +99,11 @@ async def test_live_runtime_is_kept_however_old(tmp_path, monkeypatch):
     await runtime.reclaimer.run_pass()
 
     assert (workspace / "main.py").is_file()
-    assert not runtime.is_retired(conversation_id)
+    assert not runtime.is_archived(conversation_id)
 
 
 @pytest.mark.asyncio
-async def test_caller_supplied_workspace_survives_retirement(tmp_path, monkeypatch):
+async def test_caller_supplied_workspace_survives_archiving(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     checkout = tmp_path / "user-checkout"
     checkout.mkdir()
@@ -111,22 +111,22 @@ async def test_caller_supplied_workspace_survives_retirement(tmp_path, monkeypat
 
     await runtime.reclaimer.run_pass()
 
-    assert runtime.is_retired(conversation_id)
+    assert runtime.is_archived(conversation_id)
     assert (checkout / "main.py").is_file()
 
 
 @pytest.mark.asyncio
-async def test_retired_runtime_cannot_be_resumed(tmp_path, monkeypatch):
+async def test_archived_runtime_cannot_be_resumed(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, _ = provision(runtime, days_inactive=8)
     await runtime.reclaimer.run_pass()
 
     def no_docker(_conversation_id):
-        pytest.fail("a retired runtime must not start a container")
+        pytest.fail("an archived runtime must not start a container")
 
     # Without this, a regression would start a real container and leak it.
     monkeypatch.setattr(runtime, "_build_container", no_docker)
-    with pytest.raises(RuntimeRetiredError):
+    with pytest.raises(RuntimeArchivedError):
         await runtime.get_or_create(conversation_id)
     with pytest.raises(HTTPException) as raised:
         await routers._container(runtime, conversation_id)
@@ -134,13 +134,13 @@ async def test_retired_runtime_cannot_be_resumed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_interrupted_retirement_is_finished_by_the_next_pass(
+async def test_interrupted_archiving_is_finished_by_the_next_pass(
     tmp_path, monkeypatch
 ):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, _ = provision(runtime, days_inactive=8)
     # A crash after the marker, before the runtime dir was moved.
-    runtime.retired_marker(conversation_id).touch()
+    runtime.archived_marker(conversation_id).touch()
 
     await runtime.reclaimer.run_pass()
 
@@ -148,7 +148,7 @@ async def test_interrupted_retirement_is_finished_by_the_next_pass(
 
 
 @pytest.mark.asyncio
-async def test_retirement_leaves_the_manifest_untouched(tmp_path, monkeypatch):
+async def test_archiving_leaves_the_manifest_untouched(tmp_path, monkeypatch):
     # Older builds forbid unknown manifest fields; a rollback must still load it.
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, _ = provision(runtime, days_inactive=8)
@@ -157,7 +157,7 @@ async def test_retirement_leaves_the_manifest_untouched(tmp_path, monkeypatch):
 
     await runtime.reclaimer.run_pass()
 
-    assert runtime.is_retired(conversation_id)
+    assert runtime.is_archived(conversation_id)
     assert manifest.read_bytes() == before
     assert runtime.provisioning.load(conversation_id).conversation_id == conversation_id
 
