@@ -1,0 +1,78 @@
+{
+  "scope": "Real Canvas UI + B-source Agent Server + scripted TestLLM HTTP provider. Not real-model behavior validation.",
+  "sdk_source_commit": "20532dd3e5fb88e75e880ce07a6afbdff98df1b3",
+  "sdk_source_version": "1.53.0 development source",
+  "canvas_source_commit": "a07364828c8f202e7745c6bce3dcef3915ae7ac1",
+  "canvas_package_version": "1.20.0",
+  "runtime": {
+    "os": "macOS-26.5.2-arm64-arm-64bit",
+    "node": "v24.21.0",
+    "chrome": "154.0.8037.98"
+  },
+  "test": {
+    "expected": 1,
+    "unexpected": 0,
+    "duration_seconds": 11.828,
+    "started_utc": "2026-10-06T21:18:19.929Z"
+  },
+  "conversation_id": "24df7261-4f97-4e29-8703-bf70adf31295",
+  "original_event_id": "c2c6396b-4be0-45d0-939b-dc0c3d533231",
+  "condensation_id": "e9061325-b6ff-4bf5-b81f-8b76e86057d2",
+  "forgotten_event_ids": [
+    "d10a2ab3-b76b-4e89-bef8-8c3376705d68",
+    "c2c6396b-4be0-45d0-939b-dc0c3d533231",
+    "899c7676-d020-4b4f-af1f-70f69341b7f1"
+  ],
+  "voluntary_resets": 1,
+  "summary_rescues": 0,
+  "ordinary_notes": {
+    "filename": "retry-notes.md",
+    "create_succeeded": true,
+    "reread_succeeded": true,
+    "contains_original_value": false
+  },
+  "provider_requests": {
+    "total": 8,
+    "main_agent": 7,
+    "title_generation": 1,
+    "post_reset_request_contains_original_value": false,
+    "post_reset_request_retains_new_context": true,
+    "after_history_read_contains_original_value": true
+  },
+  "history_read": {
+    "source_event_id": "c2c6396b-4be0-45d0-939b-dc0c3d533231",
+    "in_active_view": false,
+    "is_error": false,
+    "recovered_original_value": true
+  },
+  "artifacts": {
+    "01-notes-reset.png": {
+      "bytes": 63677,
+      "sha256": "d3480b3b9cd594bc6b472f00101c2cf2788ca337871536489501716fcf6d63da"
+    },
+    "02-history-recovered.png": {
+      "bytes": 83338,
+      "sha256": "490e19efb51bdb3db4c6f0f17d7cd99950d65abd1c792cd5cd0f1bc440352cb2"
+    },
+    "canvas-scripted-demo.webm": {
+      "bytes": 242159,
+      "sha256": "4d07fa855e745678802822dfdfcadef01c3d9c0e8f956754a75404843e7e606d"
+    }
+  },
+  "limitations": [
+    "Scripted responses determine tool selection and final wording; no inference about real-model behavior.",
+    "Development UI stack omits automation and VS Code. Ancillary 404 toasts can occur; they do not represent the notes/reset/history tool results.",
+    "Canvas uses generic NEWCONTEXT and CONVERSATIONHISTORY cards; no dedicated Canvas renderer was added."
+  ],
+  "process_cleanup": {
+    "launcher_exit_code": 0,
+    "provider_exit_code": 143,
+    "closed_ports": [
+      18416,
+      18417,
+      19416,
+      31416
+    ],
+    "original_canvas_checkout_status": "Only the same four pre-existing untracked .DS_Store files."
+  }
+}
