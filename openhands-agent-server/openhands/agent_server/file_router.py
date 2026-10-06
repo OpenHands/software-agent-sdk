@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import fnmatch
 import io
 import json
@@ -175,7 +176,8 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
                     # In-progress atomic save; the file it replaces is archived.
                     continue
                 arcname = str(path.relative_to(source_dir.parent))
-                try:
+                # Skip entries removed or renamed away after rglob listed them.
+                with contextlib.suppress(FileNotFoundError):
                     if path.suffix.lower() in REDACTED_SUFFIXES and path.is_file():
                         zinfo = zipfile.ZipInfo.from_file(path, arcname)
                         data = path.read_bytes()
@@ -187,9 +189,6 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
                         )
                     else:
                         archive.write(path, arcname)
-                except FileNotFoundError:
-                    # Removed or renamed away after rglob listed it.
-                    continue
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
