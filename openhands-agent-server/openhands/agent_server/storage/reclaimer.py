@@ -19,7 +19,8 @@ MAINTENANCE_INTERVAL: Final[float] = 300.0
 
 
 class ReclaimableStorage(Protocol):
-    """How one runtime mode stores conversations on this host."""
+    """How one ``Config.conversation_runtime`` (local, docker) stores
+    conversations on this host."""
 
     @property
     def root(self) -> Path:

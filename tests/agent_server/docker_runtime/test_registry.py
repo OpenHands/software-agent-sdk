@@ -28,7 +28,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 def registry(
-    tmp_path, monkeypatch, idle_ttl: float | None = 1200
+    tmp_path, monkeypatch, idle_ttl: float | None = 1200, **config
 ) -> DockerConversationRegistry:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     return DockerConversationRegistry(
@@ -37,6 +37,7 @@ def registry(
             workspace_path=tmp_path / "workspaces",
             secret_key=SecretStr("outer-key"),
             conversation_idle_ttl_seconds=idle_ttl,
+            **config,
         )
     )
 
@@ -370,9 +371,7 @@ async def test_shutdown_cancels_eviction_and_stops_containers(tmp_path, monkeypa
     assert stopped == [active.container_id]
 
 
-def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
-    runtime = registry(tmp_path, monkeypatch)
-    conversation_id = uuid4()
+def _build_container(runtime, monkeypatch, conversation_id):
     runtime.provisioning.create(conversation_id)
     commands = []
 
@@ -397,6 +396,14 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
 
     result = runtime._build_container(conversation_id)
     command, env = commands[0]
+    return result, command, env
+
+
+def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+
+    result, command, env = _build_container(runtime, monkeypatch, conversation_id)
     assert result.host == "http://127.0.0.1:32123"
     assert ["--cap-drop", "ALL"] == command[
         command.index("--cap-drop") : command.index("--cap-drop") + 2
@@ -785,6 +792,31 @@ async def test_startup_prune_continues_past_a_broken_runtime(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_startup_prune_skips_runtime_deleted_mid_listing(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    # No state file, so its age falls back to the runtime dir's own mtime.
+    gone_id, _ = seed_runtime(runtime, status=None)
+    healthy_id, _ = seed_runtime(runtime)
+    gone_dir = runtime.provisioning.runtime_dir(gone_id)
+    real_is_dir = Path.is_dir
+
+    def is_dir(path: Path, **kwargs) -> bool:
+        exists = real_is_dir(path, **kwargs)
+        if exists and path == gone_dir:
+            # A concurrent DELETE removes it right after the check.
+            shutil.rmtree(path)
+        return exists
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+
+    await runtime.reclaimer.start()
+    await reclaimed(runtime)
+
+    assert not gone_dir.exists()
+    assert not cache_dir(runtime, healthy_id).exists()
+
+
+@pytest.mark.asyncio
 async def test_resume_after_prune_mounts_a_fresh_cache_location(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id, kept = seed_runtime(runtime)
@@ -845,4 +877,26 @@ def test_container_writes_no_core_dumps(tmp_path, monkeypatch):
     command, _ = commands[0]
     assert ["--ulimit", "core=0"] == command[
         command.index("--ulimit") : command.index("--ulimit") + 2
+    ]
+
+
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "flag"),
+    [(None, True, "1"), (False, True, "0"), (True, False, "0")],
+)
+def test_container_gets_the_host_browser_setting(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, flag
+):
+    runtime = registry(
+        tmp_path,
+        monkeypatch,
+        conversation_image_has_browser=image_has_browser,
+        enable_browser=enable_browser,
+    )
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert env["OH_ENABLE_BROWSER"] == flag
+    assert ["-e", "OH_ENABLE_BROWSER"] == command[
+        command.index("OH_ENABLE_BROWSER") - 1 : command.index("OH_ENABLE_BROWSER") + 1
     ]

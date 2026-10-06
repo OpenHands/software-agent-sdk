@@ -1,6 +1,5 @@
 import json
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,7 +38,11 @@ class DockerRuntimeStorage:
         try:
             last_active = state.stat().st_mtime
         except OSError:
-            last_active = runtime_dir.stat().st_mtime
+            try:
+                last_active = runtime_dir.stat().st_mtime
+            except OSError:
+                # Deleted since the check above; nothing left to reclaim.
+                return None
         try:
             home = self.provisioning.direct_child(runtime_dir, "persistence")
         except ValueError:
@@ -73,21 +76,8 @@ class DockerRuntimeStorage:
         ]
         return sorted(runtimes, key=lambda runtime: runtime.last_active)
 
-    @asynccontextmanager
-    async def idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
-        """Hold the registry lock; True if no container runs or starts for the
-        runtime and it is not being deleted.
-
-        Nothing can start a container until the block exits, so files moved
-        inside it are not in use.
-        """
-        registry = self.registry
-        async with registry._lock:
-            yield not (
-                registry.get(conversation_id)
-                or registry.is_starting(conversation_id)
-                or conversation_id in registry._deleting
-            )
+    def idle(self, conversation_id: UUID) -> AbstractAsyncContextManager[bool]:
+        return self.registry.runtime_idle(conversation_id)
 
     def retire(self, conversation_id: UUID) -> list[Path]:
         # Marker first: if the move never happens, the next pass retries it.

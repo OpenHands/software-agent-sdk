@@ -37,6 +37,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -52,6 +53,7 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -255,7 +257,7 @@ async def test_start_conversation_registers_and_injects_client_tools(
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -324,17 +326,12 @@ async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
         confirmation_policy=NeverConfirm(),
         secrets_encrypted=True,
     )
-    assert (
-        dump_mcp_config(request.agent.mcp_config)["github"]["env"][
-            "GITHUB_PERSONAL_ACCESS_TOKEN"
-        ]
-        == encrypted_mcp_token
-    )
+    assert request.agent is None
 
     captured: dict[str, Any] = {}
 
     async def fake_start_event_service(stored: StoredConversation, **kwargs):
-        agent = cast(AgentBase, kwargs.get("agent"))
+        agent = kwargs["launched"].agent
         captured["stored"] = stored
         captured["agent"] = agent
         service = AsyncMock(spec=EventService)
@@ -2155,6 +2152,102 @@ class TestConversationServiceStartConversation:
             assert not is_new
 
     @pytest.mark.asyncio
+    async def test_concurrent_start_conversation_same_id_starts_event_service_once(
+        self, conversation_service, tmp_path
+    ):
+        """Two concurrent creates for one id must not both create.
+
+        The pre-lock existence check awaits before it acts, so a concurrent
+        create can commit in between. Both callers then observe "new" and the
+        loser starts a second EventService for an existing id, re-running the
+        initial message. The re-check under the lifecycle lock closes that
+        window.
+        """
+        custom_id = uuid4()
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+
+        def make_request():
+            return StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+        results = await asyncio.gather(
+            conversation_service.start_conversation(make_request()),
+            conversation_service.start_conversation(make_request()),
+        )
+
+        assert [r.id for r, _ in results] == [custom_id, custom_id]
+        # Exactly one caller created the conversation; the other reused it.
+        assert sorted(is_new for _, is_new in results) == [False, True]
+        # The decisive check: one EventService, so the initial message would
+        # have been delivered once rather than twice.
+        assert list(conversation_service._event_services) == [custom_id]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_fork_same_id_forks_once(
+        self, conversation_service, tmp_path
+    ):
+        """Concurrent forks onto one id must not both fork.
+
+        Losers must be rejected before ``fork()`` writes into the shared
+        persistence directory; otherwise they reopen the winner's directory
+        and fail on its already-persisted events instead of the duplicate id.
+        """
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+
+        source, _ = await conversation_service.start_conversation(
+            StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+                confirmation_policy=NeverConfirm(),
+            )
+        )
+        source_service = await conversation_service.get_event_service(source.id)
+        assert source_service is not None
+        await source_service.send_message(
+            Message(role="user", content=[TextContent(text="hi")]), run=False
+        )
+
+        fork_id = uuid4()
+        real_fork = LocalConversation.fork
+        fork_calls = 0
+
+        def fork_after_winner_commits(self, **kwargs):
+            # Force the harmful interleave: a later fork() call only runs once
+            # the winner is registered, as a slow loser's would.
+            nonlocal fork_calls
+            fork_calls += 1
+            if fork_calls > 1:
+                deadline = time.monotonic() + 5
+                while (
+                    fork_id not in conversation_service._conversation_records
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+            return real_fork(self, **kwargs)
+
+        async def fork():
+            return await conversation_service.fork_conversation(
+                source.id, fork_id=fork_id
+            )
+
+        with patch.object(LocalConversation, "fork", fork_after_winner_commits):
+            results = await asyncio.gather(fork(), fork(), return_exceptions=True)
+        successes = [r for r in results if not isinstance(r, BaseException)]
+        failures = [r for r in results if isinstance(r, BaseException)]
+
+        assert len(successes) == 1
+        assert successes[0].id == fork_id
+        assert [str(f) for f in failures] == [
+            f"Conversation with id {fork_id} already exists"
+        ]
+
+    @pytest.mark.asyncio
     async def test_start_conversation_reuse_checks_is_open(self, conversation_service):
         """Test that conversation reuse checks if event service is open."""
         custom_id = uuid4()
@@ -3168,6 +3261,9 @@ class TestAutoTitle:
     _GENERATE_TITLE_PATH = (
         "openhands.agent_server.conversation_service.generate_title_from_message"
     )
+    _TITLE_WITH_LLM_PATH = (
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    )
 
     def _make_service(
         self,
@@ -3442,6 +3538,42 @@ class TestAutoTitle:
 
         assert service.stored.title == "Fix the login bug"
         service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_skips_llm_for_settings_built_acp_agent(self):
+        service = self._make_service()
+        acp_agent = ACPAgentSettings(acp_model="claude-opus-4-7").create_agent()
+        service._conversation.agent.llm = acp_agent.llm
+
+        with patch(self._TITLE_WITH_LLM_PATH) as mock_llm_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        mock_llm_title.assert_not_called()
+        assert service.stored.title == "Fix the login bug"
+
+    @pytest.mark.asyncio
+    async def test_autotitle_uses_title_profile_for_settings_built_acp_agent(self):
+        service = self._make_service(title_llm_profile="cheap-model")
+        service._conversation.agent.llm = ACPAgentSettings().create_agent().llm
+        profile_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
+            patch(
+                self._TITLE_WITH_LLM_PATH, return_value="Profile Title"
+            ) as mock_llm_title,
+        ):
+            MockStore.return_value.load.return_value = profile_llm
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+        assert mock_llm_title.call_args.args[1] is profile_llm
+        assert service.stored.title == "Profile Title"
 
     @pytest.mark.asyncio
     async def test_autotitle_integration_routes_through_profile_store(
@@ -4298,3 +4430,173 @@ async def test_refresh_persisted_conversation_only_decrypts_requested_record(
         assert reads == [conversation_id]
         assert await service.get_conversation(conversation_id) is not None
         assert reads == [conversation_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enable_browser", "usable", "tools", "expected"),
+    [
+        (
+            True,
+            True,
+            None,
+            ["terminal", "file_editor", "task_tracker", "browser_tool_set"],
+        ),
+        (True, False, None, ["terminal", "file_editor", "task_tracker"]),
+        (False, True, None, ["terminal", "file_editor", "task_tracker"]),
+        (True, True, [{"name": "terminal"}], ["terminal"]),
+        (
+            True,
+            True,
+            [{"name": "browser_tool_set"}, {"name": "terminal"}],
+            ["browser_tool_set", "terminal"],
+        ),
+        (
+            True,
+            False,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+        (
+            False,
+            True,
+            [{"name": "terminal"}, {"name": "browser_tool_set"}],
+            ["terminal"],
+        ),
+    ],
+)
+async def test_settings_launch_resolves_tools_for_this_server(
+    conversation_service, tmp_path, enable_browser, usable, tools, expected
+):
+    conversation_service.enable_browser = enable_browser
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": tools,
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch(
+            "openhands.agent_server.launch.is_tool_usable",
+            return_value=usable,
+        ),
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == expected
+
+
+async def test_explicit_agent_wins_over_agent_settings(conversation_service, tmp_path):
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[Tool(name="terminal")],
+        ),
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+            "tools": [{"name": "file_editor"}],
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    assert [t.name for t in captured["agent"].tools] == ["terminal"]
+
+
+@pytest.mark.asyncio
+async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_path):
+    from openhands.sdk.settings import OpenHandsAgentSettings
+
+    conversation_service.enable_browser = True
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent_settings={
+            "agent_kind": "openhands",
+            "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["agent"] = agent
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with (
+        patch("openhands.agent_server.launch.is_tool_usable", return_value=True),
+        patch.object(
+            OpenHandsAgentSettings,
+            "create_agent",
+            autospec=True,
+            side_effect=OpenHandsAgentSettings.create_agent,
+        ) as create_agent,
+        patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ),
+    ):
+        await conversation_service.start_conversation(request)
+
+    create_agent.assert_called_once()
+    assert "browser_tool_set" in [t.name for t in captured["agent"].tools]
