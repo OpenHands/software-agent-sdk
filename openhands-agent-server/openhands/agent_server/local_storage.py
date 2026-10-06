@@ -71,12 +71,12 @@ class LocalWorktreeStorage:
         """
         return self.service.conversation_unloaded(conversation_id)
 
-    def retire(self, conversation_id: UUID) -> list[Path]:  # noqa: ARG002 (protocol)
+    def archive(self, conversation_id: UUID) -> list[Path]:  # noqa: ARG002 (protocol)
         # Not supported yet: a resumed local conversation would find no
         # workspace and nothing marks it read-only.
         return []
 
-    async def on_retired(self, conversation_id: UUID) -> None:
+    async def on_archived(self, conversation_id: UUID) -> None:
         pass
 
 
