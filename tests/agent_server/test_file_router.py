@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -467,6 +468,119 @@ def test_download_trajectory_redacts_llm_and_condenser_secrets(
     assert meta_out["agent"]["llm"]["api_key"] == "**********"
     assert meta_out["agent"]["condenser"]["llm"]["api_key"] == "**********"
     assert meta_out["agent"]["llm"]["model"] == "gpt-4o"
+
+
+def _trajectory_dir(monkeypatch, tmp_path):
+    """Create a conversation directory served by download-trajectory."""
+    conversations_path = tmp_path / "conversations"
+    conversation_id = uuid4()
+    conversation_dir = conversations_path / conversation_id.hex
+    (conversation_dir / "events").mkdir(parents=True)
+    (conversation_dir / "base_state.json").write_text('{"v": 1}')
+    (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
+    monkeypatch.setattr(
+        "openhands.agent_server.file_router.get_default_config",
+        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
+    )
+    return conversation_id, conversation_dir
+
+
+def _mutate_after_listing(monkeypatch, directory: Path, mutate) -> None:
+    """Run ``mutate`` right after ``directory.rglob`` lists its entries.
+
+    Reproduces a concurrent writer changing the directory between the
+    listing and the reads of the entries it returned.
+    """
+    original_rglob = Path.rglob
+
+    def rglob(self, pattern, *args, **kwargs):
+        entries = list(original_rglob(self, pattern, *args, **kwargs))
+        if self == directory:
+            mutate()
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "rglob", rglob)
+
+
+def test_download_trajectory_survives_state_save_during_zip(
+    client, monkeypatch, tmp_path
+):
+    """An atomic base-state save that lands mid-zip must not cause a 500."""
+    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    temp_file = conversation_dir / ".base_state.json.4867ztqe"
+    temp_file.write_text('{"v": 2}')
+
+    _mutate_after_listing(
+        monkeypatch,
+        conversation_dir,
+        lambda: os.replace(temp_file, conversation_dir / "base_state.json"),
+    )
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.read(f"{conversation_id.hex}/base_state.json") == b'{"v": 2}'
+        assert f"{conversation_id.hex}/.base_state.json.4867ztqe" not in (
+            archive.namelist()
+        )
+
+
+def test_download_trajectory_skips_entries_removed_while_zipping(
+    client, monkeypatch, tmp_path
+):
+    """Files and directories removed after listing are left out, not a 500."""
+    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    (conversation_dir / "gone.txt").write_text("gone")
+    (conversation_dir / "gone_dir").mkdir()
+    (conversation_dir / "gone_dir" / "inner.json").write_text("{}")
+
+    def remove_entries():
+        (conversation_dir / "gone.txt").unlink()
+        shutil.rmtree(conversation_dir / "gone_dir")
+
+    _mutate_after_listing(monkeypatch, conversation_dir, remove_entries)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+    root = conversation_id.hex
+    assert f"{root}/base_state.json" in names
+    assert f"{root}/events/event-00000.json" in names
+    assert not [name for name in names if "gone" in name]
+
+
+def test_download_trajectory_omits_in_progress_atomic_save_temp_files(
+    client, monkeypatch, tmp_path
+):
+    """A temp file from an unfinished atomic save is not archived.
+
+    It may be half-written, and its name does not end in ``.json``, so it
+    would also bypass secret redaction.
+    """
+    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    secret = "sk-in-progress-save-0123456789"
+    (conversation_dir / ".base_state.json.4867ztqe").write_text(
+        '{"agent": {"llm": {"api_key": "' + secret + '"'
+    )
+    (conversation_dir / "events" / ".event-00001-abc.json.k2_9xq0z").write_text("{")
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        blob = b"\n".join(archive.read(name) for name in names)
+    root = conversation_id.hex
+    assert sorted(names) == [
+        f"{root}/",
+        f"{root}/base_state.json",
+        f"{root}/events/",
+        f"{root}/events/event-00000.json",
+    ]
+    assert secret.encode() not in blob
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):

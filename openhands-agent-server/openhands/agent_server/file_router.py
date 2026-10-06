@@ -38,6 +38,7 @@ from openhands.sdk.git.utils import (
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.files import is_atomic_write_temp_file
 
 
 class SubdirectoryEntry(BaseModel):
@@ -157,18 +158,30 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
     are redacted on the way into the archive so a downloaded trajectory never
     leaks API keys — see ``redacted_file_bytes``.
+
+    The conversation may still be running and saving state while this walks
+    it, so in-progress atomic-save temp files are skipped, and so are entries
+    that disappear between listing and reading.
     """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
+                # Unfinished atomic save: possibly half-written, and its name
+                # does not end in .json, so redaction would not see it.
+                if is_atomic_write_temp_file(path):
+                    continue
                 arcname = str(path.relative_to(source_dir.parent))
-                if path.is_file():
-                    redacted = redacted_file_bytes(path)
-                    if redacted is not None:
-                        archive.writestr(arcname, redacted)
-                        continue
-                archive.write(path, arcname)
+                try:
+                    if path.is_file():
+                        redacted = redacted_file_bytes(path)
+                        if redacted is not None:
+                            archive.writestr(arcname, redacted)
+                            continue
+                    archive.write(path, arcname)
+                except FileNotFoundError:
+                    # Removed or renamed away after rglob listed it.
+                    continue
     except Exception:
         output_path.unlink(missing_ok=True)
         raise

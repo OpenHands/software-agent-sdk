@@ -1,6 +1,18 @@
 import os
+import re
 import tempfile
 from pathlib import Path
+
+
+# ``atomic_write_text`` writes to ``.<name>.<8 random chars>`` (``mkstemp`` with
+# that prefix; the random part uses ``[a-z0-9_]``) and then renames it to
+# ``<name>``.
+_ATOMIC_WRITE_TEMP_NAME = re.compile(r"\..+\.[a-z0-9_]{8}")
+
+
+def is_atomic_write_temp_file(path: Path) -> bool:
+    """Return True if ``path`` is named like an ``atomic_write_text`` temp file."""
+    return _ATOMIC_WRITE_TEMP_NAME.fullmatch(path.name) is not None
 
 
 def atomic_write_text(path: Path, value: str, mode: int = 0o600) -> None:
