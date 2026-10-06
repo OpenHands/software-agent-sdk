@@ -436,7 +436,9 @@ try {
 
 `isHttpError(error)` also recognizes an `HttpError` thrown by another copy of this package
 (for example when an app and a library each bundle their own), where
-`error instanceof HttpError` is false. `instanceof` still works within one copy.
+`error instanceof HttpError` is false, as long as that copy is a version that
+includes `isHttpError` (older copies do not brand their errors). `instanceof` still
+works within one copy.
 
 ## Development
 

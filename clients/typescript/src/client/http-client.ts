@@ -55,7 +55,8 @@ export type HttpValidationErrorItem = Pick<AgentServerValidationError, 'loc' | '
 /**
  * Marks HttpError instances. `Symbol.for` returns the same symbol in every
  * copy of this package, so {@link isHttpError} recognizes an error thrown by
- * another bundled copy, where `instanceof HttpError` is false.
+ * another bundled copy, where `instanceof HttpError` is false. Copies built
+ * before this brand existed do not set it.
  */
 const HTTP_ERROR_BRAND = Symbol.for('@openhands/typescript-client/HttpError');
 
@@ -124,7 +125,8 @@ export class HttpError extends Error {
 /**
  * Whether `value` is an {@link HttpError}, including one created by another
  * copy of this package (for example when an app and a library each bundle
- * their own), where `instanceof HttpError` is false.
+ * their own), where `instanceof HttpError` is false. The other copy must be
+ * a version that brands its errors, i.e. this one or later.
  */
 export function isHttpError(value: unknown): value is HttpError {
   return (
