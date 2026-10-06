@@ -2,14 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import importlib
 import json
 import os
 import threading
 import warnings
-from collections.abc import AsyncIterable, Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    Self,
+    TypeVar,
+    get_args,
+    get_origin,
+)
 
 from pydantic import (
     BaseModel,
@@ -24,6 +40,19 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm._response_stream import (
+    OutputItemEvent,
+    ResponseStreamEvent,
+    async_response_events,
+    completed_response as get_completed_response,
+    response_events,
+)
+from openhands.sdk.llm._tokenizer import (
+    ChatTemplateTokenizer,
+    chat_template_tokenizer,
+    count_tokenized_output,
+    load_chat_template_tokenizer,
+)
 from openhands.sdk.llm.exceptions.classifier import is_transient_http_error
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
@@ -201,6 +230,8 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 
+_T = TypeVar("_T")
+
 
 def __getattr__(name: str) -> Any:
     """Provide the deprecated pre-refactor import path for call context."""
@@ -353,8 +384,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     timeout: int | None = Field(
         default=300,
         ge=0,
-        description="HTTP timeout in seconds. Default is 300s (5 minutes). "
-        "Set to None to disable timeout (not recommended for production).",
+        description=(
+            "HTTP and hard per-attempt timeout in seconds. Default is 300s "
+            "(5 minutes). Set to None to disable the hard timeout."
+        ),
+        json_schema_extra=field_meta(),
+    )
+    stream_idle_timeout: float | None = Field(
+        default=300,
+        ge=0,
+        description=(
+            "Maximum seconds between chunks in an asynchronous streaming "
+            "response. Default is 300s (5 minutes); set to None to disable."
+        ),
         json_schema_extra=field_meta(),
     )
 
@@ -631,8 +673,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _metrics: Metrics | None = PrivateAttr(default=None)
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
-    _tokenizer: Any = PrivateAttr(default=None)
-    _chat_template_tokenizer: Any = PrivateAttr(default=None)
+    _tokenizer: dict[str, object] | None = PrivateAttr(default=None)
+    _chat_template_tokenizer: ChatTemplateTokenizer | None = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _subscription_credential_store: Any = PrivateAttr(default=None)
@@ -705,6 +747,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not model_val:
             raise ValueError("model must be specified in LLM")
 
+        if "stream_idle_timeout" not in d:
+            d["stream_idle_timeout"] = d.get("timeout", 300)
+
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
             d["api_version"] = "2024-12-01-preview"
@@ -747,7 +792,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Tokenizer
         if self.custom_tokenizer:
-            self._chat_template_tokenizer = self._load_chat_template_tokenizer(
+            self._chat_template_tokenizer = load_chat_template_tokenizer(
                 self.custom_tokenizer
             )
             if self._chat_template_tokenizer is None:
@@ -1114,6 +1159,69 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_listener=self._retry_listener_fn,
         )
 
+    def _timeout_error(self, detail: str, seconds: float) -> LiteLLMTimeout:
+        return LiteLLMTimeout(
+            message=f"LLM {detail} after {seconds:g} seconds",
+            model=self.model,
+            llm_provider=self._infer_litellm_provider() or "unknown",
+        )
+
+    def _async_hard_timeout_decorator(
+        self,
+    ) -> Callable[[Callable[..., Awaitable[_T]]], Callable[..., Awaitable[_T]]]:
+        def decorate(
+            function: Callable[..., Awaitable[_T]],
+        ) -> Callable[..., Awaitable[_T]]:
+            async def wrapped(*args: Any, **kwargs: Any) -> _T:
+                if self.timeout is None:
+                    return await function(*args, **kwargs)
+                timeout_context = asyncio.timeout(self.timeout)
+                try:
+                    async with timeout_context:
+                        return await function(*args, **kwargs)
+                except TimeoutError as error:
+                    if not timeout_context.expired():
+                        raise
+                    raise self._timeout_error("hard timeout", self.timeout) from error
+
+            return wrapped
+
+        return decorate
+
+    async def _anext_with_idle_timeout(
+        self, iterator: AsyncIterator[_T], timeout: float
+    ) -> _T:
+        """Await one chunk, converting only this idle timer's own expiry.
+
+        ``asyncio.timeout`` is used instead of ``asyncio.wait_for`` so that a
+        ``TimeoutError`` raised by the transport itself (for example a
+        provider-side read timeout) keeps its original identity instead of
+        being relabelled as an idle timeout.
+        """
+        timeout_context = asyncio.timeout(timeout)
+        try:
+            async with timeout_context:
+                return await anext(iterator)
+        except TimeoutError as error:
+            if not timeout_context.expired():
+                raise
+            raise self._timeout_error("stream idle timeout", timeout) from error
+
+    async def _aiter_with_idle_timeout(
+        self, stream: AsyncIterable[_T]
+    ) -> AsyncIterable[_T]:
+        timeout = self.stream_idle_timeout
+        iterator = aiter(stream)
+        while True:
+            try:
+                if timeout is None:
+                    item = await anext(iterator)
+                else:
+                    item = await self._anext_with_idle_timeout(iterator, timeout)
+            except StopAsyncIteration:
+                return
+            yield item
+
     def _build_completion_result(self, resp: ModelResponse) -> LLMResponse:
         """Convert a raw :class:`ModelResponse` into an :class:`LLMResponse`."""
         first_choice = resp["choices"][0]
@@ -1126,8 +1234,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _build_responses_result(self, resp: ResponsesAPIResponse) -> LLMResponse:
         """Convert a raw :class:`ResponsesAPIResponse` into an :class:`LLMResponse`."""
-        output_seq = cast(Sequence[Any], resp.output or [])
-        message = Message.from_llm_responses_output(output_seq)
+        message = Message.from_llm_responses_output(resp.output)
         return LLMResponse(
             message=message,
             metrics=self.metrics.get_snapshot(),
@@ -1174,8 +1281,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     def _process_stream_event(
-        self, event: Any, *, emit_deltas: bool = True
-    ) -> tuple[Any | None, ModelResponseStream | None]:
+        self, event: ResponseStreamEvent, *, emit_deltas: bool = True
+    ) -> tuple[object | None, ModelResponseStream | None]:
         """Extract output item and delta chunk from a Responses stream event.
 
         Args:
@@ -1186,15 +1293,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Returns:
             (output_item, delta_chunk) — either or both may be ``None``.
         """
-        output_item: Any | None = None
+        output_item: object | None = None
         delta_chunk: ModelResponseStream | None = None
 
         # Collect finished output items
-        evt_type = getattr(event, "type", None)
-        if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
-            item = getattr(event, "item", None)
-            if item is not None:
-                output_item = item
+        if (
+            isinstance(event, OutputItemEvent)
+            and event.type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE
+        ):
+            output_item = event.item
 
         if emit_deltas and isinstance(
             event,
@@ -1217,7 +1324,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _finalize_stream_response(
         self,
-        completed_response: Any,
+        completed_response: ResponseCompletedEvent | None,
         collected_output_items: list[Any],
     ) -> ResponsesAPIResponse:
         """Validate and patch the completed response from a Responses stream.
@@ -1826,6 +1933,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._async_hard_timeout_decorator()
         async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
@@ -2002,12 +2110,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response.completed event has output=[].  We
                 # accumulate them here and patch the completed
                 # response if needed.
-                collected_output_items: list[Any] = []
-                completed_response = getattr(ret, "completed_response", None)
-                stream = cast(Iterable[Any], ret)
-                for event in stream:
-                    if event is None:
-                        continue
+                collected_output_items: list[object] = []
+                completed_response = get_completed_response(ret)
+                if not isinstance(ret, Iterable):
+                    raise TypeError(f"Expected a response stream, got {type(ret)}")
+                for event in response_events(ret):
                     if isinstance(event, ResponseCompletedEvent):
                         completed_response = event
                     output_item, delta_chunk = self._process_stream_event(
@@ -2018,9 +2125,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     if stream_callback is not None and delta_chunk is not None:
                         stream_callback(delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                completed_response = get_completed_response(ret, completed_response)
                 return self._finalize_stream_response(
                     completed_response, collected_output_items
                 )
@@ -2136,6 +2241,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         @self._make_retry_decorator()
+        @self._async_hard_timeout_decorator()
         async def _one_attempt(
             **retry_kwargs: Any,
         ) -> ResponsesAPIResponse:
@@ -2178,13 +2284,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # response.completed event has output=[].  We
                 # accumulate them here and patch the completed
                 # response if needed.
-                collected_output_items: list[Any] = []
-                completed_response = getattr(ret, "completed_response", None)
-                if hasattr(ret, "__aiter__"):
-                    stream = cast(AsyncIterable[Any], ret)
-                    async for event in stream:
-                        if event is None:
-                            continue
+                collected_output_items: list[object] = []
+                completed_response = get_completed_response(ret)
+                if isinstance(ret, AsyncIterable):
+                    async for event in async_response_events(
+                        self._aiter_with_idle_timeout(ret)
+                    ):
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
@@ -2195,13 +2300,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
                 else:
+                    if not isinstance(ret, Iterable):
+                        raise TypeError(f"Expected a response stream, got {type(ret)}")
                     loop = asyncio.get_running_loop()
-                    events: list[Any] = await loop.run_in_executor(
-                        None, list, cast(Iterable[Any], ret)
+                    events = await loop.run_in_executor(
+                        None, list, response_events(ret)
                     )
                     for event in events:
-                        if event is None:
-                            continue
                         if isinstance(event, ResponseCompletedEvent):
                             completed_response = event
                         output_item, delta_chunk = self._process_stream_event(
@@ -2212,9 +2317,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         if stream_cb is not None and delta_chunk is not None:
                             await _invoke_token_callback(stream_cb, delta_chunk)
 
-                completed_response = getattr(
-                    ret, "completed_response", completed_response
-                )
+                completed_response = get_completed_response(ret, completed_response)
                 return self._finalize_stream_response(
                     completed_response, collected_output_items
                 )
@@ -2463,9 +2566,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             chunks: list[ModelResponseStream] = []
             # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
             # back a plain sync generator from ``litellm_acompletion``
-            if hasattr(ret, "__aiter__"):
+            if isinstance(ret, AsyncIterable):
                 stream = cast(AsyncIterable[ModelResponseStream], ret)
-                async for chunk in stream:
+                async for chunk in self._aiter_with_idle_timeout(stream):
                     await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
             else:
@@ -3153,10 +3256,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         that supports ``apply_chat_template``, prefer that exact rendered prompt
         shape for condenser token checks and fall back to LiteLLM otherwise.
         """
-        tokenizer = self._chat_template_tokenizer or self._tokenizer
-        if isinstance(tokenizer, dict):
-            tokenizer = tokenizer.get("tokenizer")
-        if tokenizer is None or not hasattr(tokenizer, "apply_chat_template"):
+        tokenizer = chat_template_tokenizer(
+            self._chat_template_tokenizer or self._tokenizer
+        )
+        if tokenizer is None:
             return None
 
         try:
@@ -3168,7 +3271,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if tools:
                 kwargs["tools"] = tools
             tokenized = tokenizer.apply_chat_template(template_messages, **kwargs)
-            return self._count_tokenized_output(tokenized, tokenizer)
+            return count_tokenized_output(tokenized, tokenizer)
         except Exception:
             logger.warning(
                 "Chat-template token counting failed for %d messages and %d tools; "
@@ -3178,33 +3281,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 exc_info=True,
             )
             return None
-
-    @staticmethod
-    def _count_tokenized_output(tokenized: Any, tokenizer: Any) -> int:
-        if isinstance(tokenized, str):
-            encoded = tokenizer.encode(tokenized)
-            return LLM._count_tokenized_output(encoded, tokenizer)
-        if hasattr(tokenized, "shape") and len(tokenized.shape) > 0:
-            return int(tokenized.shape[-1])
-        if hasattr(tokenized, "ids"):
-            return len(tokenized.ids)
-        if isinstance(tokenized, dict) and "input_ids" in tokenized:
-            return LLM._count_tokenized_output(tokenized["input_ids"], tokenizer)
-        get_input_ids = getattr(tokenized, "get", None)
-        if callable(get_input_ids):
-            input_ids = get_input_ids("input_ids")
-            if input_ids is not None:
-                return LLM._count_tokenized_output(input_ids, tokenizer)
-        encodings = getattr(tokenized, "encodings", None)
-        if encodings:
-            return LLM._count_tokenized_output(encodings[0], tokenizer)
-        if isinstance(tokenized, Sequence):
-            if tokenized and hasattr(tokenized[0], "ids"):
-                return LLM._count_tokenized_output(tokenized[0], tokenizer)
-            if tokenized and isinstance(tokenized[0], Sequence):
-                return len(tokenized[0])
-            return len(tokenized)
-        raise TypeError(f"Unsupported tokenized output: {type(tokenized).__name__}")
 
     @staticmethod
     def _messages_for_chat_template(messages: list[dict]) -> list[dict]:
@@ -3235,34 +3311,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if isinstance(parsed_arguments, dict):
                     function["arguments"] = parsed_arguments
         return template_messages
-
-    @staticmethod
-    def _load_chat_template_tokenizer(identifier: str) -> Any | None:
-        try:
-            transformers = importlib.import_module("transformers")
-        except ModuleNotFoundError:
-            return None
-        except Exception:
-            logger.debug("Unable to import transformers", exc_info=True)
-            return None
-
-        auto_tokenizer = getattr(transformers, "AutoTokenizer", None)
-        if auto_tokenizer is None:
-            return None
-
-        try:
-            tokenizer = auto_tokenizer.from_pretrained(identifier)
-        except Exception:
-            logger.debug(
-                "Unable to load chat-template tokenizer for %s",
-                identifier,
-                exc_info=True,
-            )
-            return None
-
-        if hasattr(tokenizer, "apply_chat_template"):
-            return tokenizer
-        return None
 
     @classmethod
     def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:

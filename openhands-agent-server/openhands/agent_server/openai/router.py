@@ -84,6 +84,7 @@ def _parse_observability_overrides(
     span_name: str | None,
     tags: str | None,
     metadata: str | None,
+    parent_span_context: str | None = None,
 ) -> dict[str, object]:
     overrides: dict[str, object] = {}
     try:
@@ -111,6 +112,8 @@ def _parse_observability_overrides(
             status_code=422,
             detail=exc.errors(include_context=False),
         ) from exc
+    if parent_span_context:
+        overrides["observability_parent_span_context"] = parent_span_context
     return overrides
 
 
@@ -141,6 +144,9 @@ async def create_chat_completion(
     x_openhands_observability_metadata: Annotated[
         str | None, Header(alias="X-OpenHands-Observability-Metadata")
     ] = None,
+    x_openhands_observability_parent_span_context: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
+    ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> OpenAIChatCompletionResponse | StreamingResponse:
     result = await run_chat_completion(
@@ -152,6 +158,7 @@ async def create_chat_completion(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
             metadata=x_openhands_observability_metadata,
+            parent_span_context=x_openhands_observability_parent_span_context,
         ),
     )
     conversation_id = str(result.conversation_id)
@@ -190,6 +197,9 @@ async def create_response(
     x_openhands_observability_metadata: Annotated[
         str | None, Header(alias="X-OpenHands-Observability-Metadata")
     ] = None,
+    x_openhands_observability_parent_span_context: Annotated[
+        str | None, Header(alias="X-OpenHands-Observability-Parent-Span-Context")
+    ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> OpenAIResponse:
     result = await run_response(
@@ -200,6 +210,7 @@ async def create_response(
             span_name=x_openhands_observability_span_name,
             tags=x_openhands_observability_tags,
             metadata=x_openhands_observability_metadata,
+            parent_span_context=x_openhands_observability_parent_span_context,
         ),
     )
     response.headers["X-OpenHands-ServerConversation-ID"] = str(result.conversation_id)

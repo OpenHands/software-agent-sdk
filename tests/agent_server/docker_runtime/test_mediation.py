@@ -1,33 +1,37 @@
-import asyncio
-import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from typing import Any, cast
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.config import Config
-from openhands.agent_server.docker_runtime.mediation import (
-    prepare_start,
-    serialize_start,
-    stage_title_profile,
+from openhands.agent_server.config import DEFAULT_CONVERSATION_IMAGE, Config
+from openhands.agent_server.docker_runtime.provisioning import (
+    RuntimeIdentity,
+    RuntimeProvisioningStore,
 )
-from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.docker_runtime.registry import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.routers import _prepare_forward
+from openhands.agent_server.launch import launch_source, target_launch_runtime
 from openhands.agent_server.persistence import (
+    PersistedSettings,
     get_agent_profile_store,
     get_llm_profile_store,
-    get_provider_connections_store,
-    reset_stores,
+    get_settings_store,
 )
-from openhands.sdk import LLM, Agent, Message, TextContent
+from openhands.sdk import LLM, Agent
 from openhands.sdk.context import AgentContext
-from openhands.sdk.conversation.request import StartConversationRequest
-from openhands.sdk.llm import LLMCallContext
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.llm.provider_connection_store import ProviderConnection
+from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
+    StartConversationRequest,
+)
+from openhands.sdk.launch import LaunchRuntime, LaunchStores, ResolvedLaunch, finalize
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.settings.model import OpenHandsAgentSettings
+from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -40,6 +44,21 @@ def config(tmp_path, monkeypatch) -> Config:
         secret_key=SecretStr("outer-key"),
         session_api_keys=["outer-session"],
     )
+
+
+async def _forward(
+    request: StartConversationRequest, runtime_config: Config, *, existing=False
+) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
+    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    body = request.model_dump(mode="json", context={"expose_secrets": True})
+    payload, launched = await _prepare_forward(body, registry, existing=existing)
+    provisioning = RuntimeProvisioningStore(runtime_config)
+    identity = provisioning.create(uuid4())
+    return payload(identity.cipher), launched, identity
+
+
+def _no_stores() -> LaunchStores:
+    raise AssertionError("the container reads no store")
 
 
 @pytest.mark.asyncio
@@ -63,21 +82,22 @@ async def test_materializes_request_secret_sources(tmp_path, monkeypatch):
         },
     )
 
-    prepared, launched = await prepare_start(
-        request.model_dump(mode="json"), runtime_config
-    )
+    payload, launched, identity = await _forward(request, runtime_config)
+
     assert launched is None
     assert looked_up == ["http://127.0.0.1:8123/api/settings/secrets/SELECTED"]
-    assert isinstance(prepared.secrets["SELECTED"], StaticSecret)
-
-    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
-    payload = serialize_start(prepared, identity)
     assert "selected-value" not in str(payload)
     assert "outer-session" not in str(payload)
+    assert "model-key" not in str(payload)
     received = StartConversationRequest.model_validate(
         payload, context={"cipher": identity.cipher}
     )
     assert received.secrets["SELECTED"].get_value() == "selected-value"
+    agent = launch_source(received, _no_stores, identity.cipher)
+    assert isinstance(agent, Agent)
+    assert agent.llm.api_key is not None
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "model-key"
 
 
 @pytest.mark.asyncio
@@ -93,17 +113,52 @@ async def test_materializes_agent_context_secret_sources(tmp_path, monkeypatch):
             ),
         ),
     )
-    prepared, _ = await prepare_start(request.model_dump(mode="json"), runtime_config)
-    context = prepared.agent.agent_context
-    assert context is not None
-    assert context.secrets is not None
+
+    payload, _, identity = await _forward(request, runtime_config)
+
+    received = StartConversationRequest.model_validate(payload)
+    agent = launch_source(received, _no_stores, identity.cipher)
+    assert isinstance(agent, Agent)
+    context = agent.agent_context
+    assert context is not None and context.secrets is not None
     source = context.secrets["CONTEXT_SECRET"]
     assert isinstance(source, StaticSecret)
     assert source.get_value() == "context-value"
 
 
 @pytest.mark.asyncio
-async def test_profile_uses_existing_resolver_and_secret_allowlist(
+async def test_every_encrypted_field_reaches_the_container_decryptable(
+    tmp_path, monkeypatch
+):
+    runtime_config = config(tmp_path, monkeypatch)
+    helper = AgentDefinition(
+        name="helper",
+        mcp_config={
+            "srv": MCPServer(command="echo", env={"TOKEN": SecretStr("mcp-token")})
+        },
+    )
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
+        agent_definitions=[helper],
+        secrets_encrypted=True,
+    )
+    body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
+    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+
+    payload, _ = await _prepare_forward(body, registry, existing=False)
+    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
+    received = StartConversationRequest.model_validate(
+        payload(identity.cipher), context={"cipher": identity.cipher}
+    )
+
+    servers = received.agent_definitions[0].mcp_config
+    assert servers is not None and servers["srv"].env is not None
+    assert servers["srv"].env["TOKEN"].get_secret_value() == "mcp-token"
+
+
+@pytest.mark.asyncio
+async def test_the_host_resolves_a_profile_and_the_container_finalizes_it(
     tmp_path, monkeypatch
 ):
     runtime_config = config(tmp_path, monkeypatch)
@@ -116,14 +171,12 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     profile = OpenHandsAgentProfile(
         name="docker-test-profile",
         llm_profile_ref="docker-test-model",
-        tools=[],
         mcp_server_refs=[],
         secret_refs=["ALLOWED"],
     )
     get_agent_profile_store().save(profile)
     monkeypatch.setattr(
-        "openhands.agent_server.conversation_service.discover_profile_skills",
-        lambda: [],
+        "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
     monkeypatch.setattr(
         LookupSecret, "get_value", lambda secret: secret.url.rsplit("/", 1)[-1]
@@ -131,388 +184,156 @@ async def test_profile_uses_existing_resolver_and_secret_allowlist(
     request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
         agent_profile_id=profile.id,
+        agent_launch_additions=AgentLaunchAdditions(
+            system_message_suffix_append="RUNTIME"
+        ),
         secrets={
             name: LookupSecret(url=f"/api/settings/secrets/{name}")
             for name in ("ALLOWED", "UNRELATED")
         },
     )
 
-    prepared, launched = await prepare_start(
-        request.model_dump(mode="json"), runtime_config
-    )
-    assert set(prepared.secrets) == {"ALLOWED"}
-    assert prepared.agent_profile_id is None
+    payload, launched, identity = await _forward(request, runtime_config)
+
     assert launched is not None
     assert launched.agent_profile_id == profile.id
-
-
-def _title_request(profile: str | None) -> StartConversationRequest:
-    return StartConversationRequest(
-        workspace=LocalWorkspace(working_dir="/workspace"),
-        agent=Agent(llm=LLM(model="test"), tools=[]),
-        title_llm_profile=profile,
+    assert "agent_profile_id" not in payload
+    # The host leaves the default tool set, and so the browser, to the container.
+    assert payload["agent_settings"]["tools"] is None
+    received = StartConversationRequest.model_validate(
+        payload, context={"cipher": identity.cipher}
     )
-
-
-def _runtime_profile_store(persistence_dir):
-    # What ``get_llm_profile_store()`` resolves to inside the container, where
-    # ``OH_PERSISTENCE_DIR`` is this bind-mounted directory.
-    return LLMProfileStore(base_dir=persistence_dir / "profiles")
-
-
-def test_stages_only_the_selected_title_profile_for_the_runtime(tmp_path, monkeypatch):
-    runtime_config = config(tmp_path, monkeypatch)
-    host_store = get_llm_profile_store()
-    host_store.save(
-        "title-aux",
-        LLM(
-            model="openai/aux",
-            base_url="http://host.docker.internal:1234/v1",
-            api_key=SecretStr("aux-secret"),
-        ),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
-    )
-    host_store.save(
-        "unrelated",
-        LLM(model="openai/other", api_key=SecretStr("unrelated-secret")),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
-    )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-
-    stage_title_profile(
-        _title_request("title-aux"), identity, provisioning, runtime_config
-    )
-
-    runtime_store = _runtime_profile_store(persistence_dir)
-    assert runtime_store.list() == ["title-aux.json"]
-    staged = runtime_store.load("title-aux", cipher=identity.cipher)
-    assert staged.model == "openai/aux"
-    assert staged.base_url == "http://host.docker.internal:1234/v1"
-    assert isinstance(staged.api_key, SecretStr)
-    assert staged.api_key.get_secret_value() == "aux-secret"
-    on_disk = (persistence_dir / "profiles" / "title-aux.json").read_text()
-    assert "aux-secret" not in on_disk
-    assert "unrelated-secret" not in on_disk
-    # The host key is not the runtime key: it must not recover the secret.
-    with_host_key = runtime_store.load("title-aux", cipher=runtime_config.cipher)
-    assert with_host_key.api_key is None
-    assert persistence_dir.stat().st_mode & 0o777 == 0o700
-    assert not list((persistence_dir / "provider-connections").glob("*.json"))
-    assert sorted(host_store.list()) == ["title-aux.json", "unrelated.json"]
-
-
-def test_staged_profile_keeps_credentials_resolved_from_its_provider_connection(
-    tmp_path, monkeypatch
-):
-    runtime_config = config(tmp_path, monkeypatch)
-    get_provider_connections_store().create(
-        ProviderConnection(
-            id="lmstudio",
-            display_name="LM Studio",
-            api_key=SecretStr("connection-secret"),
-            base_url="http://host.docker.internal:1234/v1",
-            created_at=0,
-            updated_at=0,
-        ),
-        cipher=runtime_config.cipher,
-    )
-    get_llm_profile_store().save(
-        "linked",
-        LLM(model="openai/aux", provider_connection_id="lmstudio"),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
-    )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-
-    stage_title_profile(
-        _title_request("linked"), identity, provisioning, runtime_config
-    )
-
-    # The runtime store has no provider connections, exactly like the container.
-    staged = _runtime_profile_store(persistence_dir).load(
-        "linked", cipher=identity.cipher
-    )
-    assert staged.provider_connection_id is None
-    assert isinstance(staged.api_key, SecretStr)
-    assert staged.api_key.get_secret_value() == "connection-secret"
-    assert staged.base_url == "http://host.docker.internal:1234/v1"
-    on_disk = (persistence_dir / "profiles" / "linked.json").read_text()
-    assert "connection-secret" not in on_disk
-    assert not list((persistence_dir / "provider-connections").glob("*.json"))
-
-
-@pytest.mark.parametrize(
-    "profile",
-    ["absent", "../escape", "corrupt"],
-    ids=["missing", "invalid-name", "unloadable"],
-)
-def test_unusable_title_profile_stages_nothing_and_does_not_fail(
-    tmp_path, monkeypatch, profile
-):
-    runtime_config = config(tmp_path, monkeypatch)
-    host_store = get_llm_profile_store()
-    (host_store.base_dir / "corrupt.json").write_text("not json")
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-
-    stage_title_profile(_title_request(profile), identity, provisioning, runtime_config)
-
-    assert not persistence_dir.exists()
-    assert not list(provisioning.data_root.rglob("*.json"))
-
-
-def test_no_title_profile_leaves_the_runtime_untouched(tmp_path, monkeypatch):
-    runtime_config = config(tmp_path, monkeypatch)
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-
-    stage_title_profile(_title_request(None), identity, provisioning, runtime_config)
-
-    assert not persistence_dir.exists()
-
-
-def test_staged_profiles_stay_isolated_between_runtimes(tmp_path, monkeypatch):
-    runtime_config = config(tmp_path, monkeypatch)
-    get_llm_profile_store().save(
-        "title-aux",
-        LLM(model="openai/aux", api_key=SecretStr("aux-secret")),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
-    )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    first = provisioning.create(uuid4())
-    second = provisioning.create(uuid4())
-    for identity in (first, second):
-        stage_title_profile(
-            _title_request("title-aux"),
-            identity,
-            provisioning,
-            runtime_config,
-        )
-
-    first_store = _runtime_profile_store(
-        provisioning.persistence_dir(first.conversation_id)
-    )
-    own = first_store.load("title-aux", cipher=first.cipher)
-    assert isinstance(own.api_key, SecretStr)
-    assert own.api_key.get_secret_value() == "aux-secret"
-    assert first_store.load("title-aux", cipher=second.cipher).api_key is None
+    assert set(received.secrets) == {"ALLOWED"}
+    source = launch_source(received, _no_stores, identity.cipher)
+    assert isinstance(source, ResolvedLaunch)
+    agent = finalize(
+        source,
+        LaunchRuntime(browser_available=True, acp_skill_sourcing="openhands_managed"),
+        additions=received.agent_launch_additions,
+    ).agent
+    assert isinstance(agent, Agent)
+    assert agent.llm.model == "test"
+    assert agent.llm.stream is True
+    assert "browser_tool_set" in {tool.name for tool in agent.tools}
+    assert agent.agent_context is not None
+    assert agent.agent_context.system_message_suffix == "RUNTIME"
 
 
 @pytest.mark.asyncio
-async def test_runtime_auto_title_uses_the_staged_profile_for_an_acp_style_agent(
-    tmp_path, monkeypatch, request
-):
-    """Outer staging -> inner ``AutoTitleSubscriber._load_title_llm`` with the
-    runtime cipher, for an agent whose LLM is the inert ACP sentinel.
-
-    Only the LLM transport (``LLM.generate``) is replaced; the profile store,
-    the subscriber and the cipher path are real.
-    """
-    from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
-
-    from openhands.agent_server.conversation_service import AutoTitleSubscriber
-    from openhands.agent_server.event_service import EventService
-    from openhands.agent_server.models import StoredConversation
-    from openhands.sdk.event import MessageEvent
-    from openhands.sdk.llm import LLMResponse, MetricsSnapshot
-    from openhands.sdk.security.confirmation_policy import NeverConfirm
-
+async def test_the_host_forwards_its_memory_preference(tmp_path, monkeypatch):
     runtime_config = config(tmp_path, monkeypatch)
-    get_llm_profile_store().save(
-        "title-aux",
-        LLM(model="openai/aux", api_key=SecretStr("aux-secret"), usage_id="title-aux"),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
+    get_settings_store(runtime_config).save(
+        PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                agent_context=AgentContext(load_memory=True)
+            )
+        )
     )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-    stage_title_profile(
-        _title_request("title-aux"), identity, provisioning, runtime_config
+    get_llm_profile_store().save("fast", LLM(model="fast-model"))
+    profile = OpenHandsAgentProfile(name="p", llm_profile_ref="fast")
+    get_agent_profile_store().save(profile)
+    monkeypatch.setattr(
+        "openhands.agent_server.launch.discover_profile_skills", lambda: []
     )
-
-    # Inner runtime: OH_PERSISTENCE_DIR is the mounted runtime directory and the
-    # service cipher is the runtime key from OH_SECRET_KEY.
-    reset_stores()
-    request.addfinalizer(reset_stores)
-    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(persistence_dir))
-    service = AsyncMock(spec=EventService)
-    service.stored = StoredConversation(
-        id=identity.conversation_id,
+    request = StartConversationRequest(
         workspace=LocalWorkspace(working_dir="/workspace"),
-        confirmation_policy=NeverConfirm(),
-        title_llm_profile="title-aux",
+        agent_profile_id=profile.id,
     )
-    service.cipher = identity.cipher
 
-    def get_llm_call_context() -> LLMCallContext:
-        return LLMCallContext().for_conversation(str(identity.conversation_id))
+    payload, _, identity = await _forward(request, runtime_config)
 
-    service._conversation = SimpleNamespace(
-        agent=SimpleNamespace(llm=LLM(model="acp-managed", usage_id="acp-managed")),
-        get_llm_call_context=get_llm_call_context,
-    )
-    calls: list[tuple[str, str | None]] = []
-
-    def fake_generate(self_llm, _messages, **_kwargs):
-        calls.append(
-            (
-                self_llm.usage_id,
-                self_llm.api_key.get_secret_value() if self_llm.api_key else None,
-            )
-        )
-        choice = Choices(
-            finish_reason="stop",
-            index=0,
-            message=LiteLLMMessage(content="Staged title", role="assistant"),
-        )
-        return LLMResponse(
-            message=Message.from_llm_chat_message(choice["message"]),
-            metrics=MetricsSnapshot(
-                model_name=self_llm.model,
-                accumulated_cost=0.0,
-                max_budget_per_task=None,
-                accumulated_token_usage=None,
-            ),
-            raw_response=ModelResponse(
-                id="resp-1",
-                choices=[choice],
-                created=0,
-                model=self_llm.model,
-                object="chat.completion",
-            ),
-        )
-
-    with patch(
-        "openhands.sdk.llm.llm.LLM.generate", autospec=True, side_effect=fake_generate
-    ):
-        await AutoTitleSubscriber(service=service)(
-            MessageEvent(
-                id="evt-1",
-                source="user",
-                llm_message=Message(
-                    role="user", content=[TextContent(text="Fix the login bug")]
-                ),
-            )
-        )
-        for _ in range(100):
-            await asyncio.sleep(0.02)
-            if service.stored.title is not None:
-                break
-
-    assert calls == [("title-aux", "aux-secret")]
-    assert service.stored.title == "Staged title"
+    assert payload["agent_settings"]["agent_context"]["load_memory"] is True
+    received = StartConversationRequest.model_validate(payload)
+    source = launch_source(received, _no_stores, identity.cipher)
+    agent = finalize(
+        source, LaunchRuntime(), additions=received.agent_launch_additions
+    ).agent
+    assert isinstance(agent, Agent)
+    assert agent.llm.model == "fast-model"
+    assert agent.agent_context is not None
+    assert agent.agent_context.load_memory is True
 
 
-def test_established_conversation_keeps_its_staged_snapshot(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_an_existing_conversation_is_not_resolved_again(tmp_path, monkeypatch):
     runtime_config = config(tmp_path, monkeypatch)
-    host_store = get_llm_profile_store()
-    host_store.save(
-        "title-aux",
-        LLM(model="openai/aux", api_key=SecretStr("aux-secret")),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
-    )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    stage_title_profile(
-        _title_request("title-aux"), identity, provisioning, runtime_config
-    )
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-    original = (persistence_dir / "profiles" / "title-aux.json").read_bytes()
-    # The inner server establishes the conversation in the mounted directory.
-    conversation_dir = runtime_config.conversations_path / identity.conversation_id.hex
-    conversation_dir.mkdir(parents=True)
-    (conversation_dir / "meta.json").write_text("{}")
-    host_store.save(
-        "title-aux",
-        LLM(model="openai/host-edit", api_key=SecretStr("rotated-secret")),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
-    )
-    host_store.save(
-        "other",
-        LLM(model="openai/other", api_key=SecretStr("other-secret")),
-        include_secrets=True,
-        cipher=runtime_config.cipher,
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent_profile_id=uuid4(),
     )
 
-    for profile in ("title-aux", "other", None):
-        stage_title_profile(
-            _title_request(profile), identity, provisioning, runtime_config
-        )
+    payload, launched, _ = await _forward(request, runtime_config, existing=True)
 
-    assert _runtime_profile_store(persistence_dir).list() == ["title-aux.json"]
-    assert (persistence_dir / "profiles" / "title-aux.json").read_bytes() == original
+    assert launched is None
+    assert payload["agent_profile_id"] == str(request.agent_profile_id)
+    assert "agent_settings" not in payload
 
 
-def test_incomplete_attempt_is_replaced_by_the_retried_selection(tmp_path, monkeypatch):
-    runtime_config = config(tmp_path, monkeypatch)
-    host_store = get_llm_profile_store()
-    for name in ("title-aux", "other"):
-        host_store.save(
-            name,
-            LLM(model=f"openai/{name}", api_key=SecretStr(f"{name}-secret")),
-            include_secrets=True,
-            cipher=runtime_config.cipher,
-        )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-    stage_title_profile(
-        _title_request("title-aux"), identity, provisioning, runtime_config
+def _docker_host_browser(host: Config) -> bool:
+    # The host's own chromium says nothing about the container's.
+    with patch("openhands.agent_server.launch.is_tool_usable", return_value=False):
+        runtime = target_launch_runtime(host)
+    assert runtime.acp_skill_sourcing == "openhands_managed"
+    return runtime.browser_available
+
+
+@pytest.mark.parametrize(
+    ("image_has_browser", "enable_browser", "has_browser"),
+    [(None, True, True), (False, True, False), (True, False, False)],
+)
+def test_the_host_config_decides_the_container_browser(
+    tmp_path, monkeypatch, image_has_browser, enable_browser, has_browser
+):
+    host = config(tmp_path, monkeypatch).model_copy(
+        update={
+            "conversation_runtime": "docker",
+            "conversation_image_has_browser": image_has_browser,
+            "enable_browser": enable_browser,
+        }
     )
 
-    stage_title_profile(_title_request("other"), identity, provisioning, runtime_config)
-    assert _runtime_profile_store(persistence_dir).list() == ["other.json"]
-
-    stage_title_profile(_title_request(None), identity, provisioning, runtime_config)
-    assert _runtime_profile_store(persistence_dir).list() == []
+    assert _docker_host_browser(host) is has_browser
 
 
-def test_concurrent_staging_attempts_leave_exactly_one_profile(tmp_path, monkeypatch):
-    """The establish-check and the replace of a stale attempt run under the
-    runtime's own lock, so interleaved attempts can never leave two profiles."""
-    runtime_config = config(tmp_path, monkeypatch)
-    host_store = get_llm_profile_store()
-    names = ["title-aux", "other"]
-    for name in names:
-        host_store.save(
-            name,
-            LLM(model=f"openai/{name}", api_key=SecretStr(f"{name}-secret")),
-            include_secrets=True,
-            cipher=runtime_config.cipher,
-        )
-    provisioning = RuntimeProvisioningStore(runtime_config)
-    identity = provisioning.create(uuid4())
-    persistence_dir = provisioning.persistence_dir(identity.conversation_id)
-    errors: list[BaseException] = []
+_STOCK_REPO = DEFAULT_CONVERSATION_IMAGE.rsplit(":", 1)[0]
 
-    def attempt(name: str) -> None:
-        try:
-            for _ in range(10):
-                stage_title_profile(
-                    _title_request(name), identity, provisioning, runtime_config
-                )
-        except BaseException as exc:  # pragma: no cover - reported below
-            errors.append(exc)
 
-    threads = [threading.Thread(target=attempt, args=(name,)) for name in names]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(30)
+@pytest.mark.parametrize(
+    ("image", "has_browser"),
+    [
+        (DEFAULT_CONVERSATION_IMAGE, True),
+        (f"{_STOCK_REPO}:1.50.0-python", True),
+        (f"{_STOCK_REPO}:latest-python-minimal", False),
+        (f"{_STOCK_REPO}:abc1234-python-minimal-amd64", False),
+        (f"{_STOCK_REPO}@sha256:" + "0" * 64, True),
+        (f"{_STOCK_REPO}-custom:tag", False),
+        ("example.com/custom:tag", False),
+        ("localhost:5000/agent-server", False),
+    ],
+)
+def test_an_unset_image_browser_is_on_only_for_the_stock_image(
+    tmp_path, monkeypatch, image, has_browser
+):
+    host = config(tmp_path, monkeypatch).model_copy(
+        update={"conversation_runtime": "docker", "conversation_image": image}
+    )
 
-    assert errors == []
-    staged = _runtime_profile_store(persistence_dir).list()
-    assert len(staged) == 1
-    assert staged[0] in {"title-aux.json", "other.json"}
+    assert _docker_host_browser(host) is has_browser
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_agent_is_forwarded_instead_of_agent_settings(
+    tmp_path, monkeypatch
+):
+    request = StartConversationRequest.model_validate(
+        {
+            "workspace": {"kind": "LocalWorkspace", "working_dir": "/workspace"},
+            "agent": {"kind": "Agent", "llm": {"model": "test"}, "tools": []},
+            "agent_settings": {"agent_kind": "openhands", "llm": {"model": "test"}},
+        }
+    )
+
+    payload, _, _ = await _forward(request, config(tmp_path, monkeypatch))
+
+    assert payload["agent"]["tools"] == []
+    assert "agent_settings" not in payload

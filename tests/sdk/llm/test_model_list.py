@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
+    get_supported_llm_models,
     get_unverified_models,
 )
 from openhands.sdk.llm.utils.verified_models import (
@@ -126,6 +127,40 @@ def test_kimi_k3_and_claude_opus_5_are_verified():
     assert "claude-opus-5" in VERIFIED_OPENHANDS_MODELS
 
 
+def test_openrouter_is_a_verified_provider():
+    """OpenRouter must be a verified provider (alongside openai/openhands) so the
+    provider picker shows it as verified on the local backend. Its entries are
+    namespaced ids with the ``openrouter/`` prefix stripped.
+    """
+    assert "openrouter" in VERIFIED_MODELS
+    # The picker treats any key in VERIFIED_MODELS as a verified provider, so a
+    # non-empty list is required for the OpenRouter section to render models.
+    assert VERIFIED_MODELS["openrouter"]
+    assert "anthropic/claude-opus-5" in VERIFIED_MODELS["openrouter"]
+    assert "openai/gpt-6-astra" in VERIFIED_MODELS["openrouter"]
+    # Entries must be real catalog ids (no alias-only ids like ``openai/gpt-5.6``).
+    assert "openai/gpt-5.6-sol" in VERIFIED_MODELS["openrouter"]
+    # Entries must not carry the openrouter/ prefix (it is the provider key).
+    assert not any(m.startswith("openrouter/") for m in VERIFIED_MODELS["openrouter"])
+
+
+def test_openrouter_entries_are_real_catalog_ids():
+    """Every OpenRouter verified entry must resolve to a real LiteLLM catalog
+    model (``openrouter/<entry>``), so the route has known context-window
+    metadata for condensation. An alias-only id like ``openai/gpt-5.6`` that no
+    catalog exposes must not be listed.
+    """
+    catalog = set(get_supported_llm_models())
+    missing = [
+        entry
+        for entry in VERIFIED_MODELS["openrouter"]
+        if f"openrouter/{entry}" not in catalog
+    ]
+    assert not missing, (
+        f"OpenRouter verified entries are not real LiteLLM catalog ids: {missing}"
+    )
+
+
 def test_nemotron_3_super_uses_full_infra_name():
     """The verified Nemotron Super entry must match the infra model name
     (``nemotron-3-super-120b-a12b``) and the short alias should not be listed.
@@ -172,6 +207,12 @@ def test_verified_lists_keep_two_latest_versions_per_line():
         "glm": ({"glm-5.3", "glm-5.2"}, {"glm-5.1"}),
         "nvidia": ({"nemotron-3.5-lightning-30b-a3b", "nemotron-3-nano"}, set()),
         "qwen": ({"qwen3.8-max", "qwen3.7-max"}, {"qwen3-max", "qwen3-6-plus"}),
+        # OpenRouter routes other vendors' models, so entries are namespaced
+        # ids (``anthropic/claude-opus-5``) rather than bare model names.
+        "openrouter": (
+            {"anthropic/claude-opus-5", "openai/gpt-6-astra"},
+            {"anthropic/claude-opus-4-7"},
+        ),
     }
     assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}
     for provider, (present, absent) in expectations.items():

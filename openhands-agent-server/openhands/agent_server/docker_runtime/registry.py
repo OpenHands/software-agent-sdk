@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
@@ -348,10 +349,12 @@ class DockerConversationRegistry(ConversationRegistry):
                     conversation_id,
                     ttl_seconds,
                 )
+                await service.refresh_persisted_conversation(conversation_id)
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
-        persistence_dir = self.provisioning.persistence_dir(conversation_id)
+        runtime_dir = self.provisioning.runtime_dir(conversation_id)
+        persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
         conversation_dir = self.conversation_dir(conversation_id)
         workspace_dir = self.workspace_dir(conversation_id)
         for directory in (persistence_dir, conversation_dir, workspace_dir):
@@ -364,6 +367,9 @@ class DockerConversationRegistry(ConversationRegistry):
                 "OH_CONVERSATIONS_PATH": _CONVERSATIONS_DIR,
                 "OH_PERSISTENCE_DIR": _PERSISTENCE_DIR,
                 "OH_CONVERSATION_RUNTIME": "local",
+                "OH_ENABLE_BROWSER": (
+                    "1" if container_browser_enabled(self.config) else "0"
+                ),
                 "OH_SECRET_KEY": identity.encryption_key.get_secret_value(),
                 V1_SESSION_API_KEY_ENV: identity.api_key.get_secret_value(),
                 "OH_RUNTIME_LAUNCHED_PROFILE": (
@@ -382,6 +388,7 @@ class DockerConversationRegistry(ConversationRegistry):
             "OH_CONVERSATIONS_PATH",
             "OH_PERSISTENCE_DIR",
             "OH_CONVERSATION_RUNTIME",
+            "OH_ENABLE_BROWSER",
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",
