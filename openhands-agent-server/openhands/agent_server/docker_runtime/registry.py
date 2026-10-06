@@ -7,10 +7,11 @@ import hashlib
 import os
 import subprocess
 import time
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from urllib.error import URLError
 from urllib.request import urlopen
 from uuid import UUID, uuid4
@@ -18,12 +19,14 @@ from uuid import UUID, uuid4
 from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
+from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
 from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
@@ -38,10 +41,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_CONVERSATIONS_DIR = "/var/openhands/conversations"
-_PERSISTENCE_DIR = "/var/openhands/.openhands"
-_WORKSPACE_DIR = "/workspace"
-_OWNER_LABEL = "ai.openhands.runtime-owner"
+_CONVERSATIONS_DIR: Final[str] = "/var/openhands/conversations"
+_PERSISTENCE_DIR: Final[str] = "/var/openhands/.openhands"
+_WORKSPACE_DIR: Final[str] = "/workspace"
+_OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
 
 
 @dataclass(slots=True)
@@ -81,6 +84,10 @@ class DockerConversationRegistry(ConversationRegistry):
         self._last_access: dict[UUID, float] = {}
         self._sessions: dict[UUID, int] = {}
         self._eviction_task: asyncio.Task[None] | None = None
+        self.reclaimer = Reclaimer(
+            DockerRuntimeStorage(self),
+            disk_budget=config.conversation_storage_disk_budget,
+        )
 
     def configure_service(self, service: ConversationService) -> None:
         self._service = service
@@ -120,6 +127,8 @@ class DockerConversationRegistry(ConversationRegistry):
 
     async def start(self) -> None:
         await asyncio.to_thread(self.cleanup_stale_containers)
+        # After the cleanup: with no container left, every runtime is reclaimable.
+        await self.reclaimer.start()
         if self.config.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
@@ -173,6 +182,21 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def is_starting(self, conversation_id: UUID) -> bool:
         return conversation_id in self._starts
+
+    @asynccontextmanager
+    async def runtime_idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
+        """Hold the lifecycle lock; True if no container runs or starts for the
+        runtime and it is not being deleted.
+
+        Nothing can start a container until the block exits, so files moved
+        inside it are not in use.
+        """
+        async with self._lock:
+            yield not (
+                self.get(conversation_id)
+                or self.is_starting(conversation_id)
+                or conversation_id in self._deleting
+            )
 
     def attach_session(self, conversation_id: UUID) -> None:
         """Record an outer proxied session attached to this runtime.
@@ -280,6 +304,7 @@ class DockerConversationRegistry(ConversationRegistry):
             container = container or started
         if container is not None:
             await asyncio.to_thread(container.stop)
+        await self.reclaimer.on_stop(conversation_id)
 
     async def shutdown(self) -> None:
         if self._eviction_task is not None:
@@ -289,6 +314,8 @@ class DockerConversationRegistry(ConversationRegistry):
             self._eviction_task = None
         ids = set(self._containers) | set(self._starts)
         await asyncio.gather(*(self.stop(cid) for cid in ids), return_exceptions=True)
+        # Last, so it also covers the stops above; the next start sweeps them.
+        await self.reclaimer.shutdown()
 
     async def _evict_idle_runtimes_loop(self) -> None:
         ttl = self.config.conversation_idle_ttl_seconds
@@ -350,6 +377,7 @@ class DockerConversationRegistry(ConversationRegistry):
                     ttl_seconds,
                 )
                 await service.refresh_persisted_conversation(conversation_id)
+                await self.reclaimer.on_stop(conversation_id)
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
@@ -422,6 +450,9 @@ class DockerConversationRegistry(ConversationRegistry):
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            # Core dumps land in the bind-mounted workspace at 1-2 GB each.
+            "--ulimit",
+            "core=0",
             "--add-host",
             "host.docker.internal:host-gateway",
             "--label",
