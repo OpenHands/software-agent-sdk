@@ -72,11 +72,35 @@ class ApptainerWorkspace(RemoteWorkspace):
         description="Port to bind the container to. If None, finds available port.",
     )
     forward_env: list[str] = Field(
-        default_factory=lambda: ["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0"],
+        default_factory=lambda: [
+            "DEBUG",
+            "SESSION_API_KEY",
+            "OH_SESSION_API_KEYS_0",
+            "LMNR_PROJECT_API_KEY",
+            "LMNR_BASE_URL",
+            "LMNR_HTTP_PORT",
+            "LMNR_GRPC_PORT",
+            "LMNR_FORCE_HTTP",
+            "LMNR_INSTRUMENTS",
+            "LMNR_SPAN_CONTEXT",
+            "OTEL_ENDPOINT",
+            "OTEL_EXPORTER",
+            "OTEL_HEADERS",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+            "OPENHANDS_OBSERVABILITY_METADATA",
+            "OPENHANDS_OBSERVABILITY_TAGS",
+            "OPENHANDS_OBSERVABILITY_SPAN_NAME",
+            "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT",
+        ],
         description=(
             "Environment variables to forward to the container. The session "
             "API key variables are forwarded so the sandboxed agent server can "
-            "authenticate network-bound requests when it binds 0.0.0.0."
+            "authenticate network-bound requests when it binds 0.0.0.0. The "
+            "OTEL/Laminar variables are forwarded so observability configured "
+            "on the host is also initialized inside the container."
         ),
     )
     mount_dir: str | None = Field(
