@@ -512,7 +512,9 @@ def test_download_trajectory_redacts_json_and_jsonl_files_only(
     """
     conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
     line = json.dumps({"llm": {"api_key": "sk-plaintext-main-0123456789"}})
-    (conversation_dir / "events.jsonl").write_text(f"{line}\n{line}\n")
+    jsonl_names = ("events.jsonl", "MORE.JSONL")
+    for name in jsonl_names:
+        (conversation_dir / name).write_text(f"{line}\n{line}\n")
     (conversation_dir / "STATE.JSON").write_text(line)
     (conversation_dir / "notes.txt").write_text(line)
 
@@ -521,13 +523,17 @@ def test_download_trajectory_redacts_json_and_jsonl_files_only(
     assert response.status_code == 200
     root = conversation_id.hex
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        jsonl = archive.read(f"{root}/events.jsonl").decode().splitlines()
+        jsonl = {
+            name: archive.read(f"{root}/{name}").decode().splitlines()
+            for name in jsonl_names
+        }
         state = json.loads(archive.read(f"{root}/STATE.JSON"))
         notes = archive.read(f"{root}/notes.txt")
-    assert [json.loads(row)["llm"]["api_key"] for row in jsonl] == [
-        REDACTED_SECRET_VALUE,
-        REDACTED_SECRET_VALUE,
-    ]
+    for rows in jsonl.values():
+        assert [json.loads(row)["llm"]["api_key"] for row in rows] == [
+            REDACTED_SECRET_VALUE,
+            REDACTED_SECRET_VALUE,
+        ]
     assert state["llm"]["api_key"] == REDACTED_SECRET_VALUE
     assert notes == line.encode()
 
