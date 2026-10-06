@@ -1,4 +1,6 @@
 import type { WebSocketCallbackClient } from '../events/websocket-client';
+import type { ConversationEvent } from '../events/types';
+import type { NewContextAction, NewContextObservation } from '../models/agent-reset';
 
 class Socket {
   static instances: Socket[] = [];
@@ -65,5 +67,48 @@ describe('typed conversation event transport', () => {
     client.stop();
     expect(Socket.instances[1].close).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('delivers reset handoffs, input boundaries and requests without dropping fields', async () => {
+    const callback = vi.fn();
+    const { WebSocketCallbackClient } = await import('../events/websocket-client');
+    client = new WebSocketCallbackClient({
+      host: 'https://agent.test',
+      conversationId: 'conversation',
+      callback,
+    });
+    client.start();
+    const action = {
+      kind: 'NewContextAction',
+      handoff: 'Continue with the deployment check.',
+    } satisfies NewContextAction;
+    const observation: NewContextObservation = {
+      kind: 'NewContextObservation',
+      content: [{ type: 'text', text: 'Context reset requested.' }],
+      input_event_id: 'user-1',
+    };
+    const events: ConversationEvent[] = [
+      {
+        kind: 'ActionEvent',
+        id: 'action-1',
+        tool_name: 'new_context',
+        tool_call_id: 'call-1',
+        action,
+      },
+      {
+        kind: 'ObservationEvent',
+        action_id: 'action-1',
+        tool_name: 'new_context',
+        tool_call_id: 'call-1',
+        observation,
+      },
+      { kind: 'CondensationRequest', trigger_action_id: 'action-1' },
+      { kind: 'ContextWindowReminderEvent', source: 'environment' },
+    ];
+
+    for (const event of events) {
+      Socket.instances[0].onmessage?.({ data: JSON.stringify(event) } as MessageEvent);
+    }
+    expect(callback.mock.calls.map(([event]) => event)).toEqual(events);
   });
 });

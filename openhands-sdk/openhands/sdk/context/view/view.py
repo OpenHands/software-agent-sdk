@@ -11,6 +11,7 @@ from openhands.sdk.context.view.properties import ALL_PROPERTIES
 from openhands.sdk.event import (
     Condensation,
     CondensationRequest,
+    ContextWindowReminderEvent,
     LLMConvertibleEvent,
 )
 from openhands.sdk.event.base import Event
@@ -31,6 +32,9 @@ class View(BaseModel):
 
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
+
+    pending_condensation_request: CondensationRequest | None = None
+    context_window_reminded: bool = False
 
     def __len__(self) -> int:
         return len(self.events)
@@ -119,11 +123,20 @@ class View(BaseModel):
             # already reflect the events seen by the agent up to that point. We can
             # therefore apply the condensation semantics directly to the stored events.
             case Condensation():
-                self.events = event.apply(self.events)
+                updated_events = event.apply(self.events)
+                if updated_events != self.events:
+                    self.context_window_reminded = False
+                self.events = updated_events
                 self.unhandled_condensation_request = False
+                self.pending_condensation_request = None
 
             case CondensationRequest():
                 self.unhandled_condensation_request = True
+                self.pending_condensation_request = event
+
+            case ContextWindowReminderEvent():
+                self.context_window_reminded = True
+                self.events.append(event)
 
             case LLMConvertibleEvent():
                 self.events.append(event)

@@ -30,6 +30,12 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillObservation,
     InvokeSkillTool,
 )
+from openhands.sdk.tool.builtins.new_context import (
+    NewContextAction,
+    NewContextExecutor,
+    NewContextObservation,
+    NewContextTool,
+)
 from openhands.sdk.tool.builtins.switch_llm import (
     SwitchLLMAction,
     SwitchLLMExecutor,
@@ -63,6 +69,7 @@ BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
     ConversationHistoryTool.__name__: ConversationHistoryTool,
     InvokeSkillTool.__name__: InvokeSkillTool,
+    NewContextTool.__name__: NewContextTool,
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
     ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
@@ -101,6 +108,10 @@ __all__ = [
     "InvokeSkillAction",
     "InvokeSkillObservation",
     "InvokeSkillExecutor",
+    "NewContextTool",
+    "NewContextAction",
+    "NewContextObservation",
+    "NewContextExecutor",
     "SwitchLLMTool",
     "SwitchLLMAction",
     "SwitchLLMObservation",

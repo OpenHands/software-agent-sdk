@@ -1,6 +1,8 @@
 import json
 import shutil
 import warnings
+from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,7 +16,10 @@ from openhands.sdk import (
     Agent,
     AgentContext,
     AgentSettingsBase,
+    Conversation,
+    ConversationExecutionStatus,
     ConversationSettings,
+    Message,
     OpenHandsAgentSettings,
     SettingProminence,
     Tool,
@@ -23,15 +28,22 @@ from openhands.sdk import (
     validate_agent_settings,
 )
 from openhands.sdk.agent.acp_agent import ACP_SENTINEL_USAGE_ID, ACPAgent
-from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
+from openhands.sdk.context.condenser import (
+    AgentResetCondenser,
+    LLMSummarizingCondenser,
+    NoOpCondenser,
+)
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.event import Condensation, ObservationEvent
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
+    AgentResetCondenserSettings,
     CondenserSettings,
     LLMSummarizingCondenserSettings,
     NoOpCondenserSettings,
@@ -45,7 +57,9 @@ from openhands.sdk.settings.model import (
     _migrate_agent_settings_payload,
     export_settings_schema,
 )
+from openhands.sdk.testing import TestLLM
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools import register_default_tools
 
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
@@ -132,7 +146,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert condenser_fields["condenser.condenser_kind"].default == "llm_summarizing"
     assert [
         choice.value for choice in condenser_fields["condenser.condenser_kind"].choices
-    ] == ["llm_summarizing", "no_op"]
+    ] == ["llm_summarizing", "no_op", "agent_reset"]
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
     assert condenser_fields["condenser.max_tokens"].default is None
@@ -1859,6 +1873,111 @@ def test_llm_create_agent_builds_no_op_condenser_variant() -> None:
     agent = settings.create_agent()
 
     assert isinstance(agent.condenser, NoOpCondenser)
+
+
+def test_agent_reset_settings_switch_and_persist() -> None:
+    settings = apply_agent_settings_diff(
+        OpenHandsAgentSettings(), {"condenser": {"condenser_kind": "agent_reset"}}
+    )
+    restored = OpenHandsAgentSettings.from_persisted(settings.model_dump(mode="json"))
+
+    assert isinstance(restored.condenser, AgentResetCondenserSettings)
+    assert restored.condenser.model_dump() == {
+        "condenser_kind": "agent_reset",
+        "enabled": True,
+    }
+    assert isinstance(restored.create_agent().condenser, AgentResetCondenser)
+
+
+@pytest.mark.parametrize(
+    "tool_names",
+    [
+        None,
+        [],
+        ["ConversationHistoryTool"],
+        ["ConversationHistoryTool", "new_context"],
+    ],
+    ids=["defaults", "empty", "partial", "explicit"],
+)
+def test_agent_reset_settings_run_with_required_tools(
+    tmp_path: Path, tool_names: list[str] | None
+) -> None:
+    llm = TestLLM.from_messages(
+        [
+            Message(role="assistant", content=[TextContent(text="Acknowledged.")]),
+            *[
+                Message(
+                    role="assistant",
+                    tool_calls=[
+                        MessageToolCall(
+                            id=f"call-{i}",
+                            name=name,
+                            arguments=json.dumps(arguments),
+                            origin="completion",
+                        )
+                    ],
+                )
+                for i, (name, arguments) in enumerate(
+                    [
+                        (
+                            "new_context",
+                            {"handoff": "Retrieve the original launch code."},
+                        ),
+                        (
+                            "conversation_history",
+                            {"command": "search", "query": "east"},
+                        ),
+                        ("finish", {"message": "The launch code is ZX-4916."}),
+                    ]
+                )
+            ],
+        ]
+    )
+    settings = OpenHandsAgentSettings(
+        llm=llm,
+        condenser=AgentResetCondenserSettings(),
+        tools=None if tool_names is None else [Tool(name=name) for name in tool_names],
+    )
+    register_default_tools(enable_browser=False)
+    original = settings.model_dump(mode="json")
+    with closing(
+        Conversation(agent=settings.create_agent(), workspace=tmp_path, visualizer=None)
+    ) as conversation:
+        conversation.send_message("Launch code ZX-4916, region east.")
+        conversation.run()
+        conversation.send_message(
+            "Start a fresh context, then recover the launch code."
+        )
+        conversation.run()
+        observations = [
+            event.observation
+            for event in conversation.state.events
+            if isinstance(event, ObservationEvent)
+            and event.tool_name in {"new_context", "conversation_history"}
+        ]
+        assert len(observations) == 2
+        assert all(not observation.is_error for observation in observations)
+        assert "Launch code ZX-4916, region east." in observations[1].text
+        assert any(
+            isinstance(event, Condensation) for event in conversation.state.events
+        )
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+    assert llm.call_count == 4
+    assert settings.model_dump(mode="json") == original
+
+
+def test_disabled_agent_reset_settings_do_not_add_tools() -> None:
+    agent = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"),
+        tools=[],
+        condenser=AgentResetCondenserSettings(enabled=False),
+    ).create_agent()
+
+    assert agent.condenser is None
+    assert "ConversationHistoryTool" not in agent.include_default_tools
+    assert "NewContextTool" not in agent.include_default_tools
 
 
 def test_llm_create_agent_builds_critic_when_enabled() -> None:

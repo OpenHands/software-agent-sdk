@@ -162,7 +162,7 @@ CriticMode = Literal["finish_and_message", "all_actions"]
 SecurityAnalyzerType = Literal["llm", "none"]
 
 
-type CondenserKind = Literal["llm_summarizing", "no_op"]
+type CondenserKind = Literal["llm_summarizing", "no_op", "agent_reset"]
 
 
 class CondenserSettings(BaseModel):
@@ -340,6 +340,35 @@ class NoOpCondenserSettings(CondenserSettings):
         return NoOpCondenser()
 
 
+class AgentResetCondenserSettings(BaseModel):
+    """Settings for model-requested context resets with history retrieval."""
+
+    condenser_kind: Literal["agent_reset"] = Field(
+        default="agent_reset",
+        description="Select model-requested context resets with history retrieval.",
+        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Enable model-requested context resets with history retrieval.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable memory condensation",
+                prominence=SettingProminence.CRITICAL,
+            ).model_dump()
+        },
+    )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import AgentResetCondenser
+
+        return AgentResetCondenser()
+
+
 def _condenser_settings_discriminator(value: Any) -> str:
     """Discriminator for :data:`CondenserSettingsConfig`.
 
@@ -347,7 +376,7 @@ def _condenser_settings_discriminator(value: Any) -> str:
     LLM summarizing condenser fields. Treat missing discriminators as
     ``'llm_summarizing'`` so those payloads continue to validate.
     """
-    if isinstance(value, CondenserSettings):
+    if isinstance(value, (CondenserSettings, AgentResetCondenserSettings)):
         return value.condenser_kind
     if isinstance(value, dict):
         return value.get("condenser_kind", "llm_summarizing")
@@ -356,7 +385,8 @@ def _condenser_settings_discriminator(value: Any) -> str:
 
 CondenserSettingsConfig = Annotated[
     Annotated[LLMSummarizingCondenserSettings, Tag("llm_summarizing")]
-    | Annotated[NoOpCondenserSettings, Tag("no_op")],
+    | Annotated[NoOpCondenserSettings, Tag("no_op")]
+    | Annotated[AgentResetCondenserSettings, Tag("agent_reset")],
     Discriminator(_condenser_settings_discriminator),
 ]
 """Discriminated union over the condenser-settings variants."""
@@ -1367,9 +1397,10 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         description=(
             "Tools available to the agent. None (the default) resolves to the "
             "standard exec set plus switch_llm (see openhands.sdk.tool.defaults); "
-            "[] is an explicitly bare agent; a non-empty list is used exactly as "
-            "given. Environment-dependent tools (browser) are injected by the "
-            "serving layer, not the default."
+            "[] selects no optional tools; a non-empty list selects the given tools. "
+            "The agent_reset condenser also includes its required history and "
+            "reset tools. Environment-dependent tools (browser) are injected by "
+            "the serving layer, not the default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -1538,7 +1569,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 
-        specs = merge_duplicate_tools(resolve_tool_specs(self.tools))
+        specs = resolve_tool_specs(self.tools)
+        if (
+            isinstance(self.condenser, AgentResetCondenserSettings)
+            and self.condenser.enabled
+        ):
+            for name in ("conversation_history", "new_context"):
+                if not selects_tool(specs, name):
+                    specs.append(Tool(name=name))
+        specs = merge_duplicate_tools(specs)
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         tools: list[Tool] = []
         for spec in specs:

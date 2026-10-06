@@ -49,8 +49,14 @@ export type ActionEvent = Omit<
 };
 export type AgentErrorEvent = AgentServerAgentErrorEvent;
 export type CondensationEvent = AgentServerCondensationEvent;
-export type CondensationRequestEvent = AgentServerCondensationRequestEvent;
+export type CondensationRequestEvent = AgentServerCondensationRequestEvent & {
+  /** The successful new_context action that requested this reset. */
+  trigger_action_id?: EventID | null;
+};
 export type CondensationSummaryEvent = AgentServerCondensationSummaryEvent;
+export type ContextWindowReminderEvent = Omit<AgentServerCondensationRequestEvent, 'kind'> & {
+  kind: 'ContextWindowReminderEvent';
+};
 export type ConversationErrorEvent = Omit<AgentServerConversationErrorEvent, 'source'> & {
   source?: EventSource;
 };
@@ -169,7 +175,11 @@ export interface ThinkEvent extends BaseEvent {
  * Union type of all conversation events
  */
 export type ConversationEvent =
-  | AgentServerEvent
+  | Exclude<AgentServerEvent, { kind: 'CondensationRequest' }>
+  | CondensationRequestEvent
+  | ContextWindowReminderEvent
+  | ActionEvent
+  | ObservationEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
   | StuckDetectionEvent

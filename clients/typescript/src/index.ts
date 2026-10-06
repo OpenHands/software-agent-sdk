@@ -87,6 +87,7 @@ export type {
   PauseEvent,
   CondensationRequestEvent,
   CondensationSummaryEvent,
+  ContextWindowReminderEvent,
   CondensationEvent,
   ConversationStateUpdateEvent,
   ConversationErrorEvent,
@@ -102,6 +103,15 @@ export type {
   HookExecutionEventType,
   ConversationEvent,
 } from './events/types';
+
+export type {
+  AgentResetCondenserSettings,
+  AgentResetCondenser,
+  NewContextAction,
+  NewContextObservation,
+  ConversationHistoryAction,
+  ConversationHistoryObservation,
+} from './models/agent-reset';
 
 // Hooks
 export {
