@@ -7,7 +7,8 @@ import hashlib
 import os
 import subprocess
 import time
-from contextlib import suppress
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -19,6 +20,7 @@ from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
+from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
@@ -95,6 +97,11 @@ class DockerConversationRegistry(ConversationRegistry):
     def configure_service(self, service: ConversationService) -> None:
         self._service = service
         service.runtime_cipher_resolver = self.resolve_persisted_cipher
+
+    async def refresh_conversation(self, conversation_id: UUID) -> None:
+        """Re-read the conversation from disk after its runtime changed."""
+        if self._service is not None:
+            await self._service.refresh_persisted_conversation(conversation_id)
 
     def resolve_persisted_cipher(self, conversation_id: UUID) -> Cipher:
         """Resolve persisted state without weakening per-runtime isolation.
@@ -193,6 +200,21 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def is_starting(self, conversation_id: UUID) -> bool:
         return conversation_id in self._starts
+
+    @asynccontextmanager
+    async def runtime_idle(self, conversation_id: UUID) -> AsyncIterator[bool]:
+        """Hold the lifecycle lock; True if no container runs or starts for the
+        runtime and it is not being deleted.
+
+        Nothing can start a container until the block exits, so files moved
+        inside it are not in use.
+        """
+        async with self._lock:
+            yield not (
+                self.get(conversation_id)
+                or self.is_starting(conversation_id)
+                or conversation_id in self._deleting
+            )
 
     def attach_session(self, conversation_id: UUID) -> None:
         """Record an outer proxied session attached to this runtime.
@@ -393,6 +415,9 @@ class DockerConversationRegistry(ConversationRegistry):
                 "OH_CONVERSATIONS_PATH": _CONVERSATIONS_DIR,
                 "OH_PERSISTENCE_DIR": _PERSISTENCE_DIR,
                 "OH_CONVERSATION_RUNTIME": "local",
+                "OH_ENABLE_BROWSER": (
+                    "1" if container_browser_enabled(self.config) else "0"
+                ),
                 "OH_SECRET_KEY": identity.encryption_key.get_secret_value(),
                 V1_SESSION_API_KEY_ENV: identity.api_key.get_secret_value(),
                 "OH_RUNTIME_LAUNCHED_PROFILE": (
@@ -411,6 +436,7 @@ class DockerConversationRegistry(ConversationRegistry):
             "OH_CONVERSATIONS_PATH",
             "OH_PERSISTENCE_DIR",
             "OH_CONVERSATION_RUNTIME",
+            "OH_ENABLE_BROWSER",
             "OH_SECRET_KEY",
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",

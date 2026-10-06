@@ -12,12 +12,12 @@ visible and retryable, instead of silently routing to a default model.
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
 
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
 from openhands.sdk.logger import get_logger
@@ -123,7 +123,15 @@ def parse_class_index(text: str, num_classes: int) -> int:
 
 
 def render_direct_prompt(meta: MetaProfile, instance_text: str) -> str:
-    """Render the minimal direct-routing placeholders supported by meta-profiles."""
+    """Render the direct-routing prompt body (without the system prefix).
+
+    Only the minimal placeholders supported by meta-profiles are substituted.
+    The ``_CLASSIFIER_SYSTEM_PREFIX`` is intentionally *not* prepended here so
+    callers can place the rendered body in a ``user`` message while keeping the
+    prefix in the ``system`` message — some providers (e.g. MiniMax) reject
+    requests whose only turn is a ``system`` message with ``"chat content is
+    empty"``.
+    """
     prompt = meta.prompt_template or ""
     values = {
         "instance_text": instance_text,
@@ -133,8 +141,43 @@ def render_direct_prompt(meta: MetaProfile, instance_text: str) -> str:
     def replace(match: re.Match[str]) -> str:
         return values.get(match.group(1), match.group(0))
 
-    rendered = re.sub(r"{{\s*(instance_text|model_table)\s*}}", replace, prompt).strip()
-    return f"{_CLASSIFIER_SYSTEM_PREFIX}\n\n{rendered}"
+    return re.sub(r"{{\s*(instance_text|model_table)\s*}}", replace, prompt).strip()
+
+
+def build_classifier_messages(meta: MetaProfile, transcript: str) -> list[Message]:
+    """Build the classifier request messages for ``meta``.
+
+    Always returns a ``system`` message followed by a non-empty ``user``
+    message. Providers such as MiniMax reject requests whose only turn is a
+    ``system`` message (``"chat content is empty"``), so the task transcript
+    and rendered prompt are placed in the ``user`` role for both routing
+    modes.
+    """
+    if meta.prompt_template is None:
+        return [
+            Message(
+                role="system",
+                content=[TextContent(text=build_classifier_prompt(meta))],
+            ),
+            Message(
+                role="user",
+                content=[
+                    TextContent(
+                        text=(f"Recent conversation:\n{transcript}\n\nCategory number:")
+                    )
+                ],
+            ),
+        ]
+    return [
+        Message(
+            role="system",
+            content=[TextContent(text=_CLASSIFIER_SYSTEM_PREFIX)],
+        ),
+        Message(
+            role="user",
+            content=[TextContent(text=render_direct_prompt(meta, transcript))],
+        ),
+    ]
 
 
 def parse_direct_model(text: str, available_models: Sequence[str]) -> str | None:
@@ -269,7 +312,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
         action: ClassifyAndSwitchLLMAction,  # noqa: ARG002
         conversation: "LocalConversation | None" = None,
     ) -> ClassifyAndSwitchLLMObservation:
-        from openhands.sdk.llm import Message, TextContent, content_to_str
+        from openhands.sdk.llm import content_to_str
 
         if conversation is None:
             return ClassifyAndSwitchLLMObservation.from_text(
@@ -316,31 +359,7 @@ class ClassifyAndSwitchLLMExecutor(ToolExecutor):
 
         # 2) Single classifier call over the recent conversation.
         transcript = _recent_messages_text(conversation) or "(no messages yet)"
-        if meta.prompt_template is None:
-            messages = [
-                Message(
-                    role="system",
-                    content=[TextContent(text=build_classifier_prompt(meta))],
-                ),
-                Message(
-                    role="user",
-                    content=[
-                        TextContent(
-                            text=(
-                                f"Recent conversation:\n{transcript}\n\n"
-                                "Category number:"
-                            )
-                        )
-                    ],
-                ),
-            ]
-        else:
-            messages = [
-                Message(
-                    role="system",
-                    content=[TextContent(text=render_direct_prompt(meta, transcript))],
-                )
-            ]
+        messages = build_classifier_messages(meta, transcript)
         try:
             response = classifier_llm.completion(
                 messages,
@@ -450,6 +469,7 @@ class ClassifyAndSwitchLLMTool(
     """Tool that classifies the task and switches to a meta-profile's LLM."""
 
     name = "route_task_to_model"
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(
