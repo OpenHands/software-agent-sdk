@@ -423,7 +423,7 @@ def test_landlock_restrict_self_failure_raises_runtime_error(
 
 
 def test_landlock_workspace_isinstance_local_workspace(tmp_path: Path):
-    """LandlockWorkspace inherits from LocalWorkspace for seamless Conversation integration."""
+    """LandlockWorkspace inherits from LocalWorkspace for Conversation integration."""
     ws = LandlockWorkspace(working_dir=tmp_path)
     assert isinstance(ws, LocalWorkspace)
     assert isinstance(ws, BaseWorkspace)
@@ -434,11 +434,12 @@ def test_landlock_workspace_isinstance_local_workspace(tmp_path: Path):
 
 
 def test_conversation_accepts_landlock_workspace(tmp_path: Path):
-    """Conversation factory and LocalConversation accept LandlockWorkspace without assertion error."""
+    """Conversation factory and LocalConversation accept LandlockWorkspace."""
+    from pydantic import SecretStr
+
     from openhands.sdk.agent import Agent
     from openhands.sdk.conversation import Conversation
     from openhands.sdk.llm import LLM
-    from pydantic import SecretStr
 
     llm = LLM(model="gpt-5.5", api_key=SecretStr("mock-key"))
     agent = Agent(llm=llm, tools=[])
@@ -448,3 +449,85 @@ def test_conversation_accepts_landlock_workspace(tmp_path: Path):
     assert conv.workspace is ws
     assert isinstance(conv.workspace, LocalWorkspace)
 
+
+def test_landlock_add_rule_failure_raises_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Failure in landlock_add_rule raises RuntimeError (fail-closed)."""
+    # 1. Test read-write path rule failure
+    call_count = 0
+
+    def mock_syscall_rw(nr, *args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # create_ruleset returns a valid fd
+            return 99
+        if nr == 445:  # SYS_landlock_add_rule
+            return -1
+        return 0
+
+    mock_libc = MagicMock()
+    mock_libc.syscall.side_effect = mock_syscall_rw
+    mock_libc.prctl.return_value = 0
+
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: mock_libc)
+    monkeypatch.setattr("ctypes.get_errno", lambda: 13)  # EACCES
+
+    with pytest.raises(
+        RuntimeError, match="landlock_add_rule failed for read-write path"
+    ):
+        _apply_landlock_and_group(
+            read_only_paths=[],
+            read_write_paths=[str(tmp_path)],
+            abi_version=1,
+            enable_process_group=False,
+        )
+
+    # 2. Test read-only path rule failure
+    call_count = 0
+
+    def mock_syscall_ro(nr, *args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return 99
+        if nr == 445:
+            return -1
+        return 0
+
+    mock_libc.syscall.side_effect = mock_syscall_ro
+    with pytest.raises(
+        RuntimeError, match="landlock_add_rule failed for read-only path"
+    ):
+        _apply_landlock_and_group(
+            read_only_paths=[str(tmp_path)],
+            read_write_paths=[],
+            abi_version=1,
+            enable_process_group=False,
+        )
+
+
+def test_execute_command_reader_retains_output_without_data_loss(tmp_path: Path):
+    """Verify stdout readers read to EOF when descendant retains pipes."""
+    ws = LandlockWorkspace(working_dir=tmp_path)
+    res = ws.execute_command("seq 1 10000; setsid sleep 0.2 &", timeout=5.0)
+
+    assert res.timeout_occurred is False
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    assert len(lines) == 10000
+    assert lines[0] == "1"
+    assert lines[-1] == "10000"
+
+
+def test_execute_command_reader_timeout_on_detached_descendant(tmp_path: Path):
+    """Verify readers report timeout when descendant retains pipes past timeout."""
+    ws = LandlockWorkspace(working_dir=tmp_path)
+    start = time.monotonic()
+    res = ws.execute_command("setsid sleep 20 &", timeout=0.5)
+    elapsed = time.monotonic() - start
+
+    assert res.timeout_occurred is True
+    assert res.exit_code == -1
+    assert elapsed < 2.0

@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
@@ -19,7 +20,6 @@ from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import sanitized_env
 from openhands.sdk.utils.redact import redact_text_secrets
-from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.local import LocalWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
@@ -249,6 +249,12 @@ def _apply_landlock_and_group(
         for path_str in read_only_paths:
             try:
                 fd = os.open(path_str, o_path | o_cloexec)
+            except OSError as err:
+                raise RuntimeError(
+                    f"Failed to open read-only path '{path_str}' "
+                    f"for Landlock rule: {err}"
+                ) from err
+            try:
                 st = os.fstat(fd)
                 is_dir = stat.S_ISDIR(st.st_mode)
                 rule = LandlockPathBeneathAttr()
@@ -258,21 +264,32 @@ def _apply_landlock_and_group(
                     else (get_file_fs_access(abi_version, write=False) & handled_fs)
                 )
                 rule.parent_fd = fd
-                libc.syscall(
+                ret = libc.syscall(
                     add_nr,
                     rfd,
                     LANDLOCK_RULE_PATH_BENEATH,
                     ctypes.byref(rule),
                     0,
                 )
+                if ret != 0:
+                    errno = ctypes.get_errno()
+                    raise RuntimeError(
+                        f"landlock_add_rule failed for read-only path '{path_str}' "
+                        f"with errno {errno}"
+                    )
+            finally:
                 os.close(fd)
-            except Exception:
-                pass
 
         # Apply full read-write rules for workspace paths and devices
         for path_str in read_write_paths:
             try:
                 fd = os.open(path_str, o_path | o_cloexec)
+            except OSError as err:
+                raise RuntimeError(
+                    f"Failed to open read-write path '{path_str}' "
+                    f"for Landlock rule: {err}"
+                ) from err
+            try:
                 st = os.fstat(fd)
                 is_dir = stat.S_ISDIR(st.st_mode)
                 rule = LandlockPathBeneathAttr()
@@ -282,16 +299,21 @@ def _apply_landlock_and_group(
                     else (get_file_fs_access(abi_version, write=True) & handled_fs)
                 )
                 rule.parent_fd = fd
-                libc.syscall(
+                ret = libc.syscall(
                     add_nr,
                     rfd,
                     LANDLOCK_RULE_PATH_BENEATH,
                     ctypes.byref(rule),
                     0,
                 )
+                if ret != 0:
+                    errno = ctypes.get_errno()
+                    raise RuntimeError(
+                        f"landlock_add_rule failed for read-write path '{path_str}' "
+                        f"with errno {errno}"
+                    )
+            finally:
                 os.close(fd)
-            except Exception:
-                pass
 
         # Seal and enforce the sandbox ruleset
         ret = libc.syscall(restrict_nr, rfd, 0)
@@ -532,6 +554,7 @@ class LandlockWorkspace(LocalWorkspace):
             proc_env["TEMP"] = str(ws_tmp)
             proc_env["TMP"] = str(ws_tmp)
 
+        start_time = time.monotonic()
         proc = subprocess.Popen(
             cmd_to_run,
             cwd=str(effective_cwd),
@@ -598,7 +621,12 @@ class LandlockWorkspace(LocalWorkspace):
 
         timeout_occurred = False
         try:
-            proc.wait(timeout=timeout)
+            wait_timeout = (
+                max(0.0, timeout - (time.monotonic() - start_time))
+                if timeout is not None
+                else None
+            )
+            proc.wait(timeout=wait_timeout)
         except subprocess.TimeoutExpired:
             timeout_occurred = True
             logger.warning(f"Command timed out after {timeout}s: {command}")
@@ -643,8 +671,31 @@ class LandlockWorkspace(LocalWorkspace):
                 timeout_occurred=True,
             )
 
-        stdout_thread.join(timeout=min(timeout, 1.0))
-        stderr_thread.join(timeout=min(timeout, 1.0))
+        # Process exited within wait timeout.
+        # Join reader threads up to EOF within remaining overall timeout.
+        if timeout is not None:
+            remaining = max(0.0, timeout - (time.monotonic() - start_time))
+        else:
+            remaining = None
+
+        stdout_thread.join(timeout=remaining)
+
+        if timeout is not None:
+            remaining = max(0.0, timeout - (time.monotonic() - start_time))
+        else:
+            remaining = None
+
+        stderr_thread.join(timeout=remaining)
+
+        if stdout_thread.is_alive() or stderr_thread.is_alive():
+            logger.warning(
+                f"Stream reader threads timed out after {timeout}s: {command}"
+            )
+            stop_event.set()
+            timeout_occurred = True
+            stdout_thread.join(timeout=0.1)
+            stderr_thread.join(timeout=0.1)
+
         if proc.stdout:
             try:
                 proc.stdout.close()
@@ -658,7 +709,7 @@ class LandlockWorkspace(LocalWorkspace):
 
         return CommandResult(
             command=command,
-            exit_code=proc.returncode,
+            exit_code=-1 if timeout_occurred else proc.returncode,
             stdout="".join(stdout_lines),
             stderr="".join(stderr_lines),
             timeout_occurred=timeout_occurred,
