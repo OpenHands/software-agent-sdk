@@ -151,17 +151,25 @@ async def _download_file(path: str) -> FileResponse:
         )
 
 
+_TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+
+
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     """Create a zip archive for source_dir using only Python stdlib APIs.
 
     Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
     are redacted on the way into the archive so a downloaded trajectory never
-    leaks API keys — see ``redacted_file_bytes``.
+    leaks API keys — see ``redacted_file_bytes``. Top-level directories in
+    ``_TRAJECTORY_EXCLUDED_TOP_DIRS`` hold runtime credentials and are omitted.
     """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
+                if path.relative_to(source_dir).parts[0] in (
+                    _TRAJECTORY_EXCLUDED_TOP_DIRS
+                ):
+                    continue
                 arcname = str(path.relative_to(source_dir.parent))
                 if path.is_file():
                     redacted = redacted_file_bytes(path)
