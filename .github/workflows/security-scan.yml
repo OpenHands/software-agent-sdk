@@ -61,7 +61,7 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout (full history + tags for the baseline diff)
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   ref: ${{ github.event.pull_request.head.sha || github.sha }}
                   fetch-depth: 0

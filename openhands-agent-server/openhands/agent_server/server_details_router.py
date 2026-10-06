@@ -64,9 +64,16 @@ class ServerInfo(BaseModel):
         default_factory=lambda: [
             "conversation_runtime_routes_v1",
             "profile_secret_scope_v1",
+            "profile_persona_v1",
             "credential_binding_v1",
             "credential_binding_readiness_probe_v1",
             "credential_binding_activation_guard_v1",
+            # Concurrent creates for one conversation id are deduplicated under
+            # the conversation's lifecycle lock, so a client may safely re-send
+            # a create whose response it never saw.
+            "idempotent_conversation_create_v1",
+            "tool_catalog_v1",
+            "agent_profile_draft_materialize_v1",
         ]
     )
     app_backend_ingress_url: str | None = Field(
