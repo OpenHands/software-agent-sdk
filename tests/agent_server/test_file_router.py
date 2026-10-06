@@ -382,6 +382,34 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
     assert not (conversations_path / f"{conversation_id.hex}.zip").exists()
 
 
+def test_download_trajectory_omits_acp_credential_dir(client, monkeypatch, tmp_path):
+    conversations_path = tmp_path / "conversations"
+    conversation_id = uuid4()
+    conversation_dir = conversations_path / conversation_id.hex
+    acp_dir = conversation_dir / "acp" / "codex"
+    acp_dir.mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    (conversation_dir / "acp_notes.json").write_text("{}")
+    (acp_dir / "auth.json").write_text('{"refresh_token": "rt-secret-123"}')
+
+    monkeypatch.setattr(
+        "openhands.agent_server.file_router.get_default_config",
+        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
+    )
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+    assert response.status_code == 200
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = archive.namelist()
+        blob = b"\n".join(archive.read(n) for n in names if not n.endswith("/"))
+
+    assert f"{conversation_id.hex}/meta.json" in names
+    assert f"{conversation_id.hex}/acp_notes.json" in names
+    assert not any("/acp/" in n or n.endswith("/acp") for n in names)
+    assert b"rt-secret-123" not in blob
+
+
 def test_download_trajectory_redacts_llm_and_condenser_secrets(
     client, monkeypatch, tmp_path
 ):

@@ -156,12 +156,16 @@ async def _download_file(path: str) -> FileResponse:
         )
 
 
+_TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+
+
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     """Create a zip archive for source_dir using only Python stdlib APIs.
 
     Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
     are redacted on the way into the archive so a downloaded trajectory never
-    leaks API keys — see ``redacted_json_bytes``.
+    leaks API keys — see ``redacted_json_bytes``. Top-level directories in
+    ``_TRAJECTORY_EXCLUDED_TOP_DIRS`` hold runtime credentials and are omitted.
 
     The conversation may still be running and saving state while this walks
     it, so files that are still being written (``*.tmp``) are skipped, and so
@@ -173,6 +177,10 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
+                if path.relative_to(source_dir).parts[0] in (
+                    _TRAJECTORY_EXCLUDED_TOP_DIRS
+                ):
+                    continue
                 if is_temp_file(path):
                     # A save in progress (or left by a crash), from
                     # atomic_write_text or the lease's owner_lease.tmp; the
