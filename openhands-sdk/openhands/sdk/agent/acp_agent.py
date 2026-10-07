@@ -1882,17 +1882,23 @@ class ACPAgent(AgentBase):
     @field_validator("agent_context")
     @classmethod
     def _drop_project_skills(cls, value: AgentContext | None) -> AgentContext | None:
-        """Clear ``load_project_skills`` — ACP CLIs read the repo themselves.
+        """Clear ``load_project_skills`` / ``load_compatible_skills`` — ACP CLIs
+        read the repo themselves.
 
         Claude Code, Codex and Gemini already ingest ``AGENTS.md`` / ``CLAUDE.md``
-        and their own project skills from the session cwd, so loading them here
-        too would put that content in the prompt twice. Normalised rather than
-        rejected: callers legitimately set the flag on a shared context they also
-        use for OpenHands agents (#4019).
+        and their own project skills (including their native
+        ``.claude``/``.codex``/``.gemini``/``.cursor`` skills directories) from the
+        session cwd, so loading them here too would put that content in the prompt
+        twice. Normalised rather than rejected: callers legitimately set the flags
+        on a shared context they also use for OpenHands agents (#4019).
         """
-        if value is None or not value.load_project_skills:
+        if value is None:
             return value
-        return value.model_copy(update={"load_project_skills": False})
+        if not (value.load_project_skills or value.load_compatible_skills):
+            return value
+        return value.model_copy(
+            update={"load_project_skills": False, "load_compatible_skills": False}
+        )
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)

@@ -164,6 +164,7 @@ def _apply_acp_skill_sourcing(
         context.skills
         or context.load_user_skills
         or context.load_public_skills
+        or context.load_compatible_skills
         or context.registered_marketplaces
     ):
         return agent
@@ -174,6 +175,7 @@ def _apply_acp_skill_sourcing(
                     "skills": [],
                     "load_user_skills": False,
                     "load_public_skills": False,
+                    "load_compatible_skills": False,
                     "registered_marketplaces": [],
                 }
             )

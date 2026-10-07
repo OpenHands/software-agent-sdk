@@ -140,6 +140,21 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    load_compatible_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to also discover AgentSkills from other agents' native "
+            "directories — `.claude/skills`, `.codex/skills`, `.gemini/skills`, "
+            "`.cursor/skills` — in addition to the OpenHands locations. Extends "
+            "the user and project skill scopes: enabling this also enables "
+            "user/project skill loading (the vendor dirs only extend those "
+            "scopes). Vendor skills are additive and lower precedence, so "
+            "`.agents/skills` (then `.openhands/skills`) wins on a name "
+            "conflict. Off by default; when off (or absent from an older "
+            "persisted config) discovery is byte-for-byte unchanged."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     load_memory: bool = Field(
         default=False,
         description=(
@@ -269,12 +284,15 @@ class AgentContext(BaseModel):
         context that way must re-run this or the deny-list silently won't apply.
         """
         include_public = self.load_public_skills
-        if self.load_user_skills or include_public:
+        include_compatible = self.load_compatible_skills
+        include_user = self.load_user_skills or include_compatible
+        if include_user or include_public:
             auto_skills = load_available_skills(
                 work_dir=None,
-                include_user=self.load_user_skills,
+                include_user=include_user,
                 include_project=False,
                 include_public=include_public,
+                include_compatible=include_compatible,
                 marketplace_path=self.marketplace_path,
             )
 

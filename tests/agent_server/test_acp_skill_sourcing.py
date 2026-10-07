@@ -92,6 +92,23 @@ def test_acp_agent_clears_load_project_skills() -> None:
     assert agent.agent_context.load_project_skills is False
 
 
+def test_acp_agent_clears_load_compatible_skills() -> None:
+    """ACP CLIs read their own vendor skill dirs, so don't load them twice."""
+    agent = _acp_agent(load_compatible_skills=True)
+    assert agent.agent_context is not None
+    assert agent.agent_context.load_compatible_skills is False
+
+
+def test_openhands_agent_keeps_load_compatible_skills() -> None:
+    agent = Agent(
+        llm=LLM(model="gpt-4o", usage_id="agent"),
+        tools=[],
+        agent_context=AgentContext(load_compatible_skills=True),
+    )
+    assert agent.agent_context is not None
+    assert agent.agent_context.load_compatible_skills is True
+
+
 def test_openhands_agent_keeps_load_project_skills() -> None:
     """The guard is ACP-only — a regular agent still loads project skills."""
     agent = Agent(

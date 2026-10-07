@@ -1155,7 +1155,10 @@ class LocalConversation(BaseConversation):
         # here, where the path is known. Project skills take precedence over
         # same-named skills already on the context.
         project_skills_loaded = False
-        if merged_context is not None and merged_context.load_project_skills:
+        load_project = merged_context is not None and (
+            merged_context.load_project_skills or merged_context.load_compatible_skills
+        )
+        if merged_context is not None and load_project:
             # Best-effort: a failure to load project skills must not prevent the
             # conversation from starting. (load_available_skills already guards
             # the project source internally; this is belt-and-suspenders.)
@@ -1165,6 +1168,7 @@ class LocalConversation(BaseConversation):
                     include_user=False,
                     include_project=True,
                     include_public=False,
+                    include_compatible=merged_context.load_compatible_skills,
                 )
             except Exception:
                 logger.warning(
