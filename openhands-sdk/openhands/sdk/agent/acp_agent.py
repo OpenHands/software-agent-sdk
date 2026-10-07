@@ -32,7 +32,6 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
-    Iterable,
     Sequence,
 )
 from concurrent.futures import Future
@@ -82,6 +81,14 @@ from pydantic import (
     field_validator,
 )
 
+from openhands.sdk.agent.acp_contracts import (
+    extract_session_models,
+    is_model_dumpable,
+    normalize_acp_error,
+    normalize_auth_method,
+    normalize_mcp_capabilities,
+    supports_legacy_model_switch,
+)
 from openhands.sdk.agent.acp_file_credentials import (
     ACPFileCredentialLifecycle,
     ACPFileCredentialNeedsReauthError,
@@ -409,7 +416,9 @@ def _auth_selection_failure_reason(
     # which the runtime does not have. Named so the log says why the method was
     # never a candidate rather than implying a missing credential.
     terminal_ids = sorted(
-        m.id for m in auth_methods if getattr(m, "type", None) == "terminal"
+        m.id
+        for m in (normalize_auth_method(raw) for raw in auth_methods)
+        if m.type == "terminal"
     )
     if terminal_ids:
         reasons.append(
@@ -589,31 +598,6 @@ def _model_config_options(
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
-def _model_config_option(response: Any) -> Any | None:
-    """Return the ``model`` ``configOptions`` select off a session response.
-
-    Newer ACP CLIs dropped the UNSTABLE ``models`` capability and expose model
-    selection as a ``configOptions`` entry with ``id == "model"`` (``type ==
-    "select"``), switched via ``session/set_config_option`` instead of
-    ``session/set_model``. Returns that option (carrying ``options`` and
-    ``current_value``) or ``None`` when the server uses neither / the old
-    mechanism. ``getattr`` keeps it tolerant of partial structures.
-
-    The ``agent-client-protocol`` Python lib wraps each entry in a
-    ``SessionConfigOption`` ``RootModel`` on 0.8.x (access via ``.root``) but
-    lists the union members directly on 0.10.x; unwrap ``.root`` so detection
-    works on either.
-    """
-    for raw in getattr(response, "config_options", None) or []:
-        opt = getattr(raw, "root", raw)
-        if (
-            getattr(opt, "type", None) == "select"
-            and getattr(opt, "id", None) == _MODEL_CONFIG_OPTION_ID
-        ):
-            return opt
-    return None
-
-
 async def _apply_acp_model(
     conn: ClientSideConnection,
     session_id: str,
@@ -643,16 +627,8 @@ async def _apply_acp_model(
             await conn.set_config_option(
                 config_id=config_id, value=value, session_id=session_id
             )
-    elif hasattr(conn, "set_session_model"):
-        await conn.set_session_model(  # type: ignore[attr-defined]
-            model_id=model, session_id=session_id
-        )
-
-
-def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
-    """Drop entries without a usable ``model_id`` — an empty/missing id is an
-    invalid picker option and an unusable model-switch target."""
-    return [info for info in infos if info.model_id]
+    elif supports_legacy_model_switch(conn):
+        await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
 
 
 def _extract_session_models(
@@ -682,32 +658,11 @@ def _extract_session_models(
     configOptions select, ``False`` for the ``models`` capability, and
     ``default_via_config_option`` when the response carries neither (the
     resume-path default for a ``load_session`` that omits the model block).
-
-    ``getattr`` keeps the helper tolerant of agents that emit a partial
-    structure.
     """
-    if response is None:
-        return None, None, default_via_config_option
-    # Prefer configOptions when an adapter advertises both it and the legacy
-    # ``models`` extension. The ``model`` select carries the same state, with
-    # each option's ``value`` as the model id (== the ``set_config_option`` target).
-    opt = _model_config_option(response)
-    if opt is not None:
-        current = getattr(opt, "current_value", None)
-        current = current if isinstance(current, str) and current else None
-        options = getattr(opt, "options", None) or []
-        usable = _usable_models(
-            ACPModelInfo.from_protocol(o, id_attr="value") for o in options
-        )
-        return current, usable, True
-    models = getattr(response, "models", None)
-    if models is not None:
-        current = getattr(models, "current_model_id", None)
-        current = current if isinstance(current, str) and current else None
-        raw = getattr(models, "available_models", None) or []
-        usable = _usable_models(ACPModelInfo.from_protocol(m) for m in raw)
-        return current, usable, False
-    return None, None, default_via_config_option
+    state = extract_session_models(
+        response, default_via_config_option=default_via_config_option
+    )
+    return state.current_model_id, state.available_models, state.via_config_option
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
@@ -768,8 +723,9 @@ def _mcp_config_to_acp_servers(
     to the protocol's ``[{name, value}]`` list form; header-compatible auth
     credentials are also converted to headers.
     """
-    http_ok = bool(getattr(mcp_capabilities, "http", False))
-    sse_ok = bool(getattr(mcp_capabilities, "sse", False))
+    caps = normalize_mcp_capabilities(mcp_capabilities)
+    http_ok = caps.http
+    sse_ok = caps.sse
     result: list[_ACPMcpServer] = []
     for name, server in mcp_config.items():
         if not server.enabled:
@@ -1026,7 +982,7 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     for content_block in content:
         block_dict = (
             content_block.model_dump(mode="json")
-            if hasattr(content_block, "model_dump")
+            if is_model_dumpable(content_block)
             else content_block
         )
         if (
@@ -1136,10 +1092,11 @@ def _stringify_acp_error_data(data: Any) -> str:
 
 def _acp_error_text(exc: BaseException) -> str:
     """Lowercased message + data text used for substring classification."""
+    info = normalize_acp_error(exc)
     if isinstance(exc, ACPRequestError):
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
-        return f"{exc} {data_str}".lower()
-    return str(exc).lower()
+        data_str = _stringify_acp_error_data(info.data)
+        return f"{info.message} {data_str}".lower()
+    return info.message.lower()
 
 
 def _acp_error_indicates_auth(exc: BaseException) -> bool:
@@ -1149,8 +1106,10 @@ def _acp_error_indicates_auth(exc: BaseException) -> bool:
     auth marker is an upstream 401/403 the server collapsed into a generic internal
     error.  Either way the client should offer re-authentication.
     """
-    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
-        return True
+    if isinstance(exc, ACPRequestError):
+        info = normalize_acp_error(exc)
+        if info.code == -32000:
+            return True
     text = _acp_error_text(exc)
     return any(marker in text for marker in _ACP_AUTH_ERROR_MARKERS) or bool(
         _ACP_AUTH_HTTP_CODES_RE.search(text)
@@ -1171,9 +1130,10 @@ def _acp_error_detail(
     secret values) before it leaves, and capped to the 500-char event limit.
     """
     if isinstance(exc, ACPRequestError):
-        code = getattr(exc, "code", None)
-        message = str(exc)
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
+        info = normalize_acp_error(exc)
+        code = info.code
+        message = info.message
+        data_str = _stringify_acp_error_data(info.data)
         detail = f"[{code}] {message}" if code is not None else message
         if data_str and data_str != message:
             detail = f"{detail}: {data_str}"
@@ -4597,8 +4557,10 @@ class ACPAgent(AgentBase):
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
-        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
-            task = getattr(self, task_attr)
+        for task_name, task in (
+            ("stdout filter task", self._stdout_filter_task),
+            ("stderr log task", self._stderr_log_task),
+        ):
             if task is not None:
                 task.cancel()
                 if self._executor is not None:
@@ -4607,8 +4569,9 @@ class ACPAgent(AgentBase):
                             self._await_cancelled_task, task, timeout=5.0
                         )
                     except Exception as e:
-                        logger.debug("Error stopping %s: %s", task_attr, e)
-                setattr(self, task_attr, None)
+                        logger.debug("Error stopping %s: %s", task_name, e)
+        self._stdout_filter_task = None
+        self._stderr_log_task = None
 
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)

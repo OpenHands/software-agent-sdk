@@ -34,6 +34,16 @@ class BashEventService:
     default_cwd: str | None = None
     _tasks: set[asyncio.Task] = field(default_factory=set, init=False)
     _closed: bool = field(default=False, init=False)
+    # Processes of currently running commands, keyed by command id. A None
+    # value means the spawn is still pending: start_bash_command registers
+    # the id synchronously so a stop arriving before the subprocess exists
+    # is recorded instead of lost. Lets a stop-by-id operation signal one
+    # command without touching the others.
+    _processes: dict[UUID, asyncio.subprocess.Process | None] = field(
+        default_factory=dict, init=False
+    )
+    # Ids a stop was requested for while their spawn was still pending.
+    _stop_requests: set[UUID] = field(default_factory=set, init=False)
     _pub_sub: PubSub[BashEventBase] = field(
         default_factory=lambda: PubSub[BashEventBase](max_subscribers=50),
         init=False,
@@ -265,6 +275,9 @@ class BashEventService:
         self._save_event_to_file(command)
         await self._pub_sub(command)
 
+        # Register synchronously so a stop racing the spawn is recorded
+        # instead of lost; the task replaces None with the live process.
+        self._processes[command.id] = None
         # Execute the bash command in a background task
         task = asyncio.create_task(self._execute_bash_command(command))
         self._tasks.add(task)
@@ -286,6 +299,12 @@ class BashEventService:
                 env=sanitized_env(),
                 start_new_session=True,
             )
+            self._processes[command.id] = process
+            if command.id in self._stop_requests:
+                # A stop arrived before the spawn completed: apply it now
+                # instead of letting the command run to its timeout.
+                self._stop_requests.discard(command.id)
+                await self.stop_bash_command(command.id)
 
             # Track output order and buffers
             output_order = 0
@@ -413,6 +432,40 @@ class BashEventService:
 
             self._save_event_to_file(error_output)
             await self._pub_sub(error_output)
+        finally:
+            self._processes.pop(command.id, None)
+            self._stop_requests.discard(command.id)
+
+    async def stop_bash_command(self, command_id: UUID) -> bool:
+        """Stop a running command's process group by command id.
+
+        Reuses the timeout path's SIGTERM-then-SIGKILL escalation so
+        user-installed cleanup traps run. The command's own task observes
+        the exit and publishes the terminal output, so only signalling
+        is needed here.
+
+        A stop racing the spawn is recorded and applied as soon as the
+        subprocess exists. Returns True when the id is known (signalled
+        now, already finished, or recorded for a pending spawn).
+        Returns False only for unknown ids; the caller maps a
+        known-but-finished id to success and an unknown id to not-found.
+        """
+        if command_id not in self._processes:
+            return False
+        process = self._processes[command_id]
+        if process is None:
+            self._stop_requests.add(command_id)
+            return True
+        self._signal_process_group(process, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=1.0)
+        except TimeoutError:
+            self._signal_process_group(process, signal.SIGKILL)
+            try:
+                await asyncio.wait_for(process.wait(), timeout=1.0)
+            except TimeoutError:
+                logger.error("Failed to stop process (command_id=%s)", command_id)
+        return True
 
     def delete_events_older_than(self, cutoff: datetime) -> int:
         """Delete bash event files with a recorded timestamp older than ``cutoff``.
@@ -525,6 +578,8 @@ class BashEventService:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        self._processes.clear()
+        self._stop_requests.clear()
         await self._pub_sub.close()
 
     async def __aenter__(self):

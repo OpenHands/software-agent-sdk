@@ -259,6 +259,14 @@ class ConversationConfig(BaseModel):
             "span names for grouping or signal routing."
         ),
     )
+    observability_parent_span_context: str | None = Field(
+        default=None,
+        description=(
+            "Serialized parent span context used to attach this conversation to "
+            "an upstream automation or integration trace."
+        ),
+    )
+
     autotitle: bool = Field(
         default=True,
         description=(

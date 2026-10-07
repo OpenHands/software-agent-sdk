@@ -23,6 +23,7 @@ from openhands.agent_server.docker_runtime.proxy import (
 from openhands.agent_server.docker_runtime.registry import (
     ConversationContainer,
     DockerConversationRegistry,
+    RuntimeArchivedError,
 )
 from openhands.agent_server.launch import (
     forward_to_runtime,
@@ -66,6 +67,10 @@ async def _container(
         raise HTTPException(404, "Conversation not found")
     try:
         return await registry.get_or_create(conversation_id)
+    except RuntimeArchivedError as exc:
+        raise HTTPException(
+            410, "Conversation runtime was archived; its history is read-only"
+        ) from exc
     except Exception as exc:
         logger.exception("Could not start conversation container %s", conversation_id)
         raise HTTPException(502, "Could not start conversation container") from exc
@@ -348,6 +353,7 @@ async def delete_conversation(conversation_id: UUID, request: Request) -> Respon
                 "Could not clean up conversation worktree %s", conversation_id
             )
         registry.provisioning.manifest_path(conversation_id).unlink(missing_ok=True)
+        registry.archived_marker(conversation_id).unlink(missing_ok=True)
         await asyncio.to_thread(
             safe_rmtree, registry.provisioning.runtime_dir(conversation_id)
         )

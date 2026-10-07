@@ -24,7 +24,7 @@ jobs:
                   echo "✅ Version format is valid: $INPUTS_VERSION"
 
             - name: Checkout repository
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
@@ -33,6 +33,11 @@ jobs:
               with:
                   version: latest
                   python-version: '3.13'
+
+            - name: Install Node.js
+              uses: actions/setup-node@v7
+              with:
+                  node-version: '24'
 
             - name: Configure Git
               run: |
@@ -61,6 +66,27 @@ jobs:
               run: |
                   npm --prefix clients/typescript version "$INPUTS_VERSION" \
                     --no-git-tag-version --ignore-scripts
+
+            # The npm publish packs the release tag as-is, so the client's
+            # Agent Server pin and generated types must land in this PR.
+            - name: Pin TypeScript client to the release Agent Server
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
+              run: |
+                  set -euo pipefail
+                  CLIENT_ROOT="clients/typescript"
+                  OPENAPI_PATH="$RUNNER_TEMP/openapi.json"
+
+                  OPENHANDS_SUPPRESS_BANNER=1 uv run python \
+                    .github/scripts/export_agent_server_openapi.py \
+                    --output "$OPENAPI_PATH"
+                  uv run python .github/scripts/prepare_typescript_client_agent_server_bump.py \
+                    --client-root "$CLIENT_ROOT" \
+                    --version "$INPUTS_VERSION" \
+                    --openapi "$OPENAPI_PATH"
+                  npm ci --prefix "$CLIENT_ROOT"
+                  AGENT_SERVER_OPENAPI_PATH="$OPENAPI_PATH" \
+                    npm --prefix "$CLIENT_ROOT" run generate:agent-server-api
 
             - name: Commit version changes
               env:
