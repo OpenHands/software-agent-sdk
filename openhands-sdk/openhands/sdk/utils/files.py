@@ -1,11 +1,12 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import Final
 
 
 # Suffix that marks a file as still being written. ``atomic_write_text`` writes
 # to ``.<name>.<random>.tmp`` next to ``path`` and then renames it to ``<name>``.
-_TEMP_SUFFIX = ".tmp"
+_TEMP_SUFFIX: Final[str] = ".tmp"
 
 
 def is_temp_file(path: Path) -> bool:
