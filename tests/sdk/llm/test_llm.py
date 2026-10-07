@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import ConversationStats, RegistryEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
+from openhands.sdk.llm._tokenizer import load_chat_template_tokenizer
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
@@ -463,10 +465,10 @@ def test_llm_load_chat_template_tokenizer_prefers_transformers(monkeypatch):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(
-        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+        "openhands.sdk.llm._tokenizer.importlib.import_module", fake_import_module
     )
 
-    tokenizer = LLM._load_chat_template_tokenizer("model-with-template")
+    tokenizer = load_chat_template_tokenizer("model-with-template")
 
     assert isinstance(tokenizer, FakeTokenizer)
     assert FakeAutoTokenizer.loaded_identifier == "model-with-template"
@@ -488,7 +490,7 @@ def test_llm_custom_tokenizer_falls_back_without_transformers(
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(
-        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+        "openhands.sdk.llm._tokenizer.importlib.import_module", fake_import_module
     )
 
     llm = LLM(
@@ -525,7 +527,7 @@ def test_llm_custom_tokenizer_falls_back_without_apply_chat_template(
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(
-        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+        "openhands.sdk.llm._tokenizer.importlib.import_module", fake_import_module
     )
 
     llm = LLM(
@@ -567,7 +569,7 @@ def test_llm_custom_tokenizer_allows_apply_chat_template_without_declared_templa
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(
-        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+        "openhands.sdk.llm._tokenizer.importlib.import_module", fake_import_module
     )
 
     llm = LLM(
@@ -699,6 +701,69 @@ def test_llm_token_counting_falls_back_when_chat_template_fails(
 
     assert token_count == 123
     mock_token_counter.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "tokenized,expected",
+    [
+        pytest.param([1, 2, 3], 3, id="ids"),
+        pytest.param([], 0, id="empty"),
+        pytest.param([[1, 2, 3]], 3, id="batched-ids"),
+        pytest.param({"input_ids": [1, 2, 3]}, 3, id="mapping"),
+        pytest.param(SimpleNamespace(shape=(1, 3)), 3, id="tensor-shape"),
+        pytest.param(SimpleNamespace(ids=[1, 2, 3]), 3, id="encoding"),
+        pytest.param(
+            SimpleNamespace(encodings=[SimpleNamespace(ids=[1, 2, 3])]),
+            3,
+            id="batch-encodings",
+        ),
+        pytest.param([SimpleNamespace(ids=[1, 2, 3])], 3, id="encoding-sequence"),
+        pytest.param("rendered prompt", 3, id="rendered-string"),
+        pytest.param(object(), 17, id="unsupported-falls-back"),
+    ],
+)
+def test_chat_template_token_result_shapes(default_llm, tokenized, expected):
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return tokenized
+
+        def encode(self, text):
+            assert text == "rendered prompt"
+            return SimpleNamespace(ids=[1, 2, 3])
+
+    default_llm._chat_template_tokenizer = Tokenizer()
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    with patch("openhands.sdk.llm.llm.token_counter", return_value=17):
+        assert default_llm.get_token_count(messages) == expected
+
+
+@pytest.mark.parametrize("failure", ["missing-factory", "import-error", "load-error"])
+def test_optional_tokenizer_loading_falls_back(monkeypatch, failure):
+    class BrokenFactory:
+        @classmethod
+        def from_pretrained(cls, identifier):
+            raise OSError("Tokenizer unavailable")
+
+    def import_transformers(name):
+        if failure == "import-error":
+            raise RuntimeError("Optional module initialization failed")
+        if failure == "missing-factory":
+            return SimpleNamespace()
+        return SimpleNamespace(AutoTokenizer=BrokenFactory)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm._tokenizer.importlib",
+        SimpleNamespace(import_module=import_transformers),
+    )
+    with patch("openhands.sdk.llm.llm.create_pretrained_tokenizer", return_value=None):
+        llm = LLM(model="gpt-4o", custom_tokenizer="local-fixture")
+    with patch("openhands.sdk.llm.llm.token_counter", return_value=23):
+        assert (
+            llm.get_token_count(
+                [Message(role="user", content=[TextContent(text="Hello")])]
+            )
+            == 23
+        )
 
 
 @patch("openhands.sdk.llm.llm.token_counter")

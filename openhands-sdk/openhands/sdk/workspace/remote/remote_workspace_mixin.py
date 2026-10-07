@@ -134,6 +134,21 @@ class RemoteWorkspaceMixin(BaseModel):
         page = yield from self._search_command_output_generator(command_id)
         return next(iter(page.get("items", [])), None)
 
+    def _stop_command_generator(
+        self,
+        command_id: str,
+    ) -> Generator[dict[str, Any], httpx.Response]:
+        response = yield {
+            "method": "POST",
+            "url": f"{self.host}{self.api_prefix}/bash/bash_commands/{command_id}/stop",
+            "headers": self._headers,
+            "timeout": 60,
+        }
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return None
+
     def _runtime_lifecycle_generator(
         self,
         *,
