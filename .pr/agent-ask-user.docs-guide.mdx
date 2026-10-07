@@ -46,7 +46,9 @@ When the agent calls `ask_user`:
    ```
 
    Answers are keyed by each question's `header`. A free-text "Other" value uses
-   a `null` `option_id` with the text in `label`.
+   a `null` `option_id` with the text in `label`. Only the option `id` is
+   trusted: the displayed label always comes from the pending question, so an
+   answer cannot relabel a known option with arbitrary text.
 
 4. The SDK matches the answer to the pending request by `request_id` and converts
    it into the `ask_user` tool observation, instead of appending it as an
@@ -54,12 +56,14 @@ When the agent calls `ask_user`:
 
 `action` distinguishes `accept` (the user answered), `decline` (the user said
 stop asking), and `cancel` (the user dismissed the question). The observation
-carries this alongside the answers.
+carries this alongside the answers. An accepted answer must select at least one
+option for every question.
 
 <Note>
   An ordinary message that does not parse as an answer is left to the normal
-  user-turn path. A malformed, mis-keyed, or stale answer produces a corrective
-  observation and does not resolve the call, so the user can retry.
+  user-turn path. A malformed, mis-keyed, or stale answer does not resolve the
+  call: the request stays pending, a non-LLM `AskUserAnswerNoticeEvent` records
+  the reason for clients, and the user can retry with a valid answer.
 </Note>
 
 ## Add the Tool

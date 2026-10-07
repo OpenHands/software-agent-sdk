@@ -40,6 +40,7 @@ from openhands.sdk.credential import CredentialBindingError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    AskUserAnswerNoticeEvent,
     CondensationRequest,
     Event,
     EventID,
@@ -109,10 +110,6 @@ from openhands.sdk.subagent import (
 )
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
-from openhands.sdk.tool.builtins.ask_user import (
-    build_ask_user_observation,
-    parse_ask_user_answer,
-)
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -1841,6 +1838,13 @@ class LocalConversation(BaseConversation):
                     ConversationExecutionStatus.IDLE
                 )  # new message resets terminal states
 
+            # Resolve a pending pause-for-user-input call *before* touching
+            # per-turn skill state: the answer is consumed as the tool
+            # observation, so its text must not activate knowledge skills that
+            # would then be marked delivered without ever reaching the LLM.
+            if self._try_resolve_ask_user(message):
+                return
+
             activated_skill_names: list[str] = []
             extended_content: list[TextContent] = []
 
@@ -1863,12 +1867,6 @@ class LocalConversation(BaseConversation):
                     extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
 
-            # A user message that parses as an answer to a pending ``ask_user``
-            # request is consumed as that call's observation instead of being
-            # appended as an unrelated user turn.
-            if self._try_resolve_ask_user(message):
-                return
-
             user_msg_event = MessageEvent(
                 source="user",
                 llm_message=message,
@@ -1879,7 +1877,7 @@ class LocalConversation(BaseConversation):
             self._on_event(user_msg_event)
 
     def _pending_ask_user_action(self) -> ActionEvent | None:
-        """The single unmatched ``ask_user`` action, or None.
+        """The single unmatched pause-for-user-input action, or None.
 
         The pending request is derived from the event log rather than a separate
         field, so it survives a resume and needs no new persisted state. Its
@@ -1895,10 +1893,10 @@ class LocalConversation(BaseConversation):
         return tool is not None and tool.pauses_run_for_user_input
 
     def _try_resolve_ask_user(self, message: Message) -> bool:
-        """Resolve a pending ``ask_user`` call from a user message.
+        """Resolve a pending pause-for-user-input call from a user message.
 
         Returns True when the message was consumed here (as the tool
-        observation, or as a corrective notice for a malformed answer), so the
+        observation, or as a corrective signal for a malformed answer), so the
         caller must not append it as a normal user turn. Returns False when
         there is no pending request or the message is not an answer, leaving it
         to the normal user-turn path.
@@ -1906,33 +1904,24 @@ class LocalConversation(BaseConversation):
         pending = self._pending_ask_user_action()
         if pending is None:
             return False
-
-        text = "".join(c.text for c in message.content if isinstance(c, TextContent))
-        payload = parse_ask_user_answer(text)
-        if payload is None:
+        tool = self.agent.tools_map.get(pending.tool_name)
+        if tool is None:
             return False
 
-        observation, error = build_ask_user_observation(pending, payload)
-        if observation is None:
-            logger.warning("Rejected ask_user answer: %s", error)
+        try:
+            observation = tool.resolve_user_input(pending, message)
+        except ValueError as e:
+            # Answer-shaped but unusable: keep the request pending and record a
+            # client-visible notice. The notice is deliberately not
+            # LLM-convertible so it cannot land between the pending tool call
+            # and its eventual result (which Anthropic rejects).
+            logger.warning("Rejected ask_user answer: %s", e)
             self._on_event(
-                MessageEvent(
-                    source="environment",
-                    llm_message=Message(
-                        role="user",
-                        content=[
-                            TextContent(
-                                text=(
-                                    f"Your answer could not be used: {error}. "
-                                    "The ask_user request is still pending; reply "
-                                    "with a valid answer."
-                                )
-                            )
-                        ],
-                    ),
-                )
+                AskUserAnswerNoticeEvent(request_id=pending.id, detail=str(e))
             )
             return True
+        if observation is None:
+            return False
 
         observation_event = ObservationEvent(
             observation=observation,
@@ -1948,6 +1937,12 @@ class LocalConversation(BaseConversation):
             tool_output=observation_event.to_llm_message(),
         )
         self._on_event(observation_event)
+        # The cached view excluded the unmatched action on a cold load (the
+        # tool-call-matching property drops actions without observations), so
+        # replaying only the new observation would produce a tool result with
+        # no preceding tool call. Re-derive the view from the raw branch so the
+        # resumed LLM sees the call and its result together.
+        self._state.rebuild_view()
         return True
 
     def _on_event_with_state_lock(self, event: Event) -> None:

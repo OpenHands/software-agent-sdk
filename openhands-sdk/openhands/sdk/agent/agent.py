@@ -714,6 +714,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # and execute them before sampling new actions.
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
+            # A pause-for-user-input call (e.g. ask_user) is resolved only by an
+            # answering user message, never by implicit confirmation. If one is
+            # still pending, re-signal the wait and leave it intact so a re-run
+            # before the answer does not execute its error-only executor and
+            # silently drop the question.
+            if any(self._pauses_for_user_input(ae.tool_name) for ae in pending_actions):
+                state.execution_status = (
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                )
+                return
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),
@@ -927,6 +937,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
+            if any(self._pauses_for_user_input(ae.tool_name) for ae in pending_actions):
+                state.execution_status = (
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                )
+                return
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),
@@ -1207,16 +1222,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             assert tool is not None, "pause tool must be in tools_map"
             if already_pending:
                 error: str | None = (
-                    "another ask_user request is already pending; wait for its "
-                    "answer before asking again"
+                    "another request for user input is already pending; wait for "
+                    "its answer before asking again"
                 )
             elif pending is not None:
                 error = (
-                    "only one ask_user call is allowed per step; combine the "
-                    "questions into a single call"
+                    "only one user-input request is allowed per step; combine "
+                    "the questions into a single call"
                 )
             elif ae.action is None:
-                error = "ask_user call had no valid action"
+                error = f"{ae.tool_name} call had no valid action"
             else:
                 error = tool.pause_error_for(ae.action)
             if error is not None:

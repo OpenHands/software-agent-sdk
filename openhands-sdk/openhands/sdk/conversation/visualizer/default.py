@@ -17,6 +17,7 @@ from openhands.sdk.event import (
     ACPToolCallEvent,
     ActionEvent,
     AgentErrorEvent,
+    AskUserAnswerNoticeEvent,
     ConversationStateUpdateEvent,
     MessageEvent,
     ObservationEvent,
@@ -241,6 +242,10 @@ EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
     PauseEvent: EventVisualizationConfig(
         title="User Paused",
         color=_PAUSE_COLOR,
+    ),
+    AskUserAnswerNoticeEvent: EventVisualizationConfig(
+        title="Rejected Answer",
+        color=_ERROR_COLOR,
     ),
     Condensation: EventVisualizationConfig(
         title="Condensation",

@@ -46,6 +46,8 @@ from openhands.sdk.utils.models import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
+    from openhands.sdk.event import ActionEvent
+    from openhands.sdk.llm import Message
 
 
 ActionT = TypeVar("ActionT", bound=Action)
@@ -441,6 +443,29 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         continues, so the agent can fix an invalid call.
         """
         return None
+
+    def resolve_user_input(
+        self,
+        action_event: "ActionEvent",
+        message: "Message",
+    ) -> "Observation | None":
+        """Resolve a pending pause call from a user ``message``.
+
+        The counterpart to :attr:`pauses_run_for_user_input`: every tool that
+        pauses the run must implement this so the pause has a matching
+        resolution contract. Return the observation for the pending
+        ``action_event`` when ``message`` resolves it, or ``None`` when the
+        message is an ordinary user turn and the call stays pending. Raise
+        :class:`ValueError` for a message that is a resolution attempt but is
+        malformed, so the caller can surface corrective feedback without
+        resolving the call.
+
+        Only called for tools with ``pauses_run_for_user_input`` set.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} sets pauses_run_for_user_input but does not "
+            "implement resolve_user_input"
+        )
 
     @classmethod
     @abstractmethod

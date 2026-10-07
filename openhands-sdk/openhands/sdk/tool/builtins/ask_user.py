@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.event import ActionEvent
+    from openhands.sdk.llm import Message
 
 
 MAX_OPTIONS = 4
@@ -224,7 +225,10 @@ def parse_ask_user_answer(text: str) -> AskUserAnswerPayload | None:
 
     Returns None for anything that is not a JSON object carrying a
     ``request_id`` string, so an ordinary user message is left to the normal
-    user-turn path.
+    user-turn path. A message that *is* answer-shaped (a JSON object with a
+    ``request_id``) but whose payload is malformed raises :class:`ValueError`
+    so the caller can reject it with a corrective signal instead of silently
+    treating it as an unrelated user turn.
     """
     stripped = text.strip()
     if not stripped.startswith("{"):
@@ -237,8 +241,8 @@ def parse_ask_user_answer(text: str) -> AskUserAnswerPayload | None:
         return None
     try:
         return AskUserAnswerPayload.model_validate(data)
-    except ValueError:
-        return None
+    except ValueError as e:
+        raise ValueError(f"malformed ask_user answer: {e}") from e
 
 
 def _resolve_selected(
@@ -259,9 +263,10 @@ def _resolve_selected(
             f"unrecognized option id '{selection.option_id}' for "
             f"'{question.header}' (valid: {valid})"
         )
-    return SelectedOption(
-        option_id=match.id, label=selection.label or match.label
-    ), None
+    # The label always comes from the pending question, never from the answer
+    # payload: a client must not be able to relabel a known option with
+    # arbitrary text and have it presented to the agent as the user's choice.
+    return SelectedOption(option_id=match.id, label=match.label), None
 
 
 def build_ask_user_observation(
@@ -296,12 +301,20 @@ def build_ask_user_observation(
         )
 
     questions_by_header = {q.header: q for q in action.questions}
+    unknown = [h for h in payload.answers if h not in questions_by_header]
+    if unknown:
+        valid = ", ".join(questions_by_header)
+        return None, (f"unrecognized question header '{unknown[0]}' (valid: {valid})")
+    missing = [h for h in questions_by_header if not payload.answers.get(h)]
+    if missing:
+        return None, (
+            "an accepted answer must select at least one option for every "
+            f"question; missing a selection for: {', '.join(missing)}"
+        )
+
     answers: list[QuestionAnswer] = []
     for header, selections in payload.answers.items():
-        question = questions_by_header.get(header)
-        if question is None:
-            valid = ", ".join(questions_by_header)
-            return None, (f"unrecognized question header '{header}' (valid: {valid})")
+        question = questions_by_header[header]
         if not question.multi_select and len(selections) > 1:
             return None, (
                 f"question '{header}' is single-select but {len(selections)} "
@@ -395,10 +408,9 @@ class AskUserExecutor(ToolExecutor[AskUserAction, AskUserObservation]):
     """Executor for ``ask_user``.
 
     A valid call never reaches this executor: the agent loop pauses the run and
-    converts the matching user answer into the observation. This runs only if a
-    pending call is executed directly (for example, a user message that is not an
-    answer implicitly confirms the batch), in which case it returns a corrective
-    error observation instead of hanging.
+    :meth:`AskUserTool.resolve_user_input` converts the matching user answer
+    into the observation. This defensive executor only runs if a pending call is
+    somehow executed directly, and returns a corrective error instead of hanging.
     """
 
     def __call__(
@@ -454,6 +466,23 @@ class AskUserTool(ToolDefinition[AskUserAction, AskUserObservation]):
             "AskUserTool.pause_error_for expects an AskUserAction"
         )
         return validate_questions(action)
+
+    def resolve_user_input(
+        self,
+        action_event: ActionEvent,
+        message: Message,
+    ) -> AskUserObservation | None:
+        text = "".join(c.text for c in message.content if isinstance(c, TextContent))
+        payload = parse_ask_user_answer(text)
+        if payload is None:
+            return None
+        observation, error = build_ask_user_observation(action_event, payload)
+        if error is not None:
+            # Answer-shaped but unusable: raise so the caller keeps the request
+            # pending and surfaces corrective feedback.
+            raise ValueError(error)
+        assert observation is not None
+        return observation
 
     @classmethod
     def create(
