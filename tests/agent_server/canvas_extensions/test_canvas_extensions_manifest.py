@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.agent_server.canvas_extensions.manifest import (
+    CanvasExtensionBackendArtifact,
     CanvasExtensionContributes,
     CanvasExtensionManifest,
     CanvasExtensionPage,
@@ -164,6 +165,47 @@ def test_manifest_round_trips_through_json_dict():
     }
     manifest = CanvasExtensionManifest.model_validate(payload)
     assert manifest.model_dump() == payload
+
+
+def test_backend_artifact_accepts_local_or_remote_source():
+    checksum = "a" * 64
+    local = CanvasExtensionBackendArtifact(path="backend/tool.tar.gz", sha256=checksum)
+    remote = CanvasExtensionBackendArtifact.model_validate(
+        {
+            "url": "https://github.com/example/tool/releases/download/v1/tool.tar.gz",
+            "sha256": checksum,
+            "strip_components": 1,
+        }
+    )
+    assert local.path == "backend/tool.tar.gz"
+    assert remote.path == ""
+    assert remote.url is not None
+    assert remote.url.startswith("https://github.com/")
+    assert remote.strip_components == 1
+    assert "path" in CanvasExtensionBackendArtifact.model_json_schema()["required"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"sha256": "a" * 64},
+        {
+            "path": "backend/tool.tar.gz",
+            "url": "https://example.com/tool.tar.gz",
+            "sha256": "a" * 64,
+        },
+        {"url": "http://example.com/tool.tar.gz", "sha256": "a" * 64},
+        {"url": "https://user@example.com/tool.tar.gz", "sha256": "a" * 64},
+        {
+            "path": "backend/tool.tar.gz",
+            "sha256": "a" * 64,
+            "strip_components": 1,
+        },
+    ],
+)
+def test_backend_artifact_rejects_unsafe_or_ambiguous_source(payload: dict[str, Any]):
+    with pytest.raises(ValidationError):
+        CanvasExtensionBackendArtifact.model_validate(payload)
 
 
 @pytest.mark.parametrize(

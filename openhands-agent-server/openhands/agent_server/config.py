@@ -398,6 +398,35 @@ class Config(BaseModel):
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)
     conversation_container_startup_timeout: float = Field(default=120, gt=0)
+    conversation_storage_disk_budget: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description=(
+            "Fraction of the conversation-storage filesystem that may be in use "
+            "before stopped conversations shed the gitignored directories of "
+            "their workspaces (node_modules, .venv, build output), least "
+            "recently active first. Tracked files, untracked work, ignored "
+            "files and nested checkouts are kept; a resumed conversation "
+            "reinstalls what was shed. Only workspaces the server created are "
+            "touched. Unset (the default) disables it."
+        ),
+    )
+    conversation_storage_retention_days: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Days a stopped conversation may stay inactive before its runtime "
+            "(sandbox home and workspace) is deleted and the conversation is "
+            "archived: its history and encryption identity are kept, so it "
+            "stays readable but can no longer be resumed. A workspace the "
+            "server did not create is never deleted. Unset (the default) keeps "
+            "runtimes until the conversation is deleted. Leave it unset when "
+            "the server runs in a sandbox that its provider pauses: no pass "
+            "runs while paused, so the first pass after a resume archives "
+            "every conversation that crossed the limit in the meantime."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",
