@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Design Doc: Remove VSCode from Agent Server (#5266)</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --heading: #f0f6fc;
+      --accent: #58a6ff;
+      --warning: #d29922;
+      --danger: #f85149;
+      --success: #3fb950;
+      --code-bg: #0b0f14;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    h1, h2, h3 {
+      color: var(--heading);
+      margin-top: 1.5rem;
+      margin-bottom: 0.75rem;
+    }
+    h1 { font-size: 2rem; }
+    h2 { font-size: 1.4rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-top: 2rem; }
+    h3 { font-size: 1.15rem; }
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 999px;
+      font-weight: 600;
+      margin-right: 0.5rem;
+    }
+    .badge-deprecated { background: rgba(210, 153, 34, 0.2); color: var(--warning); border: 1px solid var(--warning); }
+    .badge-breaking { background: rgba(248, 81, 73, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+    .badge-success { background: rgba(63, 185, 80, 0.2); color: var(--success); border: 1px solid var(--success); }
+    .callout {
+      background: rgba(210, 153, 34, 0.1);
+      border-left: 4px solid var(--warning);
+      padding: 1rem 1.25rem;
+      border-radius: 4px;
+      margin: 1.5rem 0;
+    }
+    .callout-title {
+      font-weight: bold;
+      color: var(--warning);
+      margin-bottom: 0.25rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    @media (max-width: 768px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.25rem;
+    }
+    .card-title {
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    pre, code {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.875rem;
+      background: var(--code-bg);
+      border-radius: 4px;
+    }
+    code { padding: 0.15rem 0.35rem; }
+    pre { padding: 1rem; overflow-x: auto; border: 1px solid var(--border); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.5rem 0;
+      background: var(--card-bg);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--heading);
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    svg.diagram {
+      width: 100%;
+      height: auto;
+      background: var(--card-bg);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      margin: 1rem 0;
+    }
+    .pill {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+    .pill-diff-add { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+    .pill-diff-del { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <span class="badge badge-deprecated">DEPRECATION RUNWAY</span>
+      <span class="badge badge-success">NON-BREAKING</span>
+      <h1>Remove OpenVSCode from Default Agent Server</h1>
+      <p style="color: var(--text-muted); margin-top: 0.25rem;">
+        Pull Request Design Document &bull; Resolves Issue <a href="https://github.com/OpenHands/software-agent-sdk/issues/5266" style="color: var(--accent);">#5266</a>
+      </p>
+    </header>
+
+    <div class="callout">
+      <div class="callout-title">★ Key Decision &amp; Compatibility Impact</div>
+      OpenVSCode Server is decoupled from the base Agent Server image and startup lifecycle, saving hundreds of megabytes in image footprint and memory overhead. All existing configuration flags (<code>enable_vscode</code>, <code>vscode_port</code>) and endpoints (<code>/api/vscode/url</code>, <code>/api/vscode/status</code>) remain fully backwards-compatible under a formalized 5-minor-release deprecation runway (<strong>v1.50.1 &rarr; v1.55.0</strong>). If disabled, endpoints return a clean <code>503 Service Unavailable</code> with migration guidance rather than a dead editor link.
+    </div>
+
+    <h2>1. Before &amp; After Architecture</h2>
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">
+          <span>BEFORE</span>
+          <span class="pill pill-diff-del">Bloated &amp; Default Enabled</span>
+        </div>
+        <ul>
+          <li><strong>Docker Images</strong>: Bundled OpenVSCode Server binary (~200MB+) in default images.</li>
+          <li><strong>Capabilities</strong>: <code>("vscode", "browser", "docker")</code> enabled by default.</li>
+          <li><strong>Lifespan</strong>: Auto-spawns background <code>VSCodeService</code> on startup even if no user requested an editor.</li>
+          <li><strong>Failure Mode</strong>: <code>/api/vscode/url</code> constructed dead links if server was stopped or absent.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          <span>AFTER</span>
+          <span class="pill pill-diff-add">Lean &amp; Deprecated Gracefully</span>
+        </div>
+        <ul>
+          <li><strong>Docker Images</strong>: Default capabilities stripped to <code>("browser", "docker")</code>. Image builds &amp; downloads are faster.</li>
+          <li><strong>Capabilities</strong>: <code>vscode</code> capability is opt-in for custom builds.</li>
+          <li><strong>Lifespan</strong>: <code>enable_vscode=False</code> by default. No idle process overhead.</li>
+          <li><strong>Safety</strong>: <code>/api/vscode/url</code> checks <code>is_running()</code> and raises <code>503</code> with migration notice if unavailable.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Hand-drawn SVG diagram of before vs after flow -->
+    <svg class="diagram" viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e" />
+        </marker>
+      </defs>
+      
+      <!-- BEFORE BOX -->
+      <rect x="20" y="20" width="410" height="280" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
+      <text x="40" y="50" fill="#f85149" font-weight="bold" font-size="14">BEFORE: Bundled &amp; Implicitly Started</text>
+      
+      <rect x="40" y="70" width="160" height="40" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="50" y="95" fill="#c9d1d9" font-size="12">Agent Server Init</text>
+
+      <path d="M 200 90 L 250 90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow)" />
+
+      <rect x="250" y="70" width="160" height="40" rx="4" fill="#21262d" stroke="#d29922" />
+      <text x="260" y="95" fill="#f0f6fc" font-size="12">Spawn VSCode Daemon</text>
+
+      <rect x="40" y="140" width="370" height="60" rx="4" fill="#0b0f14" stroke="#30363d" />
+      <text x="50" y="165" fill="#8b949e" font-size="11">Default Docker Image footprint:</text>
+      <text x="50" y="185" fill="#f85149" font-size="12" font-weight="bold">+200MB OpenVSCode binary + idle RAM</text>
+
+      <rect x="40" y="220" width="370" height="60" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="50" y="245" fill="#c9d1d9" font-size="12">GET /api/vscode/url</text>
+      <text x="50" y="265" fill="#8b949e" font-size="11">&rarr; Always returns URL even if dead</text>
+
+      <!-- AFTER BOX -->
+      <rect x="470" y="20" width="410" height="280" rx="8" fill="#161b22" stroke="#30363d" stroke-width="1.5" />
+      <text x="490" y="50" fill="#3fb950" font-weight="bold" font-size="14">AFTER: Lean &amp; Clean 503 Guard</text>
+
+      <rect x="490" y="70" width="160" height="40" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="500" y="95" fill="#c9d1d9" font-size="12">Agent Server Init</text>
+
+      <path d="M 650 90 L 700 90" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrow)" />
+
+      <rect x="700" y="70" width="160" height="40" rx="4" fill="#21262d" stroke="#3fb950" />
+      <text x="710" y="95" fill="#3fb950" font-size="12">No Daemon Spawned</text>
+
+      <rect x="490" y="140" width="370" height="60" rx="4" fill="#0b0f14" stroke="#30363d" />
+      <text x="500" y="165" fill="#8b949e" font-size="11">Default Docker Image footprint:</text>
+      <text x="500" y="185" fill="#3fb950" font-size="12" font-weight="bold">Lean (browser, docker only)</text>
+
+      <rect x="490" y="220" width="370" height="60" rx="4" fill="#21262d" stroke="#30363d" />
+      <text x="500" y="245" fill="#c9d1d9" font-size="12">GET /api/vscode/url</text>
+      <text x="500" y="265" fill="#d29922" font-size="11">&rarr; 503 Service Unavailable + migration note</text>
+    </svg>
+
+    <h2>2. API &amp; Deprecation Schedule</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Surface</th>
+          <th>Change</th>
+          <th>Deprecation Runway</th>
+          <th>Recommended Replacement</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>GET /api/vscode/url</code></td>
+          <td>Marked <code>deprecated=True</code>; returns <code>503</code> when not running.</td>
+          <td>v1.50.1 &rarr; v1.55.0</td>
+          <td><a href="https://github.com/OpenHands/extensions/issues/666" style="color: var(--accent);">OpenHands Standalone VSCode App</a></td>
+        </tr>
+        <tr>
+          <td><code>GET /api/vscode/status</code></td>
+          <td>Marked <code>deprecated=True</code>; returns migration message.</td>
+          <td>v1.50.1 &rarr; v1.55.0</td>
+          <td>Stand-alone extension API / health check</td>
+        </tr>
+        <tr>
+          <td><code>Config.enable_vscode</code></td>
+          <td>Default changed from <code>True</code> &rarr; <code>False</code>.</td>
+          <td>Preserved for compatibility</td>
+          <td>Opt-in via <code>OH_ENABLE_VSCODE=true</code></td>
+        </tr>
+        <tr>
+          <td><code>Workspace.extra_ports</code></td>
+          <td>Docstring updated to note legacy VSCode port 8001.</td>
+          <td>Preserved for compatibility</td>
+          <td>Custom port forwards</td>
+        </tr>
+        <tr>
+          <td><code>@openhands/typescript-client</code></td>
+          <td>Annotated <code>VSCodeClient</code> with <code>@deprecated</code>.</td>
+          <td>v1.50.1 &rarr; v1.55.0</td>
+          <td>Canvas VSCode extension</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>3. Summary of Files Changed</h2>
+    <ul>
+      <li><code>openhands-agent-server/openhands/agent_server/docker/build.py</code> &amp; <code>Dockerfile</code>: Default capabilities stripped to <code>browser,docker</code>.</li>
+      <li><code>openhands-agent-server/openhands/agent_server/config.py</code>: Set <code>enable_vscode=False</code> by default.</li>
+      <li><code>openhands-agent-server/openhands/agent_server/vscode_router.py</code>: Marked endpoints deprecated, added 503 check for <code>not is_running()</code>.</li>
+      <li><code>openhands-agent-server/openhands/agent_server/runtime_router.py</code>: Propagated route deprecation flags and docstrings.</li>
+      <li><code>openhands-agent-server/openhands/agent_server/vscode_service.py</code>: Silenced redundant startup log when disabled.</li>
+      <li><code>openhands-workspace/openhands/workspace/**</code>: Documented <code>extra_ports</code> deprecation.</li>
+      <li><code>clients/typescript/src/**</code>: JSDoc <code>@deprecated</code> added to <code>VSCodeClient</code> and manager references.</li>
+      <li><code>tests/agent_server/**</code>: Added comprehensive unit and integration tests for disabled state, OpenAPI schema deprecation metadata, and error handling.</li>
+    </ul>
+
+    <h2>4. Migration Instructions</h2>
+    <p>For users who rely on the built-in editor:</p>
+    <pre><code># To run the legacy built-in VSCode server during the deprecation period:
+docker run -e OH_ENABLE_VSCODE=true -p 8000:8000 -p 8001:8001 openhands/agent-server:latest
+
+# For custom images with the vscode capability:
+python -m openhands.agent_server.docker.build --install-capabilities=vscode,browser,docker</code></pre>
+  </div>
+</body>
+</html>

@@ -472,11 +472,11 @@ class BuildOptions(BaseModel):
         return v
 
     install_capabilities: str = Field(
-        default="vscode,browser,docker",
+        default="browser,docker",
         description=(
             "Comma-separated capability keys to bake into the `base-image` "
-            "stage (VSCode Web, browser, Docker Engine). Empty "
-            "string installs none."
+            "stage (browser, Docker Engine). Empty "
+            "string installs none. 'vscode' is deprecated."
         ),
     )
 
@@ -1158,7 +1158,7 @@ def main(argv: list[str]) -> int:
         "--install-capabilities",
         # os.environ.get, not _env(): an explicit empty string here means
         # "install none" and must survive, but _env() treats blank as unset.
-        default=os.environ.get("INSTALL_CAPABILITIES", "vscode,browser,docker"),
+        default=os.environ.get("INSTALL_CAPABILITIES", "browser,docker"),
         help=(
             "Comma-separated capability keys to bake into the image "
             "(default from $INSTALL_CAPABILITIES; empty string installs none)."

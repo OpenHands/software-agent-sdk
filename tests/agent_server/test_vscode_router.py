@@ -32,6 +32,7 @@ def mock_vscode_service():
 @pytest.mark.asyncio
 async def test_get_vscode_url_success(mock_vscode_service):
     """Test getting VSCode URL successfully."""
+    mock_vscode_service.is_running.return_value = True
     mock_vscode_service.get_connection_token.return_value = "test-token"
     mock_vscode_service.get_vscode_url.return_value = (
         "http://localhost:8001/?tkn=test-token&folder=/workspace"
@@ -53,6 +54,7 @@ async def test_get_vscode_url_default_uses_configured_port(mock_vscode_service):
     so clients that don't know the deployment topology receive the port the
     server actually binds (e.g. OH_VSCODE_PORT) rather than a fixed default.
     """
+    mock_vscode_service.is_running.return_value = True
     mock_vscode_service.get_vscode_url.return_value = (
         "http://localhost:19000/?tkn=test-token&folder=workspace"
     )
@@ -64,8 +66,21 @@ async def test_get_vscode_url_default_uses_configured_port(mock_vscode_service):
 
 
 @pytest.mark.asyncio
+async def test_get_vscode_url_not_running(mock_vscode_service):
+    """Test getting VSCode URL when service is not running."""
+    mock_vscode_service.is_running.return_value = False
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_vscode_url()
+
+    assert exc_info.value.status_code == 503
+    assert "VSCode server is not running" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_get_vscode_url_error(mock_vscode_service):
     """Test getting VSCode URL with service error."""
+    mock_vscode_service.is_running.return_value = True
     mock_vscode_service.get_connection_token.side_effect = Exception("Service error")
 
     with pytest.raises(HTTPException) as exc_info:
@@ -82,7 +97,14 @@ async def test_get_vscode_status_running(mock_vscode_service):
 
     response = await get_vscode_status()
 
-    assert response == {"running": True, "enabled": True}
+    assert response == {
+        "running": True,
+        "enabled": True,
+        "message": (
+            "Built-in OpenVSCode is deprecated. "
+            "Use the standalone VSCode App extension instead."
+        ),
+    }
     mock_vscode_service.is_running.assert_called_once()
 
 
@@ -93,7 +115,14 @@ async def test_get_vscode_status_not_running(mock_vscode_service):
 
     response = await get_vscode_status()
 
-    assert response == {"running": False, "enabled": True}
+    assert response == {
+        "running": False,
+        "enabled": True,
+        "message": (
+            "Built-in OpenVSCode is deprecated. "
+            "Use the standalone VSCode App extension instead."
+        ),
+    }
 
 
 @pytest.mark.asyncio
@@ -185,7 +214,9 @@ async def test_get_vscode_url_disabled():
             await get_vscode_url()
 
         assert exc_info.value.status_code == 503
-        assert "VSCode is disabled in configuration" in str(exc_info.value.detail)
+        assert "Built-in OpenVSCode is deprecated and disabled" in str(
+            exc_info.value.detail
+        )
 
 
 @pytest.mark.asyncio
@@ -201,7 +232,10 @@ async def test_get_vscode_status_disabled():
         assert response == {
             "running": False,
             "enabled": False,
-            "message": "VSCode is disabled in configuration",
+            "message": (
+                "Built-in OpenVSCode is deprecated and disabled in configuration. "
+                "Use the standalone VSCode App extension instead."
+            ),
         }
 
 
@@ -223,11 +257,9 @@ def test_vscode_router_disabled_integration(client):
         response = client.get("/api/vscode/url")
         assert response.status_code == 503
         data = response.json()
-        # The error message might be in different fields depending on FastAPI error
-        # handling
         error_message = data.get("detail", data.get("message", ""))
         assert (
-            "VSCode is disabled" in error_message
+            "Built-in OpenVSCode is deprecated and disabled" in error_message
             or "Internal Server Error" in error_message
         )
 
@@ -237,4 +269,21 @@ def test_vscode_router_disabled_integration(client):
         data = response.json()
         assert data["running"] is False
         assert data["enabled"] is False
-        assert "VSCode is disabled in configuration" in data["message"]
+        assert "Built-in OpenVSCode is deprecated and disabled" in data["message"]
+
+
+def test_vscode_endpoints_deprecated_in_openapi(client):
+    """Verify that VSCode endpoints are marked deprecated=True in OpenAPI schema."""
+    schema = client.app.openapi()
+    url_op = schema["paths"]["/api/vscode/url"]["get"]
+    status_op = schema["paths"]["/api/vscode/status"]["get"]
+    assert url_op.get("deprecated") is True
+    assert status_op.get("deprecated") is True
+    assert (
+        "Deprecated since v1.50.1 and scheduled for removal in v1.55.0."
+        in url_op.get("description", "")
+    )
+    assert (
+        "Deprecated since v1.50.1 and scheduled for removal in v1.55.0."
+        in status_op.get("description", "")
+    )

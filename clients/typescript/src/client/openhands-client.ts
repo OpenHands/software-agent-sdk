@@ -138,6 +138,7 @@ export class AgentServerClient extends OpenHandsClient {
   readonly mcp: MCPClient;
   readonly plugins: PluginsClient;
   readonly tools: ToolClient;
+  /** @deprecated Deprecated since v1.50.1 and scheduled for removal in v1.55.0. */
   readonly vscode: VSCodeClient;
   readonly shared: SharedClient;
   readonly llm: LLMMetadataClient;

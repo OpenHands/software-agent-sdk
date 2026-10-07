@@ -99,7 +99,10 @@ class ApptainerWorkspace(RemoteWorkspace):
     )
     extra_ports: bool = Field(
         default=False,
-        description="Whether to expose the additional VSCode port.",
+        description=(
+            "Whether to expose additional ports (historically port 8001 for "
+            "bundled VSCode, now deprecated)."
+        ),
     )
     enable_gpu: bool = Field(
         default=False,

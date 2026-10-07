@@ -25,7 +25,7 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # contents; an unknown key fails the build. The GitHub CLI is expected to
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
-ARG INSTALL_CAPABILITIES=vscode,browser,docker
+ARG INSTALL_CAPABILITIES=browser,docker
 
 ####################################################################################
 # Canonical Python + Node runtime

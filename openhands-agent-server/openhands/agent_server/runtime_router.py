@@ -86,11 +86,16 @@ def create_runtime_router(route_class: type[APIRoute] = APIRoute) -> APIRouter:
         runtime_git_router,
     ):
         router.include_router(source)
-    router.add_api_route("/vscode/url", get_runtime_vscode_url, methods=["GET"])
+    router.add_api_route(
+        "/vscode/url", get_runtime_vscode_url, methods=["GET"], deprecated=True
+    )
     for route in vscode_router.routes:
         if isinstance(route, APIRoute) and route.path != "/vscode/url":
             router.add_api_route(
-                route.path, route.endpoint, methods=list(route.methods)
+                route.path,
+                route.endpoint,
+                methods=list(route.methods),
+                deprecated=route.deprecated,
             )
     return router
 
@@ -100,6 +105,12 @@ async def get_runtime_vscode_url(
     base_url: str | None = None,
     workspace_dir: str | None = None,
 ) -> VSCodeUrlResponse:
+    """Get the VSCode URL for a runtime conversation.
+
+    Deprecated since v1.50.1 and scheduled for removal in v1.55.0.
+    Built-in OpenVSCode has been removed from default Agent Server images;
+    use the standalone VSCode App extension instead.
+    """
     event_service = request.state.runtime_event_service
     return await get_vscode_url(
         base_url,

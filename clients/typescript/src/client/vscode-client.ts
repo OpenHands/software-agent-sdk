@@ -10,6 +10,13 @@ export interface GetVSCodeUrlOptions {
   workspaceDir?: string;
 }
 
+/**
+ * Client for interacting with the legacy built-in VSCode server endpoints.
+ *
+ * @deprecated Deprecated since v1.50.1 and scheduled for removal in v1.55.0.
+ * Built-in OpenVSCode has been removed from default Agent Server images;
+ * use the standalone VSCode App extension instead.
+ */
 export class VSCodeClient {
   public readonly host: string;
   public readonly apiKey?: string;
@@ -22,6 +29,11 @@ export class VSCodeClient {
     this.client = runtimeClient;
   }
 
+  /**
+   * Get the VSCode URL with authentication token.
+   *
+   * @deprecated Deprecated since v1.50.1 and scheduled for removal in v1.55.0.
+   */
   async getUrl(options: GetVSCodeUrlOptions = {}): Promise<string | null> {
     const response = await this.client.get<VSCodeUrlResponse>('/api/vscode/url', {
       params: {
@@ -32,6 +44,11 @@ export class VSCodeClient {
     return response.data.url;
   }
 
+  /**
+   * Get the VSCode server status.
+   *
+   * @deprecated Deprecated since v1.50.1 and scheduled for removal in v1.55.0.
+   */
   async getStatus(): Promise<VSCodeStatusResponse> {
     const response = await this.client.get<VSCodeStatusResponse>('/api/vscode/status');
     return response.data;

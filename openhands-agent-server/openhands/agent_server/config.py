@@ -306,20 +306,29 @@ class Config(BaseModel):
         description="Webhooks to invoke in response to events",
     )
     enable_vscode: bool = Field(
-        default=True,
-        description="Whether to enable VSCode server functionality",
+        default=False,
+        description=(
+            "Whether to enable VSCode server functionality. "
+            "Deprecated since v1.50.1 and scheduled for removal in v1.55.0. "
+            "Built-in OpenVSCode has been removed from default Agent Server images; "
+            "use the standalone VSCode App extension instead."
+        ),
     )
     vscode_port: int = Field(
         default=8001,
         ge=1,
         le=65535,
-        description="Port on which VSCode server should run",
+        description=(
+            "Port on which VSCode server should run. "
+            "Deprecated since v1.50.1 and scheduled for removal in v1.55.0."
+        ),
     )
     vscode_base_path: str | None = Field(
         default=None,
         description=(
             "Base path for VSCode server (used in path-based routing). "
-            "For example, '/{runtime_id}/vscode' when using path-based routing."
+            "For example, '/{runtime_id}/vscode' when using path-based routing. "
+            "Deprecated since v1.50.1 and scheduled for removal in v1.55.0."
         ),
     )
     preload_tools: bool = Field(

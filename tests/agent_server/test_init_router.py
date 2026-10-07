@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server import config as config_mod, vscode_service as vscode_mod
 from openhands.agent_server.api import api_lifespan, create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.init_router import (
@@ -66,15 +67,18 @@ def _reset_bash_singleton():
     bash_mod._bash_event_service = None
 
 
-def _vscode_url_after_init(tmp_path: Path) -> str | None:
+def _vscode_url_after_init(tmp_path: Path, *, enable_vscode: bool = True) -> str | None:
     """Boot a dormant app, deliver a session key through /api/init, and read
     /api/vscode/url with that key."""
     _reset_conversation_singleton()
     cfg = Config(
         deferred_init=True,
+        enable_vscode=enable_vscode,
         conversations_path=tmp_path / "convs",
         bash_events_dir=tmp_path / "bash",
     )
+    config_mod._default_config = cfg
+    vscode_mod._vscode_service = None
     with TestClient(create_app(cfg)) as client:
         try:
             resp = client.post(
@@ -90,6 +94,8 @@ def _vscode_url_after_init(tmp_path: Path) -> str | None:
             resp = client.get(
                 "/api/vscode/url", headers={"X-Session-API-Key": "user-session-key"}
             )
+            if resp.status_code == 503:
+                return None
             assert resp.status_code == 200
             return resp.json()["url"]
         finally:
@@ -584,6 +590,11 @@ class TestEndToEndOverLifespan:
         )
 
         assert _vscode_url_after_init(tmp_path) is None
+
+    def test_vscode_url_503_when_vscode_disabled_by_default(self, tmp_path):
+        """When enable_vscode is False by default, /api/vscode/url returns 503
+        (reports no URL)."""
+        assert _vscode_url_after_init(tmp_path, enable_vscode=False) is None
 
 
 class TestNonDeferredPathUnchanged:
