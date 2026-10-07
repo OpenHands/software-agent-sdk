@@ -1170,6 +1170,88 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         return False
 
+    def _pause_for_user_input(
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Pause the run for a tool that must hand control back to the user.
+
+        A tool marked ``pauses_run_for_user_input`` (e.g. ``ask_user``) does not
+        execute here. Its ``ActionEvent`` is left unmatched so the next
+        ``send_message()`` can resolve it, and the run ends at
+        ``WAITING_FOR_CONFIRMATION``. An invalid call is reported as a
+        corrective error observation (and dropped from ``action_events`` so it
+        does not also execute) and the run continues so the agent can fix it.
+
+        Returns True when the run should stop here.
+        """
+        pause_events = [
+            ae for ae in action_events if self._pauses_for_user_input(ae.tool_name)
+        ]
+        if not pause_events:
+            return False
+
+        current_ids = {ae.id for ae in action_events}
+        # At most one request may be pending. Exclude this step's own calls
+        # (already emitted, hence unmatched) when looking for an earlier one.
+        already_pending = any(
+            ae.id not in current_ids and self._pauses_for_user_input(ae.tool_name)
+            for ae in ConversationState.get_unmatched_actions(state.active_branch())
+        )
+
+        pending: ActionEvent | None = None
+        for ae in pause_events:
+            tool = self.tools_map.get(ae.tool_name)
+            assert tool is not None, "pause tool must be in tools_map"
+            if already_pending:
+                error: str | None = (
+                    "another ask_user request is already pending; wait for its "
+                    "answer before asking again"
+                )
+            elif pending is not None:
+                error = (
+                    "only one ask_user call is allowed per step; combine the "
+                    "questions into a single call"
+                )
+            elif ae.action is None:
+                error = "ask_user call had no valid action"
+            else:
+                error = tool.pause_error_for(ae.action)
+            if error is not None:
+                self._emit_pause_error(on_event, ae, error)
+                action_events.remove(ae)
+            else:
+                pending = ae
+
+        if pending is None:
+            return False
+
+        state.execution_status = ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        return True
+
+    def _pauses_for_user_input(self, tool_name: str) -> bool:
+        tool = self.tools_map.get(tool_name)
+        return tool is not None and tool.pauses_run_for_user_input
+
+    def _emit_pause_error(
+        self,
+        on_event: ConversationCallbackType,
+        action_event: ActionEvent,
+        error: str,
+    ) -> None:
+        """Emit a corrective error observation for an invalid pause call."""
+        logger.warning("Invalid user-input pause call: %s", error)
+        on_event(
+            AgentErrorEvent(
+                error=error,
+                tool_name=action_event.tool_name,
+                tool_call_id=action_event.tool_call_id,
+                classification=AGENT_OUTCOME,
+            )
+        )
+
     def _extract_security_risk(
         self,
         arguments: dict,

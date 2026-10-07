@@ -6,6 +6,15 @@ also includes optional SDK tools that are resolved by name from agent setup.
 Tools that require interacting with the environment belong in `openhands-tools`.
 """
 
+from openhands.sdk.tool.builtins.ask_user import (
+    AskUserAction,
+    AskUserAnswerAction,
+    AskUserExecutor,
+    AskUserObservation,
+    AskUserTool,
+    OptionInfo,
+    QuestionInfo,
+)
 from openhands.sdk.tool.builtins.classify_and_switch_llm import (
     ClassifyAndSwitchLLMAction,
     ClassifyAndSwitchLLMExecutor,
@@ -59,6 +68,7 @@ BUILT_IN_TOOL_CLASSES = {
     SwitchLLMTool.__name__: SwitchLLMTool,
     VisionInspectTool.__name__: VisionInspectTool,
     ClassifyAndSwitchLLMTool.__name__: ClassifyAndSwitchLLMTool,
+    AskUserTool.__name__: AskUserTool,
 }
 
 BUILT_IN_TOOLS_WITH_PARAMS = frozenset({ClassifyAndSwitchLLMTool.__name__})
@@ -78,6 +88,13 @@ __all__ = [
     "BUILT_IN_TOOL_CLASSES",
     "BUILT_IN_TOOLS_WITH_PARAMS",
     "builtin_tool_class",
+    "AskUserTool",
+    "AskUserAction",
+    "AskUserObservation",
+    "AskUserExecutor",
+    "OptionInfo",
+    "QuestionInfo",
+    "AskUserAnswerAction",
     "ClassifyAndSwitchLLMTool",
     "ClassifyAndSwitchLLMAction",
     "ClassifyAndSwitchLLMObservation",

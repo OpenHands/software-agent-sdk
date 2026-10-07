@@ -424,6 +424,24 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         """Return whether the tool can be used in the current environment."""
         return True
 
+    pauses_run_for_user_input: ClassVar[bool] = False
+    """Whether calling this tool pauses the run until the user responds.
+
+    Tools that must hand control back to the user (e.g. ``ask_user``) set this
+    to True. The agent loop records the call as a pending request, ends the run
+    at ``WAITING_FOR_CONFIRMATION`` without executing the tool, and resolves the
+    call when the user's answer arrives.
+    """
+
+    def pause_error_for(self, action: Action) -> str | None:  # noqa: ARG002
+        """Return a corrective message if ``action`` cannot pause the run.
+
+        Only consulted for tools with ``pauses_run_for_user_input`` set. A
+        non-None result is emitted as a corrective observation and the run
+        continues, so the agent can fix an invalid call.
+        """
+        return None
+
     @classmethod
     @abstractmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:

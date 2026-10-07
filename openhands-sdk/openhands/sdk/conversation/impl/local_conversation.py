@@ -109,6 +109,10 @@ from openhands.sdk.subagent import (
 )
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import InvokeSkillTool
+from openhands.sdk.tool.builtins.ask_user import (
+    build_ask_user_observation,
+    parse_ask_user_answer,
+)
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -1859,6 +1863,12 @@ class LocalConversation(BaseConversation):
                     extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
 
+            # A user message that parses as an answer to a pending ``ask_user``
+            # request is consumed as that call's observation instead of being
+            # appended as an unrelated user turn.
+            if self._try_resolve_ask_user(message):
+                return
+
             user_msg_event = MessageEvent(
                 source="user",
                 llm_message=message,
@@ -1867,6 +1877,78 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+
+    def _pending_ask_user_action(self) -> ActionEvent | None:
+        """The single unmatched ``ask_user`` action, or None.
+
+        The pending request is derived from the event log rather than a separate
+        field, so it survives a resume and needs no new persisted state. Its
+        ``id`` is the ``request_id`` the answer is matched against.
+        """
+        for ae in ConversationState.get_unmatched_actions(self._state.active_branch()):
+            if self._tool_pauses_for_user_input(ae.tool_name):
+                return ae
+        return None
+
+    def _tool_pauses_for_user_input(self, tool_name: str) -> bool:
+        tool = self.agent.tools_map.get(tool_name)
+        return tool is not None and tool.pauses_run_for_user_input
+
+    def _try_resolve_ask_user(self, message: Message) -> bool:
+        """Resolve a pending ``ask_user`` call from a user message.
+
+        Returns True when the message was consumed here (as the tool
+        observation, or as a corrective notice for a malformed answer), so the
+        caller must not append it as a normal user turn. Returns False when
+        there is no pending request or the message is not an answer, leaving it
+        to the normal user-turn path.
+        """
+        pending = self._pending_ask_user_action()
+        if pending is None:
+            return False
+
+        text = "".join(c.text for c in message.content if isinstance(c, TextContent))
+        payload = parse_ask_user_answer(text)
+        if payload is None:
+            return False
+
+        observation, error = build_ask_user_observation(pending, payload)
+        if observation is None:
+            logger.warning("Rejected ask_user answer: %s", error)
+            self._on_event(
+                MessageEvent(
+                    source="environment",
+                    llm_message=Message(
+                        role="user",
+                        content=[
+                            TextContent(
+                                text=(
+                                    f"Your answer could not be used: {error}. "
+                                    "The ask_user request is still pending; reply "
+                                    "with a valid answer."
+                                )
+                            )
+                        ],
+                    ),
+                )
+            )
+            return True
+
+        observation_event = ObservationEvent(
+            observation=observation,
+            action_id=pending.id,
+            tool_name=pending.tool_name,
+            tool_call_id=pending.tool_call_id,
+        )
+        record_tool_result(
+            self,
+            name=pending.tool_name,
+            tool_call_id=pending.tool_call_id,
+            tool_input=pending.action,
+            tool_output=observation_event.to_llm_message(),
+        )
+        self._on_event(observation_event)
+        return True
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""

@@ -130,6 +130,13 @@ class ResponseDispatchMixin:
             action_events: list[ActionEvent],
         ) -> bool: ...
 
+        def _pause_for_user_input(
+            self,
+            state: ConversationState,
+            action_events: list[ActionEvent],
+            on_event: ConversationCallbackType,
+        ) -> bool: ...
+
         def _maybe_emit_vllm_tokens(
             self,
             llm_response: LLMResponse,
@@ -182,6 +189,9 @@ class ResponseDispatchMixin:
             if action_event is None:
                 continue
             action_events.append(action_event)
+
+        if self._pause_for_user_input(state, action_events, on_event):
+            return
 
         if self._requires_user_confirmation(state, action_events):
             return
@@ -236,6 +246,9 @@ class ResponseDispatchMixin:
             if action_event is None:
                 continue
             action_events.append(action_event)
+
+        if self._pause_for_user_input(state, action_events, on_event):
+            return
 
         if self._requires_user_confirmation(state, action_events):
             return
