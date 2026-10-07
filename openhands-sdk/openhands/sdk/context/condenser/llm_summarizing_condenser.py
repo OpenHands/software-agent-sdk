@@ -202,6 +202,25 @@ class LLMSummarizingCondenser(RollingCondenser):
         if Reason.REQUEST in reasons:
             return CondensationRequirement.HARD
 
+    def _build_summary_messages(self, event_strings: Sequence[str]) -> list[Message]:
+        """Build the messages sent to the summarization LLM.
+
+        The summarization instructions are sent as a ``system`` message and the
+        events to summarize as a ``user`` message. Splitting roles keeps the
+        steering instructions in the provider's ``instructions``/``system`` slot
+        and the event payload in the ``input``/``user`` slot, which is the
+        canonical shape for both the Chat Completions and Responses APIs.
+        """
+        prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+        system_prompt = render_template(prompt_dir, "summarizing_system.j2")
+        events_prompt = render_template(
+            prompt_dir, "summarizing_events.j2", events=event_strings
+        )
+        return [
+            Message(role="system", content=[TextContent(text=system_prompt)]),
+            Message(role="user", content=[TextContent(text=events_prompt)]),
+        ]
+
     def _generate_condensation(
         self,
         forgotten_events: Sequence[LLMConvertibleEvent],
@@ -231,13 +250,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             for forgotten_event in forgotten_events
         ]
 
-        prompt = render_template(
-            os.path.join(os.path.dirname(__file__), "prompts"),
-            "summarizing_prompt.j2",
-            events=event_strings,
-        )
-
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        messages = self._build_summary_messages(event_strings)
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
@@ -350,14 +363,22 @@ class LLMSummarizingCondenser(RollingCondenser):
         the view is too large for the summarizing LLM to handle). In that case, we keep
         trimming down the contents until a summary can be generated.
         """
+        # Preserve the leading SystemPromptEvent: it must stay at the head of the
+        # view so the request still opens with a system message. Summarize the
+        # events *after* it and insert the summary right behind it.
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = (system_idx + 1) if system_idx is not None else 0
+        forgotten_events = view.events[preserve:]
+        summary_offset = preserve
+
         max_event_str_length: int | None = None
         attempts_remaining: int = self.hard_context_reset_max_retries
 
         while attempts_remaining > 0:
             try:
                 return self._generate_condensation(
-                    forgotten_events=view.events,
-                    summary_offset=0,
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
             except Exception as e:
@@ -435,13 +456,7 @@ class LLMSummarizingCondenser(RollingCondenser):
             for fe in forgotten_events
         ]
 
-        prompt = render_template(
-            os.path.join(os.path.dirname(__file__), "prompts"),
-            "summarizing_prompt.j2",
-            events=event_strings,
-        )
-
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        messages = self._build_summary_messages(event_strings)
 
         try:
             llm_response = await self.llm.agenerate(messages=messages, store=False)
@@ -501,14 +516,20 @@ class LLMSummarizingCondenser(RollingCondenser):
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
         """Async variant of :meth:`hard_context_reset`."""
+        # Preserve the leading SystemPromptEvent (see hard_context_reset).
+        system_idx = _leading_system_prompt_index(view.events)
+        preserve = (system_idx + 1) if system_idx is not None else 0
+        forgotten_events = view.events[preserve:]
+        summary_offset = preserve
+
         max_event_str_length: int | None = None
         attempts_remaining: int = self.hard_context_reset_max_retries
 
         while attempts_remaining > 0:
             try:
                 return await self._agenerate_condensation(
-                    forgotten_events=view.events,
-                    summary_offset=0,
+                    forgotten_events=forgotten_events,
+                    summary_offset=summary_offset,
                     max_event_str_length=max_event_str_length,
                 )
             except Exception as e:

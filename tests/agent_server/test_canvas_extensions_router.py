@@ -6,12 +6,15 @@ default install dir is redirected), so nothing touches the real
 ~/.openhands.
 """
 
+import json
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
+from openhands.agent_server.canvas_extensions.manifest import MANIFEST_FILENAME
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
 
 from .canvas_extensions.conftest import write_extension
@@ -130,6 +133,56 @@ def test_patch_toggles_enabled_state(client: TestClient, tmp_path: Path):
         "/canvas-extensions/installed/demo-extension", json={"enabled": False}
     )
     assert disabled.json()["enabled"] is False
+
+
+@pytest.fixture
+def client_with_sessions(tmp_path: Path, monkeypatch) -> tuple[TestClient, object]:
+    """A TestClient with an app-scoped session store attached."""
+    store = tmp_path / "installed-store"
+    monkeypatch.setattr(
+        "openhands.agent_server.canvas_extensions.installed."
+        "get_installed_canvas_extensions_dir",
+        lambda: store,
+    )
+    app = FastAPI()
+    app.include_router(canvas_extensions_router)
+    sessions = AppBackendSessionStore()
+    app.state.app_backend_session_store = sessions
+    return TestClient(app), sessions
+
+
+@pytest.mark.parametrize("revision_route", ["disabled", "uninstalled", "stopped"])
+def test_disable_uninstall_and_stop_revoke_app_sessions(
+    client_with_sessions, tmp_path: Path, revision_route: str
+):
+    """A live app cookie must stop authorizing once the app is torn down.
+
+    Regression test: these handlers used to call `stop()` directly, leaving
+    `revoke_app` (which also cancels attached WebSocket bridges) as dead code.
+    """
+    import asyncio
+
+    client, sessions = client_with_sessions
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    endpoint = ("127.0.0.1", 4321)
+    token, _ = asyncio.run(sessions.create("demo-extension", endpoint))
+    assert asyncio.run(sessions.authorize(token, "demo-extension", endpoint))
+
+    if revision_route == "disabled":
+        response = client.patch(
+            "/canvas-extensions/installed/demo-extension", json={"enabled": False}
+        )
+    elif revision_route == "uninstalled":
+        response = client.delete("/canvas-extensions/installed/demo-extension")
+    else:
+        response = client.post(
+            "/canvas-extensions/installed/demo-extension/backend/stop"
+        )
+    assert response.status_code == 200, response.text
+
+    assert asyncio.run(sessions.authorize(token, "demo-extension", endpoint)) is None
 
 
 def test_uninstall_removes_from_installed_list(client: TestClient, tmp_path: Path):
@@ -487,3 +540,92 @@ def test_install_rejects_repo_path_escaping_the_source(
 
     assert install.status_code == 400
     assert "escapes" in install.json()["detail"]
+
+
+_SVG = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+
+
+def _write_icon_extension(directory: Path, icon: object) -> Path:
+    src = write_extension(directory, name="demo-extension")
+    manifest_path = src / MANIFEST_FILENAME
+    manifest = json.loads(manifest_path.read_text())
+    manifest["icon"] = icon
+    manifest_path.write_text(json.dumps(manifest))
+    (src / "assets").mkdir()
+    (src / "assets" / "icon.svg").write_text(_SVG)
+    return src
+
+
+def test_icon_endpoint_serves_declared_svg_sandboxed(
+    client: TestClient, tmp_path: Path
+):
+    src = _write_icon_extension(tmp_path / "src" / "demo-extension", "assets/icon.svg")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    got = client.get("/canvas-extensions/installed/demo-extension")
+    resp = client.get("/canvas-extensions/installed/demo-extension/icon")
+
+    assert got.json()["manifest"]["icon"] == "assets/icon.svg"
+    assert resp.status_code == 200
+    assert resp.text == _SVG
+    assert resp.headers["content-type"].startswith("image/svg+xml")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in resp.headers["content-security-policy"]
+
+
+def test_icon_endpoint_returns_404_without_declared_icon(
+    client: TestClient, tmp_path: Path
+):
+    src = write_extension(tmp_path / "src" / "demo-extension", name="demo-extension")
+    client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    got = client.get("/canvas-extensions/installed/demo-extension")
+    resp = client.get("/canvas-extensions/installed/demo-extension/icon")
+
+    assert "icon" not in got.json()["manifest"]
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "bad_icon", ["../icon.svg", "/etc/icon.svg", "assets/icon.png", "a\\b.svg", 42]
+)
+def test_invalid_icon_is_not_served_and_does_not_hide_extension(
+    client: TestClient, tmp_path: Path, bad_icon: object
+):
+    src = _write_icon_extension(tmp_path / "src" / "demo-extension", bad_icon)
+    install = client.post("/canvas-extensions/install", json={"source": str(src)})
+
+    got = client.get("/canvas-extensions/installed/demo-extension")
+
+    assert install.status_code == 200
+    assert got.json()["manifest"] is not None
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/icon").status_code
+        == 404
+    )
+
+
+def test_icon_endpoint_returns_404_for_missing_or_escaping_icon(
+    client: TestClient, tmp_path: Path
+):
+    src = _write_icon_extension(tmp_path / "src" / "demo-extension", "assets/icon.svg")
+    install = client.post("/canvas-extensions/install", json={"source": str(src)})
+    icon = Path(install.json()["install_path"]) / "assets" / "icon.svg"
+
+    icon.unlink()
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/icon").status_code
+        == 404
+    )
+
+    outside = tmp_path / "outside.svg"
+    outside.write_text(_SVG)
+    icon.symlink_to(outside)
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/icon").status_code
+        == 404
+    )
+    assert (
+        client.get("/canvas-extensions/installed/demo-extension/bundle").status_code
+        == 200
+    )

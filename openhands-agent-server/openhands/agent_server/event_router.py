@@ -210,19 +210,30 @@ async def batch_get_conversation_events(
     return events
 
 
-@event_write_router.post("")
+@event_write_router.post(
+    "",
+    responses={429: {"description": "Message saved but server run capacity is full"}},
+)
 async def send_message(
     request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
 ) -> Success:
-    """Send a message to a conversation"""
+    """Send a message to a conversation.
+
+    If starting the run returns 429, the message is already saved. Retry the
+    conversation's /run endpoint instead of resending the message.
+    """
     message = Message(role=request.role, content=request.content)
     await event_service.send_message(message, request.run)
     return Success()
 
 
 @event_write_router.post(
-    "/respond_to_confirmation", responses={404: {"description": "Item not found"}}
+    "/respond_to_confirmation",
+    responses={
+        404: {"description": "Item not found"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
 )
 async def respond_to_confirmation(
     request: ConfirmationResponseRequest,

@@ -69,6 +69,9 @@ def _default_web_url() -> str | None:
     return None
 
 
+DEFAULT_CONVERSATION_IMAGE = "ghcr.io/openhands/agent-server:latest-python"
+
+
 class WebhookSpec(BaseModel):
     """Spec to create a webhook. All webhook requests use POST method."""
 
@@ -328,8 +331,9 @@ class Config(BaseModel):
         ge=1,
         description=(
             "Maximum number of conversations that can execute agent steps "
-            "concurrently.  Controls the size of the dedicated thread pool "
-            "used for conversation.run() calls."
+            "concurrently, across native async runs and synchronous runs. "
+            "Creating a conversation also reserves capacity during initialization. "
+            "When full, create and run requests are rejected with HTTP 429."
         ),
     )
     secret_key: SecretStr | None = Field(
@@ -346,12 +350,73 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    app_backend_public_url: str | None = Field(
+        default=None,
+        description=(
+            "Separate browser origin that exposes authenticated Canvas App backends"
+        ),
+    )
+    trust_forwarded_headers: bool = Field(
+        default=False,
+        description=(
+            "Trust X-Forwarded-Proto/X-Forwarded-Host from the immediate peer "
+            "when deriving a request origin or secure-context decision. Enable "
+            "only when a reverse proxy or load balancer terminates TLS in front "
+            "of this server and strips client-supplied values for those headers. "
+            "Left disabled, a client can spoof them to assert an origin the "
+            "server did not actually receive."
+        ),
+    )
     conversation_runtime: Literal["local", "docker"] = "local"
-    conversation_image: str = "ghcr.io/openhands/agent-server:latest-python"
+    conversation_image: str = DEFAULT_CONVERSATION_IMAGE
+    conversation_image_has_browser: bool | None = Field(
+        default=None,
+        description=(
+            "Whether conversation_image ships the browser (chromium) stack. "
+            "Unset means true for any tag or digest of the stock agent-server "
+            "image except its -minimal flavor, and false for other images."
+        ),
+    )
+    enable_browser: bool = Field(
+        default=True,
+        description=(
+            "Whether conversations may get the browser tool set. When false, "
+            "launches leave it out even where chromium is available."
+        ),
+    )
     conversation_container_memory: str | None = "4g"
     conversation_container_cpus: float | None = Field(default=2.0, gt=0)
     conversation_container_pids_limit: int | None = Field(default=512, gt=0)
     conversation_container_startup_timeout: float = Field(default=120, gt=0)
+    conversation_storage_disk_budget: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description=(
+            "Fraction of the conversation-storage filesystem that may be in use "
+            "before stopped conversations shed the gitignored directories of "
+            "their workspaces (node_modules, .venv, build output), least "
+            "recently active first. Tracked files, untracked work, ignored "
+            "files and nested checkouts are kept; a resumed conversation "
+            "reinstalls what was shed. Only workspaces the server created are "
+            "touched. Unset (the default) disables it."
+        ),
+    )
+    conversation_storage_retention_days: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Days a stopped conversation may stay inactive before its runtime "
+            "(sandbox home and workspace) is deleted and the conversation is "
+            "archived: its history and encryption identity are kept, so it "
+            "stays readable but can no longer be resumed. A workspace the "
+            "server did not create is never deleted. Unset (the default) keeps "
+            "runtimes until the conversation is deleted. Leave it unset when "
+            "the server runs in a sandbox that its provider pauses: no pass "
+            "runs while paused, so the first pass after a resume archives "
+            "every conversation that crossed the limit in the meantime."
+        ),
+    )
 
     acp_skill_sourcing: ACPSkillSourcing = Field(
         default="native",

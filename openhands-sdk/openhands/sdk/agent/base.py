@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    field_validator,
     model_validator,
 )
 
@@ -32,6 +33,7 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 from openhands.sdk.tool import (
+    BROWSER_TOOL_NAME,
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
     Tool,
@@ -43,6 +45,7 @@ from openhands.sdk.tool.builtins.vision_inspect import (
     VisionInspectTool,
     has_vision_profile_available,
 )
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.path import get_user_persistence_dir
 
@@ -263,6 +266,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return data
 
+    @field_validator("system_prompt_kwargs")
+    @classmethod
+    def _warn_deprecated_enable_browser(
+        cls, value: dict[str, object]
+    ) -> dict[str, object]:
+        if "enable_browser" in value:
+            warn_deprecated(
+                "system_prompt_kwargs['enable_browser']",
+                deprecated_in="1.51.0",
+                removed_in="1.56.0",
+                details=(
+                    "Browser guidance now comes from the loaded browser tools; "
+                    "only custom Jinja templates still read this kwarg."
+                ),
+                stacklevel=5,
+            )
+        return value
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -343,26 +364,40 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
         the typed section registry, which also resolves a custom
         ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
-        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
-        subclass ``prompt_dir`` renders its own template.
+        ``system_prompt`` is used verbatim, followed by the loaded tools' guidance; a
+        custom ``system_prompt_filename`` or subclass ``prompt_dir`` renders its own
+        template.
 
         Returns:
             The static system prompt without dynamic context.
         """
         if self.system_prompt is not None:
-            return self.system_prompt
+            return "\n\n".join((self.system_prompt, *self._tool_guidance()))
 
         # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
         # own Jinja template; everything else (incl. custom policies) uses the registry.
         preset = self._prompt_preset
         if preset is None:
+            # Deprecated kwarg, kept until 1.56.0 for templates that branch on it.
+            template_kwargs = {
+                "enable_browser": any(t.name == BROWSER_TOOL_NAME for t in self.tools),
+                **self._resolved_template_kwargs(),
+            }
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
-                **self._resolved_template_kwargs(),
+                **template_kwargs,
             )
 
         return create_registry(preset).build(self._build_prompt_context()).static
+
+    def _tool_guidance(self) -> tuple[str, ...]:
+        """Distinct ``prompt_guidance`` texts of the loaded tools, in tool order."""
+        with self._tools_lock:
+            tools = list(self._tools.values())
+        return tuple(
+            dict.fromkeys(t.prompt_guidance for t in tools if t.prompt_guidance)
+        )
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -376,10 +411,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if "soul_content" not in template_kwargs:
             template_kwargs["soul_content"] = _load_soul_md()
 
-        template_kwargs.setdefault(
-            "enable_browser",
-            any(t.name == "browser_tool_set" for t in self.tools),
-        )
         template_kwargs.setdefault(
             "memory_enabled",
             self.agent_context is not None and self.agent_context.load_memory,
@@ -484,6 +515,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return PromptContext(
             template_kwargs=template_kwargs,
             tool_names=tuple(t.name for t in self.tools),
+            tool_guidance=self._tool_guidance(),
             platform=Platform.current(),
             working_dir=None,
             now=now,

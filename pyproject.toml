@@ -7,6 +7,7 @@ members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands
 exclude-newer = "7 days"  # Avoid packages uploaded in the last 7 days.
 exclude-newer-package = { litellm = "2026-07-20T00:00:00Z", lmnr = "2026-08-23T00:00:00Z" }  # lmnr: allow 0.7.60 streaming-token fix through the 7-day guardrail
 constraint-dependencies = [
+    "nodejs-wheel-binaries>=24,<25",
     "starlette>=0.49.1",  # CVE-2025-62727
     "aiohttp>=3.13.3",  # CVE-2025-69223 + 7 others
     "urllib3>=2.6.3",  # CVE-2026-21441, CVE-2025-66471, CVE-2025-66418
@@ -17,6 +18,8 @@ constraint-dependencies = [
     "lupa>=2.8",  # CVE-2026-34444
     "cryptography<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",  # 49.0.0 dropped x86_64 macOS wheels; release-binaries.yml still builds on macos-15-intel
     "litellm==1.93.0",  # Workspace lock target for the requested LiteLLM upgrade
+    "anyio>=4.14.2",  # CVE-2026-63374 (GHSA-82r6-8w77-94w6)
+    "pyjwt>=2.14.0",
 ]
 
 # Workspace sources for intra-repo dependencies
@@ -97,11 +100,12 @@ testpaths = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short -m 'not stress and not acp_live'"
+addopts = "-v --tb=short -m 'not stress and not acp_live and not docker_live'"
 asyncio_mode = "auto"
 markers = [
     "stress: stress / scale tests, deselected by default. Run with `pytest -m stress` (see tests/agent_server/stress/__init__.py for details).",
     "acp_live: live ACP conformance/pin-installability tests that launch real npx subprocesses and hit the npm registry, deselected by default. Run with `pytest -m acp_live` (see tests/sdk/agent/test_acp_conformance.py).",
+    "docker_live: scenarios against a real Docker daemon and agent-server image, deselected by default. Run with `pytest -m docker_live` (see tests/agent_server/docker_runtime/STORAGE_SCENARIO.md).",
 ]
 
 # Pyright configuration for PEP 420 namespace packages

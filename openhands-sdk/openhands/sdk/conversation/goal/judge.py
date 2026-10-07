@@ -14,7 +14,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.conversation.goal.prompts import JUDGE_PROMPT
+from openhands.sdk.conversation.goal.prompts import (
+    JUDGE_SYSTEM_PROMPT,
+    JUDGE_USER_PROMPT,
+)
 from openhands.sdk.event import Event, LLMConvertibleEvent
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.logger import get_logger
@@ -55,15 +58,21 @@ def judge_goal(judge_llm: LLM, objective: str, events: Sequence[Event]) -> GoalV
     """
     convertible = [e for e in events if isinstance(e, LLMConvertibleEvent)]
     transcript = _render_transcript(convertible)
-    prompt = JUDGE_PROMPT.format(objective=objective, transcript=transcript)
+    system_prompt = JUDGE_SYSTEM_PROMPT
+    user_prompt = JUDGE_USER_PROMPT.format(objective=objective, transcript=transcript)
 
     # The judge only needs the verdict text. Force non-streaming so reusing a
     # streaming agent LLM as the judge does not trip completion()'s requirement
     # of an on_token callback when stream=True.
     if judge_llm.stream:
         judge_llm = judge_llm.model_copy(update={"stream": False})
+    # Build a canonical system + user pair: steering/format instructions live in
+    # the system message, the objective + transcript payload in the user message.
     response = judge_llm.completion(
-        messages=[Message(role="user", content=[TextContent(text=prompt)])]
+        messages=[
+            Message(role="system", content=[TextContent(text=system_prompt)]),
+            Message(role="user", content=[TextContent(text=user_prompt)]),
+        ]
     )
     verdict = _parse_verdict(response.message)
     logger.debug("judge_goal verdict: %s", verdict)

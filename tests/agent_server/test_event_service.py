@@ -1,9 +1,11 @@
 import asyncio
 import contextlib
+import io
 import json
 import shutil
 import threading
 import time
+import zipfile
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,10 +15,12 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -51,9 +55,11 @@ from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.mcp.config import coerce_mcp_config
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
 from tests.agent_server.stress.scripts import (
@@ -1072,6 +1078,124 @@ class TestEventServiceSendMessage:
         assert event_service._rerun_requested is False
 
     @pytest.mark.asyncio
+    async def test_acp_supersede_holds_capacity_across_interrupt(
+        self, event_service, tmp_path
+    ):
+        """The ACP supersede restart must keep the permit its predecessor held.
+
+        ``send_message(run=True)`` interrupts the in-flight ACP prompt, which
+        makes that run yield its permit on the way out, and only then starts the
+        replacement run. If the replacement had to acquire a fresh permit it
+        could be refused (429) after the conversation's working run was already
+        killed -- dropping the user's request with no retryable signal. Holding
+        the session permit across the whole supersede window makes the restart
+        capacity-safe even when the server is at its limit.
+        """
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        # The server is at capacity: one slot, held by the run being superseded.
+        event_service._run_semaphore = asyncio.Semaphore(1)
+        owner = await RunSlot.acquire(event_service._run_semaphore)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.create_task(asyncio.Event().wait())
+
+        async def interrupt_and_yield(*, internal_acp_rerun=False):
+            # Model the outgoing run yielding its own handle as the interrupt
+            # drains it; the session permit survives via the pin.
+            run_task = event_service._run_task
+            if run_task is not None:
+                run_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await run_task
+            event_service._run_task = None
+            conversation.state.execution_status = ConversationExecutionStatus.IDLE
+            # With the predecessor's handle gone, a fresh acquire would have
+            # succeeded pre-fix -- and a competing caller could have taken it,
+            # making the restart below fail with 429.
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    event_service._run_semaphore.acquire(), timeout=0.25
+                )
+            capacity_held_at_interrupt.set()
+
+        event_service.interrupt = interrupt_and_yield
+        replacement_started = asyncio.Event()
+        capacity_held_at_interrupt = asyncio.Event()
+
+        async def finishing_astep(
+            self,  # noqa: ARG001
+            conv: LocalConversation,
+            on_event,  # noqa: ARG001
+            on_token=None,  # noqa: ARG001
+            prompt_message=None,  # noqa: ARG001
+        ) -> None:
+            replacement_started.set()
+            conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        with (
+            patch.object(ACPAgent, "init_state", autospec=True),
+            patch.object(ACPAgent, "astep", new=finishing_astep),
+        ):
+            # Must not raise ConversationRunLimitExceeded: the restart reuses the
+            # session permit its predecessor held instead of acquiring a new one.
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+
+            assert event_service._run_task is not None
+            await asyncio.wait_for(event_service._run_task, timeout=5)
+
+        assert replacement_started.is_set()
+        # Capacity stayed held across the whole supersede window, and the session
+        # permit is returned to the shared pool once the chain settles.
+        assert capacity_held_at_interrupt.is_set()
+        assert event_service._run_session_pins == 0
+        assert event_service._run_session_slot is None
+        await asyncio.wait_for(event_service._run_semaphore.acquire(), timeout=5)
+        event_service._run_semaphore.release()
+
+    @pytest.mark.asyncio
+    async def test_acp_supersede_pin_released_when_interrupt_raises(
+        self, event_service, tmp_path
+    ):
+        """The supersede pin must be released even when the interrupt raises."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service._run_semaphore = asyncio.Semaphore(1)
+        event_service.interrupt = AsyncMock(side_effect=RuntimeError("teardown"))
+
+        with pytest.raises(RuntimeError, match="teardown"):
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+        assert event_service._run_session_pins == 0
+
+    @pytest.mark.asyncio
     async def test_acp_supersede_mark_rechecks_current_prompt(
         self, event_service, tmp_path
     ):
@@ -1869,6 +1993,46 @@ class TestEventServiceRun:
         event_service._publish_state_update.assert_called()
 
 
+class _PausingWriter:
+    """Text file handle that runs ``pause`` halfway through each write.
+
+    The first half is flushed to disk before ``pause`` runs, so ``pause`` sees
+    the file as a concurrent reader would in the middle of the write.
+    """
+
+    def __init__(self, handle, pause):
+        self._handle = handle
+        self._pause = pause
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._handle.__exit__(*exc_info)
+
+    def write(self, data):
+        half = len(data) // 2
+        written = self._handle.write(data[:half])
+        self._handle.flush()
+        self._pause()
+        return written + self._handle.write(data[half:])
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _pause_text_writes_halfway(monkeypatch, pause) -> None:
+    """Run ``pause`` halfway through every text-mode write (``mode="w"``)."""
+    original_open = io.open
+
+    def open_(file, mode="r", *args, **kwargs):
+        handle = original_open(file, mode, *args, **kwargs)
+        return _PausingWriter(handle, pause) if mode == "w" else handle
+
+    monkeypatch.setattr(io, "open", open_)
+
+
 class TestEventServiceSaveMeta:
     """Test cases for EventService.save_meta method."""
 
@@ -1934,6 +2098,68 @@ class TestEventServiceSaveMeta:
         env = loaded.agent_definitions[0].mcp_config["tavily"].env
         assert env is not None
         assert env["TAVILY_API_KEY"].get_secret_value() == "${TAVILY_API_KEY}"
+
+    @pytest.mark.asyncio
+    async def test_save_meta_never_exposes_a_partial_meta_json(
+        self, event_service, tmp_path, monkeypatch
+    ):
+        """A reader of meta.json during a save sees the previous complete file."""
+        event_service.conversations_dir = tmp_path
+        event_service.conversation_dir.mkdir()
+        meta_file = event_service.conversation_dir / "meta.json"
+        await event_service.save_meta()
+        previous = meta_file.read_bytes()
+        seen_mid_save: list[bytes] = []
+        _pause_text_writes_halfway(
+            monkeypatch, lambda: seen_mid_save.append(meta_file.read_bytes())
+        )
+
+        event_service.stored.title = "renamed"
+        await event_service.save_meta()
+
+        assert seen_mid_save == [previous]
+        saved = StoredConversation.model_validate_json(meta_file.read_text())
+        assert saved.title == "renamed"
+
+    @pytest.mark.asyncio
+    async def test_trajectory_zip_built_during_save_meta_has_no_partial_meta_json(
+        self, sample_stored_conversation, tmp_path, monkeypatch
+    ):
+        """A trajectory zip built mid-save holds a complete, redacted meta.json.
+
+        Partial JSON does not parse, so the zip cannot redact it, and the
+        encrypted secrets in it would be archived as they are.
+        """
+        sample_stored_conversation.secrets = {
+            "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_zip_during_save"))
+        }
+        service = EventService(
+            stored=sample_stored_conversation,
+            conversations_dir=tmp_path,
+            cipher=Cipher("trajectory-zip-during-save-meta"),
+        )
+        service.conversation_dir.mkdir()
+        await service.save_meta()
+        meta_file = service.conversation_dir / "meta.json"
+        assert FERNET_TOKEN_PREFIX in meta_file.read_text()
+        archive_path = tmp_path / "trajectory.zip"
+        _pause_text_writes_halfway(
+            monkeypatch,
+            lambda: _create_zip_from_directory(service.conversation_dir, archive_path),
+        )
+
+        service.stored.title = "renamed"
+        await service.save_meta()
+
+        with zipfile.ZipFile(archive_path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        assert not [
+            name
+            for name, data in members.items()
+            if FERNET_TOKEN_PREFIX.encode() in data
+        ]
+        meta = json.loads(members[f"{service.stored.id.hex}/meta.json"])
+        assert meta["secrets"]["GITHUB_TOKEN"]["value"] == REDACTED_SECRET_VALUE
 
     @pytest.mark.asyncio
     async def test_switch_acp_model_persists_via_conversation(self, tmp_path):
