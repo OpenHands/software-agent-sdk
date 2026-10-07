@@ -2,7 +2,6 @@
 
 import subprocess
 from pathlib import Path
-from uuid import UUID
 
 from openhands.agent_server.utils import safe_rmtree
 from openhands.sdk.logger import get_logger
@@ -12,17 +11,26 @@ from openhands.sdk.utils.command import sanitized_env
 logger = get_logger(__name__)
 
 
-def remove_conversation_worktree(root: Path, conversation_id: UUID) -> None:
-    """Remove a deleted conversation's worktrees; their branches stay."""
-    conversation_dir = root / str(conversation_id)
+def conversation_worktree_dir(root: Path, working_dir: str) -> Path | None:
+    """The dir under ``root`` holding a workspace's worktree, if any.
+
+    Not always ``root/<id>``: a fork shares its source's workspace.
+    """
+    try:
+        rel = Path(working_dir).resolve().relative_to(root.resolve())
+    except ValueError:
+        return None
+    return root / rel.parts[0] if rel.parts else None
+
+
+def remove_conversation_worktree(conversation_dir: Path) -> None:
+    """Remove the worktrees in a conversation dir; their branches stay."""
     if conversation_dir.is_symlink() or not conversation_dir.is_dir():
         return
     repos = [
         repo for worktree in _worktrees(conversation_dir) if (repo := _repo(worktree))
     ]
-    if not safe_rmtree(
-        conversation_dir, f"worktrees of conversation {conversation_id}"
-    ):
+    if not safe_rmtree(conversation_dir, f"conversation worktrees {conversation_dir}"):
         return
     # Drops git's record of the missing worktree; the branch is untouched.
     for repo in repos:

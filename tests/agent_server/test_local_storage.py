@@ -172,3 +172,25 @@ def test_a_conversation_without_a_worktree_leaves_the_repository_alone(
     assert (repo / "local.txt").read_text() == "user's file"
     assert (repo / "README.md").read_text() == "hi"
     assert worktrees(repo) == [str(repo.resolve())]
+
+
+def test_a_fork_keeps_the_shared_worktree_until_it_is_deleted(client, tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    source, worktree = start(client, repo)
+    response = client.post(f"/api/conversations/{source}/fork", json={})
+    assert response.status_code == 201, response.text
+    fork = UUID(response.json()["id"])
+    assert Path(response.json()["workspace"]["working_dir"]) == worktree
+    (worktree / "wip.py").write_text("in progress")
+
+    delete(client, source)
+
+    # The fork works in its source's worktree, so it survives the source.
+    assert (worktree / "wip.py").read_text() == "in progress"
+    assert str(worktree) in worktrees(repo)
+
+    delete(client, fork)
+
+    assert not worktree.exists()
+    assert worktrees(repo) == [str(repo.resolve())]
+    assert git(repo, "rev-parse", "--verify", f"openhands/{source}")

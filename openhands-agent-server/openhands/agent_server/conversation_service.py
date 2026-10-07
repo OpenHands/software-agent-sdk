@@ -32,7 +32,10 @@ from openhands.agent_server.launch import (
     scoped_secrets,
     server_launch_stores,
 )
-from openhands.agent_server.local_storage import remove_conversation_worktree
+from openhands.agent_server.local_storage import (
+    conversation_worktree_dir,
+    remove_conversation_worktree,
+)
 from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
@@ -1710,6 +1713,11 @@ class ConversationService:
     async def resume_conversation(self, conversation_id: UUID) -> bool:
         return bool(await self._get_or_load_event_service(conversation_id))
 
+    def _worktree_dir(self, stored: StoredConversation) -> Path | None:
+        return conversation_worktree_dir(
+            self.conversation_worktree_root, stored.workspace.working_dir
+        )
+
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         event_services = self._event_services
         if event_services is None:
@@ -1765,11 +1773,13 @@ class ConversationService:
                 event_service.conversation_dir,
                 f"conversation directory for {conversation_id}",
             )
-            await asyncio.to_thread(
-                remove_conversation_worktree,
-                self.conversation_worktree_root,
-                conversation_id,
-            )
+            worktree_dir = self._worktree_dir(event_service.stored)
+            # Forks share their source's worktree; the last one deleted removes it.
+            if worktree_dir is not None and not any(
+                self._worktree_dir(record.stored) == worktree_dir
+                for record in self._conversation_records.values()
+            ):
+                await asyncio.to_thread(remove_conversation_worktree, worktree_dir)
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
