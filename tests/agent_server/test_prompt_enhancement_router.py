@@ -5,11 +5,13 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Literal
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 from filelock import FileLock
+from litellm.exceptions import BadRequestError
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -31,6 +33,8 @@ from openhands.sdk.llm.exceptions import (
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.provider_connection_store import ProviderConnectionNotFound
+from tests.conftest import create_mock_litellm_response
+from tests.sdk.llm.test_auth_refresh_retry import create_mock_responses_response
 
 
 @pytest.fixture
@@ -167,6 +171,62 @@ def test_responses_api_disables_provider_side_storage(client_and_store, monkeypa
     assert tools == []
     assert kwargs["max_tokens"] == router_module.MAX_OUTPUT_TOKENS
     assert kwargs["store"] is False
+
+
+@pytest.mark.parametrize("api_mode", ["chat", "responses"])
+@pytest.mark.parametrize("cache_failure", [False, True])
+def test_enhance_makes_one_provider_call(
+    client_and_store, monkeypatch, caplog, api_mode, cache_failure
+):
+    client, store = client_and_store
+    store.save(
+        "draft-profile",
+        LLM(
+            model="claude-sonnet-4-20250514",
+            api_mode=api_mode,
+            api_key=SecretStr("sk-profile-secret"),
+            caching_prompt=True,
+            num_retries=3,
+        ),
+        include_secrets=True,
+    )
+    profile_before = store.load("draft-profile").model_dump(mode="json")
+    sentinel = "private draft and provider error 4d92e7"
+    if api_mode == "chat":
+        transport_name = "litellm_acompletion"
+        success = create_mock_litellm_response("Improved draft.")
+    else:
+        transport_name = "litellm_aresponses"
+        success = create_mock_responses_response("Improved draft.")
+    transport = AsyncMock(return_value=success)
+    if cache_failure:
+        transport.side_effect = BadRequestError(
+            "The cached content is of 1171 tokens. "
+            "The minimum token count to start caching is 4096. " + sentinel,
+            model="claude-sonnet-4-20250514",
+            llm_provider="anthropic",
+        )
+    monkeypatch.setattr(f"openhands.sdk.llm.llm.{transport_name}", transport)
+
+    response = client.post(
+        "/api/prompt-enhancement/enhance",
+        json={"profile_name": "draft-profile", "text": sentinel},
+    )
+
+    assert transport.await_count == 1
+    payload = transport.call_args.kwargs
+    assert "cache_control" not in str(payload)
+    if api_mode == "responses":
+        assert payload["store"] is False
+    if cache_failure:
+        assert response.status_code == 422
+        assert error_code(response) == "unsupported_configuration"
+    else:
+        assert response.status_code == 200
+        assert response.json() == {"enhanced_text": "Improved draft."}
+    assert store.load("draft-profile").model_dump(mode="json") == profile_before
+    assert sentinel not in response.text
+    assert sentinel not in caplog.text
 
 
 @pytest.mark.parametrize(

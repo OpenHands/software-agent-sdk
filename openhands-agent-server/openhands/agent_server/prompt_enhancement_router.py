@@ -166,7 +166,9 @@ async def _load_profile(name: str, request: Request) -> LLM:
 
 def _quiet_llm(llm: LLM) -> LLM:
     """Disable persisted completion logging and retries for this one-off call."""
-    quiet_llm = llm.model_copy(update={"log_completions": False, "num_retries": 0})
+    quiet_llm = llm.model_copy(
+        update={"log_completions": False, "num_retries": 0, "caching_prompt": False}
+    )
     quiet_llm.reset_metrics()
     return quiet_llm
 
