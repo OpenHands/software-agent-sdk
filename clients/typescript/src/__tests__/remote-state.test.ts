@@ -104,4 +104,59 @@ describe('RemoteState full_state normalization', () => {
 
     await expect(state.getExecutionStatus()).resolves.toBe('running');
   });
+
+  it.each([false, true])(
+    'preserves a newer event during a queued refresh (initial update fails: %s)',
+    async (initialUpdateFails) => {
+      const { state, fetchMock } = makeState(CONVERSATION_INFO);
+      let resolveResponse!: (response: Response) => void;
+      const response = new Promise<Response>((resolve) => {
+        resolveResponse = resolve;
+      });
+      const fetchStarted = new Promise<void>((resolve) => {
+        fetchMock.mockImplementationOnce(() => {
+          resolve();
+          return response;
+        });
+      });
+
+      const initialUpdate = state.updateStateFromEvent({
+        id: 'initial-update',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:00Z',
+        key: initialUpdateFails ? '__full_state__' : 'execution_status',
+        value: initialUpdateFails ? 'not-an-object' : 'running',
+      });
+      const initialResult = initialUpdate.catch((error: unknown) => error);
+      const refresh = state.refresh();
+      await fetchStarted;
+
+      const newerUpdate = state.updateStateFromEvent({
+        id: 'newer-update',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:01Z',
+        key: 'execution_status',
+        value: 'paused',
+      });
+      const latestUpdate = state.updateStateFromEvent({
+        id: 'latest-update',
+        kind: 'ConversationStateUpdateEvent',
+        timestamp: '2024-01-01T00:00:02Z',
+        key: 'execution_status',
+        value: 'finished',
+      });
+      resolveResponse(jsonResponse(CONVERSATION_INFO));
+      await Promise.all([refresh, newerUpdate, latestUpdate]);
+
+      if (initialUpdateFails) {
+        expect(await initialResult).toMatchObject({
+          message: 'Full conversation state update must contain an object value.',
+        });
+      } else {
+        expect(await initialResult).toBeUndefined();
+      }
+      expect(fetchMock).toHaveBeenCalledOnce();
+      await expect(state.getExecutionStatus()).resolves.toBe('finished');
+    }
+  );
 });

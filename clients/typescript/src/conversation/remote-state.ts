@@ -226,10 +226,11 @@ class AsyncLock {
         } catch (error) {
           reject(error);
         } finally {
-          this.locked = false;
           const next = this.queue.shift();
           if (next) {
             next();
+          } else {
+            this.locked = false;
           }
         }
       };
