@@ -18,6 +18,7 @@ from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService, RunSlot
 from openhands.agent_server.models import (
+    AskUserResponseRequest,
     ConfirmationResponseRequest,
     EventPage,
     EventSortOrder,
@@ -39,7 +40,15 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.credential import CredentialSyncError
-from openhands.sdk.event import AgentErrorEvent, Event
+from openhands.sdk.event import (
+    AgentErrorEvent,
+    AskUserAnswer,
+    AskUserRequestError,
+    AskUserRequestEvent,
+    AskUserResponseEvent,
+    Event,
+    QuestionInfo,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
@@ -1637,6 +1646,131 @@ class TestEventServiceRespondToConfirmation:
             mock_loop.run_in_executor.assert_called_once_with(
                 None, conversation.reject_pending_actions, "custom reason"
             )
+
+
+class TestEventServiceRespondToAskUser:
+    """Test cases for ask_user response handling."""
+
+    def _service_with_pending(self, request_id: str = "req-1"):
+        request = AskUserRequestEvent(
+            request_id=request_id,
+            questions=[QuestionInfo(id="auth", question="Which auth?")],
+            action_id="action-1",
+            tool_call_id="call-1",
+        )
+        state = MagicMock(spec=ConversationState)
+        state.active_branch.return_value = [request]
+        conversation = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=state)
+        conversation._state.__exit__ = MagicMock(return_value=None)
+        return request, conversation
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_records_response_and_resumes_run(
+        self, event_service
+    ):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.respond_to_ask_user(
+            AskUserResponseRequest(
+                request_id="req-1",
+                action="accept",
+                answers={"auth": AskUserAnswer(option_id="jwt", label="JWT")},
+            )
+        )
+
+        conversation._on_event.assert_called_once()
+        response = conversation._on_event.call_args[0][0]
+        assert isinstance(response, AskUserResponseEvent)
+        assert response.request_id == "req-1"
+        assert response.action == "accept"
+        event_service.run.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_rejects_stale_request_id(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(AskUserRequestError):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(request_id="stale", action="cancel")
+            )
+
+        conversation._on_event.assert_not_called()
+        event_service.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_inactive_service(self, event_service):
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(request_id="req-1", action="cancel")
+            )
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_swallows_already_running(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock(
+            side_effect=ValueError("conversation_already_running")
+        )
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.respond_to_ask_user(
+            AskUserResponseRequest(request_id="req-1", action="cancel")
+        )
+
+        conversation._on_event.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_timeout_resolves_pending_request_as_cancel(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+        event_service.ask_user_timeout_seconds = 0.01
+
+        await event_service._maybe_arm_ask_user_timeout()
+        task = event_service._ask_user_timeout_task
+        assert task is not None
+        await task
+
+        responses = [c.args[0] for c in conversation._on_event.call_args_list]
+        assert responses
+        assert isinstance(responses[0], AskUserResponseEvent)
+        assert responses[0].action == "cancel"
+        assert responses[0].source == "environment"
+        event_service.run.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_armed_when_disabled(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.ask_user_timeout_seconds = None
+
+        await event_service._maybe_arm_ask_user_timeout()
+
+        assert event_service._ask_user_timeout_task is None
+
+    @pytest.mark.asyncio
+    async def test_close_resolves_pending_request_as_cancel(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service._pending_ask_user_request_id = "req-1"
+
+        await event_service._cancel_pending_ask_user_on_close()
+
+        conversation._on_event.assert_called_once()
+        response = conversation._on_event.call_args[0][0]
+        assert isinstance(response, AskUserResponseEvent)
+        assert response.action == "cancel"
+        assert event_service._pending_ask_user_request_id is None
 
 
 class TestEventServiceIsOpen:

@@ -1,9 +1,14 @@
 import { HttpClient, HttpError } from './http-client';
-import { getCachedAgentServerInfo } from './agent-server-compatibility';
+import {
+  AgentServerFeatureRequirements,
+  assertAgentServerSupports,
+  getCachedAgentServerInfo,
+} from './agent-server-compatibility';
 import { ConversationExecutionStatus, LLM, Success } from '../types/base';
 import type {
   AgentResponseResult,
   AskAgentResponse,
+  AskUserResponseRequest,
   ConfirmationResponseRequest,
   ConversationEvent,
   ConversationEventCountOptions,
@@ -299,6 +304,18 @@ export class ConversationClient {
   ): Promise<TResponse> {
     const response = await this.client.post<TResponse>(
       `/api/conversations/${conversationId}/events/respond_to_confirmation`,
+      request
+    );
+    return response.data;
+  }
+
+  async respondToAskUser<TResponse = unknown>(
+    conversationId: string,
+    request: AskUserResponseRequest
+  ): Promise<TResponse> {
+    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.askUser);
+    const response = await this.client.post<TResponse>(
+      `/api/conversations/${conversationId}/events/respond_to_ask_user`,
       request
     );
     return response.data;

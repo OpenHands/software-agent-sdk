@@ -1,0 +1,12 @@
+diff --git a/docs.json b/docs.json
+index 8572c83..e76f7d2 100644
+--- a/docs.json
++++ b/docs.json
+@@ -396,6 +396,7 @@
+                   "sdk/guides/agent-file-based",
+                   "sdk/guides/agent-stuck-detector",
+                   "sdk/guides/agent-ask-oracle",
++                  "sdk/guides/agent-ask-user-events",
+                   "sdk/guides/agent-tom-agent",
+                   "sdk/guides/critic"
+                 ]

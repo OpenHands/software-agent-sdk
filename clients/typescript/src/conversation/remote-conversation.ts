@@ -7,6 +7,10 @@
 
 import { HttpClient } from '../client/http-client';
 import { WebSocketCallbackClient, ErrorCallbackType } from '../events/websocket-client';
+import {
+  AgentServerFeatureRequirements,
+  assertAgentServerSupports,
+} from '../client/agent-server-compatibility';
 import { RemoteState } from './remote-state';
 import { RemoteWorkspace } from '../workspace/remote-workspace';
 import {
@@ -28,12 +32,16 @@ import {
   UpdateSecretsRequest,
   AskAgentRequest,
   AskAgentResponse,
+  AskUserAnswer,
+  AskUserResponseAction,
+  AskUserResponseRequest,
   SetSecurityAnalyzerRequest,
   AgentResponseResult,
   ForkConversationRequest,
   NavigateConversationRequest,
   StartGoalRequest,
 } from '../models/conversation';
+import type { AskUserRequestEvent, AskUserResponseEvent } from '../events/types';
 import { IConversation, BaseConversationOptions } from './base';
 import { Success } from '../types/base';
 import type { HookConfig } from '../hooks';
@@ -274,6 +282,51 @@ export class RemoteConversation implements IConversation {
   async sendConfirmationResponse(accept: boolean, reason?: string): Promise<void> {
     const request: ConfirmationResponseRequest = { accept, reason };
     await this.client.post(`/api/conversations/${this.id}/events/respond_to_confirmation`, request);
+  }
+
+  /**
+   * Answer the conversation's single pending ask_user request.
+   *
+   * `action` is `accept` (with `answers` keyed by question id), `decline`, or
+   * `cancel`. The server rejects the call when `request_id` does not match the
+   * single pending request.
+   */
+  async respondToAskUser(
+    requestId: string,
+    action: AskUserResponseAction,
+    answers?: Record<string, AskUserAnswer>
+  ): Promise<void> {
+    await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.askUser);
+    const request: AskUserResponseRequest = {
+      request_id: requestId,
+      action,
+      answers,
+    };
+    await this.client.post(`/api/conversations/${this.id}/events/respond_to_ask_user`, request);
+  }
+
+  /**
+   * Return the conversation's single unresolved ask_user request, if any.
+   *
+   * A request is unresolved until an AskUserResponseEvent with its
+   * `request_id` lands in the event history.
+   */
+  async pendingAskUserRequest(): Promise<AskUserRequestEvent | null> {
+    const events = (await this.state.events.getEvents()) as unknown as Array<
+      AskUserRequestEvent | AskUserResponseEvent
+    >;
+    const resolved = new Set(
+      events
+        .filter((event): event is AskUserResponseEvent => event.kind === 'AskUserResponseEvent')
+        .map((event) => event.request_id)
+    );
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event.kind === 'AskUserRequestEvent' && !resolved.has(event.request_id)) {
+        return event;
+      }
+    }
+    return null;
   }
 
   async setTitle(title: string): Promise<void> {

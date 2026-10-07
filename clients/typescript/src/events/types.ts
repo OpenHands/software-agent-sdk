@@ -128,6 +128,75 @@ export interface ConfirmationResponseEvent extends BaseEvent {
 }
 
 /**
+ * One selectable answer for an ask_user question.
+ */
+export interface AskUserQuestionOption {
+  /** Stable option id used as the answer key */
+  id: string;
+  /** Human-readable label for display */
+  label: string;
+  /** Optional longer explanation of the option */
+  description?: string | null;
+}
+
+/**
+ * A single structured question asked via the ask_user tool.
+ */
+export interface AskUserQuestionInfo {
+  /** Stable question id used to key the answers map */
+  id: string;
+  /** The question text shown to the user */
+  question: string;
+  /** Selectable options; empty means a free-form question */
+  options?: AskUserQuestionOption[];
+  /** Whether the user may select more than one option */
+  multi_select?: boolean;
+}
+
+/** The user's selection for one ask_user question. */
+export interface AskUserAnswer {
+  /** Id of the selected option */
+  option_id: string;
+  /** Display label captured at answer time */
+  label: string;
+}
+
+/** How an ask_user request resolved: accept, decline, or cancel. */
+export type AskUserResponseAction = 'accept' | 'decline' | 'cancel';
+
+/**
+ * Ask user request event - the agent paused to ask structured questions.
+ */
+export interface AskUserRequestEvent extends BaseEvent {
+  kind: 'AskUserRequestEvent';
+  /** Typed id used to match a response, distinct from the tool-call id */
+  request_id: string;
+  /** The structured questions the agent is asking */
+  questions: AskUserQuestionInfo[];
+  /** Id of the ActionEvent this request resolves */
+  action_id: string;
+  /** Tool-call id this request resolves */
+  tool_call_id: string;
+  /** Name of the tool that raised the request */
+  tool_name?: string;
+  /** Optional per-request timeout override in seconds */
+  timeout_seconds?: number | null;
+}
+
+/**
+ * Ask user response event - a client's answer to an ask_user request.
+ */
+export interface AskUserResponseEvent extends BaseEvent {
+  kind: 'AskUserResponseEvent';
+  /** Id of the request this answers */
+  request_id: string;
+  /** One of accept, decline, or cancel */
+  action: AskUserResponseAction;
+  /** Answers keyed by question id; populated for accept only */
+  answers?: Record<string, AskUserAnswer>;
+}
+
+/**
  * Stuck detection event - agent detected as stuck
  */
 export interface StuckDetectionEvent extends BaseEvent {
@@ -172,6 +241,8 @@ export type ConversationEvent =
   | AgentServerEvent
   | ConfirmationRequestEvent
   | ConfirmationResponseEvent
+  | AskUserRequestEvent
+  | AskUserResponseEvent
   | StuckDetectionEvent
   | FinishEvent
   | ThinkEvent;

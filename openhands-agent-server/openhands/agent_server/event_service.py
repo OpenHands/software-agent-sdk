@@ -19,6 +19,7 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
+    AskUserResponseRequest,
     ConfirmationResponseRequest,
     EventPage,
     EventSortOrder,
@@ -33,6 +34,7 @@ from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
 )
+from openhands.sdk.agent.response_dispatch import pending_ask_user_request
 from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.event_store import EventLog
@@ -67,7 +69,11 @@ from openhands.sdk.credential import (
     VersionedCredentialBinding,
 )
 from openhands.sdk.event import (
+    ASK_USER_TIMEOUT_SOURCE,
     AgentErrorEvent,
+    AskUserRequestError,
+    AskUserRequestEvent,
+    AskUserResponseEvent,
     ObservationBaseEvent,
     StreamingDeltaEvent,
 )
@@ -75,6 +81,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import SourceType
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.io import LocalFileStore
@@ -220,6 +227,7 @@ class EventService:
     bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    ask_user_timeout_seconds: float | None = None
     _conversation: LocalConversation | None = field(default=None, init=False)
     _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
@@ -244,6 +252,13 @@ class EventService:
     _explicit_interrupt_generation: int = field(default=0, init=False)
     _closing: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    # Background timer that resolves an unanswered ask_user request as 'cancel'
+    # once its timeout elapses. None when no request is pending or the timeout
+    # is disabled.
+    _ask_user_timeout_task: asyncio.Task | None = field(default=None, init=False)
+    # request_id of the conversation's single pending ask_user request, tracked
+    # in memory so teardown can resolve it without reading conversation state.
+    _pending_ask_user_request_id: str | None = field(default=None, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
@@ -1369,6 +1384,12 @@ class EventService:
                     )
                     self._conversation._on_event(error_event)
 
+        # A request left pending by a crash has no answer coming; resolve it as
+        # 'cancel' so the conversation does not sit forever in a paused state
+        # that no client is waiting on. The status was cleared to IDLE above.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._resolve_ask_user_on_restart_sync)
+
         # Publish initial state update
         await self._publish_state_update()
 
@@ -1573,6 +1594,9 @@ class EventService:
                     # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
+                    # If the run paused on an ask_user request, start the
+                    # timeout clock now that the run has yielded.
+                    await self._maybe_arm_ask_user_timeout()
 
                     # Re-arm a run for input stranded while this task was
                     # wrapping up. A send_message(run=True) that arrived during
@@ -1953,6 +1977,174 @@ class EventService:
             None, self._conversation.reject_pending_actions, reason
         )
 
+    def _pending_ask_user_request_sync(self) -> AskUserRequestEvent | None:
+        if not self._conversation:
+            return None
+        with self._conversation._state as state:
+            return pending_ask_user_request(state)
+
+    def _refresh_pending_ask_user_sync(self) -> AskUserRequestEvent | None:
+        """Read the pending request and remember its id for teardown paths."""
+        request = self._pending_ask_user_request_sync()
+        self._pending_ask_user_request_id = request.request_id if request else None
+        return request
+
+    def _record_ask_user_response_sync(
+        self, response: AskUserResponseEvent
+    ) -> AskUserRequestEvent:
+        """Append ``response``; validate against the single pending request.
+
+        The execution status is left at ``WAITING_FOR_CONFIRMATION``: the
+        resuming ``run()`` refuses a conversation already marked ``RUNNING``,
+        and the run loop clears the confirmation status itself before the next
+        step. Setting it here would make the resume a silent no-op.
+        """
+        assert self._conversation is not None
+        with self._conversation._state as state:
+            request = pending_ask_user_request(state)
+            if request is None:
+                raise AskUserRequestError(
+                    "No pending ask_user request for this conversation."
+                )
+            if request.request_id != response.request_id:
+                raise AskUserRequestError(
+                    "The response request_id does not match the pending "
+                    "ask_user request."
+                )
+            self._conversation._on_event(response)
+        self._pending_ask_user_request_id = None
+        return request
+
+    async def _respond_to_ask_user(
+        self, request: AskUserResponseRequest, *, source: SourceType
+    ) -> None:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        response = AskUserResponseEvent(
+            source=source,
+            request_id=request.request_id,
+            action=request.action,
+            answers=request.answers,
+        )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._record_ask_user_response_sync, response)
+        self._cancel_ask_user_timeout()
+        await self._publish_state_update()
+        try:
+            await self.run()
+        except ValueError as e:
+            # "already running" is a no-op success: the loop will pick up the
+            # response on its next pending-action resolution.
+            if str(e) != "conversation_already_running":
+                raise
+
+    async def respond_to_ask_user(self, request: AskUserResponseRequest) -> None:
+        """Record a client's answer and resume the conversation."""
+        await self._respond_to_ask_user(request, source="user")
+
+    def _cancel_ask_user_timeout(self) -> None:
+        task = self._ask_user_timeout_task
+        self._ask_user_timeout_task = None
+        if task is None or task.done():
+            return
+        # A timeout resolution runs *inside* this task; cancelling it would
+        # raise CancelledError at the next await and abort the resume before
+        # the run is re-armed. Only cancel a timer we are not currently in.
+        if asyncio.current_task() is task:
+            return
+        task.cancel()
+
+    def _ask_user_timeout_for(self, request: AskUserRequestEvent) -> float | None:
+        if request.timeout_seconds is not None:
+            return request.timeout_seconds
+        return self.ask_user_timeout_seconds
+
+    async def _maybe_arm_ask_user_timeout(self) -> None:
+        """Arm a one-shot timer to cancel the pending request when it expires.
+
+        Reads pending state in a worker thread so the state lock never blocks
+        the event loop.
+        """
+        loop = asyncio.get_running_loop()
+        request = await loop.run_in_executor(None, self._refresh_pending_ask_user_sync)
+        if request is None:
+            self._cancel_ask_user_timeout()
+            return
+        timeout = self._ask_user_timeout_for(request)
+        if timeout is None:
+            return
+        if (
+            self._ask_user_timeout_task is not None
+            and not self._ask_user_timeout_task.done()
+        ):
+            return
+
+        async def _expire() -> None:
+            try:
+                await asyncio.sleep(timeout)
+                await self._respond_to_ask_user(
+                    AskUserResponseRequest(
+                        request_id=request.request_id, action="cancel"
+                    ),
+                    source=ASK_USER_TIMEOUT_SOURCE,
+                )
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning("ask_user timeout resolution failed", exc_info=True)
+
+        self._ask_user_timeout_task = asyncio.create_task(_expire())
+
+    def _resolve_ask_user_on_restart_sync(self) -> AskUserRequestEvent | None:
+        """Resolve a request left pending by a crash as 'cancel'.
+
+        The run is not resumed here; ``start()`` clears the stale RUNNING status
+        and publishes the resolution so a client sees the request closed.
+        """
+        request = self._pending_ask_user_request_sync()
+        if request is None:
+            return None
+        assert self._conversation is not None
+        response = AskUserResponseEvent(
+            source=ASK_USER_TIMEOUT_SOURCE,
+            request_id=request.request_id,
+            action="cancel",
+        )
+        with self._conversation._state as state:
+            self._conversation._on_event(response)
+            if (
+                state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            ):
+                state.execution_status = ConversationExecutionStatus.IDLE
+        self._pending_ask_user_request_id = None
+        return request
+
+    async def _cancel_pending_ask_user_on_close(self) -> None:
+        """Resolve a pending ask_user request as 'cancel' during teardown.
+
+        Uses the in-memory request id so teardown never reads conversation state
+        (which may be partially mocked or already closing). Run before the run is
+        drained, so a run unblocked by the cancel exits cleanly instead of being
+        force-cancelled.
+        """
+        self._cancel_ask_user_timeout()
+        request_id = self._pending_ask_user_request_id
+        if not request_id or not self._conversation:
+            return
+        response = AskUserResponseEvent(
+            source=ASK_USER_TIMEOUT_SOURCE,
+            request_id=request_id,
+            action="cancel",
+        )
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                None, self._record_ask_user_response_sync, response
+            )
+        except AskUserRequestError:
+            self._pending_ask_user_request_id = None
+
     async def pause(self):
         if self._conversation:
             self._explicit_interrupt_generation += 1
@@ -2083,6 +2275,10 @@ class EventService:
             with suppress(asyncio.CancelledError):
                 await self._lease_task
             self._lease_task = None
+
+        # Resolve any pending ask_user request as 'cancel' before draining the
+        # run, so a run blocked on the answer unblocks and exits cleanly.
+        await self._cancel_pending_ask_user_on_close()
 
         # Drain in-flight run before teardown so MCP close doesn't race
         # with a tool call mid-step.

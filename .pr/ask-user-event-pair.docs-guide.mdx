@@ -1,0 +1,66 @@
+---
+title: Ask User (request/response events)
+description: A dedicated ask_user request/response event pair and endpoint, so a client can answer a paused run over the wire.
+---
+
+The `ask_user` tool pauses a run so the agent can ask structured questions.
+This slice gives that pause a first-class transport: an `AskUserRequestEvent`
+when the run pauses, an `AskUserResponseEvent` when it is answered, and the
+`POST /api/conversations/{conversation_id}/events/respond_to_ask_user` endpoint
+that records the answer and resumes the run.
+
+## Events
+
+| Event | Source | Meaning |
+| --- | --- | --- |
+| `AskUserRequestEvent` | `agent` | The agent paused to ask structured questions. Carries `request_id`, `questions`, `action_id`, `tool_call_id`, `tool_name`, and an optional `timeout_seconds`. |
+| `AskUserResponseEvent` | `user` (or `environment` for timeout/close) | The answer to a single request. Carries `request_id`, `action` (`accept`/`decline`/`cancel`), and `answers` keyed by question id. |
+
+Both are plain `Event` subclasses, not `LLMConvertibleEvent`: the agent observes
+the answer through the tool observation, so the raw pair stays out of the LLM
+view.
+
+## Endpoint
+
+```
+POST /api/conversations/{conversation_id}/events/respond_to_ask_user
+```
+
+Body:
+
+```json
+{
+  "request_id": "<AskUserRequestEvent.request_id>",
+  "action": "accept",
+  "answers": {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}}
+}
+```
+
+`action` is `accept`, `decline`, or `cancel`. A `request_id` that does not match
+the single pending request is rejected with **409**. On success the answer is
+recorded as an `AskUserResponseEvent` and the run resumes with the tool
+observation in history.
+
+## Timeouts
+
+By default an unanswered request waits indefinitely, matching confirmation mode.
+Set `ask_user_timeout_seconds` on the agent server (or `timeout_seconds` on the
+tool call) to bound the wait; an expired request resolves as `cancel` so the run
+always unblocks. Closing the conversation or recovering from a crash resolves a
+stranded request the same way.
+
+## Python
+
+```python
+from openhands.sdk import Conversation
+from openhands.sdk.event import AskUserRequestEvent
+
+# ... drive a run that calls ask_user ...
+pending = conversation.pending_ask_user_request()
+assert isinstance(pending, AskUserRequestEvent)
+conversation.respond_to_ask_user(
+    pending.request_id,
+    "accept",
+    {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}},
+)
+```

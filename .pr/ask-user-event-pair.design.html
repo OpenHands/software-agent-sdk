@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ask_user request/response pair + endpoint — design</title>
+<style>
+  :root { --fg:#1f2328; --muted:#57606a; --border:#d0d7de; --bg:#fff; --code:#f6f8fa; --accent:#0969da; --green:#1a7f37; --red:#cf222e; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); margin:0; padding:2.5rem 1.5rem; }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.3rem; margin: 2.2rem 0 .6rem; padding-bottom:.3rem; border-bottom:1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin: 1.4rem 0 .4rem; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); font-size: 1.05rem; }
+  code { background: var(--code); padding: .12rem .35rem; border-radius: 6px; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size: .88em; }
+  pre { background: var(--code); border:1px solid var(--border); border-radius: 8px; padding: .9rem 1rem; overflow:auto; }
+  pre code { background:none; padding:0; font-size: .85rem; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0; font-size: .93rem; }
+  th, td { border:1px solid var(--border); padding:.5rem .65rem; text-align:left; vertical-align:top; }
+  th { background: var(--code); }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:1.2rem; }
+  .card { border:1px solid var(--border); border-radius:8px; padding:.8rem 1rem; }
+  .card h3 { margin-top:0; }
+  .badge { display:inline-block; font-size:.72rem; font-weight:600; padding:.1rem .45rem; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  .ok { color: var(--green); }
+  .no { color: var(--red); }
+  @media (max-width:720px){ .cols{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>ask_user: request/response event pair + endpoint</h1>
+  <p class="lede">Issue <a href="https://github.com/OpenHands/software-agent-sdk/issues/5571">#5571</a> · builds on the <code>ask_user</code> tool from <a href="https://github.com/OpenHands/software-agent-sdk/issues/5570">#5570</a></p>
+
+  <h2>Why</h2>
+  <p>
+    The <code>ask_user</code> tool (#5570) pauses a run so the agent can ask structured
+    questions. That first slice carried the answer back through the ordinary
+    <code>send_message()</code> path as a user message, which the SDK had to guess was an
+    answer rather than a normal turn. This slice gives the pause a first-class,
+    typed transport: a request event when the run pauses, a response event when it
+    is answered, and a dedicated endpoint to record the answer and resume.
+  </p>
+
+  <h2>What changes</h2>
+  <div class="cols">
+    <div class="card">
+      <h3>Before</h3>
+      <ul>
+        <li>Answer arrives as a <code>MessageEvent(source="user")</code>.</li>
+        <li>SDK parses the message text to decide if it is an answer.</li>
+        <li>No way for a client to match an answer to a specific request.</li>
+        <li>No in-band record that a question was asked or answered.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>After</h3>
+      <ul>
+        <li>Run pauses with <code>AskUserRequestEvent</code> (typed <code>request_id</code>).</li>
+        <li>Answer is an <code>AskUserResponseEvent</code> posted to a dedicated endpoint.</li>
+        <li>Answer is matched by <code>request_id</code>; mismatches are 409.</li>
+        <li>Both events are visible in history; neither enters the LLM stream.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Event pair</h2>
+  <table>
+    <tr><th>Event</th><th>Source</th><th>Key fields</th></tr>
+    <tr>
+      <td><code>AskUserRequestEvent</code></td>
+      <td><code>agent</code></td>
+      <td><code>request_id</code>, <code>questions: list[QuestionInfo]</code>, <code>action_id</code>, <code>tool_call_id</code>, <code>tool_name</code>, optional <code>timeout_seconds</code></td>
+    </tr>
+    <tr>
+      <td><code>AskUserResponseEvent</code></td>
+      <td><code>user</code> / <code>environment</code></td>
+      <td><code>request_id</code>, <code>action: accept|decline|cancel</code>, <code>answers: dict[str, AskUserAnswer]</code></td>
+    </tr>
+  </table>
+  <p>
+    Both subclass <code>Event</code> directly (not <code>LLMConvertibleEvent</code>): the
+    agent observes the answer via the <em>tool observation</em>, so the raw pair must
+    stay out of the LLM view — the same reason <code>PauseEvent</code> does.
+  </p>
+
+  <h2>Flow</h2>
+<pre><code>agent calls ask_user
+      │  ResponseDispatchMixin._handle_ask_user_actions
+      ▼
+AskUserRequestEvent emitted  ──►  run pauses (WAITING_FOR_CONFIRMATION)
+      │
+      │  client POSTs /events/respond_to_ask_user {request_id, action, answers}
+      ▼
+EventService.respond_to_ask_user  ──►  AskUserResponseEvent recorded  ──►  run resumes
+      │
+      ▼
+_run loop resolves the pending action into an AskUserObservation (the tool result)</code></pre>
+
+  <h2>Endpoint</h2>
+<pre><code>POST /api/conversations/{conversation_id}/events/respond_to_ask_user
+{
+  "request_id": "&lt;AskUserRequestEvent.request_id&gt;",
+  "action": "accept" | "decline" | "cancel",
+  "answers": {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}}
+}</code></pre>
+  <ul>
+    <li><span class="badge ok">200</span> answer recorded and run resumed.</li>
+    <li><span class="badge no">409</span> <code>request_id</code> does not match the single pending request (<code>AskUserRequestError</code>).</li>
+  </ul>
+
+  <h2>Invariants</h2>
+  <ul>
+    <li><strong>One pending request.</strong> A second <code>ask_user</code> while one is open is rejected with a corrective observation, not a second pause.</li>
+    <li><strong>Answer never becomes a user turn.</strong> The response resolves the pending tool call; it is not appended as an unrelated message.</li>
+    <li><strong>Run always unblocks.</strong> A timeout, conversation close, or crash recovery resolves a stranded request as <code>cancel</code>.</li>
+    <li><strong>State lock off the event loop.</strong> Server paths read the pending request in a worker thread, never holding <code>ConversationState</code>'s lock on the loop.</li>
+  </ul>
+
+  <h2>Compatibility</h2>
+  <ul>
+    <li>Additive: a new event pair and a new endpoint; no existing REST contract changes.</li>
+    <li>TypeScript client gates the feature on agent-server <code>1.54.0</code> via <code>AgentServerFeatureRequirements.askUser</code>.</li>
+    <li><code>ask_user_timeout_seconds</code> defaults to <code>None</code> (wait indefinitely), so existing deployments are unaffected.</li>
+  </ul>
+
+  <h2>Tests</h2>
+  <ul>
+    <li><code>tests/sdk/event/test_ask_user_events.py</code> — event schema and round-trip.</li>
+    <li><code>tests/sdk/agent/test_response_dispatch_ask_user.py</code> — pause, one-pending rule, resolve/reject paths.</li>
+    <li><code>tests/agent_server/test_event_service.py</code> — record/resume, stale id, timeout, close.</li>
+    <li><code>tests/cross/test_remote_conversation_live_server.py::test_ask_user_event_pair_over_real_server</code> — end-to-end over a real server (pause → 409 on stale id → 200 accept → observation).</li>
+    <li>TypeScript: <code>api-clients.test.ts</code>, <code>remote-conversation</code>.</li>
+  </ul>
+</main>
+</body>
+</html>

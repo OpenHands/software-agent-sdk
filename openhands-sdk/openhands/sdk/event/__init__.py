@@ -1,4 +1,16 @@
 from openhands.sdk.event.acp_tool_call import ACPToolCallEvent
+from openhands.sdk.event.ask_user import (
+    ASK_USER_TIMEOUT_SOURCE,
+    AskUserRequestEvent,
+    AskUserResponseEvent,
+)
+from openhands.sdk.event.ask_user_schema import (
+    AskUserAnswer,
+    AskUserRequestError,
+    AskUserResponseAction,
+    QuestionInfo,
+    QuestionOption,
+)
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import (
     Condensation,
@@ -30,6 +42,14 @@ from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
 
 __all__ = [
     "ACPToolCallEvent",
+    "ASK_USER_TIMEOUT_SOURCE",
+    "AskUserAnswer",
+    "AskUserRequestError",
+    "AskUserRequestEvent",
+    "AskUserResponseAction",
+    "AskUserResponseEvent",
+    "QuestionInfo",
+    "QuestionOption",
     "Event",
     "LLMConvertibleEvent",
     "SystemPromptEvent",

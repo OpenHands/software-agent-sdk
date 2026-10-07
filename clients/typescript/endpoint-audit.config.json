@@ -35,6 +35,12 @@
       "reason": "Client-ahead API stacked on the pending Agent Server pre-flight LLM validation endpoint.",
       "owner": "OpenHands TypeScript client maintainers",
       "tracking": "https://github.com/OpenHands/software-agent-sdk/pull/4422"
+    },
+    {
+      "endpoints": ["POST /api/conversations/{}/events/respond_to_ask_user"],
+      "reason": "Client-ahead API for the ask_user request/response pair, added ahead of the pinned Agent Server release.",
+      "owner": "OpenHands SDK maintainers",
+      "tracking": "https://github.com/OpenHands/software-agent-sdk/issues/5571"
     }
   ],
 

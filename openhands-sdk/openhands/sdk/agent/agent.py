@@ -89,6 +89,7 @@ if TYPE_CHECKING:
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
+    AskUserAction,
     FinishAction,
     FinishTool,
     ThinkAction,
@@ -714,6 +715,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # and execute them before sampling new actions.
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
+            if self._resolve_pending_ask_user(state, pending_actions, on_event):
+                # ask_user actions resolve from the request/response pair, not
+                # from implicit execution; only run any non-ask_user leftovers
+                # and only when no request is still pending.
+                remaining = [
+                    ae
+                    for ae in pending_actions
+                    if not isinstance(ae.action, AskUserAction)
+                ]
+                if (
+                    remaining
+                    and state.execution_status
+                    != ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                ):
+                    self._execute_actions(conversation, remaining, on_event)
+                return
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),
@@ -927,6 +944,19 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
+            if self._resolve_pending_ask_user(state, pending_actions, on_event):
+                remaining = [
+                    ae
+                    for ae in pending_actions
+                    if not isinstance(ae.action, AskUserAction)
+                ]
+                if (
+                    remaining
+                    and state.execution_status
+                    != ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                ):
+                    await self._aexecute_actions(conversation, remaining, on_event)
+                return
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),

@@ -30,6 +30,11 @@ export const AgentServerFeatureRequirements = {
     displayName: 'MCP OAuth API',
     minVersion: '1.31.0',
   },
+  askUser: {
+    feature: 'ask-user',
+    displayName: 'ask_user request/response API',
+    minVersion: '1.54.0',
+  },
 } as const satisfies Record<string, AgentServerFeatureRequirement>;
 
 export class AgentServerVersionError extends Error {

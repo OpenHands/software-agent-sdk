@@ -10,12 +10,24 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import (
+    AskUserRequestEvent,
+    AskUserResponseEvent,
+    MessageEvent,
+    ObservationEvent,
+    QuestionInfo,
+)
+from openhands.sdk.event.ask_user_schema import AskUserAnswer
 from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.builtins.ask_user import (
+    AskUserAction,
+    AskUserObservation,
+)
 
 
 if TYPE_CHECKING:
@@ -35,6 +47,54 @@ if TYPE_CHECKING:
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 
 logger = get_logger(__name__)
+
+
+def build_ask_user_observation(
+    questions: list[QuestionInfo],
+    action: str,
+    answers: dict[str, AskUserAnswer],
+) -> AskUserObservation:
+    """Build the tool observation that reflects an ``ask_user`` resolution."""
+    if action == "accept":
+        lines = [
+            f"- {question.question} -> {answers[question.id].label}"
+            for question in questions
+            if question.id in answers
+        ]
+        message = (
+            "User answered:\n" + "\n".join(lines)
+            if lines
+            else "User accepted without selecting an option."
+        )
+        return AskUserObservation(resolution="accept", answers=answers, message=message)
+    if action == "decline":
+        return AskUserObservation(
+            resolution="decline",
+            message="User declined to answer the question(s).",
+        )
+    return AskUserObservation(
+        resolution="cancel",
+        message=(
+            "The question was dismissed (cancelled). Proceed using your best "
+            "judgement or try a different approach."
+        ),
+    )
+
+
+def pending_ask_user_request(
+    state: ConversationState,
+) -> AskUserRequestEvent | None:
+    """Return the single unresolved ``ask_user`` request, if any.
+
+    A request is unresolved until a matching :class:`AskUserResponseEvent`
+    carrying its ``request_id`` lands on the active branch.
+    """
+    branch = state.active_branch()
+    resolved = {e.request_id for e in branch if isinstance(e, AskUserResponseEvent)}
+    for event in reversed(branch):
+        if isinstance(event, AskUserRequestEvent) and event.request_id not in resolved:
+            return event
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +243,12 @@ class ResponseDispatchMixin:
                 continue
             action_events.append(action_event)
 
+        paused, action_events = self._handle_ask_user_actions(
+            state, action_events, on_event
+        )
+        if paused:
+            return
+
         if self._requires_user_confirmation(state, action_events):
             return
 
@@ -237,6 +303,12 @@ class ResponseDispatchMixin:
                 continue
             action_events.append(action_event)
 
+        paused, action_events = self._handle_ask_user_actions(
+            state, action_events, on_event
+        )
+        if paused:
+            return
+
         if self._requires_user_confirmation(state, action_events):
             return
 
@@ -244,6 +316,138 @@ class ResponseDispatchMixin:
             await self._aexecute_actions(conversation, action_events, on_event)
 
         self._maybe_emit_vllm_tokens(llm_response, on_event)
+
+    def _handle_ask_user_actions(
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> tuple[bool, list[ActionEvent]]:
+        """Pause for ``ask_user`` calls, or reject them with a corrective result.
+
+        Returns ``(paused, remaining_actions)``. ``ask_user`` actions are always
+        removed from ``remaining_actions``: either they paused the run (a request
+        event was emitted) or they were rejected with an observation because a
+        request is already pending or a second one was in the same batch.
+        """
+        if not any(isinstance(ae.action, AskUserAction) for ae in action_events):
+            return False, action_events
+
+        pending = pending_ask_user_request(state)
+        paused = False
+        remaining: list[ActionEvent] = []
+        for action_event in action_events:
+            if not isinstance(action_event.action, AskUserAction):
+                remaining.append(action_event)
+                continue
+            if pending is not None:
+                self._reject_ask_user_action(
+                    action_event,
+                    on_event,
+                    "Another ask_user request is already pending. Wait for the "
+                    "user's answer before asking again.",
+                )
+                continue
+            if paused:
+                self._reject_ask_user_action(
+                    action_event,
+                    on_event,
+                    "Only one ask_user request may be pending at a time.",
+                )
+                continue
+            request = AskUserRequestEvent(
+                request_id=str(uuid4()),
+                questions=action_event.action.questions,
+                action_id=action_event.id,
+                tool_call_id=action_event.tool_call_id,
+                tool_name=action_event.tool_name,
+                timeout_seconds=action_event.action.timeout_seconds,
+            )
+            on_event(request)
+            pending = request
+            paused = True
+
+        if paused:
+            state.execution_status = (
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
+        return paused, remaining
+
+    def _reject_ask_user_action(
+        self,
+        action_event: ActionEvent,
+        on_event: ConversationCallbackType,
+        message: str,
+    ) -> None:
+        on_event(
+            ObservationEvent(
+                observation=AskUserObservation(resolution="cancel", message=message),
+                action_id=action_event.id,
+                tool_name=action_event.tool_name,
+                tool_call_id=action_event.tool_call_id,
+            )
+        )
+
+    def _resolve_pending_ask_user(
+        self,
+        state: ConversationState,
+        pending_actions: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Resolve ``ask_user`` actions from the request/response pair.
+
+        Called from the run loop when there are unmatched actions. Returns
+        ``True`` when it handled at least one ``ask_user`` action; the run then
+        either pauses again (no response yet) or emits the resolving observation.
+        """
+        ask_user_actions = [
+            ae for ae in pending_actions if isinstance(ae.action, AskUserAction)
+        ]
+        if not ask_user_actions:
+            return False
+
+        branch = state.active_branch()
+        requests_by_action = {
+            e.action_id: e for e in branch if isinstance(e, AskUserRequestEvent)
+        }
+        responses_by_request = {
+            e.request_id: e for e in branch if isinstance(e, AskUserResponseEvent)
+        }
+
+        handled = False
+        still_pending = False
+        for action_event in ask_user_actions:
+            request = requests_by_action.get(action_event.id)
+            if request is None:
+                self._reject_ask_user_action(
+                    action_event,
+                    on_event,
+                    "No ask_user request event was recorded for this action.",
+                )
+                handled = True
+                continue
+            response = responses_by_request.get(request.request_id)
+            if response is None:
+                still_pending = True
+                handled = True
+                continue
+            on_event(
+                ObservationEvent(
+                    observation=build_ask_user_observation(
+                        request.questions, response.action, response.answers
+                    ),
+                    action_id=action_event.id,
+                    tool_name=action_event.tool_name,
+                    tool_call_id=action_event.tool_call_id,
+                )
+            )
+            handled = True
+
+        if still_pending:
+            state.execution_status = (
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
+        return handled
 
     def _handle_content_response(
         self,
