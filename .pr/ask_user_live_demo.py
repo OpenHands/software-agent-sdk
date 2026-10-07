@@ -93,8 +93,7 @@ assert remaining == []
 observations = [
     e.observation
     for e in conversation.state.events
-    if isinstance(e, ObservationEvent)
-    and isinstance(e.observation, AskUserObservation)
+    if isinstance(e, ObservationEvent) and isinstance(e.observation, AskUserObservation)
 ]
 print("ask_user observations:", [o.model_dump() for o in observations])
 assert len(observations) == 1
@@ -143,11 +142,7 @@ conversation2: LocalConversation = Conversation(
 print("\n== scenario 2: invalid ask_user call (1 option) ==")
 conversation2.send_message("ask me")
 conversation2.run()
-errors = [
-    e.error
-    for e in conversation2.state.events
-    if isinstance(e, AgentErrorEvent)
-]
+errors = [e.error for e in conversation2.state.events if isinstance(e, AgentErrorEvent)]
 print("corrective errors:", errors)
 assert any("between 2 and 4 options" in e for e in errors)
 assert conversation2.state.execution_status == ConversationExecutionStatus.FINISHED
