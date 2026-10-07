@@ -233,7 +233,7 @@ def test_links_planted_by_the_sandbox_are_removed_not_followed(server, tmp_path)
             rm -rf "$HOME/.cache"
             ln -s ../workspace/precious "$HOME/.cache"
             cd /workspace && git init -q && echo build/ > .gitignore
-            ln -s {outside}/build build
+            mkdir build && ln -s {outside}/build build/out
             """,
         )
         home = _home(client, conversation_id)
@@ -245,6 +245,7 @@ def test_links_planted_by_the_sandbox_are_removed_not_followed(server, tmp_path)
 
         assert not os.path.lexists(home / ".cache")
         assert not os.path.lexists(home / ".npm")
+        assert not os.path.lexists(workspace / "build")
         assert (workspace / "precious" / "data").read_text() == "keep\n"
         for name in ("npm", "build"):
             assert (outside / name / "precious").read_text() == "keep"

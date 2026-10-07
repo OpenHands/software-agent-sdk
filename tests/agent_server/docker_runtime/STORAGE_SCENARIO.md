@@ -29,9 +29,9 @@ to what must go:
    sheds its four dependency dirs and nothing else. The running conversation is
    unchanged, file for file.
 2. **Planted links are removed, never followed.** The sandbox points `~/.npm`
-   and an ignored `build` at host paths outside the runtime, and `~/.cache` at
-   a relative path that lands in its own workspace on the host. All targets
-   survive.
+   and a link inside an ignored `build/` at host paths outside the runtime, and
+   `~/.cache` at a relative path that lands in its own workspace on the host.
+   The links and `build/` go; all targets survive.
 3. **A caller-supplied workspace is never shed**, even over budget; the
    sandbox's own caches still go.
 4. **A reclaimed conversation resumes and works**: reading a workspace file
