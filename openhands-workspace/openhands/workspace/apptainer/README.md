@@ -97,7 +97,7 @@ available inside the workspace when the host has a working NVIDIA runtime.
 | `host_port` | `int \| None` | `None` | Port to bind to (auto-assigned if None) |
 | `mount_dir` | `str \| None` | `None` | Host directory to mount into container |
 | `cache_dir` | `str \| None` | `~/.apptainer_cache` | Directory for caching SIF files |
-| `forward_env` | `list[str]` | `["DEBUG", "SESSION_API_KEY", "OH_SESSION_API_KEYS_0", + OTEL/Laminar vars] | Environment variables to forward (incl. observability) |
+| `forward_env` | `list[str]` | `["DEBUG"]` | Environment variables to forward |
 | `detach_logs` | `bool` | `True` | Stream logs in background |
 | `platform` | `PlatformType` | `"linux/amd64"` | Platform architecture |
 | `extra_ports` | `bool` | `False` | Expose the additional VSCode port |

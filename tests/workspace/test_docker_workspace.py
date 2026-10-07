@@ -263,53 +263,6 @@ def test_docker_workspace_uses_forwarded_session_key(
 
 
 # ===========================================================================
-# forward_env observability tests
-# ===========================================================================
-
-
-@pytest.mark.parametrize("cls", [DockerWorkspace, ApptainerWorkspace])
-def test_forward_env_default_includes_observability_vars(cls):
-    """OTEL/Laminar vars must be forwarded so in-container tracing initializes."""
-    forward_env = cls.model_fields["forward_env"].get_default(call_default_factory=True)
-    assert "SESSION_API_KEY" in forward_env
-    assert "OH_SESSION_API_KEYS_0" in forward_env
-    for key in (
-        "LMNR_PROJECT_API_KEY",
-        "OTEL_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    ):
-        assert key in forward_env
-
-
-def test_docker_run_forwards_observability_env(mock_docker_workspace, monkeypatch):
-    """Set OTEL vars are passed as -e flags on the docker run command."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://localhost:4317")
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "test-key")
-
-    with (
-        patch(
-            "openhands.workspace.docker.workspace.check_port_available",
-            return_value=True,
-        ),
-        patch.object(DockerWorkspace, "_wait_for_health"),
-    ):
-        workspace, mock_exec = mock_docker_workspace()
-        workspace.host_port = 8010
-        mock_exec.reset_mock()
-        mock_exec.return_value = Mock(returncode=0, stdout="container_123", stderr="")
-
-        workspace._start_container("test:latest", None)
-
-        run_cmd = next(
-            call[0][0] for call in mock_exec.call_args_list if "run" in call[0][0]
-        )
-        assert "-e" in run_cmd
-        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4317" in run_cmd
-        assert "LMNR_PROJECT_API_KEY=test-key" in run_cmd
-
-
-# ===========================================================================
 # health_check_timeout tests for DockerWorkspace and ApptainerWorkspace
 # ===========================================================================
 
