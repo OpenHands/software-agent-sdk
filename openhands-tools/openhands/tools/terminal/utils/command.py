@@ -56,12 +56,12 @@ def _last_heredoc_is_closed(root: Node) -> bool:
     from the tree keeps the guard identical on every platform instead of
     depending on a ``bash`` executable being present and working.
     """
-    entries: list[tuple[int, str, str]] = []
+    entries: list[tuple[int, str, bytes]] = []
     stack = [root]
     while stack:
         node = stack.pop()
         if node.type in ("heredoc_start", "heredoc_body", "heredoc_end"):
-            entries.append((node.start_byte, node.type, node.text.decode()))
+            entries.append((node.start_byte, node.type, node.text or b""))
         stack.extend(node.named_children)
     entries.sort()
 
@@ -75,7 +75,7 @@ def _last_heredoc_is_closed(root: Node) -> bool:
     )
     if start is None:
         return False
-    delimiter = re.sub(r"['\"]", "", entries[start][2].strip())
+    delimiter = re.sub(r"['\"]", "", entries[start][2].decode().strip())
     if delimiter.startswith("-"):
         delimiter = delimiter[1:]
     rest = entries[start + 1 :]
@@ -84,7 +84,7 @@ def _last_heredoc_is_closed(root: Node) -> bool:
     bodies = [text for _, kind, text in rest if kind == "heredoc_body"]
     if not bodies:
         return False
-    lines = [line for line in bodies[-1].splitlines() if line.strip()]
+    lines = [line for line in bodies[-1].decode().splitlines() if line.strip()]
     return bool(lines) and lines[-1].strip() == delimiter
 
 
