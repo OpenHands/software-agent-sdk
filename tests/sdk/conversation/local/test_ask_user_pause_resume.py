@@ -447,3 +447,53 @@ def test_parallel_sibling_call_keeps_batch_with_results(tmp_path):
         assert sum(isinstance(e, ObservationEvent) for e in events) == 2
     finally:
         resumed.close()
+
+
+def test_warm_parallel_sibling_batch_resolves_in_view():
+    """Warm conversation: a mixed batch never collapses and stays coherent.
+
+    Unlike the cold-reload case, the view already holds the sibling action, so
+    answering must not rebuild (full enforcement would drop the incomplete
+    batch); the post-execution rebuild then groups the complete batch.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+    conversation: LocalConversation = Conversation(
+        agent=Agent(llm=llm, tools=[Tool(name=AskUserTool.name)])
+    )
+    turn1 = _response(
+        "resp_batch",
+        "thinking",
+        [
+            _tool_call("ask_1", "ask_user", ASK_ARGS),
+            _tool_call("think_1", "think", json.dumps({"thought": "x"})),
+        ],
+    )
+    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=turn1):
+        conversation.send_message("add auth")
+        conversation.run()
+    request_id = [
+        p.id
+        for p in ConversationState.get_unmatched_actions(conversation.state.events)
+        if p.tool_name == "ask_user"
+    ][0]
+    # The batch is still present while the answer is pending, and answering keeps
+    # it (the sibling action is not collapsed).
+    conversation.send_message(
+        json.dumps(
+            {
+                "request_id": request_id,
+                "action": "accept",
+                "answers": {"auth": [{"option_id": "jwt"}]},
+            }
+        )
+    )
+    assert sum(isinstance(e, ActionEvent) for e in conversation.state.view.events) == 2
+
+    with patch(
+        "openhands.sdk.llm.llm.litellm_completion",
+        return_value=_response("resp_done", "done"),
+    ):
+        conversation.run()
+    events = conversation.state.view.events
+    assert sum(isinstance(e, ActionEvent) for e in events) == 2
+    assert sum(isinstance(e, ObservationEvent) for e in events) == 2
