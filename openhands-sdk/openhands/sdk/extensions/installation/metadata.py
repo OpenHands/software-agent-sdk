@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
+from filelock import BaseFileLock, FileLock, Timeout
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.extensions.installation.info import InstallationInfo
@@ -12,9 +13,12 @@ from openhands.sdk.extensions.installation.interface import (
 )
 from openhands.sdk.extensions.installation.utils import validate_extension_name
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.files import atomic_write_text
 
 
 logger = get_logger(__name__)
+
+_LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
 
 
 class MetadataSession:
@@ -32,10 +36,12 @@ class MetadataSession:
         installed_dir: Path,
         metadata: InstallationMetadata,
         interface: InstallationInterface | None = None,
+        lock: BaseFileLock | None = None,
     ) -> None:
         self.installed_dir = installed_dir
         self.metadata = metadata
         self.interface = interface
+        self.lock = lock
 
     @property
     def extensions(self) -> dict[str, InstallationInfo]:
@@ -73,8 +79,12 @@ class MetadataSession:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_type is None:
-            self.metadata.save_to_dir(self.installed_dir)
+        try:
+            if exc_type is None:
+                self.metadata.save_to_dir(self.installed_dir)
+        finally:
+            if self.lock is not None:
+                self.lock.release()
 
 
 class InstallationMetadata(BaseModel):
@@ -128,14 +138,36 @@ class InstallationMetadata(BaseModel):
     ) -> MetadataSession:
         """Load metadata and return a session that auto-saves on exit.
 
+        Acquires a file lock on ``installed_dir`` before loading and holds it
+        until the session exits, so a load-modify-save cycle cannot interleave
+        with another one (another thread or process). Always use the result in
+        a ``with`` block, and do not nest sessions on the same directory.
+
         Args:
             installed_dir: Root directory where extensions are installed.
             interface: Optional installation interface, required if the
                 session will call ``sync()``.
         """
-        return MetadataSession(
-            installed_dir, cls.load_from_dir(installed_dir), interface
-        )
+        installed_dir.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(installed_dir / ".metadata.lock")
+        try:
+            lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS)
+        except Timeout:
+            logger.error(
+                f"Failed to acquire installation metadata lock in "
+                f"{_LOCK_TIMEOUT_SECONDS}s: {installed_dir}"
+            )
+            raise TimeoutError(
+                "Installation metadata lock acquisition timed out after "
+                f"{_LOCK_TIMEOUT_SECONDS}s"
+            )
+        try:
+            return MetadataSession(
+                installed_dir, cls.load_from_dir(installed_dir), interface, lock=lock
+            )
+        except BaseException:
+            lock.release()
+            raise
 
     @classmethod
     def get_metadata_path(cls, installed_dir: Path) -> Path:
@@ -159,7 +191,7 @@ class InstallationMetadata(BaseModel):
         """Save metadata to the installed extensions directory."""
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        atomic_write_text(metadata_path, self.model_dump_json(indent=2), mode=0o644)
 
     def validate_tracked(self, installed_dir: Path) -> list[InstallationInfo]:
         """Validate tracked extensions exist on disk.
