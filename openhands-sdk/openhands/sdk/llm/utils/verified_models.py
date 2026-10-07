@@ -9,8 +9,9 @@ Unversioned "current" aliases (for example ``deepseek-chat``, ``kimi-for-coding`
 stay. When a new version lands, drop the oldest one in the same line.
 """
 
-# GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
+# GPT: gpt-6.1, gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -22,10 +23,11 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5.5 and 5. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5.5, 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
 VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
@@ -139,10 +141,12 @@ VERIFIED_OPENROUTER_MODELS = [
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-fable-5-1",
     "claude-fable-5",
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
