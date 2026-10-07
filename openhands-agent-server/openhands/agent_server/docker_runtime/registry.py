@@ -46,6 +46,30 @@ _PERSISTENCE_DIR: Final[str] = "/var/openhands/.openhands"
 _WORKSPACE_DIR: Final[str] = "/workspace"
 _OWNER_LABEL: Final[str] = "ai.openhands.runtime-owner"
 
+# Environment variables read by openhands.sdk.observability (Laminar / OTEL
+# tracing). Only those actually set on the host are forwarded into the
+# conversation container, so an unconfigured host injects nothing.
+_OBSERVABILITY_ENV_VARS: Final[tuple[str, ...]] = (
+    "LMNR_PROJECT_API_KEY",
+    "LMNR_BASE_URL",
+    "LMNR_HTTP_PORT",
+    "LMNR_GRPC_PORT",
+    "LMNR_FORCE_HTTP",
+    "LMNR_INSTRUMENTS",
+    "LMNR_SPAN_CONTEXT",
+    "OTEL_ENDPOINT",
+    "OTEL_EXPORTER",
+    "OTEL_HEADERS",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OPENHANDS_OBSERVABILITY_METADATA",
+    "OPENHANDS_OBSERVABILITY_TAGS",
+    "OPENHANDS_OBSERVABILITY_SPAN_NAME",
+    "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT",
+)
+
 
 class RuntimeArchivedError(RuntimeError):
     """Retention deleted the runtime; the conversation is read-only."""
@@ -430,8 +454,15 @@ class DockerConversationRegistry(ConversationRegistry):
         if "DEBUG" in os.environ:
             env["DEBUG"] = os.environ["DEBUG"]
 
+        # Forward host observability configuration so the in-container agent
+        # server initializes tracing with the same Laminar/OTEL backend.
+        for name in _OBSERVABILITY_ENV_VARS:
+            value = os.environ.get(name)
+            if value is not None:
+                env[name] = value
+
         flags: list[str] = []
-        for name in (
+        forwarded_env_names: list[str] = [
             "HOME",
             "OH_CONVERSATIONS_PATH",
             "OH_PERSISTENCE_DIR",
@@ -441,7 +472,11 @@ class DockerConversationRegistry(ConversationRegistry):
             V1_SESSION_API_KEY_ENV,
             "OH_RUNTIME_LAUNCHED_PROFILE",
             "DEBUG",
-        ):
+        ]
+        forwarded_env_names.extend(
+            name for name in _OBSERVABILITY_ENV_VARS if name in env
+        )
+        for name in forwarded_env_names:
             if name in env:
                 flags.extend(("-e", name))
         for host, target in (
