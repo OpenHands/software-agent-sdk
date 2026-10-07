@@ -2,6 +2,7 @@ import asyncio
 import itertools
 import shutil
 import time
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from pathlib import Path
 from typing import Final, Protocol
@@ -60,10 +61,13 @@ class Reclaimer:
         *,
         disk_budget: float | None = None,
         retention_days: float | None = None,
+        policy: Callable[[], tuple[float | None, float | None]] | None = None,
     ) -> None:
         self.storage = storage
         self.disk_budget = disk_budget
         self.retention_days = retention_days
+        # Re-read (disk budget, retention days) before every pass.
+        self.policy = policy
         self.trash = Trash(storage.root)
         self._maintenance: asyncio.Task[None] | None = None
         self._over_budget_warned = False
@@ -73,7 +77,7 @@ class Reclaimer:
         for runtime in await asyncio.to_thread(self.storage.runtimes):
             await self.reclaim(runtime, Tier.CACHES)
         self.trash.empty_soon()
-        if self.disk_budget or self.retention_days:
+        if self.policy or self.disk_budget or self.retention_days:
             self._maintenance = asyncio.create_task(self._maintenance_loop())
 
     async def shutdown(self) -> None:
@@ -86,6 +90,8 @@ class Reclaimer:
 
     async def run_pass(self) -> None:
         """Apply the configured policies once; log only if something was freed."""
+        if self.policy is not None:
+            self.disk_budget, self.retention_days = self.policy()
         free_before = _free_bytes(self.storage.root)
         # Retention first: what it archives no longer counts against the budget.
         archived = await self._enforce_retention()

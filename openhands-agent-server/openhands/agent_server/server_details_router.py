@@ -80,6 +80,8 @@ class ServerInfo(BaseModel):
             # a create whose response it never saw.
             "idempotent_conversation_create_v1",
             "tool_catalog_v1",
+            # misc_settings.runtime is applied live (runtime_settings.py).
+            "runtime_settings_v1",
             "agent_profile_draft_materialize_v1",
         ]
     )

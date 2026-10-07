@@ -20,12 +20,12 @@ from openhands.agent_server.config import V1_SESSION_API_KEY_ENV, Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.docker_runtime.provisioning import RuntimeProvisioningStore
 from openhands.agent_server.docker_runtime.storage import DockerRuntimeStorage
-from openhands.agent_server.launch import container_browser_enabled
 from openhands.agent_server.models import (
     ConversationRuntimeInfo,
     ConversationRuntimeStatus,
 )
 from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.agent_server.runtime_settings import load_runtime_settings
 from openhands.agent_server.storage import Reclaimer
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.logger import get_logger
@@ -92,6 +92,7 @@ class DockerConversationRegistry(ConversationRegistry):
             DockerRuntimeStorage(self),
             disk_budget=config.conversation_storage_disk_budget,
             retention_days=config.conversation_storage_retention_days,
+            policy=lambda: load_runtime_settings().docker_storage_policy(config),
         )
 
     def configure_service(self, service: ConversationService) -> None:
@@ -149,8 +150,7 @@ class DockerConversationRegistry(ConversationRegistry):
         await asyncio.to_thread(self.cleanup_stale_containers)
         # After the cleanup: with no container left, every runtime is reclaimable.
         await self.reclaimer.start()
-        if self.config.conversation_idle_ttl_seconds:
-            self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
+        self._eviction_task = asyncio.create_task(self._evict_idle_runtimes_loop())
 
     def add_execution_routes(self, router: APIRouter) -> None:
         from openhands.agent_server.docker_runtime.routers import (
@@ -340,12 +340,14 @@ class DockerConversationRegistry(ConversationRegistry):
         await self.reclaimer.shutdown()
 
     async def _evict_idle_runtimes_loop(self) -> None:
-        ttl = self.config.conversation_idle_ttl_seconds
-        if not ttl:
-            return
-        interval = max(1.0, min(60.0, ttl / 2))
         while True:
-            await asyncio.sleep(interval)
+            # Re-read so a Settings change applies without a restart.
+            ttl = await asyncio.to_thread(
+                lambda: load_runtime_settings().docker_idle_ttl_seconds(self.config)
+            )
+            await asyncio.sleep(max(1.0, min(60.0, ttl / 2)) if ttl else 60.0)
+            if not ttl:
+                continue
             try:
                 await self._evict_idle_runtimes(ttl)
             except Exception:
@@ -403,6 +405,7 @@ class DockerConversationRegistry(ConversationRegistry):
 
     def _build_container(self, conversation_id: UUID) -> ConversationContainer:
         identity = self.provisioning.load(conversation_id)
+        runtime = load_runtime_settings()
         runtime_dir = self.provisioning.runtime_dir(conversation_id)
         persistence_dir = self.provisioning.direct_child(runtime_dir, "persistence")
         conversation_dir = self.conversation_dir(conversation_id)
@@ -418,7 +421,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 "OH_PERSISTENCE_DIR": _PERSISTENCE_DIR,
                 "OH_CONVERSATION_RUNTIME": "local",
                 "OH_ENABLE_BROWSER": (
-                    "1" if container_browser_enabled(self.config) else "0"
+                    "1" if runtime.docker_browser_enabled(self.config) else "0"
                 ),
                 "OH_SECRET_KEY": identity.encryption_key.get_secret_value(),
                 V1_SESSION_API_KEY_ENV: identity.api_key.get_secret_value(),
@@ -452,10 +455,12 @@ class DockerConversationRegistry(ConversationRegistry):
             (workspace_dir, _WORKSPACE_DIR),
         ):
             flags.extend(("-v", f"{host}:{target}"))
-        if self.config.conversation_container_memory:
-            flags.extend(("--memory", self.config.conversation_container_memory))
-        if self.config.conversation_container_cpus is not None:
-            flags.extend(("--cpus", str(self.config.conversation_container_cpus)))
+        memory = runtime.docker_memory or self.config.conversation_container_memory
+        if memory:
+            flags.extend(("--memory", memory))
+        cpus = runtime.docker_cpus or self.config.conversation_container_cpus
+        if cpus is not None:
+            flags.extend(("--cpus", str(cpus)))
         if self.config.conversation_container_pids_limit is not None:
             flags.extend(
                 ("--pids-limit", str(self.config.conversation_container_pids_limit))

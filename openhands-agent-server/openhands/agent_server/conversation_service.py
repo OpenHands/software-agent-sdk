@@ -7,8 +7,9 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakValueDictionary
 
@@ -43,6 +44,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import FileSecretsStore
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.runtime_settings import load_runtime_settings
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.telemetry import (
     ConversationTelemetryContext,
@@ -93,6 +95,9 @@ if TYPE_CHECKING:
 _AUTOMATION_TAG_KEYS = ("automationtrigger", "automationid", "automationrunid")
 
 
+WORKTREE_RETENTION_INTERVAL_SECONDS = 300.0
+
+
 class CredentialBindingActivationRequired(RuntimeError):
     pass
 
@@ -135,7 +140,9 @@ def _local_branch_exists(repo_root: Path, branch: str) -> bool:
     return True
 
 
-def _get_worktree_start_point(repo_root: Path) -> str:
+def _get_worktree_start_point(
+    repo_root: Path, base: Literal["default_branch", "head"] = "default_branch"
+) -> str:
     """Resolve the base ref a new conversation worktree should be created from.
 
     Policy (in order):
@@ -149,7 +156,11 @@ def _get_worktree_start_point(repo_root: Path) -> str:
          available.
       4. Fall back to ``HEAD`` only when none of the above applies, so worktree
          creation still succeeds on freshly initialized repos.
+
+    ``base="head"`` skips the policy and branches from the checkout's ``HEAD``.
     """
+    if base == "head":
+        return "HEAD"
     if _has_git_remote(repo_root):
         try:
             run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
@@ -223,7 +234,9 @@ def _plan_conversation_worktree(
     )
 
 
-def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
+def _create_conversation_worktree(
+    plan: _WorktreePlan, base: Literal["default_branch", "head"] = "default_branch"
+) -> LocalWorkspace:
     repo_root = plan.repo_root
     plan.worktree_root.parent.mkdir(parents=True, exist_ok=True)
 
@@ -249,13 +262,46 @@ def _create_conversation_worktree(plan: _WorktreePlan) -> LocalWorkspace:
             "-b",
             plan.branch,
             str(plan.worktree_root),
-            _get_worktree_start_point(repo_root),
+            _get_worktree_start_point(repo_root, base),
         ],
         repo_root,
     )
 
     plan.workspace_dir.mkdir(parents=True, exist_ok=True)
     return LocalWorkspace(working_dir=plan.workspace_dir)
+
+
+def _remove_conversation_worktree(
+    conversation_worktree_root: Path, conversation_id: UUID, *, delete_branch: bool
+) -> bool:
+    """Remove the worktree the server created for a conversation, if any."""
+    base = conversation_worktree_root / str(conversation_id)
+    if not base.is_dir():
+        return False
+    for worktree in base.iterdir():
+        if not worktree.is_dir():
+            continue
+        try:
+            repo_root = Path(
+                run_git_command(
+                    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                    worktree,
+                )
+            ).parent
+            run_git_command(
+                ["git", "worktree", "remove", "--force", str(worktree)], repo_root
+            )
+            run_git_command(["git", "worktree", "prune"], repo_root)
+            if delete_branch:
+                branch = f"openhands/{conversation_id}"
+                if run_git_command(["git", "branch", "--list", branch], repo_root):
+                    run_git_command(["git", "branch", "-D", branch], repo_root)
+        except GitCommandError:
+            logger.warning(
+                "Could not remove worktree %s through git", worktree, exc_info=True
+            )
+    safe_rmtree(base, f"worktree for {conversation_id}")
+    return True
 
 
 logger = logging.getLogger(__name__)
@@ -531,6 +577,7 @@ class ConversationService:
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _eviction_task: asyncio.Task | None = field(default=None, init=False)
+    _worktree_retention_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
     _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
     _credential_bindings: dict[UUID, dict[str, VersionedCredentialBinding]] = field(
@@ -1574,7 +1621,9 @@ class ConversationService:
             )
         )
         workspace = (
-            _create_conversation_worktree(worktree)
+            _create_conversation_worktree(
+                worktree, (await asyncio.to_thread(load_runtime_settings)).worktree_base
+            )
             if worktree is not None
             else request.workspace
         )
@@ -1764,6 +1813,14 @@ class ConversationService:
                 event_service.conversation_dir,
                 f"conversation directory for {conversation_id}",
             )
+            runtime = await asyncio.to_thread(load_runtime_settings)
+            if runtime.worktree_remove_on_delete:
+                await asyncio.to_thread(
+                    _remove_conversation_worktree,
+                    self.conversation_worktree_root,
+                    conversation_id,
+                    delete_branch=runtime.worktree_delete_branch,
+                )
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
@@ -2039,12 +2096,64 @@ class ConversationService:
                 )
 
         self._lease_renewal_task = asyncio.create_task(self._renew_all_leases_loop())
+        self._worktree_retention_task = asyncio.create_task(
+            self._worktree_retention_loop()
+        )
         if self.conversation_idle_ttl_seconds:
             self._eviction_task = asyncio.create_task(
                 self._evict_idle_conversations_loop()
             )
 
         return self
+
+    async def _worktree_retention_loop(self) -> None:
+        while True:
+            await asyncio.sleep(WORKTREE_RETENTION_INTERVAL_SECONDS)
+            try:
+                await self.enforce_worktree_retention()
+            except Exception:
+                logger.exception("error_enforcing_worktree_retention")
+
+    async def enforce_worktree_retention(self) -> int:
+        """Remove worktrees of conversations inactive past the retention period.
+
+        History is kept; the conversation can no longer run in that worktree.
+        """
+        runtime = await asyncio.to_thread(load_runtime_settings)
+        days = runtime.worktree_retention_days
+        root = self.conversation_worktree_root
+        if not days or not root.is_dir():
+            return 0
+        cutoff = utc_now() - timedelta(days=days)
+        removed = 0
+        for entry in await asyncio.to_thread(lambda: list(root.iterdir())):
+            try:
+                conversation_id = UUID(entry.name)
+            except ValueError:
+                continue
+            info = await self.get_conversation(conversation_id)
+            if info is None:
+                last_active = datetime.fromtimestamp(entry.stat().st_mtime, UTC)
+            elif info.execution_status == ConversationExecutionStatus.RUNNING:
+                continue
+            else:
+                last_active = info.updated_at
+            if last_active.tzinfo is None:
+                last_active = last_active.replace(tzinfo=UTC)
+            if last_active > cutoff:
+                continue
+            if await asyncio.to_thread(
+                _remove_conversation_worktree,
+                root,
+                conversation_id,
+                delete_branch=runtime.worktree_delete_branch,
+            ):
+                removed += 1
+        if removed:
+            logger.info(
+                "Removed %d worktrees past %.0f days of retention", removed, days
+            )
+        return removed
 
     async def _renew_all_leases_loop(self) -> None:
         """Single background task that renews leases for all active conversations.
@@ -2132,6 +2241,12 @@ class ConversationService:
                         pending.setdefault(secret_name, binding)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._worktree_retention_task is not None:
+            self._worktree_retention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._worktree_retention_task
+            self._worktree_retention_task = None
+
         if self._eviction_task is not None:
             self._eviction_task.cancel()
             with suppress(asyncio.CancelledError):

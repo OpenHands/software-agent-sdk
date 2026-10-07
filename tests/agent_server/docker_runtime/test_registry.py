@@ -336,13 +336,16 @@ async def test_runtime_access_refreshes_idle_deadline(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_disabled_idle_ttl_does_not_start_eviction(tmp_path, monkeypatch):
+async def test_eviction_loop_runs_without_ttl_so_settings_can_enable_it(
+    tmp_path, monkeypatch
+):
     runtime = registry(tmp_path, monkeypatch, idle_ttl=None)
     monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
 
     await runtime.start()
 
-    assert runtime._eviction_task is None
+    assert runtime._eviction_task is not None
+    await runtime.shutdown()
 
 
 @pytest.mark.asyncio

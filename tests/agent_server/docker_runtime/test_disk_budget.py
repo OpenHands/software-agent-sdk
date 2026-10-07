@@ -216,7 +216,9 @@ async def test_non_git_workspace_is_skipped(tmp_path, monkeypatch, usage):
 
 
 @pytest.mark.asyncio
-async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch):
+async def test_disk_budget_loop_runs_even_unset_so_settings_can_enable_it(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(reclaimer_module, "MAINTENANCE_INTERVAL", 3600)
     runtime = registry(tmp_path, monkeypatch)
     monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
@@ -235,7 +237,7 @@ async def test_disk_budget_loop_runs_only_when_configured(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(unset, "cleanup_stale_containers", lambda: None)
     await unset.start()
-    assert unset.reclaimer._maintenance is None
+    assert unset.reclaimer._maintenance is not None
     await unset.shutdown()
 
 

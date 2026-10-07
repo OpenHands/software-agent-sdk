@@ -171,8 +171,10 @@ def test_retention_days_is_read_from_nested_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_retention_loop_runs_only_when_configured(tmp_path, monkeypatch):
-    for days, expected in ((7, True), (None, False)):
+async def test_retention_loop_runs_even_unset_so_settings_can_enable_it(
+    tmp_path, monkeypatch
+):
+    for days, expected in ((7, True), (None, True)):
         runtime = registry(tmp_path / str(days), monkeypatch, days=days)
         monkeypatch.setattr(runtime, "cleanup_stale_containers", lambda: None)
         await runtime.start()

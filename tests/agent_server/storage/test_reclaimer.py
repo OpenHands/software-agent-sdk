@@ -91,3 +91,14 @@ async def test_unknown_runtime_is_a_no_op(tmp_path):
     await reclaimer.on_stop(uuid4())
 
     assert not reclaimer.trash.dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_policy_is_reread_before_each_pass(tmp_path):
+    values = [(None, 3.0), (0.5, None)]
+    reclaimer = Reclaimer(FakeStorage(tmp_path), policy=lambda: values.pop(0))
+
+    await reclaimer.run_pass()
+    assert (reclaimer.disk_budget, reclaimer.retention_days) == (None, 3.0)
+    await reclaimer.run_pass()
+    assert (reclaimer.disk_budget, reclaimer.retention_days) == (0.5, None)
