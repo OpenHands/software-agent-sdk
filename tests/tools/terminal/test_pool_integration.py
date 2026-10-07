@@ -10,7 +10,7 @@ import threading
 import time
 
 import pytest
-from libtmux.exc import TmuxObjectDoesNotExist
+from libtmux.exc import LibTmuxException, TmuxObjectDoesNotExist
 
 from openhands.sdk.tool import DeclaredResources
 from openhands.tools.terminal.definition import (
@@ -58,13 +58,20 @@ def test_missing_session_recovers_while_server_survives(pool_executor, tmp_path)
         keeper.kill()
 
 
-def test_missing_tmux_object_recovers_without_replaying_command(
-    pool_executor, monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "error",
+    [
+        TmuxObjectDoesNotExist("Could not find object"),
+        LibTmuxException(["server exited unexpectedly"]),
+    ],
+)
+def test_missing_tmux_state_recovers_without_replaying_command(
+    pool_executor, monkeypatch, tmp_path, error
 ):
     marker = tmp_path / "must-not-run"
 
     def missing_object(self, action):
-        raise TmuxObjectDoesNotExist("Could not find object")
+        raise error
 
     with monkeypatch.context() as patch:
         patch.setattr(TerminalSession, "execute", missing_object)
