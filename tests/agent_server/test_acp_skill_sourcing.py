@@ -99,6 +99,42 @@ def test_acp_agent_clears_load_compatible_skills() -> None:
     assert agent.agent_context.load_compatible_skills is False
 
 
+def test_acp_agent_drops_vendor_user_skills_but_keeps_others(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Eagerly resolved vendor user skills must not reach the ACP prompt.
+
+    ``AgentContext`` resolves ``load_compatible_skills`` into ``skills`` during
+    validation, before the ACP validator runs. A direct ``ACPAgent`` would
+    otherwise repeat skills its own CLI already discovers.
+    """
+    from openhands.sdk.skills import skill as skill_module
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(skill_module, "USER_SKILLS_DIRS", [home / ".agents" / "skills"])
+    vendor_dir = home / ".claude" / "skills" / "vendor-skill"
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "SKILL.md").write_text(
+        "---\nname: vendor-skill\ndescription: d\n---\nbody\n"
+    )
+
+    agent = _acp_agent(
+        load_compatible_skills=True,
+        skills=[
+            Skill(
+                name="explicit-skill",
+                content="explicit",
+                description="d",
+                is_agentskills_format=True,
+            )
+        ],
+    )
+    context = agent.agent_context
+    assert context is not None
+    assert [s.name for s in context.skills] == ["explicit-skill"]
+
+
 def test_openhands_agent_keeps_load_compatible_skills() -> None:
     agent = Agent(
         llm=LLM(model="gpt-4o", usage_id="agent"),

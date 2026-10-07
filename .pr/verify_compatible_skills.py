@@ -38,6 +38,9 @@ with tempfile.TemporaryDirectory() as td:
     write_skill(ws / ".agents" / "skills", "dup", "FROM_AGENTS")
     write_skill(ws / ".cursor" / "skills", "dup", "FROM_CURSOR")
     write_skill(ws / ".codex" / "skills", "codex-only", "FROM_CODEX")
+    # Loose Markdown in a vendor dir must not become a permanent-context skill.
+    (ws / ".claude" / "skills").mkdir(parents=True)
+    (ws / ".claude" / "skills" / "notes.md").write_text("loose note\n")
 
     proj_off = load_project_skills(ws)
     proj_on = load_project_skills(ws, include_compatible=True)
@@ -45,6 +48,18 @@ with tempfile.TemporaryDirectory() as td:
     print("project (on): ", sorted(s.name for s in proj_on))
     dup = next(s for s in proj_on if s.name == "dup")
     print("collision winner content:", dup.content.strip())
+
+    # Repo-root .agents beats a vendor skill in a subdirectory.
+    (ws / ".git").mkdir()
+    subdir = ws / "src"
+    subdir.mkdir()
+    write_skill(subdir / ".claude" / "skills", "dup", "FROM_SUBDIR_VENDOR")
+    sub_dup = next(
+        s
+        for s in load_project_skills(subdir, include_compatible=True)
+        if s.name == "dup"
+    )
+    print("subdir workdir winner content:", sub_dup.content.strip())
 
     ctx = AgentContext(load_compatible_skills=True)
     print("AgentContext skills:", [s.name for s in ctx.skills])

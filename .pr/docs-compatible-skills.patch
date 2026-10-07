@@ -1,4 +1,4 @@
-From c55a1710bc8c859d01fa8ec4a59566e4cbbe9ef1 Mon Sep 17 00:00:00 2001
+From 9c7a270b3729fbe681d74d0d5d67180e45d86db1 Mon Sep 17 00:00:00 2001
 From: openhands <openhands@all-hands.dev>
 Date: Wed, 7 Oct 2026 08:20:19 +0000
 Subject: [PATCH] docs: document discovering skills from other agents' native
@@ -28,7 +28,7 @@ index 0526cf4..6534be7 100644
  <Note>
  In the SDK, explicitly supplied skills override automatically loaded user and public skills. Project skills are resolved from the conversation workspace and override a same-named skill from another source. See the [SDK Skills Guide](/sdk/guides/skill) for loader configuration.
 diff --git a/sdk/guides/skill.mdx b/sdk/guides/skill.mdx
-index 1d1a71e..98e6312 100644
+index 1d1a71e..f698998 100644
 --- a/sdk/guides/skill.mdx
 +++ b/sdk/guides/skill.mdx
 @@ -1030,6 +1030,31 @@ echo "$1" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
@@ -52,7 +52,7 @@ index 1d1a71e..98e6312 100644
 +)
 +```
 +
-+Enabling `load_compatible_skills` also turns on the user and project scopes, because the vendor directories only extend those scopes. To scan only one scope, enable the corresponding `load_user_skills` / `load_project_skills` flag and leave the other off.
++Enabling `load_compatible_skills` also turns on the user and project scopes, because the vendor directories only extend those scopes — there is no way to scan a vendor directory without also scanning the OpenHands locations in the same scope. Within a scope, every OpenHands source wins over the vendor directories: `.agents/skills/` beats `.claude/skills/`, and an installed OpenHands skill beats a vendor skill of the same name in the user scope. Only `SKILL.md` skills are read from the vendor directories, so loose Markdown notes there are ignored.
 +
 +The vendor directories are **additive and lower precedence**: a skill name that exists in both `.agents/skills/` and `.claude/skills/` resolves to the `.agents/skills/` version. Nothing changes when the setting is off, so this is safe to leave disabled.
 +

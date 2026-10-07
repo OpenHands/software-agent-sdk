@@ -126,6 +126,7 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
+from openhands.sdk.skills.skill import is_compatible_user_skill
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -1891,13 +1892,28 @@ class ACPAgent(AgentBase):
         session cwd, so loading them here too would put that content in the prompt
         twice. Normalised rather than rejected: callers legitimately set the flags
         on a shared context they also use for OpenHands agents (#4019).
+
+        The flags are cleared lazily, but ``AgentContext`` also eagerly resolves
+        user skills into ``skills`` during validation. Vendor-native user skills
+        (``~/.claude/skills`` etc.) are therefore removed from that list too, so a
+        direct ``ACPAgent`` does not repeat skills its own CLI already discovers.
+        Explicit (non-vendor) skills and installed OpenHands skills are kept.
         """
         if value is None:
             return value
-        if not (value.load_project_skills or value.load_compatible_skills):
+        stripped_skills = [s for s in value.skills if not is_compatible_user_skill(s)]
+        if (
+            not value.load_project_skills
+            and not value.load_compatible_skills
+            and len(stripped_skills) == len(value.skills)
+        ):
             return value
         return value.model_copy(
-            update={"load_project_skills": False, "load_compatible_skills": False}
+            update={
+                "load_project_skills": False,
+                "load_compatible_skills": False,
+                "skills": stripped_skills,
+            }
         )
 
     def model_post_init(self, __context: object) -> None:

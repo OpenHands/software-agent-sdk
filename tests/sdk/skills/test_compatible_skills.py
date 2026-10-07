@@ -13,6 +13,7 @@ import pytest
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.skills import (
+    Skill,
     load_available_skills,
     load_project_skills,
     skill as skill_module,
@@ -180,3 +181,84 @@ def test_agent_context_compatible_project_skills_load_lazily(tmp_path, user_home
     context = conversation.agent.agent_context
     assert context is not None
     assert "vendor" in {s.name for s in context.skills}
+
+
+# -- precedence against other sources ----------------------------------------
+
+
+def test_installed_skill_wins_over_vendor(user_home, monkeypatch):
+    """An installed OpenHands skill must not be displaced by a vendor skill."""
+    from openhands.sdk.skills import installed as installed_module
+
+    installed = Skill(
+        name="review",
+        content="FROM_OPENHANDS",
+        description="installed",
+        is_agentskills_format=True,
+    )
+    monkeypatch.setattr(
+        installed_module, "load_installed_skills", lambda *a, **k: [installed]
+    )
+    _write_skill(user_home / ".claude" / "skills", "review", "FROM_CLAUDE")
+
+    skills = skill_module.load_user_skills(include_compatible=True)
+
+    assert [s.name for s in skills] == ["review"]
+    assert skills[0].content.strip() == "FROM_OPENHANDS"
+
+
+def test_root_agents_skill_wins_over_subdir_vendor(tmp_path):
+    """A repo-root `.agents` skill beats a vendor skill in a subdirectory."""
+    (tmp_path / ".git").mkdir()
+    _write_skill(tmp_path / ".agents" / "skills", "build", "FROM_AGENTS")
+    subdir = tmp_path / "src"
+    subdir.mkdir()
+    _write_skill(subdir / ".claude" / "skills", "build", "FROM_CLAUDE")
+
+    skills = load_project_skills(subdir, include_compatible=True)
+
+    assert [s.name for s in skills] == ["build"]
+    assert skills[0].content.strip() == "FROM_AGENTS"
+
+
+def test_work_dir_vendor_wins_over_root_vendor(tmp_path):
+    """Within the vendor group, the working directory still precedes the root."""
+    (tmp_path / ".git").mkdir()
+    _write_skill(tmp_path / ".claude" / "skills", "dup", "FROM_ROOT")
+    subdir = tmp_path / "src"
+    subdir.mkdir()
+    _write_skill(subdir / ".claude" / "skills", "dup", "FROM_SUBDIR")
+
+    skills = load_project_skills(subdir, include_compatible=True)
+
+    assert [s.name for s in skills] == ["dup"]
+    assert skills[0].content.strip() == "FROM_SUBDIR"
+
+
+def test_vendor_loose_markdown_is_not_loaded(tmp_path):
+    """Only SKILL.md skills come from vendor dirs; loose notes must not enter
+    the permanent system prompt."""
+    vendor = tmp_path / ".claude" / "skills"
+    _write_skill(vendor, "real-skill", "FROM_SKILL_MD")
+    (vendor / "notes.md").write_text("# scratch notes\n")
+
+    skills = load_project_skills(tmp_path, include_compatible=True)
+
+    assert [s.name for s in skills] == ["real-skill"]
+
+
+def test_is_compatible_user_skill_classifies_source(user_home):
+    _write_skill(user_home / ".claude" / "skills", "vendor")
+    _write_skill(user_home / ".agents" / "skills", "openhands")
+
+    vendor = skill_module.load_user_skills(include_compatible=True)
+    by_name = {s.name: s for s in vendor}
+
+    assert skill_module.is_compatible_user_skill(by_name["vendor"]) is True
+    assert skill_module.is_compatible_user_skill(by_name["openhands"]) is False
+    assert (
+        skill_module.is_compatible_user_skill(
+            Skill(name="explicit", content="x", description="d")
+        )
+        is False
+    )
