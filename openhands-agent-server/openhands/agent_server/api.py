@@ -727,6 +727,12 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app)
     _setup_static_files(app, config)
+    if config.conversation_runtime_selectable:
+        from openhands.agent_server.docker_runtime.hybrid import (
+            RuntimeDispatchMiddleware,
+        )
+
+        app.add_middleware(RuntimeDispatchMiddleware)
     app.add_middleware(
         CORSDispatcher,
         allow_origins=config.allow_cors_origins,

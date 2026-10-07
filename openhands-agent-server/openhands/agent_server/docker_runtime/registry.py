@@ -127,6 +127,7 @@ class DockerConversationRegistry(ConversationRegistry):
             return ConversationRuntimeInfo(
                 runtime_status=ConversationRuntimeStatus.MISSING,
                 can_resume=False,
+                conversation_runtime="docker",
             )
         return ConversationRuntimeInfo(
             runtime_status=(
@@ -137,6 +138,7 @@ class DockerConversationRegistry(ConversationRegistry):
                 else ConversationRuntimeStatus.MISSING
             ),
             can_resume=True,
+            conversation_runtime="docker",
         )
 
     @property

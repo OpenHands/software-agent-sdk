@@ -127,6 +127,8 @@ async def start_conversation(
         raise HTTPException(400, "Invalid JSON body") from exc
     if not isinstance(body, dict):
         raise HTTPException(422, "Expected a JSON object")
+    if body.pop("conversation_runtime", None) not in (None, "docker"):
+        raise HTTPException(422, "This server only runs docker conversations")
 
     workspace = body.get("workspace")
     if workspace is not None and (
@@ -345,7 +347,10 @@ async def proxy_conversation(
         raise HTTPException(501, "This operation is unavailable in Docker runtime mode")
     registry = get_registry(request)
     container = await _container(registry, conversation_id)
-    upstream_path = _upstream_path(request, request.url.path)
+    upstream_path = _upstream_path(
+        request,
+        f"/api/conversations/{conversation_id}" + (f"/{tail}" if tail else ""),
+    )
     if tail == "secrets" and request.method == "POST":
         try:
             update = UpdateSecretsRequest.model_validate_json(await request.body())

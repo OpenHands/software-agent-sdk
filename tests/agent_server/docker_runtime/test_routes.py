@@ -256,12 +256,14 @@ def test_runtime_info_marks_legacy_local_conversation_non_resumable(
         "runtime_status": "missing",
         "can_resume": False,
         "runtime_error": None,
+        "conversation_runtime": "docker",
     }
     assert docker.status_code == 200
     assert docker.json() == {
         "runtime_status": "missing",
         "can_resume": True,
         "runtime_error": None,
+        "conversation_runtime": "docker",
     }
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -68,6 +68,7 @@ class ConversationRuntimeInfo(BaseModel):
     runtime_status: ConversationRuntimeStatus
     can_resume: bool
     runtime_error: ConversationRuntimeError | None = None
+    conversation_runtime: Literal["local", "docker"] | None = None
 
 
 class ServerErrorEvent(Event):

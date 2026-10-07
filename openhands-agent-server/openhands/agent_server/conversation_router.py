@@ -330,6 +330,11 @@ async def start_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
+    if request.conversation_runtime not in (None, "local"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This server only runs local conversations",
+        )
     request = _request_with_observability_headers(
         request,
         span_name=x_openhands_observability_span_name,

@@ -95,10 +95,9 @@ async def get_event_service(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> EventService:
     registry = getattr(request.app.state, "conversation_registry", None)
-    if (
-        isinstance(registry, ConversationRegistry)
-        and registry.serves_persisted_event_reads
-    ):
+    if isinstance(
+        registry, ConversationRegistry
+    ) and registry.serves_persisted_event_reads_for(conversation_id):
         event_service = await conversation_service.get_persisted_event_service(
             conversation_id
         )

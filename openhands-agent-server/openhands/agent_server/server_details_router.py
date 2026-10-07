@@ -60,6 +60,13 @@ class ServerInfo(BaseModel):
         default_factory=lambda: get_runtime_idle_timeout_seconds()
     )
     conversation_runtime: Literal["local", "docker"] = "local"
+    available_conversation_runtimes: list[Literal["local", "docker"]] = Field(
+        default_factory=list,
+        description=(
+            "Runtimes a start request may select with `conversation_runtime`. "
+            "Empty means only `conversation_runtime` is served."
+        ),
+    )
     capabilities: list[str] = Field(
         default_factory=lambda: [
             "conversation_runtime_routes_v1",
@@ -134,16 +141,22 @@ async def ready(response: Response) -> dict[str, str]:
 def build_server_info(
     conversation_runtime: Literal["local", "docker"] = "local",
     app_backend_ingress_url: str | None = None,
+    conversation_runtime_selectable: bool = False,
 ) -> ServerInfo:
     now = time.time()
     info = ServerInfo(
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
         conversation_runtime=conversation_runtime,
+        available_conversation_runtimes=(
+            ["local", "docker"] if conversation_runtime_selectable else []
+        ),
         app_backend_ingress_url=app_backend_ingress_url,
     )
     if app_backend_ingress_url:
         info.capabilities.append("canvas_app_backend_bridge_v1")
+    if conversation_runtime_selectable:
+        info.capabilities.append("selectable_conversation_runtime_v1")
     return info
 
 
@@ -153,4 +166,5 @@ async def get_server_info(request: Request) -> ServerInfo:
     return build_server_info(
         config.conversation_runtime,
         app_backend_ingress_url=config.app_backend_public_url,
+        conversation_runtime_selectable=config.conversation_runtime_selectable,
     )

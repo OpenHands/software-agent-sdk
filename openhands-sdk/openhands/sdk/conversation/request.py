@@ -317,6 +317,14 @@ class StartConversationRequest(ConversationConfig):
         ),
     )
     agent: AgentBase = Field(default=cast(AgentBase, None))
+    conversation_runtime: Literal["local", "docker"] | None = Field(
+        default=None,
+        description=(
+            "Runtime that executes this conversation. Unset uses the server's "
+            "configured `conversation_runtime`; another value is only accepted "
+            "when the server lists it in `available_conversation_runtimes`."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

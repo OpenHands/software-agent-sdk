@@ -187,6 +187,7 @@ def test_search_conversations_includes_runtime_info(
         "runtime_status": "missing",
         "can_resume": False,
         "runtime_error": None,
+        "conversation_runtime": None,
     }
 
 
