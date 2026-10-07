@@ -991,32 +991,6 @@ def compatible_project_skills_dirs(root: Path) -> list[Path]:
     return [root / parent / leaf for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS]
 
 
-def is_compatible_user_skill(skill: Skill) -> bool:
-    """Whether ``skill`` was loaded from a vendor-native user skill directory.
-
-    Used to tell vendor-sourced skills apart from regular user/installed skills,
-    e.g. so an ACP agent can drop them — its native CLI reads those directories
-    itself and would otherwise see the same skill twice.
-    """
-    source = skill.source
-    if not source:
-        return False
-    src = Path(source)
-    if not src.is_absolute():
-        return False
-    try:
-        real_src = src.resolve()
-    except OSError:
-        return False
-    for vendor_dir in compatible_user_skills_dirs():
-        try:
-            if real_src.is_relative_to(vendor_dir.resolve()):
-                return True
-        except OSError:
-            continue
-    return False
-
-
 def _load_user_skills_from_dirs(
     dirs: list[Path], compatible_dirs: list[Path]
 ) -> list[Skill]:

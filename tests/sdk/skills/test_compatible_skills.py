@@ -245,20 +245,3 @@ def test_vendor_loose_markdown_is_not_loaded(tmp_path):
     skills = load_project_skills(tmp_path, include_compatible=True)
 
     assert [s.name for s in skills] == ["real-skill"]
-
-
-def test_is_compatible_user_skill_classifies_source(user_home):
-    _write_skill(user_home / ".claude" / "skills", "vendor")
-    _write_skill(user_home / ".agents" / "skills", "openhands")
-
-    vendor = skill_module.load_user_skills(include_compatible=True)
-    by_name = {s.name: s for s in vendor}
-
-    assert skill_module.is_compatible_user_skill(by_name["vendor"]) is True
-    assert skill_module.is_compatible_user_skill(by_name["openhands"]) is False
-    assert (
-        skill_module.is_compatible_user_skill(
-            Skill(name="explicit", content="x", description="d")
-        )
-        is False
-    )

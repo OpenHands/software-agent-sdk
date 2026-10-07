@@ -99,14 +99,15 @@ def test_acp_agent_clears_load_compatible_skills() -> None:
     assert agent.agent_context.load_compatible_skills is False
 
 
-def test_acp_agent_drops_vendor_user_skills_but_keeps_others(
+def test_acp_agent_keeps_vendor_user_skills_for_the_runtime_to_decide(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Eagerly resolved vendor user skills must not reach the ACP prompt.
+    """Vendor user skills survive construction; ``finalize`` decides per runtime.
 
     ``AgentContext`` resolves ``load_compatible_skills`` into ``skills`` during
-    validation, before the ACP validator runs. A direct ``ACPAgent`` would
-    otherwise repeat skills its own CLI already discovers.
+    validation. The runtime is unknown at construction time, so the validator
+    must not drop them — a container CLI cannot reach the host's vendor
+    directories and needs them injected (``openhands_managed`` sourcing).
     """
     from openhands.sdk.skills import skill as skill_module
 
@@ -119,20 +120,28 @@ def test_acp_agent_drops_vendor_user_skills_but_keeps_others(
         "---\nname: vendor-skill\ndescription: d\n---\nbody\n"
     )
 
-    agent = _acp_agent(
-        load_compatible_skills=True,
-        skills=[
-            Skill(
-                name="explicit-skill",
-                content="explicit",
-                description="d",
-                is_agentskills_format=True,
-            )
-        ],
-    )
+    agent = _acp_agent(load_compatible_skills=True)
     context = agent.agent_context
     assert context is not None
-    assert [s.name for s in context.skills] == ["explicit-skill"]
+    assert context.load_compatible_skills is False
+    assert [s.name for s in context.skills] == ["vendor-skill"]
+
+
+def test_acp_agent_keeps_explicit_skill_sourced_from_a_vendor_dir(
+    tmp_path: Path,
+) -> None:
+    """An explicit skill whose ``source`` happens to sit under a vendor dir is
+    the caller's choice and must not be dropped by the ACP validator."""
+    explicit = Skill(
+        name="review",
+        content="review content",
+        description="explicit",
+        source=str(tmp_path / ".claude" / "skills" / "review" / "SKILL.md"),
+    )
+    agent = _acp_agent(skills=[explicit])
+    context = agent.agent_context
+    assert context is not None
+    assert [s.name for s in context.skills] == ["review"]
 
 
 def test_openhands_agent_keeps_load_compatible_skills() -> None:
@@ -188,6 +197,53 @@ def test_managed_sourcing_keeps_managed_skills(tmp_path: Path) -> None:
     assert agent.agent_context is not None
     assert [s.name for s in agent.agent_context.skills] == [MANAGED_SKILL]
     assert MANAGED_SKILL in _installed_suffix(agent, project)
+
+
+def test_managed_sourcing_keeps_vendor_user_skills(tmp_path: Path, monkeypatch) -> None:
+    """A container CLI cannot reach the host's vendor dirs, so managed sourcing
+    must inject the vendor user skills it eagerly resolved (Finding 1)."""
+    from openhands.sdk.skills import skill as skill_module
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(skill_module, "USER_SKILLS_DIRS", [home / ".agents" / "skills"])
+    vendor_dir = home / ".claude" / "skills" / "review"
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "SKILL.md").write_text(
+        "---\nname: review\ndescription: d\n---\nhost vendor body\n"
+    )
+    project = _workspace(tmp_path)
+
+    agent = _apply_acp_skill_sourcing(
+        _acp_agent(load_compatible_skills=True), "openhands_managed"
+    )
+
+    context = agent.agent_context
+    assert context is not None
+    assert "review" in {s.name for s in context.skills}
+    assert "review" in _installed_suffix(agent, project)
+
+
+def test_native_sourcing_drops_vendor_user_skills(tmp_path: Path, monkeypatch) -> None:
+    """A host-local CLI reads its own vendor dirs, so native sourcing strips
+    them to avoid duplicating the catalog in the prompt."""
+    from openhands.sdk.skills import skill as skill_module
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(skill_module, "USER_SKILLS_DIRS", [home / ".agents" / "skills"])
+    vendor_dir = home / ".claude" / "skills" / "review"
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "SKILL.md").write_text(
+        "---\nname: review\ndescription: d\n---\nhost vendor body\n"
+    )
+    project = _workspace(tmp_path)
+
+    agent = _apply_acp_skill_sourcing(_acp_agent(load_compatible_skills=True), "native")
+
+    assert agent.agent_context is not None
+    assert agent.agent_context.skills == []
+    assert "review" not in _installed_suffix(agent, project)
 
 
 def test_native_sourcing_clears_lazy_skill_sources() -> None:

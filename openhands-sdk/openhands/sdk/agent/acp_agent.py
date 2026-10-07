@@ -126,7 +126,6 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
-from openhands.sdk.skills.skill import is_compatible_user_skill
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -1883,8 +1882,7 @@ class ACPAgent(AgentBase):
     @field_validator("agent_context")
     @classmethod
     def _drop_project_skills(cls, value: AgentContext | None) -> AgentContext | None:
-        """Clear ``load_project_skills`` / ``load_compatible_skills`` — ACP CLIs
-        read the repo themselves.
+        """Clear the project-scope skill flags — ACP CLIs read the repo themselves.
 
         Claude Code, Codex and Gemini already ingest ``AGENTS.md`` / ``CLAUDE.md``
         and their own project skills (including their native
@@ -1893,26 +1891,22 @@ class ACPAgent(AgentBase):
         twice. Normalised rather than rejected: callers legitimately set the flags
         on a shared context they also use for OpenHands agents (#4019).
 
-        The flags are cleared lazily, but ``AgentContext`` also eagerly resolves
-        user skills into ``skills`` during validation. Vendor-native user skills
-        (``~/.claude/skills`` etc.) are therefore removed from that list too, so a
-        direct ``ACPAgent`` does not repeat skills its own CLI already discovers.
-        Explicit (non-vendor) skills and installed OpenHands skills are kept.
+        User-scope sourcing is deliberately *not* decided here. Whether a user's
+        vendor skills (``~/.claude/skills`` etc.) should be injected depends on
+        the runtime that launches the CLI: a host-local CLI reads them itself,
+        while a container CLI cannot reach the host's home directory, so
+        ``finalize`` preserves them under ``openhands_managed`` sourcing. The
+        runtime is unknown at construction time, so filtering here would drop
+        those skills before ``finalize`` can decide — ``skills`` is left intact.
         """
         if value is None:
             return value
-        stripped_skills = [s for s in value.skills if not is_compatible_user_skill(s)]
-        if (
-            not value.load_project_skills
-            and not value.load_compatible_skills
-            and len(stripped_skills) == len(value.skills)
-        ):
+        if not (value.load_project_skills or value.load_compatible_skills):
             return value
         return value.model_copy(
             update={
                 "load_project_skills": False,
                 "load_compatible_skills": False,
-                "skills": stripped_skills,
             }
         )
 

@@ -64,4 +64,28 @@ with tempfile.TemporaryDirectory() as td:
     ctx = AgentContext(load_compatible_skills=True)
     print("AgentContext skills:", [s.name for s in ctx.skills])
 
+    # ACP runtime sourcing: the validator keeps vendor user skills (the runtime
+    # is unknown at construction), and finalize decides per runtime.
+    from openhands.sdk.agent import ACPAgent
+    from openhands.sdk.launch.finalize import _apply_acp_skill_sourcing
+
+    acp = ACPAgent(
+        acp_command=["claude-code-acp"],
+        agent_context=AgentContext(load_compatible_skills=True),
+    )
+    acp_ctx = acp.agent_context
+    assert acp_ctx is not None
+    print("ACP constructed skills:", [s.name for s in acp_ctx.skills])
+
+    managed = _apply_acp_skill_sourcing(acp, "openhands_managed")
+    assert managed.agent_context is not None
+    print(
+        "ACP managed skills:",
+        [s.name for s in managed.agent_context.skills],
+    )
+
+    native = _apply_acp_skill_sourcing(acp, "native")
+    assert native.agent_context is not None
+    print("ACP native skills:", [s.name for s in native.agent_context.skills])
+
 print("OK")
