@@ -1,5 +1,6 @@
 import pytest
 
+from openhands.tools.terminal.utils import command as command_module
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     needs_heredoc_completion_boundary,
@@ -138,6 +139,32 @@ def test_single_heredoc_does_not_need_completion_boundary():
 
 def test_incomplete_heredoc_does_not_need_completion_boundary():
     assert not needs_heredoc_completion_boundary("cat <<EOF\nbody")
+
+
+def test_completion_boundary_falls_back_without_bash(monkeypatch):
+    """The guard must not depend on a `bash` executable being on PATH.
+
+    On Windows tree-sitter reports parse errors for these forms and `bash` is
+    absent, so the fallback must still recognize a closed heredoc.
+    """
+
+    def _no_bash(*args, **kwargs):
+        raise FileNotFoundError("bash")
+
+    monkeypatch.setattr(command_module.subprocess, "run", _no_bash)
+
+    assert needs_heredoc_completion_boundary(
+        "cat <<'EOF'\nbody\nEOF\nsleep 1; echo done"
+    )
+    assert needs_heredoc_completion_boundary("cat <<A <<B\na\nA\nb\nB\necho done")
+    assert needs_heredoc_completion_boundary('cat <<E"OF"\nbody\nEOF\necho done')
+    assert needs_heredoc_completion_boundary("cat <<EOF &\nbody\nEOF\nwait")
+    assert needs_heredoc_completion_boundary(
+        "cat <<-EOF\n\tindented\n\tEOF\nprintf done"
+    )
+    assert not needs_heredoc_completion_boundary("cat <<EOF\nbody")
+    assert not needs_heredoc_completion_boundary("cat <<EOF\nbody\nEOF\n")
+    assert not needs_heredoc_completion_boundary("cat <<'EOF'\nbody\nEOF\n")
 
 
 @pytest.mark.parametrize(

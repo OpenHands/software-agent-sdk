@@ -46,6 +46,49 @@ def _ends_with_heredoc(node: Node) -> bool:
     return last.type == "heredoc_end" and last.end_byte == node.end_byte
 
 
+def _last_heredoc_is_closed(root: Node) -> bool:
+    """Whether the final heredoc in an unparseable input has seen its terminator.
+
+    tree-sitter-bash reports a parse error for forms bash itself accepts (a
+    quoted delimiter, several heredocs on one command, ``&`` before the body)
+    and may then omit the ``heredoc_end`` node, leaving the terminator line
+    inside the ``heredoc_body`` instead. Compare that final line against the
+    delimiter to tell a closed heredoc from one bash is still reading. This is
+    the no-``bash`` fallback, so the boundary guard is not a silent no-op on
+    platforms such as Windows.
+    """
+    entries: list[tuple[int, str, str]] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type in ("heredoc_start", "heredoc_body", "heredoc_end"):
+            entries.append((node.start_byte, node.type, node.text.decode()))
+        stack.extend(node.named_children)
+    entries.sort()
+
+    start = max(
+        (
+            index
+            for index, (_, kind, _) in enumerate(entries)
+            if kind == "heredoc_start"
+        ),
+        default=None,
+    )
+    if start is None:
+        return False
+    delimiter = re.sub(r"['\"]", "", entries[start][2].strip())
+    if delimiter.startswith("-"):
+        delimiter = delimiter[1:]
+    rest = entries[start + 1 :]
+    if any(kind == "heredoc_end" for _, kind, _ in rest):
+        return True
+    bodies = [text for _, kind, text in rest if kind == "heredoc_body"]
+    if not bodies:
+        return False
+    lines = [line for line in bodies[-1].splitlines() if line.strip()]
+    return bool(lines) and lines[-1].strip() == delimiter
+
+
 def needs_heredoc_completion_boundary(commands: str) -> bool:
     """Whether interactive Bash may prompt before this input is fully consumed."""
     source = commands.encode()
@@ -67,11 +110,11 @@ def needs_heredoc_completion_boundary(commands: str) -> bool:
                 env={"LC_ALL": "C"},
                 timeout=1,
             )
-            return syntax_check.returncode == 0 and b"here-document" not in (
-                syntax_check.stderr
-            )
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+            return _last_heredoc_is_closed(root)
+        return syntax_check.returncode == 0 and b"here-document" not in (
+            syntax_check.stderr
+        )
 
     statements = [child for child in root.named_children if child.type != "comment"]
     return any(
