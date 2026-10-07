@@ -1,0 +1,41 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.7, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/yangxiao/git/software-agent-sdk-terminal-fix
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+timeout: 30.0s
+timeout method: signal
+timeout func_only: False
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 6 items / 5 deselected / 1 selected
+
+tests/tools/terminal/test_pool_integration.py F                          [100%]
+
+=================================== FAILURES ===================================
+_________ test_missing_tmux_object_recovers_without_replaying_command __________
+tests/tools/terminal/test_pool_integration.py:48: in test_missing_tmux_object_recovers_without_replaying_command
+    obs = pool_executor(TerminalAction(command=f"touch {marker}", timeout=5))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+openhands-tools/openhands/tools/terminal/impl.py:577: in __call__
+    return self._execute_pooled(action, conversation)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+openhands-tools/openhands/tools/terminal/impl.py:518: in _execute_pooled
+    observation = session.execute(cmd_action)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/tools/terminal/test_pool_integration.py:44: in missing_object
+    raise TmuxObjectDoesNotExist("Could not find object")
+E   libtmux.exc.TmuxObjectDoesNotExist: Could not find object
+---------------------------- Captured stderr setup -----------------------------
+[10/07/26 12:33:43] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:143
+                             session=openhands-pool-None-8                      
+                             381a941-884f-4077-99d1-654162                      
+                             d2e69f, max_panes=3                                
+[10/07/26 12:33:43] INFO     TerminalExecutor initialized (pool      impl.py:145
+                             mode) working_dir: /tmp/tmp22_4ty24,               
+                             username: None, max_panes: 3                       
+------------------------------ Captured log setup ------------------------------
+INFO     openhands.tools.terminal.terminal.tmux_pane_pool:tmux_pane_pool.py:143 TmuxPanePool initialized: session=openhands-pool-None-8381a941-884f-4077-99d1-654162d2e69f, max_panes=3
+INFO     openhands.tools.terminal.impl:impl.py:145 TerminalExecutor initialized (pool mode) working_dir: /tmp/tmp22_4ty24, username: None, max_panes: 3
+=========================== short test summary info ============================
+FAILED tests/tools/terminal/test_pool_integration.py::test_missing_tmux_object_recovers_without_replaying_command
+======================= 1 failed, 5 deselected in 0.76s ========================

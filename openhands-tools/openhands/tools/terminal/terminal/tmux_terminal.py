@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Mapping
 
 import libtmux
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
@@ -234,11 +235,14 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
+        result = self.pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.returncode:
+            raise LibTmuxException(result.stderr)
         content = "\n".join(
             map(
                 # avoid double newlines
                 lambda line: line.rstrip(),
-                self.pane.cmd("capture-pane", "-J", "-pS", "-").stdout,
+                result.stdout,
             )
         )
         return content

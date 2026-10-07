@@ -1,10 +1,12 @@
 """Tests for TmuxPanePool."""
 
+import logging
 import tempfile
 import threading
 import time
 
 import pytest
+from libtmux.exc import LibTmuxException
 
 from openhands.tools.terminal.constants import (
     TMUX_SESSION_HEIGHT,
@@ -102,6 +104,44 @@ def test_checkout_unblocks_after_checkin(pool):
     pool.checkin(terminal)
     for p in panes[1:]:
         pool.checkin(p)
+
+
+@pytest.mark.parametrize("log_level", [logging.INFO, logging.DEBUG])
+def test_pane_lifecycle_logging_survives_missing_session(pool, caplog, log_level):
+    terminal = pool.checkout()
+    pool.checkin(terminal)
+    terminal.server.cmd("kill-server")
+    caplog.set_level(
+        log_level, logger="openhands.tools.terminal.terminal.tmux_pane_pool"
+    )
+
+    # Borrowing/returning a handle must not query tmux just to format a log.
+    with pool.pane(timeout=0.2) as handle:
+        assert handle.terminal is terminal
+    with pool.pane(timeout=0.2) as handle:
+        assert handle.terminal is terminal
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_checkout_initialization_failure_preserves_capacity(
+    pool, monkeypatch, error_type
+):
+    assert pool._session is not None
+    initial_windows = len(pool._session.windows)
+
+    def fail_clear_screen(self):
+        raise error_type("pane setup failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TmuxTerminal, "clear_screen", fail_clear_screen)
+        for _ in range(pool.max_panes + 1):
+            with pytest.raises(error_type, match="pane setup failed"):
+                pool.checkout(timeout=0.2)
+            assert len(pool._session.windows) == initial_windows
+
+    panes = [pool.checkout(timeout=0.2) for _ in range(pool.max_panes)]
+    for terminal in panes:
+        pool.checkin(terminal)
 
 
 # -- Replace -----------------------------------------------------------------
@@ -281,7 +321,8 @@ def test_stale_terminal_cannot_access_restarted_server(
                 time.sleep(0.05)
 
             if operation == "read":
-                assert "SECOND_CONVERSATION_MARKER" not in stale.read_screen()
+                with pytest.raises(LibTmuxException):
+                    stale.read_screen()
             elif operation == "write":
                 marker = tmp_path / "wrong-conversation"
                 stale.send_keys(f"touch {marker}")

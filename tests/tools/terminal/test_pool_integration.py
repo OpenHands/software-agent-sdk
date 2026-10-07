@@ -10,6 +10,7 @@ import threading
 import time
 
 import pytest
+from libtmux.exc import TmuxObjectDoesNotExist
 
 from openhands.sdk.tool import DeclaredResources
 from openhands.tools.terminal.definition import (
@@ -18,6 +19,7 @@ from openhands.tools.terminal.definition import (
     TerminalTool,
 )
 from openhands.tools.terminal.impl import TerminalExecutor
+from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
 
 @pytest.fixture
@@ -31,6 +33,51 @@ def pool_executor():
         )
         yield executor
         executor.close()
+
+
+def test_missing_session_recovers_while_server_survives(pool_executor, tmp_path):
+    first = pool_executor(TerminalAction(command="echo ready", timeout=5))
+    assert not first.is_error
+    pool = pool_executor._pool
+    assert pool is not None
+    assert pool._server is not None
+    assert pool._session is not None
+    keeper = pool._server.new_session(session_name="keep-server-alive")
+    marker = tmp_path / "not-replayed"
+    try:
+        pool._session.kill()
+        obs = pool_executor(TerminalAction(command=f"touch {marker}", timeout=5))
+        assert obs.is_error
+        assert "rebuilt the terminal pool" in obs.text
+        assert not marker.exists()
+        after = pool_executor(TerminalAction(command="echo recovered", timeout=5))
+        assert not after.is_error
+        assert "recovered" in after.text
+        assert not marker.exists()
+    finally:
+        keeper.kill()
+
+
+def test_missing_tmux_object_recovers_without_replaying_command(
+    pool_executor, monkeypatch, tmp_path
+):
+    marker = tmp_path / "must-not-run"
+
+    def missing_object(self, action):
+        raise TmuxObjectDoesNotExist("Could not find object")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(TerminalSession, "execute", missing_object)
+        obs = pool_executor(TerminalAction(command=f"touch {marker}", timeout=5))
+
+    assert obs.is_error
+    assert "rebuilt the terminal pool" in obs.text
+    assert not marker.exists()
+    after = pool_executor(TerminalAction(command="echo after_recovery", timeout=5))
+    assert not after.is_error
+    assert after.exit_code == 0
+    assert "after_recovery" in after.text
+    assert not marker.exists()
 
 
 class TestDeclaredResources:

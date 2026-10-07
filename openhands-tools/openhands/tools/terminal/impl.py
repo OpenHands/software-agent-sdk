@@ -53,6 +53,8 @@ _TMUX_POOL_RECOVERY_MESSAGE = (
 _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "no server running",
     "can't find session",
+    "can't find pane",
+    "can't find window",
     "could not find window_id",
     "could not find pane_id",
 )
@@ -150,8 +152,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
     @staticmethod
     def _is_recoverable_tmux_pool_error(error: Exception) -> bool:
-        recoverable_types = (LibTmuxException, TmuxObjectDoesNotExist)
-        if not isinstance(error, recoverable_types):
+        if isinstance(error, TmuxObjectDoesNotExist):
+            return True
+        if not isinstance(error, LibTmuxException):
             return False
         message = " ".join(str(arg) for arg in error.args).lower()
         return any(marker in message for marker in _TMUX_RECOVERABLE_ERROR_MARKERS)
