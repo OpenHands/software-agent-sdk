@@ -222,6 +222,12 @@ export type {
 // ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
 export type { ACPModelOption, ACPProviderInfo, ACPProviderKey } from './models/acp';
+export type {
+  ACPModelDiscovery,
+  ACPModelDiscoveryError,
+  ACPModelDiscoveryRequest,
+  ACPModelInfo,
+} from './models/acp-model-discovery';
 
 // Agent profile types (mirrors openhands-sdk agent_profile.py + resolver.py)
 export type {
