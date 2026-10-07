@@ -1,0 +1,217 @@
+---
+title: Ask User
+description: Let an agent pause and ask the user structured questions mid-task, then resume with the answer.
+---
+
+import RunExampleCode from "/sdk/shared-snippets/how-to-run-example.mdx";
+
+> A ready-to-run example is available [here](#ready-to-run-example)!
+
+Use `ask_user` when the agent hits genuine ambiguity that the code or task does
+not resolve, and guessing would risk wasted work. The agent asks one or more
+structured questions in a single call, the run pauses, and the user's answer
+becomes the tool result that resumes the run.
+
+## When to Use It
+
+`ask_user` is useful when an agent faces:
+
+- Architecture decisions the code does not encode (session vs. JWT vs. OAuth)
+- Destructive migrations with several valid paths
+- Product decisions that cannot be inferred from the repository
+
+Do not use it for anything the agent can determine from the code, the task, or
+its own tools. Prefer a single, well-scoped call over repeated questions.
+
+## How It Works
+
+When the agent calls `ask_user`:
+
+1. The tool validates its arguments. Each question has a short `header` (at most
+   12 characters), 2-4 `options` (each with a stable `id`, a `label`, and a
+   `description`), and a `multiSelect` flag. An "Other" free-text escape hatch is
+   always available.
+2. The run ends at the `WAITING_FOR_CONFIRMATION` execution status with one
+   pending `ask_user` request recorded. The call is not executed; there is no new
+   event type or endpoint.
+3. The user answers by sending a message through `send_message()`. The message
+   carries a JSON answer object:
+
+   ```json
+   {
+     "request_id": "<the pending request id>",
+     "action": "accept",
+     "answers": {"auth": [{"option_id": "jwt"}]}
+   }
+   ```
+
+   Answers are keyed by each question's `header`. A free-text "Other" value uses
+   a `null` `option_id` with the text in `label`.
+
+4. The SDK matches the answer to the pending request by `request_id` and converts
+   it into the `ask_user` tool observation, instead of appending it as an
+   unrelated user turn. The run then resumes with that observation in history.
+
+`action` distinguishes `accept` (the user answered), `decline` (the user said
+stop asking), and `cancel` (the user dismissed the question). The observation
+carries this alongside the answers.
+
+<Note>
+  An ordinary message that does not parse as an answer is left to the normal
+  user-turn path. A malformed, mis-keyed, or stale answer produces a corrective
+  observation and does not resolve the call, so the user can retry.
+</Note>
+
+## Add the Tool
+
+`ask_user` is opt-in: it is not part of the default tool set. Add it to the
+agent's tools by name:
+
+```python icon="python" wrap focus={2, 5}
+from openhands.sdk import Agent, Tool
+from openhands.sdk.tool.builtins import AskUserTool
+
+agent = Agent(
+    llm=llm,
+    tools=[Tool(name=AskUserTool.name)],
+)
+```
+
+When the run pauses, read the pending request from the conversation state and
+answer it:
+
+```python icon="python"
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+
+conversation.send_message("Add authentication to the API.")
+conversation.run()
+
+if conversation.state.execution_status == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION:
+    request = ConversationState.get_unmatched_actions(conversation.state.events)[0]
+    conversation.send_message(
+        json.dumps(
+            {
+                "request_id": request.id,
+                "action": "accept",
+                "answers": {"auth": [{"option_id": "jwt"}]},
+            }
+        )
+    )
+    conversation.run()
+```
+
+## Non-Interactive Runs
+
+Because this slice reuses the confirmation pause/resume machinery, the tool is
+simply not registered in headless or evaluation runs. There is no
+`interactive` capability flag yet, and tool availability is process-global.
+Dedicated transport, a typed `request_id` request/response event pair, and a
+timeout that resolves to `cancel` are planned follow-ups.
+
+## Ready-to-run Example
+
+<Note>
+This example is available on GitHub: [examples/01_standalone_sdk/60_ask_user/main.py](https://github.com/OpenHands/software-agent-sdk/blob/main/examples/01_standalone_sdk/60_ask_user/main.py)
+</Note>
+
+```python icon="python" expandable examples/01_standalone_sdk/60_ask_user/main.py
+"""Ask the user structured questions mid-task, then resume with the answer.
+
+The ``ask_user`` tool lets the agent pause and ask one or more questions, each
+with a short header, 2-4 labelled options, and an always-available free-text
+"Other" escape hatch. The call ends the run at ``WAITING_FOR_CONFIRMATION`` and
+records a pending request; the next message sent through ``send_message()`` that
+parses as an answer is consumed as the tool's observation, and the run resumes
+with that observation in history.
+
+This example drives the flow end to end: it sends a task that forces a choice,
+detects the pause, answers the request programmatically (picking an option and
+demonstrating the free-text escape hatch), and resumes the agent.
+
+Usage:
+    LLM_API_KEY=... LLM_BASE_URL=https://llm-proxy.app.all-hands.dev \
+        uv run python examples/01_standalone_sdk/60_ask_user/main.py
+"""
+
+import json
+import os
+import tempfile
+
+from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.tool.builtins import AskUserTool
+from openhands.sdk.tool.builtins.ask_user import AskUserAction
+
+
+model = os.getenv("LLM_MODEL", "gpt-5.5")
+api_key = os.getenv("LLM_API_KEY")
+base_url = os.getenv("LLM_BASE_URL")
+llm = LLM(usage_id="agent", model=model, api_key=api_key, base_url=base_url)
+
+# ask_user is opt-in: it is not part of the default tool set.
+agent = Agent(llm=llm, tools=[Tool(name=AskUserTool.name)])
+
+workspace = tempfile.mkdtemp(prefix="ask_user_demo_")
+conversation = Conversation(agent=agent, workspace=workspace)
+
+conversation.send_message(
+    "I want to add authentication to a small HTTP API. Before writing any "
+    "code, ask me which authentication approach to use (offer JWT and "
+    "session cookies) and how the tokens should be stored. Use the ask_user "
+    "tool; do not guess."
+)
+conversation.run()
+
+if (
+    conversation.state.execution_status
+    != ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+):
+    print(
+        "The agent did not call ask_user this time "
+        f"(status: {conversation.state.execution_status})."
+    )
+else:
+    pending = ConversationState.get_unmatched_actions(conversation.state.events)
+    request = pending[0]
+    print("Agent is waiting for an answer to request:", request.id)
+
+    # Answer the request: pick JWT, and use the free-text escape hatch to say
+    # how tokens should be stored. Answers are keyed by each question's header.
+    action = request.action
+    assert isinstance(action, AskUserAction)
+    headers = [q.header for q in action.questions]
+    answer: dict[str, list[dict[str, str | None]]] = {
+        headers[0]: [{"option_id": "jwt"}],
+    }
+    for header in headers[1:]:
+        answer[header] = [{"option_id": None, "label": "in an httpOnly cookie"}]
+
+    conversation.send_message(
+        json.dumps({"request_id": request.id, "action": "accept", "answers": answer})
+    )
+
+    # The answer resolved the pending request and became the tool observation;
+    # resume the run.
+    conversation.run()
+    print("Final status:", conversation.state.execution_status)
+
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
+```
+
+<RunExampleCode path_to_script="examples/01_standalone_sdk/60_ask_user/main.py"/>
+
+## Next Steps
+
+- **[Pause and Resume](/sdk/guides/convo-pause-and-resume)** - Control agent
+  execution without losing state
+- **[Security & Action Confirmation](/sdk/guides/security)** - The confirmation
+  pause/resume shape this tool reuses
+- **[Custom Tools](/sdk/guides/custom-tools)** - Build tools with custom
+  behavior
