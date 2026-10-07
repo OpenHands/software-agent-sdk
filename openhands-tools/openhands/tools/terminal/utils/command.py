@@ -1,7 +1,6 @@
 """Command splitting and escape utilities backed by tree-sitter-bash."""
 
 import re
-import subprocess
 
 from tree_sitter import Node
 
@@ -53,9 +52,9 @@ def _last_heredoc_is_closed(root: Node) -> bool:
     quoted delimiter, several heredocs on one command, ``&`` before the body)
     and may then omit the ``heredoc_end`` node, leaving the terminator line
     inside the ``heredoc_body`` instead. Compare that final line against the
-    delimiter to tell a closed heredoc from one bash is still reading. This is
-    the no-``bash`` fallback, so the boundary guard is not a silent no-op on
-    platforms such as Windows.
+    delimiter to tell a closed heredoc from one bash is still reading. Deciding
+    from the tree keeps the guard identical on every platform instead of
+    depending on a ``bash`` executable being present and working.
     """
     entries: list[tuple[int, str, str]] = []
     stack = [root]
@@ -103,18 +102,7 @@ def needs_heredoc_completion_boundary(commands: str) -> bool:
             stack.extend(node.named_children)
         if not has_heredoc:
             return False
-        try:
-            syntax_check = subprocess.run(
-                ["bash", "--noprofile", "--norc", "-n", "-c", commands],
-                capture_output=True,
-                env={"LC_ALL": "C"},
-                timeout=1,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return _last_heredoc_is_closed(root)
-        return syntax_check.returncode == 0 and b"here-document" not in (
-            syntax_check.stderr
-        )
+        return _last_heredoc_is_closed(root)
 
     statements = [child for child in root.named_children if child.type != "comment"]
     return any(
