@@ -137,6 +137,36 @@ def test_deepseek_vision_models_keep_images_in_chat_payload(model):
 
 @patch(
     "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": True},
+)
+@patch(
+    "openhands.sdk.llm.utils.model_features.litellm_supports_vision",
+    return_value=False,
+)
+def test_deepseek_v4_vision_payload_keeps_image(_mock_sv, _mock_model_info):
+    """A vision-capable DeepSeek v4 model keeps its image parts in the payload."""
+    llm = LLM(
+        model="openhands/deepseek-v4.1-flash",
+        api_key=SecretStr("k"),
+        usage_id="t",
+    )
+    assert llm.vision_is_active() is True
+
+    msg = Message(
+        role="user",
+        content=[
+            TextContent(text="see image"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+    formatted = llm.format_messages_for_llm([msg])
+
+    assert len(formatted) == 1
+    assert len(_collect_image_url_parts(formatted[0])) == 1
+
+
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
     return_value={"supports_vision": False},
 )
 @patch(

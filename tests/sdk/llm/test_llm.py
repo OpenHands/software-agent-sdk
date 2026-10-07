@@ -1181,9 +1181,9 @@ def test_llm_function_calling_can_be_disabled():
 
 def test_llm_force_string_serializer_auto_detect():
     """Test that force_string_serializer auto-detects based on model when None."""
-    # Test with a model that requires string serialization (DeepSeek)
+    # Test with the legacy DeepSeek family that requires string serialization
     llm_deepseek = LLM(
-        model="deepseek-v3",
+        model="DeepSeek-V3.2-Exp",
         api_key=SecretStr("test_key"),
         usage_id="test-deepseek",
     )

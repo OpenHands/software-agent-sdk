@@ -281,11 +281,10 @@ RESPONSES_API_MODELS: list[str] = [
 #       substring matching (not globbing) and honors "!" exclude rules with
 #       last-match-wins semantics. Keep entries as bare substrings.
 FORCE_STRING_SERIALIZER_MODELS: list[str] = [
-    "deepseek",  # e.g., DeepSeek-V3.2-Exp
-    # Vision-capable DeepSeek variants must NOT force the string serializer,
-    # otherwise image content is dropped. See #5523.
-    "!deepseek-v4.1-flash",
-    "!deepseek-v4-flash",
+    # Only the legacy DeepSeek v3.2 family needs string-only content. Newer
+    # v4/v4.1 ids accept structured list content, and matching a bare
+    # "deepseek" substring would string-serialize them and drop image parts.
+    "deepseek-v3.2",  # e.g., DeepSeek-V3.2-Exp, deepseek-v3.2-reasoner
     "glm",  # e.g., GLM-4.5 / GLM-4.6
     # Kimi K2-Instruct requires string serialization only on Groq
     "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs
