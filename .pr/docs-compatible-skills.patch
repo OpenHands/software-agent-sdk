@@ -1,0 +1,68 @@
+From c55a1710bc8c859d01fa8ec4a59566e4cbbe9ef1 Mon Sep 17 00:00:00 2001
+From: openhands <openhands@all-hands.dev>
+Date: Wed, 7 Oct 2026 08:20:19 +0000
+Subject: [PATCH] docs: document discovering skills from other agents' native
+ dirs
+
+Document the SDK load_compatible_skills opt-in and the vendor directories it scans (.claude/.codex/.gemini/.cursor skills) in the skills guide and overview.
+
+Co-authored-by: openhands <openhands@all-hands.dev>
+---
+ overview/skills.mdx  |  4 +++-
+ sdk/guides/skill.mdx | 25 +++++++++++++++++++++++++
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/overview/skills.mdx b/overview/skills.mdx
+index 0526cf4..6534be7 100644
+--- a/overview/skills.mdx
++++ b/overview/skills.mdx
+@@ -93,7 +93,9 @@ OpenHands can combine skills from several scopes:
+ 
+ Both the legacy `.openhands/skills/` and `.openhands/microagents/` directories remain supported, but use `.agents/skills/` for new skills. This location follows the Agent Skills standard and makes skills portable across compatible agent tools.
+ 
+-Name conflicts are resolved by precedence rather than by merging skill bodies. For automatically loaded sources, project skills override user skills, and user skills override public skills. Within a project or user scope, `.agents/skills/` takes precedence over the legacy directories.
++OpenHands can also read skills that already live in another agent's native directory — `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, `~/.cursor/skills/`, and the same directories inside a project. Enable `load_compatible_skills` on the agent context to scan them. Those locations are additive and lower precedence than `.agents/skills/`, so a name that appears in both resolves to the OpenHands location. See the [SDK Skills Guide](/sdk/guides/skill#discovering-skills-from-other-agents-directories) for details.
++
++Name conflicts are resolved by precedence rather than by merging skill bodies. For automatically loaded sources, project skills override user skills, and user skills override public skills. Within a project or user scope, `.agents/skills/` takes precedence over the legacy directories and over the other agents' native directories.
+ 
+ <Note>
+ In the SDK, explicitly supplied skills override automatically loaded user and public skills. Project skills are resolved from the conversation workspace and override a same-named skill from another source. See the [SDK Skills Guide](/sdk/guides/skill) for loader configuration.
+diff --git a/sdk/guides/skill.mdx b/sdk/guides/skill.mdx
+index 1d1a71e..98e6312 100644
+--- a/sdk/guides/skill.mdx
++++ b/sdk/guides/skill.mdx
+@@ -1030,6 +1030,31 @@ echo "$1" | tr 'A-Za-z' 'N-ZA-Mn-za-m'
+ 
+ When the user says "encrypt", the skill is triggered and the agent can use the provided script.
+ 
++## Discovering Skills from Other Agents' Directories
++
++Other coding agents — Claude Code, Codex, Gemini CLI, and Cursor — use the same `SKILL.md` layout, so a skill written for them usually works in OpenHands unchanged. Enable `load_compatible_skills` to also discover those native directories:
++
++| Scope | Directories scanned (in addition to the OpenHands locations) |
++|---|---|
++| User | `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, `~/.cursor/skills/` |
++| Project | `<workspace>/.claude/skills/`, `<workspace>/.codex/skills/`, `<workspace>/.gemini/skills/`, `<workspace>/.cursor/skills/` |
++
++```python icon="python" focus={2}
++agent_context = AgentContext(
++    load_compatible_skills=True,  # Also scan .claude/.codex/.gemini/.cursor skill dirs
++    load_user_skills=True,        # Extend the user scope
++    load_project_skills=True,     # Extend the project scope
++)
++```
++
++Enabling `load_compatible_skills` also turns on the user and project scopes, because the vendor directories only extend those scopes. To scan only one scope, enable the corresponding `load_user_skills` / `load_project_skills` flag and leave the other off.
++
++The vendor directories are **additive and lower precedence**: a skill name that exists in both `.agents/skills/` and `.claude/skills/` resolves to the `.agents/skills/` version. Nothing changes when the setting is off, so this is safe to leave disabled.
++
++<Note>
++ACP agents (Claude Code, Codex, Gemini CLI) read their own native skill directories from the session working directory. OpenHands clears `load_compatible_skills` and `load_project_skills` for ACP agents so that content is not loaded twice.
++</Note>
++
+ ## Loading Public Skills
+ 
+ OpenHands maintains a [public skills repository](https://github.com/OpenHands/extensions) with community-contributed skills. You can automatically load these skills without waiting for SDK updates.
+-- 
+2.47.3
+
