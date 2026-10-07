@@ -729,6 +729,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 len(pending_actions),
             )
             self._execute_actions(conversation, pending_actions, on_event)
+            # A batch that also carried a resolved pause-for-user-input call was
+            # kept intact (not collapsed) while it awaited the answer, so
+            # re-derive the view now that every sibling has an observation. This
+            # groups the whole action batch with all of its results and drops
+            # any batch still incomplete.
+            state.rebuild_view()
             return
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
@@ -947,6 +953,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 len(pending_actions),
             )
             await self._aexecute_actions(conversation, pending_actions, on_event)
+            state.rebuild_view()
             return
 
         if state.last_user_message_id is not None:

@@ -302,12 +302,13 @@ class TestAskUserPauseResume:
         self._answer(
             request_id, action="accept", answers={"auth": [{"option_id": "jwt"}]}
         )
-        # The resolved answer must restore the tool call alongside its result so
-        # the resumed LLM does not see an orphan tool result.
+        # Resolving the single-call batch re-derives the view so the tool call
+        # lands immediately before its result; the resumed LLM never sees an
+        # orphan tool result.
         view_roles = [
             e.to_llm_message().role for e in self.conversation.state.view.events
         ]
-        assert "assistant" in view_roles and "tool" in view_roles
+        assert view_roles[-2:] == ["assistant", "tool"]
 
     def test_non_answer_message_is_a_normal_turn(self):
         self._run_to_pause()
@@ -371,8 +372,78 @@ def test_cold_reload_answer_keeps_tool_call_in_view(tmp_path):
                 }
             )
         )
-        # ...and the answer restores it next to its observation.
+        # ...and the answer restores it immediately before its observation.
         view_roles = [e.to_llm_message().role for e in resumed.state.view.events]
-        assert "assistant" in view_roles and "tool" in view_roles
+        assert view_roles[-2:] == ["assistant", "tool"]
+    finally:
+        resumed.close()
+
+
+def test_parallel_sibling_call_keeps_batch_with_results(tmp_path):
+    """A single response with ``ask_user`` plus another tool stays coherent.
+
+    The paused batch keeps its sibling action while the answer is pending; after
+    the resumed run executes the sibling, the whole batch and all observations
+    must enter the view together so the next LLM request never carries a tool
+    result without its originating tool call.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+
+    def make_conversation(cid, persist, ws):
+        return Conversation(
+            agent=Agent(llm=llm, tools=[Tool(name=AskUserTool.name)]),
+            workspace=str(ws),
+            persistence_dir=str(persist),
+            conversation_id=cid,
+            delete_on_close=False,
+        )
+
+    cid = uuid.uuid4()
+    persist = tmp_path / "persist"
+    ws = tmp_path / "ws"
+    created = make_conversation(cid, persist, ws)
+    turn1 = _response(
+        "resp_batch",
+        "thinking",
+        [
+            _tool_call("ask_1", "ask_user", ASK_ARGS),
+            _tool_call("think_1", "think", json.dumps({"thought": "x"})),
+        ],
+    )
+    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=turn1):
+        created.send_message("add auth")
+        created.run()
+    request_id = [
+        p.id
+        for p in ConversationState.get_unmatched_actions(created.state.events)
+        if p.tool_name == "ask_user"
+    ][0]
+    # The sibling action is retained (not collapsed) while the answer is pending.
+    assert sum(isinstance(e, ActionEvent) for e in created.state.view.events) == 2
+    created.close()
+
+    resumed = make_conversation(cid, persist, ws)
+    try:
+        # Cold load collapses the incomplete batch until every call is resolved.
+        assert not any(isinstance(e, ActionEvent) for e in resumed.state.view.events)
+        resumed.send_message(
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "action": "accept",
+                    "answers": {"auth": [{"option_id": "jwt"}]},
+                }
+            )
+        )
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=_response("resp_done", "done"),
+        ):
+            resumed.run()
+        events = resumed.state.view.events
+        # Both tool calls and both observations are present, so no observation is
+        # orphaned from its originating action.
+        assert sum(isinstance(e, ActionEvent) for e in events) == 2
+        assert sum(isinstance(e, ObservationEvent) for e in events) == 2
     finally:
         resumed.close()

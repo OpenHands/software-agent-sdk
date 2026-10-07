@@ -1937,13 +1937,25 @@ class LocalConversation(BaseConversation):
             tool_output=observation_event.to_llm_message(),
         )
         self._on_event(observation_event)
-        # The cached view excluded the unmatched action on a cold load (the
-        # tool-call-matching property drops actions without observations), so
-        # replaying only the new observation would produce a tool result with
-        # no preceding tool call. Re-derive the view from the raw branch so the
-        # resumed LLM sees the call and its result together.
-        self._state.rebuild_view()
+        # On a cold load the cached view dropped this pending action (tool-call
+        # matching removes actions without observations), so appending only the
+        # observation would leave a tool result without its tool call. When the
+        # whole batch is now resolved, re-derive the view to restore the pair.
+        # When sibling calls in the same response are still pending, leave the
+        # view alone: full enforcement would drop the incomplete batch, and the
+        # post-execution rebuild groups the complete batch once the siblings run.
+        if not self._has_pending_sibling_action(pending):
+            self._state.rebuild_view()
         return True
+
+    def _has_pending_sibling_action(self, action: ActionEvent) -> bool:
+        """Whether another unresolved call shares ``action``'s batch."""
+        return any(
+            ae.llm_response_id == action.llm_response_id
+            for ae in ConversationState.get_unmatched_actions(
+                self._state.active_branch()
+            )
+        )
 
     def _on_event_with_state_lock(self, event: Event) -> None:
         """Emit an event while holding the conversation state lock."""

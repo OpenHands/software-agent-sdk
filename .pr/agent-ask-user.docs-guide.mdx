@@ -53,6 +53,9 @@ When the agent calls `ask_user`:
 4. The SDK matches the answer to the pending request by `request_id` and converts
    it into the `ask_user` tool observation, instead of appending it as an
    unrelated user turn. The run then resumes with that observation in history.
+   When the same LLM response also carried other tool calls, the SDK keeps them
+   grouped with `ask_user` so the answered call and its siblings resume together,
+   and the next LLM request never carries a tool result without its tool call.
 
 `action` distinguishes `accept` (the user answered), `decline` (the user said
 stop asking), and `cancel` (the user dismissed the question). The observation
