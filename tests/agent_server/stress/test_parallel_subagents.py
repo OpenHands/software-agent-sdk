@@ -30,7 +30,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.subagent.registry import _reset_registry_for_tests, register_agent
 from openhands.tools.task import TaskToolSet
-from tests.agent_server.stress.budgets import PARALLEL_SUBAGENTS
+from tests.agent_server.stress.budgets import CPU, PARALLEL_SUBAGENTS
 from tests.agent_server.stress.probe import ResourceProbe
 from tests.agent_server.stress.scripts import (
     SlowTestLLM,
@@ -107,13 +107,14 @@ def _build_parent_llm(n: int, latency_s: float) -> SlowTestLLM:
 async def _run_once(
     conversation_service: ConversationService,
     client,
+    probe: ResourceProbe,
     workspace: str,
     *,
     n_subagents: int,
     tool_concurrency_limit: int,
     latency_s: float,
     usage_id: str,
-) -> tuple[float, list[SlowTestLLM], ConversationExecutionStatus]:
+) -> tuple[float, float, list[SlowTestLLM], ConversationExecutionStatus]:
     sub_llms = _register_subagents(n_subagents, latency_s)
     parent_llm = _build_parent_llm(n_subagents, latency_s)
     info = await start_conversation_with_test_llm(
@@ -126,11 +127,14 @@ async def _run_once(
         initial_text=f"run {n_subagents} task(s)",
     )
 
+    # Both the wall clock and the CPU window start after setup, so the CPU
+    # numerator and the wall denominator cover the same span.
     t0 = time.monotonic()
+    cpu0 = probe.cpu_time_s()
     run_resp = await client.post(f"/api/conversations/{info.id.hex}/run")
     assert run_resp.status_code == 200, run_resp.text
     status = await wait_for_terminal(client, info.id, timeout_s=30.0)
-    return time.monotonic() - t0, sub_llms, status
+    return time.monotonic() - t0, cpu0, sub_llms, status
 
 
 async def test_parallel_subagents_all_complete(
@@ -146,9 +150,10 @@ async def test_parallel_subagents_all_complete(
     (tmp_path / "ws").mkdir()
 
     # Single-agent reference, then registry reset.
-    single_wall, single_subs, single_status = await _run_once(
+    single_wall, _single_cpu0, single_subs, single_status = await _run_once(
         conversation_service,
         client,
+        probe,
         workspace,
         n_subagents=1,
         tool_concurrency_limit=1,
@@ -166,10 +171,12 @@ async def test_parallel_subagents_all_complete(
     pre_parallel_idx = len(probe.samples)
     pre_parallel_rss_mb = probe.samples[-1].rss_mb
 
-    # Now the actual n-sub-agent run.
-    parallel_wall, sub_llms, status = await _run_once(
+    # Now the actual n-sub-agent run. Its CPU window is returned alongside its
+    # wall clock so both cover the same span.
+    parallel_wall, parallel_cpu0, sub_llms, status = await _run_once(
         conversation_service,
         client,
+        probe,
         workspace,
         n_subagents=n,
         tool_concurrency_limit=n,
@@ -220,4 +227,17 @@ async def test_parallel_subagents_all_complete(
         f"FDs grew by {probe.fd_delta()} (budget < "
         f"{PARALLEL_SUBAGENTS.max_fd_growth}). Possible FD leak in sub-agent "
         f"teardown."
+    )
+
+    # 4. CPU budget. CPU-seconds per wall-second during the parallel run must
+    #    stay below the ceiling. This catches a busy-wait or spin loop that
+    #    would inflate CPU while leaving wall time and RSS within budget.
+    parallel_cpu_s = probe.cpu_time_s() - parallel_cpu0
+    cpu_per_wall = parallel_cpu_s / max(parallel_wall, 1e-6)
+    assert cpu_per_wall < CPU.parallel_subagents_max_cpu_per_wall_second, (
+        f"CPU/wall ratio ({cpu_per_wall:.2f}, {parallel_cpu_s:.2f}s CPU over "
+        f"{parallel_wall:.2f}s wall) exceeded "
+        f"{CPU.parallel_subagents_max_cpu_per_wall_second}. CPU is growing "
+        f"faster than the work — likely a busy-wait or an extra worker spinning "
+        f"on the sub-agent path."
     )
