@@ -36,6 +36,11 @@ HISTORY_LIMIT: Final[int] = 10_000
 
 TMUX_SOCKET_NAME: Final[str] = "openhands"
 
+# tmux user option recording the PID of the process that created a socket.
+# Startup cleanup reads it so it does not kill the live sessions of a sibling
+# agent-server that shares one externally supplied TMUX_TMPDIR.
+TMUX_SOCKET_OWNER_OPTION: Final[str] = "@openhands_socket_owner_pid"
+
 # Tmux session dimensions (columns x rows). Keep the viewport wide enough for
 # common command output while leaving scrollback retention to HISTORY_LIMIT.
 # Output wider than TMUX_SESSION_WIDTH columns will wrap; this is an accepted

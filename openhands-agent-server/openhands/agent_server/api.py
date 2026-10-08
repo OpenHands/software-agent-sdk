@@ -33,6 +33,7 @@ from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
+from openhands.agent_server.conversation_lease import _is_pid_alive
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
 )
@@ -107,7 +108,10 @@ from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
 from openhands.sdk.utils.redact import sanitize_dict
-from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
+from openhands.tools.terminal.constants import (
+    TMUX_SOCKET_NAME,
+    TMUX_SOCKET_OWNER_OPTION,
+)
 
 
 logger = get_logger(__name__)
@@ -132,25 +136,69 @@ def _ensure_server_tmux_tmpdir() -> tuple[Path, bool]:
     return tmux_tmpdir, True
 
 
-def _cleanup_stale_tmux_sessions() -> None:
-    """Clean up legacy and isolated terminal sockets on server startup."""
-    if os.name != "posix":
-        return
-    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
-    socket_names = [TMUX_SOCKET_NAME]
-    socket_names.extend(
+def _isolated_socket_names(socket_dir: Path) -> list[str]:
+    """Return per-instance socket names present in *socket_dir*."""
+    return [
         path.name
         for path in socket_dir.glob(f"{TMUX_SOCKET_NAME}-" + "[0-9a-f]" * 32)
         if path.is_socket()
-    )
-    for socket_name in socket_names:
+    ]
+
+
+def _kill_sessions(server: libtmux.Server) -> None:
+    for session in server.sessions:
+        try:
+            session.kill()
+        except Exception as e:
+            logger.warning("Failed to kill tmux session %s: %s", session, e)
+
+
+def _socket_owner_pid(server: libtmux.Server) -> int | None:
+    """Return the recorded owner PID for a socket, or None when unknown."""
+    try:
+        raw = server.show_option(
+            TMUX_SOCKET_OWNER_OPTION, global_=True, scope=None, ignore_errors=True
+        )
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return None
+
+
+def _cleanup_stale_tmux_sessions() -> None:
+    """Clean up legacy and isolated terminal sockets on server startup.
+
+    The legacy socket (``openhands``) is always reclaimed. Per-instance
+    sockets (``openhands-<32 hex>``) are only reclaimed when their owning
+    process is gone: several agent-servers may share one externally supplied
+    ``TMUX_TMPDIR``, and killing a live sibling's sessions silently destroys
+    that conversation's terminal.
+    """
+    if os.name != "posix":
+        return
+    socket_dir = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+
+    try:
+        _kill_sessions(libtmux.Server(socket_name=TMUX_SOCKET_NAME))
+    except Exception as e:
+        logger.warning("Failed to cleanup tmux socket %s: %s", TMUX_SOCKET_NAME, e)
+
+    for socket_name in _isolated_socket_names(socket_dir):
         try:
             server = libtmux.Server(socket_name=socket_name)
-            for session in server.sessions:
-                try:
-                    session.kill()
-                except Exception as e:
-                    logger.warning("Failed to kill tmux session %s: %s", session, e)
+            owner_pid = _socket_owner_pid(server)
+            if owner_pid is not None and _is_pid_alive(owner_pid):
+                logger.debug(
+                    "Leaving tmux socket %s alone; owner pid %s is alive",
+                    socket_name,
+                    owner_pid,
+                )
+                continue
+            _kill_sessions(server)
         except Exception as e:
             logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
 
