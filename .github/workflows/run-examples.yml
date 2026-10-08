@@ -32,7 +32,7 @@ jobs:
                   wait-interval: 10
 
             - name: Checkout
-              uses: actions/checkout@v7
+              uses: actions/checkout@v7.0.1
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
                   repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -46,7 +46,7 @@ jobs:
             - name: Install Node.js
               uses: actions/setup-node@v7
               with:
-                  node-version: '22'
+                  node-version: '24'
 
             - name: Setup Apptainer
               uses: eWaterCycle/setup-apptainer@3f706d898c9db585b1d741b4692e66755f3a1b40 # v2

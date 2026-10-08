@@ -17,10 +17,15 @@ two security-critical checks around it:
 import re
 from pathlib import Path
 from typing import Final, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.extensions.installation.utils import validate_extension_name
+from openhands.sdk.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 # Filename a canvas extension's manifest is loaded from, at its package root.
@@ -89,24 +94,61 @@ BackendPlatform = Literal["linux-amd64", "linux-arm64"]
 
 
 class CanvasExtensionBackendArtifact(BaseModel):
-    """Immutable backend artifact for one supported platform."""
+    """Immutable local or HTTPS backend artifact for one platform."""
 
     path: str = Field(description="Package-relative .tar.gz artifact path")
+    url: str | None = Field(
+        default=None, description="Public HTTPS .tar.gz artifact URL"
+    )
     sha256: str = Field(
         pattern=r"^[0-9a-f]{64}$", description="Lowercase SHA-256 checksum"
     )
+    strip_components: int = Field(
+        default=0, ge=0, le=16, description="Leading archive path components to remove"
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_remote_path(cls, value: object) -> object:
+        if isinstance(value, dict) and "path" not in value and value.get("url"):
+            return {**value, "path": ""}
+        return value
 
     @field_validator("path")
     @classmethod
     def _validate_path(cls, value: str) -> str:
-        if (
-            not value
-            or value.startswith("/")
+        if value and (
+            value.startswith("/")
             or ".." in Path(value).parts
             or not value.endswith(".tar.gz")
         ):
             raise ValueError("artifact path must be a relative .tar.gz path")
         return value
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or not parsed.path.endswith(".tar.gz")
+        ):
+            raise ValueError("artifact url must be a credential-free HTTPS .tar.gz URL")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "CanvasExtensionBackendArtifact":
+        if bool(self.path) == (self.url is not None):
+            raise ValueError("artifact must declare exactly one of path or url")
+        if self.path and self.strip_components:
+            raise ValueError("strip_components is supported only for remote artifacts")
+        return self
 
 
 class CanvasExtensionBackendHealth(BaseModel):
@@ -181,6 +223,25 @@ class CanvasExtensionManifest(BaseModel):
         exclude_if=lambda value: value is None,
         description="Optional explicitly prepared and started backend service",
     )
+    icon: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Path, relative to the extension package root, to an SVG icon",
+    )
+
+    @field_validator("icon", mode="before")
+    @classmethod
+    def _validate_icon(cls, v: object) -> str | None:
+        """Drop a non-SVG icon instead of raising.
+
+        The manifest is re-validated on every read, so raising here would hide
+        the whole extension. Containment is checked at serve time by
+        :func:`resolve_icon`.
+        """
+        if v is None or (isinstance(v, str) and v.endswith(".svg")):
+            return v
+        logger.warning("Ignoring invalid canvas extension icon %r", v)
+        return None
 
     @field_validator("schema_version")
     @classmethod
@@ -237,16 +298,32 @@ def resolve_entrypoint(manifest: CanvasExtensionManifest, package_root: Path) ->
             a directory, a dangling symlink, and symlink cycles — none of
             which ``is_relative_to`` alone rejects).
     """
+    return _resolve_contained_file("entrypoint", manifest.entrypoint, package_root)
+
+
+def resolve_icon(manifest: CanvasExtensionManifest, package_root: Path) -> Path | None:
+    """Resolve ``manifest.icon`` with the same containment check as the entrypoint.
+
+    Returns:
+        None if the manifest declares no icon.
+
+    Raises:
+        ValueError: If the icon escapes ``package_root`` or is not a file.
+    """
+    icon = manifest.icon
+    return None if icon is None else _resolve_contained_file("icon", icon, package_root)
+
+
+def _resolve_contained_file(label: str, relative_path: str, package_root: Path) -> Path:
     root = package_root.resolve()
-    candidate = (root / manifest.entrypoint).resolve()
+    candidate = (root / relative_path).resolve()
     if not candidate.is_relative_to(root):
         raise ValueError(
-            f"entrypoint {manifest.entrypoint!r} resolves outside the "
-            "extension package root"
+            f"{label} {relative_path!r} resolves outside the extension package root"
         )
     if not candidate.is_file():
         raise ValueError(
-            f"entrypoint {manifest.entrypoint!r} does not resolve to a file "
+            f"{label} {relative_path!r} does not resolve to a file "
             "in the extension package"
         )
     return candidate

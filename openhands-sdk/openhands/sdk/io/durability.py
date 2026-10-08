@@ -27,6 +27,7 @@ durability errors propagate to callers instead of being swallowed.
 
 import os
 import queue
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -34,7 +35,32 @@ from pathlib import Path
 from openhands.sdk.logger import get_logger
 
 
+if sys.platform == "win32":
+    import _winapi
+    import msvcrt
+
+
 logger = get_logger(__name__)
+
+
+def _open_fsync_file(path: Path) -> int:
+    if sys.platform != "win32":
+        return os.open(path, os.O_RDWR)
+    # Share delete access so a later atomic write can replace this open file.
+    handle = _winapi.CreateFile(
+        str(path),
+        _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+        0x7,  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+        0,
+        _winapi.OPEN_EXISTING,
+        0,
+        0,
+    )
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_RDWR)
+    except BaseException:
+        _winapi.CloseHandle(handle)
+        raise
 
 
 def fsync_file(path: Path) -> None:
@@ -47,7 +73,7 @@ def fsync_file(path: Path) -> None:
     """
     try:
         # Windows fsync (_commit/FlushFileBuffers) requires a writable handle.
-        fd = os.open(path, os.O_RDWR)
+        fd = _open_fsync_file(path)
     except FileNotFoundError:
         return
     try:

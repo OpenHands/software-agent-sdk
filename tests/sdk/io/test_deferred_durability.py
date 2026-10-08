@@ -127,6 +127,9 @@ def test_deferred_fsync_uses_writable_handle(
             O_RDWR=os.O_RDWR,
         ),
     )
+    monkeypatch.setattr(
+        durability, "_open_fsync_file", lambda path: open_file(path, os.O_RDWR)
+    )
     fs = LocalFileStore(str(tmp_path))
     try:
         fs.write("event.json", "persisted")
@@ -135,6 +138,82 @@ def test_deferred_fsync_uses_writable_handle(
         assert (tmp_path / "event.json").read_text() == "persisted"
     finally:
         fs.close()
+
+
+def test_atomic_replace_while_deferred_fsync_holds_previous_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An open durability handle must not prevent the next atomic replacement."""
+    entered = threading.Event()
+    release = threading.Event()
+    original_fsync = os.fsync
+
+    def latched_fsync(fd: int) -> None:
+        entered.set()
+        assert release.wait(10)
+        original_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", latched_fsync)
+    fs = LocalFileStore(str(tmp_path))
+    try:
+        fs.write("base_state.json", "first")
+        assert entered.wait(10)
+        fs.write("base_state.json", "second")
+        assert fs.read("base_state.json") == "second"
+        release.set()
+        fs.flush()
+        assert fs.read("base_state.json") == "second"
+    finally:
+        release.set()
+        fs.close()
+
+
+@pytest.mark.parametrize("conversion_fails", [False, True])
+def test_windows_fsync_handle_shares_delete_and_transfers_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conversion_fails: bool
+):
+    """Check WinAPI flags and the ownership boundary without emulating fsync."""
+    calls: list[tuple] = []
+    closed: list[int] = []
+
+    def create_file(*args):
+        calls.append(args)
+        return 123
+
+    def open_osfhandle(handle, flags):
+        assert (handle, flags) == (123, os.O_RDWR)
+        if conversion_fails:
+            raise OSError("conversion failed")
+        return 456
+
+    monkeypatch.setattr(durability, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(
+        durability,
+        "_winapi",
+        SimpleNamespace(
+            GENERIC_READ=0x80000000,
+            GENERIC_WRITE=0x40000000,
+            OPEN_EXISTING=3,
+            CreateFile=create_file,
+            CloseHandle=closed.append,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        durability,
+        "msvcrt",
+        SimpleNamespace(open_osfhandle=open_osfhandle),
+        raising=False,
+    )
+    path = tmp_path / "base_state.json"
+    if conversion_fails:
+        with pytest.raises(OSError, match="conversion failed"):
+            durability._open_fsync_file(path)
+        assert closed == [123]
+    else:
+        assert durability._open_fsync_file(path) == 456
+        assert closed == []
+    assert calls == [(str(path), 0xC0000000, 0x7, 0, 3, 0, 0)]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-exit test uses POSIX fork")

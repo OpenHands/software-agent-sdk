@@ -2,6 +2,21 @@ import os
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Final
+
+
+# Suffix that marks a file as still being written. ``atomic_write_text`` writes
+# to ``.<name>.<random>.tmp`` next to ``path`` and then renames it to ``<name>``.
+_TEMP_SUFFIX: Final[str] = ".tmp"
+
+
+def is_temp_file(path: Path) -> bool:
+    """Return True if ``path`` is named like a file that is still being written.
+
+    That is any ``*.tmp`` name: ``atomic_write_text``'s temp files, and those of
+    other writers that use the same suffix for a file they rename into place.
+    """
+    return path.suffix == _TEMP_SUFFIX
 
 
 def atomic_write_text(
@@ -26,7 +41,9 @@ def atomic_write_text(
             deferred fsync completes. When None (default), fsync runs
             inline and the write is fully durable on return.
     """
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=_TEMP_SUFFIX, dir=path.parent
+    )
     temporary_path = Path(temporary_name)
     try:
         fchmod = getattr(os, "fchmod", None)
