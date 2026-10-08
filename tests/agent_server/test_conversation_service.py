@@ -211,6 +211,46 @@ async def test_start_acp_conversation_rejects_budget(tmp_path):
             await service.start_conversation(request)
 
 
+@pytest.mark.asyncio
+async def test_rejected_acp_budget_does_not_orphan_state_for_retry(tmp_path):
+    """A rejected ACP budget must not leave base_state.json behind.
+
+    Otherwise a retry with the same id but a regular agent would resume the
+    rejected ACP agent from that orphaned file instead of creating the
+    requested conversation.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    conversation_id = uuid4()
+    workspace = LocalWorkspace(working_dir=str(workspace_dir))
+    rejected = StartConversationRequest(
+        conversation_id=conversation_id,
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=workspace,
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=1.0,
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(CostBudgetUnsupportedError):
+            await service.start_conversation(rejected)
+        assert not (
+            conversations_dir / conversation_id.hex / "base_state.json"
+        ).exists()
+
+        retry = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=workspace,
+            confirmation_policy=NeverConfirm(),
+        )
+        info, is_new = await service.start_conversation(retry)
+        assert is_new
+        assert info.id == conversation_id
+        assert isinstance(info.agent, Agent)
+
+
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
     tool_call = MessageToolCall.from_chat_tool_call(
         ChatCompletionMessageToolCall(

@@ -148,3 +148,31 @@ def test_acp_agent_without_budget_is_allowed():
         )
         assert conv.max_budget_per_run is None
         assert conv._cost_budget is None
+
+
+def test_acp_budget_rejection_leaves_no_orphan_state():
+    """A rejected ACP budget must not write base_state.json.
+
+    If it did, retrying the same conversation id without a budget would resume
+    the rejected ACP agent instead of creating the requested conversation.
+    """
+    from uuid import uuid4
+
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        persist = tmp / "persist"
+        cid = uuid4()
+        with pytest.raises(CostBudgetUnsupportedError, match="ACP agents"):
+            Conversation(
+                agent=ACPAgent(acp_command=["echo", "test"]),
+                workspace=str(tmp),
+                persistence_dir=str(persist),
+                conversation_id=cid,
+                max_budget_per_run=1.0,
+                visualizer=None,
+                delete_on_close=False,
+            )
+        assert not (persist / cid.hex / "base_state.json").exists()

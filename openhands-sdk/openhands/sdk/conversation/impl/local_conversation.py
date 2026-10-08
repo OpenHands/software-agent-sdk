@@ -181,6 +181,26 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def _reject_acp_budget(
+    agent: AgentBase | None, max_budget_per_run: float | None
+) -> None:
+    """Reject a per-run budget on an ACP agent, which cannot enforce one.
+
+    ACP prompts run in an external process that reports usage only after the
+    turn, so the SDK cannot reserve a call's worst-case cost before sending and
+    a single prompt can exceed the ceiling. Accepting the budget would silently
+    promise enforcement the SDK cannot deliver.
+    """
+    if max_budget_per_run is None or not isinstance(agent, ACPAgent):
+        return
+    raise CostBudgetUnsupportedError(
+        "max_budget_per_run is not supported for ACP agents: their "
+        "prompts bypass the SDK's pre-call cost reservation, so a single "
+        "prompt can exceed the budget before it is recorded. Use a "
+        "regular (LLM) agent to enforce a per-conversation budget."
+    )
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -399,6 +419,14 @@ class LocalConversation(BaseConversation):
         ws_path = Path(self.workspace.working_dir)
         if not ws_path.exists():
             ws_path.mkdir(parents=True, exist_ok=True)
+        # Reject an ACP budget before ``ConversationState.create`` writes
+        # ``base_state.json``. A later rejection would leave an orphaned state
+        # file behind, so a retry with the same id but a different agent would
+        # resume the rejected ACP agent instead of creating the requested one.
+        # The resumed agent is not known until after ``create``, so only a
+        # caller-supplied agent can be checked here; the resume path re-checks
+        # once the persisted agent is loaded.
+        _reject_acp_budget(agent, max_budget_per_run)
         self._state = ConversationState.create(
             id=desired_id,
             agent=agent,
@@ -417,6 +445,10 @@ class LocalConversation(BaseConversation):
         # ``self.agent`` and ``self._state.agent`` are the same object.
         if agent is None:
             agent = self._state.agent
+            # Resume path: the persisted agent is known only now. No state file
+            # is created here (base_state.json already exists), so re-checking
+            # the budget cannot orphan anything.
+            _reject_acp_budget(agent, max_budget_per_run)
             # The persisted agent carries client-tool ``Tool`` specs, but in a
             # fresh process the ``ClientTool`` *classes* are absent from the
             # global registry. Re-register them from the persisted specs so
@@ -516,17 +548,6 @@ class LocalConversation(BaseConversation):
         # that inherited a parent's budget shares its ledger and must never
         # re-seed it mid-flight.
         self._owns_budget = False
-        if max_budget_per_run is not None and isinstance(self.agent, ACPAgent):
-            # ACP prompts run in an external process that reports usage only
-            # after the turn, so the SDK cannot reserve a worst-case cost before
-            # sending and a single prompt can exceed the ceiling. Reject the
-            # budget rather than accept an unenforceable cap.
-            raise CostBudgetUnsupportedError(
-                "max_budget_per_run is not supported for ACP agents: their "
-                "prompts bypass the SDK's pre-call cost reservation, so a single "
-                "prompt can exceed the budget before it is recorded. Use a "
-                "regular (LLM) agent to enforce a per-conversation budget."
-            )
         if max_budget_per_run is not None:
             if inherited_budget is not None:
                 # A subagent shares its parent's reservation pool so parent and
