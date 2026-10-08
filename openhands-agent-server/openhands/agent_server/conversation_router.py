@@ -342,15 +342,11 @@ async def start_conversation(
         info, is_new = await conversation_service.start_conversation(request)
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
         raise launch_http_exception(e) from e
-    except ClientToolRegistrationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
-        ) from e
-    except CostBudgetUnsupportedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
-        ) from e
-    except InvalidParentConversation as e:
+    except (
+        ClientToolRegistrationError,
+        CostBudgetUnsupportedError,
+        InvalidParentConversation,
+    ) as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e
