@@ -6338,6 +6338,12 @@ export type InstalledCanvasExtensionResponse = {
    */
   repo_path?: string | null;
   /**
+   * Requested Ref
+   *
+   * Branch, tag, or commit requested at install time. None means no ref was requested (tracking the source's default branch).
+   */
+  requested_ref?: string | null;
+  /**
    * Resolved Ref
    *
    * Resolved git commit SHA
