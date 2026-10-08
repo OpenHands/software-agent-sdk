@@ -1,9 +1,11 @@
 """Tmux-based terminal backend implementation."""
 
 import logging
+import os
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import suppress
 
 import libtmux
 
@@ -14,6 +16,7 @@ from openhands.tools.terminal.constants import (
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
     TMUX_SOCKET_NAME,
+    TMUX_SOCKET_OWNER_OPTION,
 )
 from openhands.tools.terminal.env import (
     build_terminal_env,
@@ -66,6 +69,20 @@ def _install_libtmux_redaction_filter() -> None:
             for log_filter in libtmux_logger.filters
         ):
             libtmux_logger.addFilter(_SecretRedactFilter())
+
+
+def mark_socket_owner(server: libtmux.Server) -> None:
+    """Record this process as the owner of *server*'s socket.
+
+    The agent-server's startup cleanup reads this to tell a live sibling's
+    socket apart from a stale one when a shared ``TMUX_TMPDIR`` is in use.
+    Best-effort: a failure here only loses the ownership hint, so it must
+    never break terminal setup.
+    """
+    with suppress(Exception):
+        server.set_option(
+            TMUX_SOCKET_OWNER_OPTION, str(os.getpid()), global_=True, scope=None
+        )
 
 
 # Map normalized special key names to tmux key names.
@@ -142,6 +159,7 @@ class TmuxTerminal(TerminalInterface):
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
+        mark_socket_owner(self.server)
         for k, v in env.items():
             self.session.set_environment(k, v)
 

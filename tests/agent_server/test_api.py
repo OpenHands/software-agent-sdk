@@ -2,7 +2,10 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -20,6 +23,7 @@ from openhands.agent_server.api import (
     create_app,
 )
 from openhands.agent_server.config import Config
+from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 
 
 @pytest.fixture(autouse=True)
@@ -63,24 +67,82 @@ def test_ensure_server_tmux_tmpdir_respects_existing_env(tmp_path, monkeypatch):
     assert not existing.exists()
 
 
+def _wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out waiting for tmux output"
+        time.sleep(0.05)
+
+
+_ORPHAN_SOCKET_SCRIPT = """
+import tempfile
+from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+
+pool = TmuxPanePool(tempfile.mkdtemp(prefix="oh-orphan-workdir-"))
+pool.initialize()
+pool.checkout()
+print(pool._server.socket_name)
+"""
+
+
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
-def test_cleanup_stale_tmux_sessions_includes_isolated_sockets(monkeypatch):
-    with tempfile.TemporaryDirectory(prefix="oh-cleanup-") as socket_dir:
+def test_cleanup_stale_tmux_sessions_spares_live_sibling_socket(monkeypatch):
+    """Startup cleanup must not kill a live sibling agent-server's sessions.
+
+    Regression for #5581: with a shared, externally supplied ``TMUX_TMPDIR``
+    (as on an Agent Canvas host), ``_cleanup_stale_tmux_sessions()`` used to
+    glob every ``openhands-<32 hex>`` socket and kill all of its sessions,
+    silently destroying the terminals of every other running agent-server.
+    A socket whose owner is gone must still be reclaimed.
+    """
+    with tempfile.TemporaryDirectory(prefix="oh-shared-tmux-") as socket_dir:
         monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
-        servers = [
-            libtmux.Server(socket_name=name)
-            for name in ["openhands", "openhands-" + "a" * 32, "unrelated"]
-        ]
+
+        # Conversation A: a live pool whose long-running command must survive.
+        pool_a = TmuxPanePool(tempfile.mkdtemp(prefix="oh-conversation-a-"))
+        pool_a.initialize()
+        terminal_a = pool_a.checkout()
+
+        # Legacy and non-OpenHands sockets share the directory.
+        legacy = libtmux.Server(socket_name="openhands")
+        unrelated = libtmux.Server(socket_name="unrelated")
+        legacy.new_session(session_name="test")
+        unrelated.new_session(session_name="test")
         try:
-            for server in servers:
-                server.new_session(session_name="test")
+            terminal_a.send_keys("printf 'A_STILL_ALIVE\\n'")
+            _wait_for(lambda: "A_STILL_ALIVE" in terminal_a.read_screen())
+
+            # An orphaned socket whose owner process has exited (a crashed
+            # sibling) is created out-of-process, then its owner dies.
+            env = {**os.environ, "TMUX_TMPDIR": socket_dir}
+            orphan = subprocess.run(
+                [sys.executable, "-c", _ORPHAN_SOCKET_SCRIPT],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+            orphan_socket = orphan.stdout.strip().splitlines()[-1]
+            orphan_server = libtmux.Server(socket_name=orphan_socket)
+            assert orphan_server.sessions
+
+            # Conversation B's agent-server starts on the same host.
             _cleanup_stale_tmux_sessions()
-            assert not servers[0].sessions
-            assert not servers[1].sessions
-            assert servers[2].sessions
+
+            # The live sibling is untouched and still usable.
+            assert "A_STILL_ALIVE" in terminal_a.read_screen()
+            terminal_a.send_keys("printf 'A_STILL_USABLE\\n'")
+            _wait_for(lambda: "A_STILL_USABLE" in terminal_a.read_screen())
+
+            # A socket whose owner is gone is reclaimed, the legacy socket is
+            # still cleaned up, and non-OpenHands sockets are left alone.
+            assert not orphan_server.sessions
+            assert not legacy.sessions
+            assert unrelated.sessions
         finally:
-            for server in servers:
-                server.cmd("kill-server")
+            pool_a.close()
+            legacy.cmd("kill-server")
+            unrelated.cmd("kill-server")
 
 
 class TestStaticFilesServing:

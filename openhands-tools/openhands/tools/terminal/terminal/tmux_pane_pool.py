@@ -28,7 +28,10 @@ from openhands.tools.terminal.env import (
     build_terminal_env,
     normalize_terminal_env,
 )
-from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
+from openhands.tools.terminal.terminal.tmux_terminal import (
+    TmuxTerminal,
+    mark_socket_owner,
+)
 
 
 logger = get_logger(__name__)
@@ -130,6 +133,7 @@ class TmuxPanePool:
             x=TMUX_SESSION_WIDTH,
             y=TMUX_SESSION_HEIGHT,
         )
+        mark_socket_owner(self._server)
         for k, v in env.items():
             self._session.set_environment(k, v)
         self._session.set_option("history-limit", str(HISTORY_LIMIT))
