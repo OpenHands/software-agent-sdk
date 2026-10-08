@@ -77,7 +77,7 @@
     <tr>
       <td><code>AskUserResponseEvent</code></td>
       <td><code>user</code> / <code>environment</code></td>
-      <td><code>request_id</code>, <code>action: accept|decline|cancel</code>, <code>answers: dict[str, AskUserAnswer]</code></td>
+      <td><code>request_id</code>, <code>action: accept|decline|cancel</code>, <code>answers: dict[str, list[AskUserAnswer]]</code></td>
     </tr>
   </table>
   <p>
@@ -104,7 +104,7 @@ _run loop resolves the pending action into an AskUserObservation (the tool resul
 {
   "request_id": "&lt;AskUserRequestEvent.request_id&gt;",
   "action": "accept" | "decline" | "cancel",
-  "answers": {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}}
+  "answers": {"auth": [{"option_id": "jwt", "label": "JWT bearer tokens"}]}
 }</code></pre>
   <ul>
     <li><span class="badge ok">200</span> answer recorded and run resumed.</li>

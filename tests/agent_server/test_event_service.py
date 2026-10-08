@@ -52,6 +52,7 @@ from openhands.sdk.event import (
     AskUserResponseEvent,
     Event,
     QuestionInfo,
+    QuestionOption,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
@@ -1657,10 +1658,14 @@ class TestEventServiceRespondToConfirmation:
 class TestEventServiceRespondToAskUser:
     """Test cases for ask_user response handling."""
 
-    def _service_with_pending(self, request_id: str = "req-1"):
+    def _service_with_pending(
+        self,
+        request_id: str = "req-1",
+        questions: list[QuestionInfo] | None = None,
+    ):
         request = AskUserRequestEvent(
             request_id=request_id,
-            questions=[QuestionInfo(id="auth", question="Which auth?")],
+            questions=questions or [QuestionInfo(id="auth", question="Which auth?")],
             action_id="action-1",
             tool_call_id="call-1",
         )
@@ -1684,7 +1689,7 @@ class TestEventServiceRespondToAskUser:
             AskUserResponseRequest(
                 request_id="req-1",
                 action="accept",
-                answers={"auth": AskUserAnswer(option_id="jwt", label="JWT")},
+                answers={"auth": [AskUserAnswer(option_id="jwt", label="JWT")]},
             )
         )
 
@@ -1733,6 +1738,49 @@ class TestEventServiceRespondToAskUser:
         )
 
         conversation._on_event.assert_called_once()
+        # The rejected resume is remembered so the exiting run task re-arms.
+        assert event_service._ask_user_resume_requested is True
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_rejects_unknown_option(self, event_service):
+        _, conversation = self._service_with_pending(
+            questions=[
+                QuestionInfo(
+                    id="auth",
+                    question="Which auth?",
+                    options=[QuestionOption(id="jwt", label="JWT")],
+                )
+            ]
+        )
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(AskUserRequestError):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(
+                    request_id="req-1",
+                    action="accept",
+                    answers={"auth": [AskUserAnswer(option_id="oauth", label="OAuth")]},
+                )
+            )
+
+        conversation._on_event.assert_not_called()
+        event_service.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resume_requested_only_set_for_already_running(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock(side_effect=ValueError("inactive_service"))
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(request_id="req-1", action="cancel")
+            )
+
+        assert event_service._ask_user_resume_requested is False
 
     @pytest.mark.asyncio
     async def test_timeout_resolves_pending_request_as_cancel(self, event_service):

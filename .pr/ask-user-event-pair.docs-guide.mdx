@@ -32,7 +32,7 @@ Body:
 {
   "request_id": "<AskUserRequestEvent.request_id>",
   "action": "accept",
-  "answers": {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}}
+  "answers": {"auth": [{"option_id": "jwt", "label": "JWT bearer tokens"}]}
 }
 ```
 
@@ -61,6 +61,6 @@ assert isinstance(pending, AskUserRequestEvent)
 conversation.respond_to_ask_user(
     pending.request_id,
     "accept",
-    {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}},
+    {"auth": [{"option_id": "jwt", "label": "JWT bearer tokens"}]},
 )
 ```

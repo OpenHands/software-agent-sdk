@@ -153,7 +153,7 @@ export interface AskUserQuestionInfo {
   multi_select?: boolean;
 }
 
-/** The user's selection for one ask_user question. */
+/** The user's selection(s) for one ask_user question. */
 export interface AskUserAnswer {
   /** Id of the selected option */
   option_id: string;
@@ -192,8 +192,10 @@ export interface AskUserResponseEvent extends BaseEvent {
   request_id: string;
   /** One of accept, decline, or cancel */
   action: AskUserResponseAction;
-  /** Answers keyed by question id; populated for accept only */
-  answers?: Record<string, AskUserAnswer>;
+  /** Answers keyed by question id; populated for accept only. Each value is
+   * the list of selections for that question (one element for single-select,
+   * one or more for multi-select). */
+  answers?: Record<string, AskUserAnswer[]>;
 }
 
 /**

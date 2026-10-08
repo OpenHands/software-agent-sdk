@@ -449,12 +449,13 @@ class AskUserResponseRequest(BaseModel):
 
     Mirrors MCP elicitation: exactly one of ``accept`` (with ``answers``),
     ``decline``, or ``cancel``. ``answers`` is keyed by question id and each
-    value carries the selected option id plus its display label.
+    value is the list of selections for that question (one element for a
+    single-select question, one or more for a ``multi_select`` question).
     """
 
     request_id: str
     action: AskUserResponseAction
-    answers: dict[str, AskUserAnswer] = Field(default_factory=dict)
+    answers: dict[str, list[AskUserAnswer]] = Field(default_factory=dict)
 
 
 class Success(BaseModel):

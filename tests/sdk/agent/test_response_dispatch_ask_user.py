@@ -17,10 +17,12 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.event import (
     ActionEvent,
     AskUserAnswer,
+    AskUserRequestError,
     AskUserRequestEvent,
     AskUserResponseEvent,
     ObservationEvent,
     QuestionInfo,
+    QuestionOption,
 )
 from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall
@@ -40,7 +42,14 @@ def _state() -> ConversationState:
 
 
 def _question() -> QuestionInfo:
-    return QuestionInfo(id="auth", question="Which auth strategy?")
+    return QuestionInfo(
+        id="auth",
+        question="Which auth strategy?",
+        options=[
+            QuestionOption(id="jwt", label="JWT bearer tokens"),
+            QuestionOption(id="session", label="Server sessions"),
+        ],
+    )
 
 
 def _request() -> AskUserRequestEvent:
@@ -89,11 +98,161 @@ def test_build_observation_accept_lists_selected_labels():
     observation = build_ask_user_observation(
         [_question()],
         "accept",
-        {"auth": AskUserAnswer(option_id="jwt", label="JWT bearer tokens")},
+        {"auth": [AskUserAnswer(option_id="jwt", label="JWT bearer tokens")]},
     )
 
     assert observation.resolution == "accept"
     assert "JWT bearer tokens" in observation.message
+
+
+def test_build_observation_accept_includes_every_multi_select_label():
+    observation = build_ask_user_observation(
+        [_question()],
+        "accept",
+        {
+            "auth": [
+                AskUserAnswer(option_id="jwt", label="JWT bearer tokens"),
+                AskUserAnswer(option_id="session", label="Server sessions"),
+            ]
+        },
+    )
+
+    assert "JWT bearer tokens" in observation.message
+    assert "Server sessions" in observation.message
+    assert len(observation.answers["auth"]) == 2
+
+
+def test_build_observation_accept_rejects_unknown_option():
+    with pytest.raises(AskUserRequestError):
+        build_ask_user_observation(
+            [_question()],
+            "accept",
+            {"auth": [AskUserAnswer(option_id="oauth", label="OAuth")]},
+        )
+
+
+def test_build_observation_accept_rejects_unknown_question():
+    with pytest.raises(AskUserRequestError):
+        build_ask_user_observation(
+            [_question()],
+            "accept",
+            {"nope": [AskUserAnswer(option_id="jwt", label="JWT")]},
+        )
+
+
+def test_build_observation_accept_allows_partial_answers():
+    observation = build_ask_user_observation([_question()], "accept", {})
+
+    assert observation.resolution == "accept"
+    assert observation.answers == {}
+
+
+def _local_conversation_with_state(state: ConversationState):
+    from openhands.sdk.agent import Agent as AgentClass
+    from openhands.sdk.conversation import Conversation
+
+    conversation = Conversation(agent=AgentClass(llm=LLM(model="test"), tools=[]))
+    conversation._ensure_agent_ready()
+    conversation._state = state
+    return conversation
+
+
+def test_local_conversation_respond_to_ask_user_appends_response():
+    state = _state()
+    action_event = _ask_user_action_event()
+    state.append_event(action_event)
+    state.append_event(
+        AskUserRequestEvent(
+            request_id="req-1",
+            questions=[_question()],
+            action_id=action_event.id,
+            tool_call_id="call-1",
+        )
+    )
+    conversation = _local_conversation_with_state(state)
+
+    conversation.respond_to_ask_user(
+        "req-1",
+        "accept",
+        {"auth": [AskUserAnswer(option_id="jwt", label="JWT bearer tokens")]},
+    )
+
+    responses = [e for e in state.events if isinstance(e, AskUserResponseEvent)]
+    assert len(responses) == 1
+    assert responses[0].request_id == "req-1"
+    assert responses[0].answers["auth"][0].option_id == "jwt"
+
+
+def test_local_conversation_respond_to_ask_user_accepts_plain_mapping():
+    state = _state()
+    action_event = _ask_user_action_event()
+    state.append_event(action_event)
+    state.append_event(
+        AskUserRequestEvent(
+            request_id="req-1",
+            questions=[_question()],
+            action_id=action_event.id,
+            tool_call_id="call-1",
+        )
+    )
+    conversation = _local_conversation_with_state(state)
+
+    conversation.respond_to_ask_user(
+        "req-1", "accept", {"auth": {"option_id": "session", "label": "Sessions"}}
+    )
+
+    responses = [e for e in state.events if isinstance(e, AskUserResponseEvent)]
+    assert responses[0].answers["auth"][0].option_id == "session"
+
+
+def test_local_conversation_respond_to_ask_user_rejects_stale_id():
+    state = _state()
+    action_event = _ask_user_action_event()
+    state.append_event(action_event)
+    state.append_event(
+        AskUserRequestEvent(
+            request_id="req-1",
+            questions=[_question()],
+            action_id=action_event.id,
+            tool_call_id="call-1",
+        )
+    )
+    conversation = _local_conversation_with_state(state)
+
+    with pytest.raises(ValueError, match="request_id"):
+        conversation.respond_to_ask_user("stale", "cancel")
+
+    assert not any(isinstance(e, AskUserResponseEvent) for e in state.events)
+
+
+def test_local_conversation_respond_to_ask_user_rejects_unknown_option():
+    state = _state()
+    action_event = _ask_user_action_event()
+    state.append_event(action_event)
+    state.append_event(
+        AskUserRequestEvent(
+            request_id="req-1",
+            questions=[_question()],
+            action_id=action_event.id,
+            tool_call_id="call-1",
+        )
+    )
+    conversation = _local_conversation_with_state(state)
+
+    with pytest.raises(AskUserRequestError):
+        conversation.respond_to_ask_user(
+            "req-1", "accept", {"auth": {"option_id": "oauth", "label": "OAuth"}}
+        )
+
+    assert not any(isinstance(e, AskUserResponseEvent) for e in state.events)
+
+
+def test_local_conversation_respond_to_ask_user_without_pending_raises():
+    state = _state()
+    conversation = _local_conversation_with_state(state)
+
+    with pytest.raises(ValueError, match="No pending ask_user request"):
+        conversation.respond_to_ask_user("req-1", "cancel")
 
 
 def test_build_observation_decline_and_cancel():
@@ -109,7 +268,7 @@ def test_build_observation_non_accept_ignores_answers(action):
     observation = build_ask_user_observation(
         [_question()],
         action,
-        {"auth": AskUserAnswer(option_id="jwt", label="JWT bearer tokens")},
+        {"auth": [AskUserAnswer(option_id="jwt", label="JWT bearer tokens")]},
     )
 
     # Only 'accept' carries answers through to the observation.
@@ -198,7 +357,9 @@ def test_matching_response_emits_resolving_observation():
         AskUserResponseEvent(
             request_id="req-1",
             action="accept",
-            answers={"auth": AskUserAnswer(option_id="jwt", label="JWT bearer tokens")},
+            answers={
+                "auth": [AskUserAnswer(option_id="jwt", label="JWT bearer tokens")]
+            },
         )
     )
 

@@ -369,7 +369,7 @@ class TestRespondToAskUserEndpoint:
                 json={
                     "request_id": "req-1",
                     "action": "accept",
-                    "answers": {"auth": {"option_id": "jwt", "label": "JWT"}},
+                    "answers": {"auth": [{"option_id": "jwt", "label": "JWT"}]},
                 },
             )
 

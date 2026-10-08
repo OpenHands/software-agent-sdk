@@ -114,7 +114,7 @@ export interface ConfirmationResponseRequest {
   reason?: string;
 }
 
-/** The user's selection for one ask_user question. */
+/** The user's selection(s) for one ask_user question. */
 export interface AskUserAnswer {
   option_id: string;
   label: string;
@@ -127,7 +127,7 @@ export type AskUserResponseAction = 'accept' | 'decline' | 'cancel';
 export interface AskUserResponseRequest {
   request_id: string;
   action: AskUserResponseAction;
-  answers?: Record<string, AskUserAnswer>;
+  answers?: Record<string, AskUserAnswer[]>;
 }
 
 export interface CreateConversationRequest {

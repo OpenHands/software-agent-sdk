@@ -34,7 +34,10 @@ from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
 )
-from openhands.sdk.agent.response_dispatch import pending_ask_user_request
+from openhands.sdk.agent.response_dispatch import (
+    build_ask_user_observation,
+    pending_ask_user_request,
+)
 from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.event_store import EventLog
@@ -75,8 +78,10 @@ from openhands.sdk.event import (
     AskUserRequestEvent,
     AskUserResponseEvent,
     ObservationBaseEvent,
+    ObservationEvent,
     StreamingDeltaEvent,
 )
+from openhands.sdk.event.ask_user_schema import validate_ask_user_answers
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
@@ -242,6 +247,10 @@ class EventService:
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
     _rerun_requested: bool = field(default=False, init=False)
+    # Set when an ask_user answer is recorded but its resume run() is rejected
+    # because the paused run task is still draining callbacks; consumed by
+    # _run_and_publish so the answer is resolved instead of stranded.
+    _ask_user_resume_requested: bool = field(default=False, init=False)
     # Set only for the internal ACP interrupt/restart path triggered by a new
     # send_message(run=True). Explicit user pause/interrupt clears it so user
     # stop intent wins over an earlier automatic restart request.
@@ -1615,9 +1624,11 @@ class EventService:
                     # never sets the flag.
                     rerun_requested = self._rerun_requested
                     acp_internal_rerun_requested = self._acp_internal_rerun_requested
+                    ask_user_resume_requested = self._ask_user_resume_requested
                     rerun_generation = self._explicit_interrupt_generation
                     self._rerun_requested = False
                     self._acp_internal_rerun_requested = False
+                    self._ask_user_resume_requested = False
                     if rerun_requested:
                         status = await self._get_execution_status()
                         rerun_generation_still_valid = (
@@ -1658,6 +1669,29 @@ class EventService:
                                     self._acp_internal_rerun_requested = (
                                         acp_internal_rerun_requested
                                     )
+                                else:
+                                    raise
+
+                    # An ask_user answer recorded while this task was wrapping
+                    # up had its resume run() rejected as
+                    # "conversation_already_running". The run loop has already
+                    # resolved pending actions and paused, so honor the answer
+                    # here: re-arm a run that consumes the pending response and
+                    # emits the resolving observation. The run loop clears
+                    # WAITING_FOR_CONFIRMATION before its next step, so no
+                    # status flip is needed; the re-arm reuses this
+                    # conversation's session permit.
+                    if ask_user_resume_requested and not rerun_requested:
+                        if (
+                            self._explicit_interrupt_generation == rerun_generation
+                            and await self._get_execution_status()
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        ):
+                            try:
+                                await self.run(wait_for_capacity=True)
+                            except ValueError as e:
+                                if str(e) == "conversation_already_running":
+                                    self._ask_user_resume_requested = True
                                 else:
                                     raise
 
@@ -2012,6 +2046,8 @@ class EventService:
                     "The response request_id does not match the pending "
                     "ask_user request."
                 )
+            if response.action == "accept":
+                validate_ask_user_answers(request.questions, response.answers)
             self._conversation._on_event(response)
         self._pending_ask_user_request_id = None
         return request
@@ -2034,9 +2070,17 @@ class EventService:
         try:
             await self.run()
         except ValueError as e:
-            # "already running" is a no-op success: the loop will pick up the
-            # response on its next pending-action resolution.
-            if str(e) != "conversation_already_running":
+            # "already running" is normally a no-op success: the live run loop
+            # picks up the response on its next pending-action resolution. But
+            # if the answer landed in the tail window after the paused run set
+            # WAITING_FOR_CONFIRMATION and before _run_and_publish cleared
+            # _run_task, that exiting task has already resolved pending actions
+            # and will not consume the answer, so it would be stranded. Record
+            # an explicit re-arm intent for _run_and_publish to honor once the
+            # task clears.
+            if str(e) == "conversation_already_running":
+                self._ask_user_resume_requested = True
+            else:
                 raise
 
     async def respond_to_ask_user(self, request: AskUserResponseRequest) -> None:
@@ -2100,7 +2144,9 @@ class EventService:
         """Resolve a request left pending by a crash as 'cancel'.
 
         The run is not resumed here; ``start()`` clears the stale RUNNING status
-        and publishes the resolution so a client sees the request closed.
+        and publishes the resolution so a client sees the request closed. The
+        resolving observation is emitted too, so the pending tool call is
+        matched instead of being left as an orphan for the next run to trip on.
         """
         request = self._pending_ask_user_request_sync()
         if request is None:
@@ -2118,6 +2164,19 @@ class EventService:
                 == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
             ):
                 state.execution_status = ConversationExecutionStatus.IDLE
+            # Match the pending tool call so the recovered history has no
+            # unmatched action, mirroring the AgentErrorEvent emitted for other
+            # in-flight tools above.
+            self._conversation._on_event(
+                ObservationEvent(
+                    observation=build_ask_user_observation(
+                        request.questions, "cancel", {}
+                    ),
+                    action_id=request.action_id,
+                    tool_name=request.tool_name,
+                    tool_call_id=request.tool_call_id,
+                )
+            )
         self._pending_ask_user_request_id = None
         return request
 

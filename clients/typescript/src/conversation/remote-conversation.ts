@@ -294,7 +294,7 @@ export class RemoteConversation implements IConversation {
   async respondToAskUser(
     requestId: string,
     action: AskUserResponseAction,
-    answers?: Record<string, AskUserAnswer>
+    answers?: Record<string, AskUserAnswer[]>
   ): Promise<void> {
     await assertAgentServerSupports(this.client, AgentServerFeatureRequirements.askUser);
     const request: AskUserResponseRequest = {

@@ -10,6 +10,7 @@ from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.response_dispatch import pending_ask_user_request
 from openhands.sdk.agent.stream_context import StreamProgressCallbackType
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.memory import load_memory
@@ -40,6 +41,7 @@ from openhands.sdk.credential import CredentialBindingError
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    AskUserResponseEvent,
     CondensationRequest,
     Event,
     EventID,
@@ -48,6 +50,12 @@ from openhands.sdk.event import (
     ObservationEvent,
     PauseEvent,
     UserRejectObservation,
+)
+from openhands.sdk.event.ask_user_schema import (
+    AskUserAnswer,
+    AskUserResponseAction,
+    normalize_ask_user_answers,
+    validate_ask_user_answers,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.error_classification import AGENT_OUTCOME
@@ -2685,6 +2693,41 @@ class LocalConversation(BaseConversation):
                 )
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
+
+    def respond_to_ask_user(
+        self,
+        request_id: str,
+        action: AskUserResponseAction,
+        answers: Mapping[
+            str, AskUserAnswer | Sequence[AskUserAnswer] | Mapping[str, Any]
+        ]
+        | None = None,
+    ) -> None:
+        """Answer this conversation's pending ``ask_user`` request.
+
+        Validates the answer against the single pending request, appends a typed
+        :class:`AskUserResponseEvent`, and lets the run loop resolve the tool
+        observation on the next ``run()``/``arun()``. Raises ``ValueError`` when
+        there is no pending request or ``request_id`` does not match it.
+        """
+        request = pending_ask_user_request(self._state)
+        if request is None:
+            raise ValueError("No pending ask_user request for this conversation.")
+        if request.request_id != request_id:
+            raise ValueError(
+                "The response request_id does not match the pending ask_user request."
+            )
+        normalized = normalize_ask_user_answers(answers)
+        if action == "accept":
+            validate_ask_user_answers(request.questions, normalized)
+        response = AskUserResponseEvent(
+            source="user",
+            request_id=request_id,
+            action=action,
+            answers=normalized,
+        )
+        with self._state:
+            self._on_event(response)
 
     def _emit_orphaned_action_errors(self) -> None:
         """Emit ``AgentErrorEvent`` for actions that have no observation.

@@ -69,9 +69,12 @@ class AskUserObservation(Observation):
     resolution: AskUserResolution = Field(
         description="How the request resolved: accept, decline, or cancel."
     )
-    answers: dict[str, AskUserAnswer] = Field(
+    answers: dict[str, list[AskUserAnswer]] = Field(
         default_factory=dict,
-        description="Answers keyed by question id; populated for 'accept' only.",
+        description=(
+            "Answers keyed by question id; populated for 'accept' only. Each "
+            "value lists the selections for that question."
+        ),
     )
     message: str = Field(
         default="", description="Human-readable summary of the resolution."

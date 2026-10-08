@@ -72,7 +72,11 @@ class AskUserResponseEvent(Event):
     action: AskUserResponseAction = Field(
         description="One of 'accept', 'decline', or 'cancel'."
     )
-    answers: dict[str, AskUserAnswer] = Field(
+    answers: dict[str, list[AskUserAnswer]] = Field(
         default_factory=dict,
-        description="Answers keyed by question id; populated for 'accept' only.",
+        description=(
+            "Answers keyed by question id; populated for 'accept' only. Each "
+            "value is the list of selections for that question (one element for "
+            "single-select, one or more for multi-select)."
+        ),
     )

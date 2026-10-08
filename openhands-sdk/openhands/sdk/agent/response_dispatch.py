@@ -21,7 +21,10 @@ from openhands.sdk.event import (
     ObservationEvent,
     QuestionInfo,
 )
-from openhands.sdk.event.ask_user_schema import AskUserAnswer
+from openhands.sdk.event.ask_user_schema import (
+    AskUserAnswer,
+    validate_ask_user_answers,
+)
 from openhands.sdk.llm import LLMResponse, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.ask_user import (
@@ -52,14 +55,16 @@ logger = get_logger(__name__)
 def build_ask_user_observation(
     questions: list[QuestionInfo],
     action: str,
-    answers: dict[str, AskUserAnswer],
+    answers: dict[str, list[AskUserAnswer]],
 ) -> AskUserObservation:
     """Build the tool observation that reflects an ``ask_user`` resolution."""
     if action == "accept":
+        validate_ask_user_answers(questions, answers)
         lines = [
-            f"- {question.question} -> {answers[question.id].label}"
+            f"- {question.question} -> "
+            + ", ".join(selection.label for selection in answers[question.id])
             for question in questions
-            if question.id in answers
+            if answers.get(question.id)
         ]
         message = (
             "User answered:\n" + "\n".join(lines)

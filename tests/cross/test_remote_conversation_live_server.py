@@ -808,7 +808,9 @@ def test_ask_user_event_pair_over_real_server(server_env):
             json={
                 "request_id": ask_request.request_id,
                 "action": "accept",
-                "answers": {"auth": {"option_id": "jwt", "label": "JWT bearer tokens"}},
+                "answers": {
+                    "auth": [{"option_id": "jwt", "label": "JWT bearer tokens"}]
+                },
             },
         )
         assert accepted.status_code == 200, accepted.text
