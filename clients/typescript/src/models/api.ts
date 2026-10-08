@@ -37,6 +37,21 @@ export interface LLMSubscriptionStatusResponse {
   expires_at: number | null;
 }
 
+export interface CodexAuthStatus {
+  connected: boolean;
+  state: 'disconnected' | 'pending' | 'connected' | 'cancelled' | 'expired' | 'error';
+  expires_at: number | null;
+}
+
+export interface CodexDeviceChallenge {
+  /** An opaque server-side handle, not an OAuth device authorization secret. */
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  expires_at: number;
+  interval_seconds: number;
+}
+
 export interface LLMSubscriptionDeviceStartResponse {
   device_code: string;
   user_code: string;
