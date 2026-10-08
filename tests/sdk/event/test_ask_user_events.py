@@ -121,3 +121,37 @@ def test_validate_allows_free_form_and_partial_answers():
     free_form = QuestionInfo(id="why", question="Why?")
     validate_ask_user_answers([free_form], {"why": []})
     validate_ask_user_answers([_question()], {})
+
+
+def test_validate_rejects_multiple_selections_for_single_select():
+    with pytest.raises(AskUserRequestError):
+        validate_ask_user_answers(
+            [_question()],
+            {
+                "auth": [
+                    AskUserAnswer(option_id="jwt", label="JWT"),
+                    AskUserAnswer(option_id="session", label="Session"),
+                ]
+            },
+        )
+
+
+def test_validate_allows_multiple_selections_when_multi_select():
+    question = QuestionInfo(
+        id="auth",
+        question="Which auth?",
+        multi_select=True,
+        options=[
+            QuestionOption(id="jwt", label="JWT"),
+            QuestionOption(id="session", label="Session"),
+        ],
+    )
+    validate_ask_user_answers(
+        [question],
+        {
+            "auth": [
+                AskUserAnswer(option_id="jwt", label="JWT"),
+                AskUserAnswer(option_id="session", label="Session"),
+            ]
+        },
+    )

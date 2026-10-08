@@ -1769,6 +1769,45 @@ class TestEventServiceRespondToAskUser:
         event_service.run.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_respond_to_ask_user_rejects_multi_select_for_single_select(
+        self, event_service
+    ):
+        _, conversation = self._service_with_pending(
+            questions=[
+                QuestionInfo(
+                    id="auth",
+                    question="Which auth?",
+                    options=[
+                        QuestionOption(id="jwt", label="JWT"),
+                        QuestionOption(id="session", label="Session"),
+                    ],
+                )
+            ]
+        )
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(AskUserRequestError):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(
+                    request_id="req-1",
+                    action="accept",
+                    answers={
+                        "auth": [
+                            AskUserAnswer(option_id="jwt", label="JWT"),
+                            AskUserAnswer(option_id="session", label="Session"),
+                        ]
+                    },
+                )
+            )
+
+        conversation._on_event.assert_not_called()
+        event_service.run.assert_not_awaited()
+        # The permit guard is released even when validation rejects the answer.
+        assert event_service._ask_user_resume_pending is False
+
+    @pytest.mark.asyncio
     async def test_resume_requested_only_set_for_already_running(self, event_service):
         _, conversation = self._service_with_pending()
         event_service._conversation = conversation
@@ -1781,6 +1820,35 @@ class TestEventServiceRespondToAskUser:
             )
 
         assert event_service._ask_user_resume_requested is False
+
+    @pytest.mark.asyncio
+    async def test_maybe_end_run_session_retains_permit_for_pending_answer(
+        self, event_service
+    ):
+        """A pending ask_user answer must keep the run slot.
+
+        Without retaining the permit, a paused run ending in the answer's tail
+        window would release the slot and a competing conversation could take
+        it, parking the accepted answer behind an unbounded wait.
+        """
+        released = []
+        owner = MagicMock()
+        owner.live_handles = 2
+        owner.release.side_effect = lambda: released.append(True)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.current_task()
+
+        # While the answer is pending the run slot is held.
+        event_service._ask_user_resume_pending = True
+        event_service._maybe_end_run_session()
+        assert released == []
+        assert event_service._run_session_slot is owner
+
+        # Once the answer has been resolved the permit is returned.
+        event_service._ask_user_resume_pending = False
+        event_service._maybe_end_run_session()
+        assert released == [True]
+        assert event_service._run_session_slot is None
 
     @pytest.mark.asyncio
     async def test_timeout_resolves_pending_request_as_cancel(self, event_service):
@@ -2672,6 +2740,101 @@ class TestEventServiceStartWithRunningStatus:
                 if isinstance(call[0][0], AgentErrorEvent)
             ]
             assert len(error_event_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_resolves_pending_ask_user_without_duplicate_result(
+        self, event_service, tmp_path
+    ):
+        """A crash while paused on ask_user must yield exactly one result.
+
+        With RUNNING status the generic orphan-action recovery would emit an
+        AgentErrorEvent for the ask_user action; the ask_user restart resolution
+        then emits the cancel observation for the same tool call. Only the
+        observation may remain, and the request must be closed as 'cancel'.
+        """
+        from openhands.sdk.event import AgentErrorEvent, ObservationEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.llm import MessageToolCall, TextContent
+        from openhands.sdk.tool.builtins.ask_user import AskUserAction
+
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            action = ActionEvent(
+                source="agent",
+                thought=[TextContent(text="ask the user")],
+                action=AskUserAction(
+                    questions=[
+                        QuestionInfo(
+                            id="auth",
+                            question="Which auth?",
+                            options=[QuestionOption(id="jwt", label="JWT")],
+                        )
+                    ]
+                ),
+                tool_name="ask_user",
+                tool_call_id="call-1",
+                tool_call=MessageToolCall(
+                    id="call-1",
+                    name="ask_user",
+                    arguments='{"questions": []}',
+                    origin="completion",
+                ),
+                llm_response_id="response-1",
+            )
+            request = AskUserRequestEvent(
+                request_id="req-1",
+                questions=[
+                    QuestionInfo(
+                        id="auth",
+                        question="Which auth?",
+                        options=[QuestionOption(id="jwt", label="JWT")],
+                    )
+                ],
+                action_id=action.id,
+                tool_call_id="call-1",
+                tool_name="ask_user",
+            )
+
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [action, request]
+            mock_state.active_branch.return_value = [action, request]
+            mock_state.stats = MagicMock()
+            mock_state.__enter__ = MagicMock(return_value=mock_state)
+            mock_state.__exit__ = MagicMock(return_value=None)
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            emitted = [call[0][0] for call in mock_conv._on_event.call_args_list]
+            error_events = [e for e in emitted if isinstance(e, AgentErrorEvent)]
+            observations = [
+                e
+                for e in emitted
+                if isinstance(e, ObservationEvent) and e.tool_call_id == "call-1"
+            ]
+            responses = [e for e in emitted if isinstance(e, AskUserResponseEvent)]
+
+            # Exactly one tool result for the ask_user action, and the request
+            # is closed so no client is left waiting.
+            assert error_events == []
+            assert len(observations) == 1
+            assert len(responses) == 1
+            assert responses[0].action == "cancel"
 
     @pytest.mark.skipif(not shutil.which("git"), reason="git executable not found")
     @pytest.mark.asyncio

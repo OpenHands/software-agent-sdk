@@ -106,8 +106,9 @@ def test_build_observation_accept_lists_selected_labels():
 
 
 def test_build_observation_accept_includes_every_multi_select_label():
+    question = _question().model_copy(update={"multi_select": True})
     observation = build_ask_user_observation(
-        [_question()],
+        [question],
         "accept",
         {
             "auth": [

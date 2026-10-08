@@ -62,14 +62,20 @@ def validate_ask_user_answers(
     """Reject answers that name an unknown question or option.
 
     Partial answers are allowed (a client may answer only some questions); the
-    observation simply reports the ones that were provided. Unknown ids are a
-    client error, so they raise :class:`AskUserRequestError`.
+    observation simply reports the ones that were provided, so an empty
+    selection list is accepted and treated as unanswered. Unknown ids, and more
+    than one selection for a question that is not ``multi_select``, are client
+    errors, so they raise :class:`AskUserRequestError`.
     """
     by_id = {question.id: question for question in questions}
     for question_id, selections in answers.items():
         question = by_id.get(question_id)
         if question is None:
             raise AskUserRequestError(f"Unknown question id '{question_id}'.")
+        if not question.multi_select and len(selections) > 1:
+            raise AskUserRequestError(
+                f"Question '{question_id}' does not allow multiple selections."
+            )
         if not question.options:
             continue
         known = {option.id for option in question.options}
