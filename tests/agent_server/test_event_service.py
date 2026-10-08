@@ -4027,6 +4027,146 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
     assert es._run_task is None
 
 
+@pytest.mark.timeout(30)
+async def test_ask_user_answer_hands_off_run_on_one_slot_server(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """An accepted answer must hand the sole run slot to a successor run.
+
+    Faithful one-slot scenario: the server has a single run slot, the paused run
+    holds it, and a competing conversation is queued for it. The answer is
+    recorded while the paused run is still live (its ``_run_task`` not done, the
+    permit held). The exiting run must keep the permit for the re-arm it
+    schedules, so the successor run starts without acquiring a fresh slot and
+    completes even though the queued contender is waiting for one. Without the
+    retained permit the successor would queue behind the contender and the
+    answer would be stranded.
+    """
+    from openhands.sdk import Tool
+    from openhands.sdk.testing import TestLLM
+
+    (tmp_path / "ws").mkdir()
+    ask_args = json.dumps(
+        {
+            "questions": [
+                {
+                    "id": "auth",
+                    "question": "Which auth scheme?",
+                    "options": [
+                        {"id": "jwt", "label": "JWT bearer tokens"},
+                        {"id": "session", "label": "Server sessions"},
+                    ],
+                }
+            ]
+        }
+    )
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="I need a decision.")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-ask-1",
+                        name="ask_user",
+                        arguments=ask_args,
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant", content=[TextContent(text="Proceeding with JWT.")]
+            ),
+        ]
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="ask-handoff",
+        tools=[Tool(name="ask_user")],
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None
+    conv = es.get_conversation()
+
+    # Hold the run task alive after it pauses on ask_user (the request is
+    # recorded) but before _run_and_publish settles it, so the answer lands
+    # while the permit is still held and _run_task is not yet done.
+    paused = asyncio.Event()
+    release = asyncio.Event()
+    real_arun = conv.arun
+    gated_once = False
+
+    async def gated_arun() -> None:
+        nonlocal gated_once
+        await real_arun()
+        if not gated_once:
+            gated_once = True
+            paused.set()
+            await release.wait()
+
+    monkeypatch.setattr(conv, "arun", gated_arun)
+
+    # The server's only run slot.
+    semaphore = asyncio.Semaphore(1)
+    es._run_semaphore = semaphore
+
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="Add auth.")]), run=True
+    )
+    await asyncio.wait_for(paused.wait(), 10.0)
+    assert es._run_task is not None and not es._run_task.done()
+    assert es._run_session_slot is not None
+    assert semaphore.locked()
+
+    # A competing conversation queues for the only slot while the paused run
+    # still holds it. If the run dropped the permit on the way out, this
+    # contender would claim it and strand the successor run behind it.
+    contender_acquired = asyncio.Event()
+
+    async def contender() -> None:
+        await semaphore.acquire()
+        contender_acquired.set()
+
+    contender_task = asyncio.create_task(contender())
+    await asyncio.sleep(0)
+    assert not contender_acquired.is_set()
+
+    request = es._pending_ask_user_request_sync()
+    assert request is not None
+    await es.respond_to_ask_user(
+        AskUserResponseRequest(
+            request_id=request.request_id,
+            action="accept",
+            answers={"auth": [AskUserAnswer(option_id="jwt", label="JWT")]},
+        )
+    )
+    # Refused as "already running" while the paused task wraps up, so the run is
+    # re-armed by _run_and_publish once the task clears.
+    assert es._ask_user_resume_requested is True
+
+    release.set()
+
+    # The successor run reuses the retained permit and completes even though the
+    # contender is waiting for the slot the paused run still holds.
+    deadline = time.monotonic() + 5.0
+    while llm._call_count < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    assert llm._call_count == 2, (
+        "the accepted answer was stranded: the successor run never started "
+        f"(call_count={llm._call_count})"
+    )
+
+    # Only once the whole chain settles is the permit returned to the pool,
+    # which finally lets the queued contender in.
+    await asyncio.wait_for(contender_acquired.wait(), timeout=5.0)
+    semaphore.release()
+    contender_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await contender_task
+
+
 def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) -> None:
     """_emit_event_from_thread must use the captured main_loop, not self._main_loop.
 
