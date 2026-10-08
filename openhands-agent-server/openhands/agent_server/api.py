@@ -344,20 +344,23 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             try:
                 yield
             finally:
-                session_store = getattr(api.state, "app_backend_session_store", None)
-                if session_store is not None:
-                    await session_store.shutdown()
-                await conversation_registry.shutdown()
-                if retention_task is not None:
-                    retention_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await retention_task
+                try:
+                    session_store = getattr(
+                        api.state, "app_backend_session_store", None
+                    )
+                    if session_store is not None:
+                        await session_store.shutdown()
+                    await conversation_registry.shutdown()
+                    if retention_task is not None:
+                        retention_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await retention_task
 
-                await stop_stateless_services()
-
-                # Close bash before the conversation service exits so running
-                # commands cannot outlive the app.
-                await bash_svc.close()
+                    await stop_stateless_services()
+                finally:
+                    # Close bash before the conversation service exits so running
+                    # commands cannot outlive the app.
+                    await bash_svc.close()
     finally:
         # Deregister here so a startup failure after registration still
         # republishes the singletons to the app below us (or clears them).

@@ -343,6 +343,47 @@ async def test_lifespan_closes_bash_service_and_kills_running_commands(tmp_path)
         )
 
 
+async def test_bash_is_closed_when_another_shutdown_step_raises(tmp_path, monkeypatch):
+    """Bash teardown must run even if an earlier shutdown step fails.
+
+    If ``conversation_registry.shutdown()`` raises, the running command's process
+    group must still be killed rather than outliving the app.
+    """
+    config = _config(tmp_path)
+    config.workspace_path.mkdir(parents=True)
+    app = create_app(config)
+    pid_file = tmp_path / "child.pid"
+
+    async def boom():
+        raise RuntimeError("registry shutdown failed")
+
+    with pytest.raises(RuntimeError, match="registry shutdown failed"):
+        async with api_lifespan(app):
+            bash_svc = app.state.bash_event_service
+            monkeypatch.setattr(app.state.conversation_registry, "shutdown", boom)
+            await bash_svc.start_bash_command(
+                ExecuteBashRequest(
+                    command=f"echo $$ > {pid_file}; exec sleep 300",
+                    cwd=str(config.workspace_path),
+                )
+            )
+            deadline = time.monotonic() + 10
+            while not pid_file.exists() and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert pid_file.exists(), "command never started"
+
+    pid = int(pid_file.read_text().strip())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_deferred_init_lifespan_does_not_publish_service_singletons(tmp_path):
     config = Config(
         deferred_init=True,
