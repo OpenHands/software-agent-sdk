@@ -316,7 +316,7 @@ class TestServiceParallelization:
         # Mock the service getters
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch(
@@ -360,7 +360,7 @@ class TestServiceParallelization:
         # Mock the service getters
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch(
@@ -396,7 +396,7 @@ class TestServiceParallelization:
         # Mock all services as None (disabled)
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
@@ -427,7 +427,7 @@ class TestServiceParallelization:
 
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
@@ -457,7 +457,7 @@ class TestServiceParallelization:
 
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -47,7 +48,22 @@ CATALOG = [
 
 
 @pytest.fixture
-def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
+def env_host_store(tmp_path, monkeypatch) -> Path:
+    """Point the ambient ``OH_*`` store env at a decoy, as a live runtime does.
+
+    A Cloud runtime sandbox exports ``OH_CONVERSATIONS_PATH`` process-wide. The
+    app under test is built with an explicit ``Config``, so nothing may land in
+    these decoy paths (#5590).
+    """
+    host_conversations = tmp_path / "host" / "conversations"
+    host_bash = tmp_path / "host" / "bash_events"
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(host_conversations))
+    monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(host_bash))
+    return host_conversations
+
+
+@pytest.fixture
+def server(tmp_path, monkeypatch, env_host_store) -> Iterator[TestClient]:
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path / "persistence"))
     reset_stores()
     config = Config(
@@ -79,6 +95,8 @@ def server(tmp_path, monkeypatch) -> Iterator[TestClient]:
         TestClient(create_app(config)) as client,
     ):
         yield client
+    # Nothing may leak into the env-derived store (#5590).
+    assert not env_host_store.exists()
     reset_stores()
 
 

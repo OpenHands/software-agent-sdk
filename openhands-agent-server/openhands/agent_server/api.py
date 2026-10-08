@@ -17,10 +17,14 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from openhands.agent_server import (
+    bash_service as bash_service_module,
+    conversation_service as conversation_service_module,
+)
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.canvas_extensions.backend import (
     CanvasExtensionBackendManager,
 )
@@ -41,8 +45,8 @@ from openhands.agent_server.conversation_router import (
     conversation_router,
 )
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     CredentialBindingActivationRequired,
-    get_default_conversation_service,
 )
 from openhands.agent_server.credential_binding import (
     router as credential_binding_router,
@@ -262,12 +266,20 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             return
 
         # Non-deferred (legacy) path: build and enter the conversation
-        # service as part of the lifespan, exactly as before.
-        service = get_default_conversation_service()
+        # service as part of the lifespan, exactly as before. The services are
+        # built from the Config the app was created with, never from the
+        # process-global default config, so an in-process app cannot be routed
+        # into a store selected by ambient OH_* environment variables.
+        service = ConversationService.get_instance(config)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
-        bash_svc = get_default_bash_event_service()
+        bash_svc = BashEventService(bash_events_dir=config.bash_events_dir)
+        # Publish to the module singletons so import-time callers that still
+        # read them (sockets.py) resolve the same instance as REST, mirroring
+        # the deferred-init path in InitService.initialize.
+        conversation_service_module._conversation_service = service
+        bash_service_module._bash_event_service = bash_svc
         api.state.bash_event_service = bash_svc
 
         conversation_registry.configure_service(service)
