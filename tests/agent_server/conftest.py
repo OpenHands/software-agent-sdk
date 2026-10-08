@@ -41,3 +41,24 @@ def isolate_persistence_dir(tmp_path, monkeypatch):
         yield
     finally:
         reset_stores()
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_singletons():
+    """Restore the module service singletons after each test.
+
+    The non-deferred lifespan publishes the conversation and bash services it
+    builds to ``conversation_service._conversation_service`` /
+    ``bash_service._bash_event_service`` so import-time callers (sockets.py)
+    agree with REST. Tests that run a lifespan with mocked services would
+    otherwise leave a mock behind for later tests in the session.
+    """
+    from openhands.agent_server import bash_service, conversation_service
+
+    conversation_before = conversation_service._conversation_service
+    bash_before = bash_service._bash_event_service
+    try:
+        yield
+    finally:
+        conversation_service._conversation_service = conversation_before
+        bash_service._bash_event_service = bash_before
