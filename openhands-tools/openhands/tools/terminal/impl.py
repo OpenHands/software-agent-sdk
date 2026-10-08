@@ -34,8 +34,10 @@ from openhands.tools.terminal.terminal.terminal_session import (
 )
 from openhands.tools.terminal.terminal.tmux_pane_pool import (
     DEFAULT_MAX_PANES,
+    PaneHandle,
     PooledTmuxTerminal,
     TmuxPanePool,
+    TmuxPanePoolClosed,
 )
 
 
@@ -50,14 +52,25 @@ _TMUX_POOL_RECOVERY_MESSAGE = (
     "or conditional shell logic instead. Please rerun any needed command."
 )
 
-_TMUX_RECOVERABLE_ERROR_MARKERS = (
-    "no server running",
-    "server exited unexpectedly",
-    "can't find session",
-    "can't find pane",
-    "can't find window",
-    "could not find window_id",
-    "could not find pane_id",
+_TMUX_PANE_RECOVERY_MESSAGE = (
+    "The terminal pane disappeared while running the previous command. "
+    "OpenHands replaced only the affected pane; other panes were left running. "
+    "The interrupted command's result is not reliable and was not retried. "
+    "Avoid top-level `exit` in terminal commands, as it terminates the persistent "
+    "shell. Please rerun any needed command."
+)
+
+_TMUX_SERVER_ERROR_MARKERS = frozenset(
+    {"no server running", "server exited unexpectedly", "can't find session"}
+)
+_TMUX_RECOVERABLE_ERROR_MARKERS = _TMUX_SERVER_ERROR_MARKERS | frozenset(
+    {
+        "can't find pane",
+        "can't find window",
+        "could not find window_id",
+        "could not find pane_id",
+        "capture-pane failed (rc=",
+    }
 )
 
 logger = get_logger(__name__)
@@ -175,9 +188,14 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     def _tmux_pool_recovery_observation(
         action: TerminalAction,
         error: Exception,
+        *,
+        pane_only: bool = False,
     ) -> TerminalObservation:
+        message = (
+            _TMUX_PANE_RECOVERY_MESSAGE if pane_only else _TMUX_POOL_RECOVERY_MESSAGE
+        )
         return TerminalObservation.from_text(
-            text=(f"{_TMUX_POOL_RECOVERY_MESSAGE}\n\nOriginal tmux error: {error}"),
+            text=f"{message}\n\nOriginal tmux error: {error}",
             is_error=True,
             command=action.command or "[RESET]",
             exit_code=-1,
@@ -488,50 +506,31 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         assert pool is not None
         try:
             with pool.pane() as handle:
-                reset_text: str | None = None
-
-                if action.reset or handle.terminal._closed:
+                try:
+                    return self._execute_pooled_action(
+                        pool, handle, action, conversation
+                    )
+                except Exception as error:
+                    if not self._is_recoverable_tmux_pool_error(error):
+                        raise
+                    if any(
+                        marker in str(error).lower()
+                        for marker in _TMUX_SERVER_ERROR_MARKERS
+                    ):
+                        raise
+                    # Replace before checkin so no waiter can borrow the dead pane.
+                    replacement = pool.replace(handle.terminal)
                     self._discard_session(handle.terminal)
-                    handle.terminal = pool.replace(handle.terminal)
-                    reset_text = self._RESET_TEXT
-                    logger.info(
-                        "Terminal pane replaced (reset) "
-                        f"working_dir: {self._working_dir}"
+                    handle.terminal = replacement
+                    return self._tmux_pool_recovery_observation(
+                        action, error, pane_only=True
                     )
-
-                    if not action.command.strip():
-                        return TerminalObservation.from_text(
-                            text=reset_text,
-                            command="[RESET]",
-                            exit_code=0,
-                        )
-
-                session = self._wrap_session(handle.terminal)
-                self._prepare_pooled_session(session)
-
-                cmd_action = (
-                    action
-                    if reset_text is None
-                    else TerminalAction(
-                        command=action.command,
-                        timeout=action.timeout,
-                        is_input=False,
-                    )
-                )
-                self._export_envs(cmd_action, conversation, session=session)
-                observation = session.execute(cmd_action)
-
-                if reset_text is not None:
-                    observation = observation.model_copy(
-                        update={
-                            "content": [
-                                TextContent(text=f"{reset_text}\n\n{observation.text}")
-                            ],
-                            "command": f"[RESET] {action.command}",
-                        }
-                    )
-
-                return self._mask_observation(observation, conversation)
+        except TmuxPanePoolClosed as error:
+            # Recovery closes the old pool before publishing its replacement.
+            with self._pool_recovery_lock:
+                if self._pool is pool:
+                    raise
+            return self._tmux_pool_recovery_observation(action, error)
         except Exception as error:
             if not self._is_recoverable_tmux_pool_error(error):
                 raise
@@ -541,6 +540,50 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             )
             self._recover_tmux_pool(pool)
             return self._tmux_pool_recovery_observation(action, error)
+
+    def _execute_pooled_action(
+        self,
+        pool: TmuxPanePool,
+        handle: PaneHandle,
+        action: TerminalAction,
+        conversation: "LocalConversation | None",
+    ) -> TerminalObservation:
+        reset_text: str | None = None
+        if action.reset or handle.terminal._closed:
+            replacement = pool.replace(handle.terminal)
+            self._discard_session(handle.terminal)
+            handle.terminal = replacement
+            reset_text = self._RESET_TEXT
+            logger.info(
+                "Terminal pane replaced (reset) working_dir: %s", self._working_dir
+            )
+
+            if not action.command.strip():
+                return TerminalObservation.from_text(
+                    text=reset_text, command="[RESET]", exit_code=0
+                )
+
+        session = self._wrap_session(handle.terminal)
+        self._prepare_pooled_session(session)
+        cmd_action = (
+            action
+            if reset_text is None
+            else TerminalAction(
+                command=action.command, timeout=action.timeout, is_input=False
+            )
+        )
+        self._export_envs(cmd_action, conversation, session=session)
+        observation = session.execute(cmd_action)
+        if reset_text is not None:
+            observation = observation.model_copy(
+                update={
+                    "content": [
+                        TextContent(text=f"{reset_text}\n\n{observation.text}")
+                    ],
+                    "command": f"[RESET] {action.command}",
+                }
+            )
+        return self._mask_observation(observation, conversation)
 
     def __call__(
         self,

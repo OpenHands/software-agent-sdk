@@ -4,6 +4,7 @@ import logging
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from libtmux.exc import LibTmuxException
@@ -12,7 +13,10 @@ from openhands.tools.terminal.constants import (
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
 )
-from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+from openhands.tools.terminal.terminal.tmux_pane_pool import (
+    PooledTmuxTerminal,
+    TmuxPanePool,
+)
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
@@ -142,6 +146,70 @@ def test_checkout_initialization_failure_preserves_capacity(
     panes = [pool.checkout(timeout=0.2) for _ in range(pool.max_panes)]
     for terminal in panes:
         pool.checkin(terminal)
+
+
+def test_shell_death_during_setup_preserves_session(pool, monkeypatch):
+    clear_screen = PooledTmuxTerminal.clear_screen
+
+    def kill_during_setup(terminal):
+        terminal.window.kill()
+        clear_screen(terminal)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(PooledTmuxTerminal, "clear_screen", kill_during_setup)
+        with pytest.raises(LibTmuxException):
+            pool.checkout(timeout=1)
+
+    panes = [pool.checkout(timeout=1) for _ in range(pool.max_panes)]
+    for terminal in panes:
+        terminal.send_keys("printf 'SETUP_%s\\n' RECOVERED")
+    time.sleep(0.3)
+    for terminal in panes:
+        assert "SETUP_RECOVERED" in terminal.read_screen()
+        pool.checkin(terminal)
+
+
+@pytest.mark.parametrize("replace", [False, True])
+@pytest.mark.parametrize("close", [False, True])
+def test_slow_creation_does_not_block_pool_lifecycle(pool, monkeypatch, replace, close):
+    warm = pool.checkout()
+    old = pool.checkout() if replace else None
+    entered = threading.Event()
+    proceed = threading.Event()
+    clear_screen = PooledTmuxTerminal.clear_screen
+
+    def slow_setup(terminal):
+        entered.set()
+        assert proceed.wait(5)
+        clear_screen(terminal)
+
+    monkeypatch.setattr(PooledTmuxTerminal, "clear_screen", slow_setup)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        creating = (
+            workers.submit(pool.replace, old)
+            if replace
+            else workers.submit(pool.checkout)
+        )
+        try:
+            assert entered.wait(5)
+            if close:
+                workers.submit(pool.close).result(timeout=1)
+                pool.checkin(warm)
+            else:
+                workers.submit(pool.checkin, warm).result(timeout=1)
+                assert workers.submit(pool.checkout, 1).result(timeout=1) is warm
+                pool.checkin(warm)
+        finally:
+            proceed.set()
+        if close:
+            with pytest.raises((RuntimeError, LibTmuxException)):
+                creating.result(timeout=5)
+            assert pool._server is not None
+            assert not pool._server.cmd("list-windows", "-a").stdout
+        else:
+            pool.checkin(creating.result(timeout=5))
+        if old is not None and close:
+            pool.checkin(old)
 
 
 # -- Replace -----------------------------------------------------------------
@@ -290,6 +358,32 @@ def test_checkout_after_close_raises(pool):
         pool.checkout()
 
 
+def test_close_wakes_all_waiters_before_borrowers_return(pool):
+    panes = [pool.checkout() for _ in range(pool.max_panes)]
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        waiting = [workers.submit(pool.checkout) for _ in range(4)]
+        try:
+            pool.close()
+            for future in waiting:
+                with pytest.raises(RuntimeError, match="closed"):
+                    future.result(timeout=2)
+        finally:
+            for terminal in panes:
+                pool.checkin(terminal)
+
+
+def test_duplicate_checkin_does_not_add_capacity(pool):
+    panes = [pool.checkout() for _ in range(pool.max_panes)]
+    pool.checkin(panes[0])
+    pool.checkin(panes[0])
+    borrowed = pool.checkout(timeout=1)
+    with pytest.raises(TimeoutError):
+        pool.checkout(timeout=0.1)
+    pool.checkin(borrowed)
+    for terminal in panes[1:]:
+        pool.checkin(terminal)
+
+
 def test_checkin_foreign_pane_is_ignored(pool):
     """Checkin of a pane not from this pool is ignored."""
     from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
@@ -321,8 +415,11 @@ def test_stale_terminal_cannot_access_restarted_server(
                 time.sleep(0.05)
 
             if operation == "read":
-                with pytest.raises(LibTmuxException):
-                    stale.read_screen()
+                if pooled:
+                    with pytest.raises(LibTmuxException):
+                        stale.read_screen()
+                else:
+                    assert stale.read_screen() == ""
             elif operation == "write":
                 marker = tmp_path / "wrong-conversation"
                 stale.send_keys(f"touch {marker}")

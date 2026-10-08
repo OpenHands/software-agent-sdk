@@ -8,7 +8,10 @@ through the executor's __call__ interface.
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
+import libtmux
 import pytest
 from libtmux.exc import LibTmuxException, TmuxObjectDoesNotExist
 
@@ -19,17 +22,19 @@ from openhands.tools.terminal.definition import (
     TerminalTool,
 )
 from openhands.tools.terminal.impl import TerminalExecutor
+from openhands.tools.terminal.terminal import create_terminal_session
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
+from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 
 
-@pytest.fixture
-def pool_executor():
+@pytest.fixture(params=[3])
+def pool_executor(request):
     """Create a TerminalExecutor in pool mode."""
     with tempfile.TemporaryDirectory() as work_dir:
         executor = TerminalExecutor(
             working_dir=work_dir,
             terminal_type="tmux",
-            max_panes=3,
+            max_panes=request.param,
         )
         yield executor
         executor.close()
@@ -78,13 +83,180 @@ def test_missing_tmux_state_recovers_without_replaying_command(
         obs = pool_executor(TerminalAction(command=f"touch {marker}", timeout=5))
 
     assert obs.is_error
-    assert "rebuilt the terminal pool" in obs.text
+    expected = (
+        "replaced only the affected pane"
+        if isinstance(error, TmuxObjectDoesNotExist)
+        else "rebuilt the terminal pool"
+    )
+    assert expected in obs.text
     assert not marker.exists()
     after = pool_executor(TerminalAction(command="echo after_recovery", timeout=5))
     assert not after.is_error
     assert after.exit_code == 0
     assert "after_recovery" in after.text
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("missing_object", [False, True])
+def test_pane_loss_does_not_interrupt_sibling(
+    pool_executor, tmp_path, monkeypatch, missing_object
+):
+    ready = tmp_path / "ready"
+    release = tmp_path / "release"
+    execute = TerminalSession.execute
+
+    def execute_with_missing_object(session, action):
+        if missing_object and action.command == "exit 1":
+            raise TmuxObjectDoesNotExist("Could not find object")
+        return execute(session, action)
+
+    monkeypatch.setattr(TerminalSession, "execute", execute_with_missing_object)
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        sibling = workers.submit(
+            pool_executor,
+            TerminalAction(
+                command=(
+                    f"touch {ready}; while [ ! -f {release} ]; do sleep 0.05; done; "
+                    "printf 'SIBLING_%s\\n' DONE"
+                ),
+                timeout=15,
+            ),
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            observation = pool_executor(TerminalAction(command="exit 1", timeout=5))
+            assert observation.is_error
+            assert "replaced only the affected pane" in observation.text
+            assert "was not retried" in observation.text
+        finally:
+            release.touch()
+        result = sibling.result(timeout=5)
+        assert result.exit_code == 0
+        assert "SIBLING_DONE" in result.text
+    assert (
+        pool_executor(TerminalAction(command="echo healthy", timeout=5)).exit_code == 0
+    )
+
+
+@pytest.mark.parametrize("pool_executor", [1], indirect=True)
+def test_recovery_finishes_waiting_and_borrowed_calls(
+    pool_executor, tmp_path, monkeypatch
+):
+    ready = tmp_path / "ready"
+    borrowed = threading.Event()
+    recovered = threading.Event()
+    waiter_entered = threading.Event()
+    prepare = TerminalExecutor._prepare_pooled_session
+    recover = TerminalExecutor._recover_tmux_pool
+    checkout = TmuxPanePool.checkout
+    results = {}
+
+    def pause_borrower(session):
+        if threading.current_thread().name == "borrower":
+            borrowed.set()
+            assert recovered.wait(5)
+        prepare(session)
+
+    def enter_checkout(pool, timeout=None):
+        if threading.current_thread().name == "waiter":
+            waiter_entered.set()
+        return checkout(pool, timeout)
+
+    def recover_after_borrow(self, failed_pool):
+        if threading.current_thread().name == "holder":
+            assert borrowed.wait(5)
+            assert waiter_entered.wait(5)
+        try:
+            recover(self, failed_pool)
+        finally:
+            recovered.set()
+
+    def run(name, command):
+        try:
+            results[name] = pool_executor(TerminalAction(command=command, timeout=10))
+        except Exception as error:
+            results[name] = error
+
+    monkeypatch.setattr(
+        TerminalExecutor, "_prepare_pooled_session", staticmethod(pause_borrower)
+    )
+    monkeypatch.setattr(TerminalExecutor, "_recover_tmux_pool", recover_after_borrow)
+    monkeypatch.setattr(TmuxPanePool, "checkout", enter_checkout)
+    commands = {
+        "holder": f"touch {ready}; sleep 1; tmux kill-server",
+        "borrower": "echo borrower",
+        "waiter": "echo waiter",
+    }
+    threads = {
+        name: threading.Thread(target=run, args=(name, command), name=name, daemon=True)
+        for name, command in commands.items()
+    }
+    threads["holder"].start()
+    deadline = time.monotonic() + 5
+    while not ready.exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    threads["borrower"].start()
+    assert borrowed.wait(5)
+    threads["waiter"].start()
+    try:
+        for thread in threads.values():
+            thread.join(timeout=10)
+        assert not any(thread.is_alive() for thread in threads.values())
+        for name in commands:
+            result = results[name]
+            assert isinstance(result, TerminalObservation), result
+            assert result.exit_code in (-1, 0)
+        assert results["holder"].exit_code == -1
+        assert results["borrower"].exit_code == -1
+        after = pool_executor(TerminalAction(command="echo recovered", timeout=5))
+        assert after.exit_code == 0
+        assert "recovered" in after.text
+    finally:
+        recovered.set()
+        pool_executor.close()
+
+
+def test_unpooled_shell_exit_returns_observation(tmp_path):
+    session = create_terminal_session(
+        work_dir=str(tmp_path), terminal_type="tmux", no_change_timeout_seconds=1
+    )
+    session.initialize()
+    try:
+        observation = session.execute(TerminalAction(command="exit", timeout=2))
+        assert observation.exit_code == -1
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("stderr", [[], ["can't find pane: %missing"]])
+def test_capture_failure_returns_readable_recovery(
+    pool_executor, monkeypatch, tmp_path, stderr
+):
+    pool_executor(TerminalAction(command="echo ready", timeout=5))
+    cmd = libtmux.Pane.cmd
+    failed = False
+
+    def fail_once(pane, *args, **kwargs):
+        nonlocal failed
+        if args[0] == "capture-pane" and not failed:
+            failed = True
+            return SimpleNamespace(returncode=1, stderr=stderr, stdout=[])
+        return cmd(pane, *args, **kwargs)
+
+    monkeypatch.setattr(libtmux.Pane, "cmd", fail_once)
+    marker = tmp_path / "not-replayed"
+    observation = pool_executor(TerminalAction(command=f"touch {marker}", timeout=5))
+    assert observation.is_error
+    expected = "\n".join(stderr) or "capture-pane failed (rc=1)"
+    assert observation.text.endswith(f"Original tmux error: {expected}")
+    assert not marker.exists()
+    assert (
+        pool_executor(TerminalAction(command="echo healthy", timeout=5)).exit_code == 0
+    )
 
 
 class TestDeclaredResources:

@@ -13,7 +13,7 @@ from collections import deque
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Final
+from typing import ClassVar, Final
 
 import libtmux
 
@@ -36,6 +36,10 @@ logger = get_logger(__name__)
 DEFAULT_MAX_PANES: Final[int] = 4
 
 
+class TmuxPanePoolClosed(RuntimeError):
+    """A checkout or replacement raced with pool shutdown."""
+
+
 class PooledTmuxTerminal(TmuxTerminal):
     """A TmuxTerminal variant used inside a pane pool.
 
@@ -45,6 +49,8 @@ class PooledTmuxTerminal(TmuxTerminal):
     ``TerminalSession`` wrapper would otherwise destroy the session that
     all other pool panes depend on.
     """
+
+    _raise_on_capture_error: ClassVar[bool] = True
 
     def close(self) -> None:
         if not self._closed:
@@ -100,6 +106,7 @@ class TmuxPanePool:
     _all_panes: list[PooledTmuxTerminal] = field(
         default_factory=list, init=False, repr=False
     )
+    _checked_out: set[int] = field(default_factory=set, init=False, repr=False)
     _semaphore: threading.Semaphore = field(init=False, repr=False)
 
     _initialized: bool = field(default=False, init=False, repr=False)
@@ -147,15 +154,16 @@ class TmuxPanePool:
 
     def close(self) -> None:
         """Destroy all panes and the tmux session."""
-        if self._closed:
-            return
-        self._closed = True
-
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             for terminal in self._all_panes:
                 terminal._closed = True
             self._all_panes.clear()
             self._available.clear()
+            # Wake a waiter; failed checkouts pass this permit to the next one.
+            self._semaphore.release()
 
         # Kill the entire tmux session (destroys all windows/panes at once).
         # We deliberately skip per-terminal close() because that also calls
@@ -175,7 +183,7 @@ class TmuxPanePool:
             shell_command = f"su {self.username} -"
 
         window = self._session.new_window(
-            window_name=f"pane-{len(self._all_panes)}",
+            window_name=f"pane-{uuid.uuid4().hex}",
             window_shell=shell_command,
             start_directory=self.work_dir,
         )
@@ -202,6 +210,16 @@ class TmuxPanePool:
             time.sleep(0.1)
             terminal._initialized = True
             terminal.clear_screen()
+            terminal.read_screen()
+
+            with self._lock:
+                if self._closed:
+                    raise TmuxPanePoolClosed("TmuxPanePool is already closed")
+                initial_window = self._initial_window
+                self._initial_window = None
+            if initial_window is not None:
+                with suppress(Exception):
+                    initial_window.kill()
 
             logger.debug("Created pooled pane: %s", active_pane.pane_id)
         except BaseException:
@@ -211,12 +229,6 @@ class TmuxPanePool:
                 window.kill()
             raise
 
-        # Keep the initial window alive until setup succeeds so a failed first
-        # checkout cannot destroy the shared tmux session.
-        if self._initial_window is not None:
-            with suppress(Exception):
-                self._initial_window.kill()
-            self._initial_window = None
         return terminal
 
     def checkout(self, timeout: float | None = None) -> PooledTmuxTerminal:
@@ -232,8 +244,11 @@ class TmuxPanePool:
             RuntimeError: If the pool is closed or not initialized.
             TimeoutError: If *timeout* expires before a pane is available.
         """
-        if not self._initialized or self._closed:
-            raise RuntimeError("TmuxPanePool is not initialized or already closed")
+        with self._lock:
+            if self._closed:
+                raise TmuxPanePoolClosed("TmuxPanePool is already closed")
+            if not self._initialized:
+                raise RuntimeError("TmuxPanePool is not initialized")
 
         if timeout is None:
             self._semaphore.acquire()
@@ -242,28 +257,44 @@ class TmuxPanePool:
                 f"No pane available within {timeout}s (pool size {self.max_panes})"
             )
 
+        terminal: PooledTmuxTerminal | None = None
         try:
             with self._lock:
                 if self._closed:
-                    raise RuntimeError("TmuxPanePool is already closed")
+                    raise TmuxPanePoolClosed("TmuxPanePool is already closed")
                 if self._available:
-                    terminal = self._available[0]
-                    logger.debug("Checked out existing pane: %s", terminal.pane.pane_id)
+                    available = self._available[0]
+                    logger.debug(
+                        "Checked out existing pane: %s", available.pane.pane_id
+                    )
+                    self._checked_out.add(id(available))
                     return self._available.popleft()
 
-                terminal = self._create_pane()
+            # The acquired permit reserves capacity while tmux runs outside the lock.
+            terminal = self._create_pane()
+            with self._lock:
+                if self._closed:
+                    raise TmuxPanePoolClosed("TmuxPanePool is already closed")
                 self._all_panes.append(terminal)
-                return terminal
+                self._checked_out.add(id(terminal))
+            return terminal
         except BaseException:
-            self._semaphore.release()
+            try:
+                if terminal is not None:
+                    terminal.close()
+            finally:
+                self._semaphore.release()
             raise
 
     def checkin(self, terminal: PooledTmuxTerminal) -> None:
         """Return a pane to the pool."""
         with self._lock:
-            if terminal not in self._all_panes:
-                logger.warning("Attempted to checkin a pane not from this pool")
+            if id(terminal) not in self._checked_out:
+                logger.warning(
+                    "Attempted to checkin a pane not checked out from this pool"
+                )
                 return
+            self._checked_out.remove(id(terminal))
             if not self._closed:
                 self._available.append(terminal)
 
@@ -280,15 +311,25 @@ class TmuxPanePool:
         because we swap 1-for-1.
         """
         with self._lock:
-            # Create the replacement pane BEFORE killing the old window,
-            # because tmux destroys the session when the last window dies.
-            new_terminal = self._create_pane()
-            self._all_panes.append(new_terminal)
+            if self._closed:
+                raise TmuxPanePoolClosed("TmuxPanePool is already closed")
+            if id(old_terminal) not in self._checked_out:
+                raise ValueError("Replacement requires a checked-out pane")
 
-            if old_terminal in self._all_panes:
+        # Keep the old window alive until its replacement is ready, without
+        # blocking borrowers of other panes on tmux subprocesses.
+        new_terminal = self._create_pane()
+        try:
+            with self._lock:
+                if self._closed:
+                    raise TmuxPanePoolClosed("TmuxPanePool is already closed")
                 self._all_panes.remove(old_terminal)
-            if old_terminal in self._available:
-                self._available.remove(old_terminal)
+                self._checked_out.remove(id(old_terminal))
+                self._all_panes.append(new_terminal)
+                self._checked_out.add(id(new_terminal))
+        except BaseException:
+            new_terminal.close()
+            raise
 
         # Capture IDs before killing (repr would fail after kill).
         old_pane_id = old_terminal.pane.pane_id
