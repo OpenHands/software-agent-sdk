@@ -210,6 +210,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-haiku-5-5",
     # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     "claude-opus-5",
     # Claude Sonnet 5 supports prompt caching but is not covered by any
