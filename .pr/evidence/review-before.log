@@ -1,0 +1,120 @@
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692673 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+exiter: exit_code=-1 tmux_error='["can\'t find pane: %2"]'
+sibling: exit_code=-1 tmux_error="['no server running on /private/tmp/tmux-501/openhands-aa3f57398dd8425fa9bad3220e73fa9f']"
+BUG REPRODUCED: sibling command was killed
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692682 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+finished: {'holder': -1, 'waiter1': -1}
+pool was rebuilt: True
+blocked after 30s: ['waiter2']
+BUG REPRODUCED: tool call never returns
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692690 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+holder exit_code: -1
+waiter result: RuntimeError('TmuxPanePool is already closed')
+pool rebuilt and healthy: True
+BUG REPRODUCED: raw RuntimeError escaped the tool call
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692693 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+raised LibTmuxException: ['no server running on /private/tmp/tmux-501/openhands-f148b90da8bd48c9ae14aeb93934ac90']
+BUG REPRODUCED: execute() raised instead of returning an observation
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692697 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+agent sees: Original tmux error: ['no server running on /private/tmp/tmux-501/openhands-106ff6ab92b84c958204a075f72e32ae']
+empty-stderr message: '[]'
+recoverable: False
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692707 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+checkout returned a 'ready' terminal: %1 initialized = True
+initial window killed too; session windows left: []
+first use fails: LibTmuxException: ['no server running on /private/tmp/tmux-501/openhands-9550c0c9c41b4015aac3a3bb41b9e41f']
+BUG REPRODUCED: dead pane passed setup and was handed out
+
+process exit: 0
+
+=== https://github.com/OpenHands/software-agent-sdk/pull/5567#discussion_r4206692716 ===
++----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+checkin of a warm pane took 256 ms
+BUG REPRODUCED: checkin waited on pane creation
+
+process exit: 0
