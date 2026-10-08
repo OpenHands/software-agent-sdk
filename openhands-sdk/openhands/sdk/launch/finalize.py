@@ -163,8 +163,8 @@ def _apply_acp_skill_sourcing(
     The agent renders the ACP prompt itself, so the sourcing has to live on the
     agent — ``finalize`` is the only code that knows the runtime. Recorded even
     when nothing needs stripping: a managed deployment whose catalog arrives
-    later (lazy flags, plugin skills) must not be rendered under the native
-    default a directly-built agent carries.
+    later (lazy flags, plugin skills) must not be rendered under the unknown
+    default (``None``) a directly-built agent carries.
     """
     if not isinstance(agent, ACPAgent):
         return agent

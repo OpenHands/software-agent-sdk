@@ -277,7 +277,7 @@ def test_direct_acp_conversation_does_not_inject_vendor_skills(
     context = agent.agent_context
     assert context is not None
     assert [s.name for s in context.skills] == ["review"]
-    assert agent.acp_skill_sourcing == "native"
+    assert agent.acp_skill_sourcing is None
     assert "review" not in _installed_suffix(agent, project)
 
 
@@ -342,5 +342,43 @@ def test_native_sourcing_leaves_a_non_acp_agent_alone() -> None:
 
 
 def test_native_sourcing_is_a_no_op_without_skills() -> None:
-    agent = _acp_agent(current_datetime=None)
+    agent = _acp_agent(current_datetime=None).model_copy(
+        update={"acp_skill_sourcing": "native"}
+    )
     assert _apply_acp_skill_sourcing(agent, "native") is agent
+
+
+def _explicit_skill(name: str) -> Skill:
+    return Skill(
+        name=name,
+        content=f"{name} content",
+        description=f"{name} description",
+    )
+
+
+def test_direct_acp_conversation_renders_explicit_skills(tmp_path: Path) -> None:
+    """A directly-built agent keeps explicit skills with compatible loading off.
+
+    Regression: the old default ("native") stripped every managed skill at
+    render, so an explicitly supplied skill silently vanished from a direct
+    ``Conversation(agent=ACPAgent(...))`` that never ran through ``finalize``.
+    """
+    project = _workspace(tmp_path)
+    agent = _acp_agent(skills=[_explicit_skill("my-skill")])
+    assert agent.acp_skill_sourcing is None
+    assert "my-skill" in _installed_suffix(agent, project)
+
+
+def test_direct_acp_conversation_drops_only_compatible_skills(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """With compatible loading on, only vendor-loaded skills leave the prompt."""
+    _vendor_skill_in_home(tmp_path, monkeypatch, name="review")
+    project = _workspace(tmp_path)
+
+    agent = _acp_agent(
+        skills=[_explicit_skill("my-skill")], load_compatible_skills=True
+    )
+
+    assert "review" not in _installed_suffix(agent, project)
+    assert "my-skill" in _installed_suffix(agent, project)

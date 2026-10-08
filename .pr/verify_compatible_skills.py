@@ -66,8 +66,9 @@ with tempfile.TemporaryDirectory() as td:
 
     # ACP runtime sourcing: the validator keeps vendor user skills (the runtime
     # is unknown at construction), and the render decides per runtime. A
-    # directly-built agent (no finalize) keeps the native default, so it must
-    # NOT put the vendor skill its native CLI already reads into the prompt.
+    # directly-built agent (no finalize) has no runtime yet (sourcing None), so
+    # it must NOT put the vendor skill its native CLI already reads into the
+    # prompt — but it must still render its other skills.
     from unittest.mock import patch
 
     from openhands.sdk import Conversation
@@ -91,9 +92,9 @@ with tempfile.TemporaryDirectory() as td:
     acp_ctx = acp.agent_context
     assert acp_ctx is not None
     print("ACP constructed skills:", [s.name for s in acp_ctx.skills])
-    assert acp.acp_skill_sourcing == "native"
+    assert acp.acp_skill_sourcing is None
     native_prompt = rendered_suffix(acp)
-    print("ACP native prompt has vendor skill:", "claude-user-skill" in native_prompt)
+    print("ACP default prompt has vendor skill:", "claude-user-skill" in native_prompt)
     assert "claude-user-skill" not in native_prompt
 
     managed = _apply_acp_skill_sourcing(acp, "openhands_managed")

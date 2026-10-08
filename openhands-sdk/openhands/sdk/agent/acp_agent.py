@@ -126,6 +126,11 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
+from openhands.sdk.skills import Skill
+from openhands.sdk.skills.skill import (
+    COMPATIBLE_SKILLS_SUBDIRS,
+    compatible_user_skills_dirs,
+)
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -320,6 +325,48 @@ def _strip_managed_skills(context: AgentContext) -> AgentContext:
             "registered_marketplaces": [],
         }
     )
+
+
+def _is_compatible_skill(skill: Skill) -> bool:
+    """True when ``skill`` was loaded from a vendor-native skills directory.
+
+    Keyed on the skill's ``source`` path (``~/.claude/skills/…/SKILL.md`` etc.).
+    This survives the settings round-trip — which revalidates the context and
+    turns auto-loaded ``load_compatible_skills`` skills into explicit ones — so a
+    directly-built ACP agent can still tell which skills its CLI will also read.
+    A literal ``.claude/skills/`` marker also matches a project-scope vendor
+    skill, whose root this helper does not know.
+    """
+    source = skill.source
+    if not source:
+        return False
+    try:
+        resolved = Path(source).resolve()
+    except (OSError, ValueError):
+        return False
+    for root in compatible_user_skills_dirs():
+        if resolved.is_relative_to(root.resolve()):
+            return True
+    normalised = source.replace("\\", "/")
+    return any(
+        f"{parent}/{leaf}/" in normalised for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS
+    )
+
+
+def _strip_compatible_skills(context: AgentContext) -> AgentContext:
+    """Context without the vendor-native skills its CLI also reads.
+
+    Applied when the runtime is not yet known (a directly-built agent, sourcing
+    ``None``). Only the skills loaded from the vendor-native directories
+    (``load_compatible_skills``) are dropped — the ones a host-local CLI would
+    discover itself and duplicate. Explicit, user, public and marketplace skills
+    stay, so nothing but the compatible-load results is affected. No compatible
+    skills loaded ⇒ the context is returned unchanged.
+    """
+    remaining = [s for s in context.skills if not _is_compatible_skill(s)]
+    if len(remaining) == len(context.skills):
+        return context
+    return context.model_copy(update={"skills": remaining})
 
 
 # ---------------------------------------------------------------------------
@@ -1917,17 +1964,18 @@ class ACPAgent(AgentBase):
             "enable it; the SDK owns where the root lives."
         ),
     )
-    acp_skill_sourcing: ACPSkillSourcing = Field(
-        default="native",
+    acp_skill_sourcing: ACPSkillSourcing | None = Field(
+        default=None,
         description=(
-            "Who supplies this ACP agent's skills (#4019). 'native' (default): "
-            "the CLI reads its own host configuration and the repository, so "
-            "OpenHands injects none of its managed catalog — the render drops "
-            "the context's skills. 'openhands_managed': also inject the resolved "
-            "catalog, for a container CLI that cannot reach the host's "
-            "configuration. ``finalize`` sets this from the ``LaunchRuntime`` "
-            "for server launches; a directly-built agent keeps the 'native' "
-            "default."
+            "Who supplies this ACP agent's skills (#4019). ``None`` (default): "
+            "the runtime is not yet known — a directly-built agent renders its "
+            "catalog except the vendor-native skills its CLI already reads, so "
+            "explicit, user, public and marketplace skills still reach the "
+            "prompt. ``'native'``: OpenHands injects none of its managed "
+            "catalog; the render drops all of it. ``'openhands_managed'``: also "
+            "inject the resolved catalog, for a container CLI that cannot reach "
+            "the host's configuration. ``finalize`` sets the runtime value from "
+            "the ``LaunchRuntime`` for server launches."
         ),
     )
 
@@ -2556,15 +2604,18 @@ class ACPAgent(AgentBase):
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
-        # Under native sourcing the CLI reads its own host configuration and the
-        # repository, so drop every managed skill source from the rendered prompt
-        # (#4019). Done at render time rather than construction: a server launch
-        # builds the agent before its runtime is known, so a managed deployment
-        # must still inject the catalog.
-        if self.acp_skill_sourcing == "native" and _managed_catalog_is_injected(
-            agent_context
-        ):
-            agent_context = _strip_managed_skills(agent_context)
+        # Skill sourcing is per-deployment (#4019). ``native`` — the runtime is
+        # known and the CLI reads its own host configuration and the repository,
+        # so drop every managed skill source. ``None`` — the runtime is not yet
+        # known (a directly-built agent that never ran through ``finalize``), so
+        # drop only the vendor-native skills the CLI would also read, keeping
+        # explicit / user / public / marketplace skills. ``openhands_managed`` —
+        # a container CLI cannot reach the host, so keep the full catalog.
+        if self.acp_skill_sourcing == "native":
+            if _managed_catalog_is_injected(agent_context):
+                agent_context = _strip_managed_skills(agent_context)
+        elif self.acp_skill_sourcing is None:
+            agent_context = _strip_compatible_skills(agent_context)
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
