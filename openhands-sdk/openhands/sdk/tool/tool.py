@@ -46,6 +46,8 @@ from openhands.sdk.utils.models import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
+    from openhands.sdk.event import ActionEvent
+    from openhands.sdk.llm import Message
 
 
 ActionT = TypeVar("ActionT", bound=Action)
@@ -423,6 +425,47 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def is_usable(cls) -> bool:
         """Return whether the tool can be used in the current environment."""
         return True
+
+    pauses_run_for_user_input: ClassVar[bool] = False
+    """Whether calling this tool pauses the run until the user responds.
+
+    Tools that must hand control back to the user (e.g. ``ask_user``) set this
+    to True. The agent loop records the call as a pending request, ends the run
+    at ``WAITING_FOR_CONFIRMATION`` without executing the tool, and resolves the
+    call when the user's answer arrives.
+    """
+
+    def pause_error_for(self, action: Action) -> str | None:  # noqa: ARG002
+        """Return a corrective message if ``action`` cannot pause the run.
+
+        Only consulted for tools with ``pauses_run_for_user_input`` set. A
+        non-None result is emitted as a corrective observation and the run
+        continues, so the agent can fix an invalid call.
+        """
+        return None
+
+    def resolve_user_input(
+        self,
+        action_event: "ActionEvent",
+        message: "Message",
+    ) -> "Observation | None":
+        """Resolve a pending pause call from a user ``message``.
+
+        The counterpart to :attr:`pauses_run_for_user_input`: every tool that
+        pauses the run must implement this so the pause has a matching
+        resolution contract. Return the observation for the pending
+        ``action_event`` when ``message`` resolves it, or ``None`` when the
+        message is an ordinary user turn and the call stays pending. Raise
+        :class:`ValueError` for a message that is a resolution attempt but is
+        malformed, so the caller can surface corrective feedback without
+        resolving the call.
+
+        Only called for tools with ``pauses_run_for_user_input`` set.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} sets pauses_run_for_user_input but does not "
+            "implement resolve_user_input"
+        )
 
     @classmethod
     @abstractmethod

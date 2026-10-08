@@ -714,11 +714,27 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # and execute them before sampling new actions.
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
+            # A pause-for-user-input call (e.g. ask_user) is resolved only by an
+            # answering user message, never by implicit confirmation. If one is
+            # still pending, re-signal the wait and leave it intact so a re-run
+            # before the answer does not execute its error-only executor and
+            # silently drop the question.
+            if any(self._pauses_for_user_input(ae.tool_name) for ae in pending_actions):
+                state.execution_status = (
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                )
+                return
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),
             )
             self._execute_actions(conversation, pending_actions, on_event)
+            # A batch that also carried a resolved pause-for-user-input call was
+            # kept intact (not collapsed) while it awaited the answer, so
+            # re-derive the view now that every sibling has an observation. This
+            # groups the whole action batch with all of its results and drops
+            # any batch still incomplete.
+            state.rebuild_view()
             return
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
@@ -927,11 +943,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
+            if any(self._pauses_for_user_input(ae.tool_name) for ae in pending_actions):
+                state.execution_status = (
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                )
+                return
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),
             )
             await self._aexecute_actions(conversation, pending_actions, on_event)
+            state.rebuild_view()
             return
 
         if state.last_user_message_id is not None:
@@ -1169,6 +1191,88 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             return True
 
         return False
+
+    def _pause_for_user_input(
+        self,
+        state: ConversationState,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Pause the run for a tool that must hand control back to the user.
+
+        A tool marked ``pauses_run_for_user_input`` (e.g. ``ask_user``) does not
+        execute here. Its ``ActionEvent`` is left unmatched so the next
+        ``send_message()`` can resolve it, and the run ends at
+        ``WAITING_FOR_CONFIRMATION``. An invalid call is reported as a
+        corrective error observation (and dropped from ``action_events`` so it
+        does not also execute) and the run continues so the agent can fix it.
+
+        Returns True when the run should stop here.
+        """
+        pause_events = [
+            ae for ae in action_events if self._pauses_for_user_input(ae.tool_name)
+        ]
+        if not pause_events:
+            return False
+
+        current_ids = {ae.id for ae in action_events}
+        # At most one request may be pending. Exclude this step's own calls
+        # (already emitted, hence unmatched) when looking for an earlier one.
+        already_pending = any(
+            ae.id not in current_ids and self._pauses_for_user_input(ae.tool_name)
+            for ae in ConversationState.get_unmatched_actions(state.active_branch())
+        )
+
+        pending: ActionEvent | None = None
+        for ae in pause_events:
+            tool = self.tools_map.get(ae.tool_name)
+            assert tool is not None, "pause tool must be in tools_map"
+            if already_pending:
+                error: str | None = (
+                    "another request for user input is already pending; wait for "
+                    "its answer before asking again"
+                )
+            elif pending is not None:
+                error = (
+                    "only one user-input request is allowed per step; combine "
+                    "the questions into a single call"
+                )
+            elif ae.action is None:
+                error = f"{ae.tool_name} call had no valid action"
+            else:
+                error = tool.pause_error_for(ae.action)
+            if error is not None:
+                self._emit_pause_error(on_event, ae, error)
+                action_events.remove(ae)
+            else:
+                pending = ae
+
+        if pending is None:
+            return False
+
+        state.execution_status = ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+        return True
+
+    def _pauses_for_user_input(self, tool_name: str) -> bool:
+        tool = self.tools_map.get(tool_name)
+        return tool is not None and tool.pauses_run_for_user_input
+
+    def _emit_pause_error(
+        self,
+        on_event: ConversationCallbackType,
+        action_event: ActionEvent,
+        error: str,
+    ) -> None:
+        """Emit a corrective error observation for an invalid pause call."""
+        logger.warning("Invalid user-input pause call: %s", error)
+        on_event(
+            AgentErrorEvent(
+                error=error,
+                tool_name=action_event.tool_name,
+                tool_call_id=action_event.tool_call_id,
+                classification=AGENT_OUTCOME,
+            )
+        )
 
     def _extract_security_risk(
         self,

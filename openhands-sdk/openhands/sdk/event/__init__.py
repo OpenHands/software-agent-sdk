@@ -1,4 +1,5 @@
 from openhands.sdk.event.acp_tool_call import ACPToolCallEvent
+from openhands.sdk.event.ask_user import AskUserAnswerNoticeEvent
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import (
     Condensation,
@@ -30,6 +31,7 @@ from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
 
 __all__ = [
     "ACPToolCallEvent",
+    "AskUserAnswerNoticeEvent",
     "Event",
     "LLMConvertibleEvent",
     "SystemPromptEvent",
