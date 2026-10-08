@@ -127,10 +127,7 @@ from openhands.sdk.settings.acp_providers import (
     get_acp_provider,
 )
 from openhands.sdk.skills import Skill
-from openhands.sdk.skills.skill import (
-    COMPATIBLE_SKILLS_SUBDIRS,
-    compatible_user_skills_dirs,
-)
+from openhands.sdk.skills.skill import COMPATIBLE_SKILLS_SUBDIRS
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -327,43 +324,47 @@ def _strip_managed_skills(context: AgentContext) -> AgentContext:
     )
 
 
-def _is_compatible_skill(skill: Skill) -> bool:
-    """True when ``skill`` was loaded from a vendor-native skills directory.
+def _skill_vendor_subdir(skill: Skill) -> str | None:
+    """The top-level vendor directory a compatible skill came from, if any.
 
-    Keyed on the skill's ``source`` path (``~/.claude/skills/…/SKILL.md`` etc.).
-    This survives the settings round-trip — which revalidates the context and
-    turns auto-loaded ``load_compatible_skills`` skills into explicit ones — so a
-    directly-built ACP agent can still tell which skills its CLI will also read.
-    A literal ``.claude/skills/`` marker also matches a project-scope vendor
-    skill, whose root this helper does not know.
+    ``~/.claude/skills/x/SKILL.md`` → ``.claude``. Returns ``None`` for a skill
+    that is not inherited, has no usable source, or sits outside every known
+    compatible directory.
     """
-    source = skill.source
-    if not source:
-        return False
-    try:
-        resolved = Path(source).resolve()
-    except (OSError, ValueError):
-        return False
-    for root in compatible_user_skills_dirs():
-        if resolved.is_relative_to(root.resolve()):
-            return True
-    normalised = source.replace("\\", "/")
-    return any(
-        f"{parent}/{leaf}/" in normalised for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS
-    )
+    if not skill.inherited or not skill.source:
+        return None
+    normalised = "/" + skill.source.replace("\\", "/").strip("/") + "/"
+    for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS:
+        if f"/{parent}/{leaf}/" in normalised:
+            return parent
+    return None
 
 
-def _strip_compatible_skills(context: AgentContext) -> AgentContext:
-    """Context without the vendor-native skills its CLI also reads.
+def _strip_inherited_skills(
+    context: AgentContext, *, native_subdirs: Collection[str] | None
+) -> AgentContext:
+    """Context without the compatible skills the CLI also reads natively.
 
-    Applied when the runtime is not yet known (a directly-built agent, sourcing
-    ``None``). Only the skills loaded from the vendor-native directories
-    (``load_compatible_skills``) are dropped — the ones a host-local CLI would
-    discover itself and duplicate. Explicit, user, public and marketplace skills
-    stay, so nothing but the compatible-load results is affected. No compatible
-    skills loaded ⇒ the context is returned unchanged.
+    Applied when the runtime that launches the CLI is not yet known (a
+    directly-built agent, sourcing ``None``). ``native_subdirs`` names the
+    top-level vendor directories the selected CLI discovers on its own; each
+    inherited skill whose source sits in one of them is dropped, because the
+    CLI would otherwise advertise it twice. Skills from *other* vendors are
+    kept — a Claude CLI does not read ``~/.codex/skills``, so leaving those in
+    the prompt is the only way its agent can reach them.
+
+    ``native_subdirs is None`` means the CLI is unknown: no skill can be proven
+    duplicated, so nothing is dropped. Explicit, user, public and marketplace
+    skills are never inherited and always stay.
     """
-    remaining = [s for s in context.skills if not _is_compatible_skill(s)]
+    if not native_subdirs:
+        return context
+    drop = set(native_subdirs)
+    remaining = [
+        s
+        for s in context.skills
+        if not (s.inherited and _skill_vendor_subdir(s) in drop)
+    ]
     if len(remaining) == len(context.skills):
         return context
     return context.model_copy(update={"skills": remaining})
@@ -2615,7 +2616,11 @@ class ACPAgent(AgentBase):
             if _managed_catalog_is_injected(agent_context):
                 agent_context = _strip_managed_skills(agent_context)
         elif self.acp_skill_sourcing is None:
-            agent_context = _strip_compatible_skills(agent_context)
+            provider = self._resolved_provider()
+            agent_context = _strip_inherited_skills(
+                agent_context,
+                native_subdirs=provider.native_skill_subdirs if provider else None,
+            )
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:

@@ -246,13 +246,18 @@ def test_native_sourcing_drops_vendor_user_skills(tmp_path: Path, monkeypatch) -
     assert "review" not in _installed_suffix(agent, project)
 
 
-def _vendor_skill_in_home(tmp_path: Path, monkeypatch, name: str = "review") -> None:
+def _vendor_skill_in_home(
+    tmp_path: Path,
+    monkeypatch,
+    name: str = "review",
+    vendor: str = ".claude",
+) -> None:
     from openhands.sdk.skills import skill as skill_module
 
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(skill_module, "USER_SKILLS_DIRS", [home / ".agents" / "skills"])
-    vendor_dir = home / ".claude" / "skills" / name
+    vendor_dir = home / vendor / "skills" / name
     vendor_dir.mkdir(parents=True)
     (vendor_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: d\n---\nhost vendor body\n"
@@ -382,3 +387,69 @@ def test_direct_acp_conversation_drops_only_compatible_skills(
 
     assert "review" not in _installed_suffix(agent, project)
     assert "my-skill" in _installed_suffix(agent, project)
+
+
+def test_direct_acp_keeps_other_vendors_skills(tmp_path: Path, monkeypatch) -> None:
+    """A Claude CLI does not read ``.codex/skills``, so those skills stay.
+
+    Only the selected provider's own native directory is suppressed; a skill
+    loaded from another vendor's directory would otherwise become unreachable,
+    since neither OpenHands nor the CLI would advertise it.
+    """
+    _vendor_skill_in_home(tmp_path, monkeypatch, name="claude-skill", vendor=".claude")
+    _vendor_skill_in_home(tmp_path, monkeypatch, name="codex-skill", vendor=".codex")
+    project = _workspace(tmp_path)
+
+    suffix = _installed_suffix(_acp_agent(load_compatible_skills=True), project)
+
+    assert "claude-skill" not in suffix
+    assert "codex-skill" in suffix
+
+
+def test_direct_acp_keeps_own_vendor_skill_for_codex(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The suppression follows the provider, not a fixed directory."""
+    _vendor_skill_in_home(tmp_path, monkeypatch, name="claude-skill", vendor=".claude")
+    _vendor_skill_in_home(tmp_path, monkeypatch, name="codex-skill", vendor=".codex")
+    project = _workspace(tmp_path)
+
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "acp",
+            "acp_server": "codex",
+            "agent_context": AgentContext(load_compatible_skills=True).model_dump(),
+        }
+    )
+    agent = settings.create_agent()
+    assert isinstance(agent, ACPAgent)
+
+    suffix = _installed_suffix(agent, project)
+
+    assert "codex-skill" not in suffix
+    assert "claude-skill" in suffix
+
+
+def test_direct_acp_keeps_explicit_skill_sourced_from_vendor_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An explicit skill whose ``source`` sits under a vendor dir is the caller's
+    choice and must not be suppressed — only auto-loaded compatible skills are.
+
+    Regression for the old path-based filter, which dropped any skill whose
+    ``source`` happened to lie under a vendor directory even when compatible
+    loading was off.
+    """
+    _vendor_skill_in_home(tmp_path, monkeypatch)
+    project = _workspace(tmp_path)
+    home = tmp_path / "home"
+
+    explicit = Skill(
+        name="explicit-review",
+        content="explicit content",
+        description="explicit",
+        source=str(home / ".claude" / "skills" / "review" / "SKILL.md"),
+    )
+    agent = _acp_agent(skills=[explicit])
+
+    assert "explicit-review" in _installed_suffix(agent, project)

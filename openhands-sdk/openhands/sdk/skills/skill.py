@@ -212,6 +212,17 @@ class Skill(BaseModel):
             "When it is None, it is treated as a programmatically defined skill."
         ),
     )
+    inherited: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill was auto-loaded from a path that an external "
+            "harness also reads (a compatible/vendor skills directory such as "
+            "``.claude/skills``). Callers that hand the catalog to such a harness "
+            "use this to avoid advertising a skill the harness discovers itself. "
+            "False for explicitly supplied and OpenHands-owned skills, so a "
+            "caller's ``source`` path alone never marks a skill as inherited."
+        ),
+    )
     mcp_tools: dict[str, MCPServer] | None = Field(
         default=None,
         description=("MCP servers for the skill (repo skills only)."),
@@ -852,6 +863,7 @@ def load_skills_from_dir(
     root: Path | None = None,
     exclude_dirs: set[Path] | None = None,
     load_regular_md: bool = True,
+    mark_inherited: bool = False,
 ) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -876,6 +888,9 @@ def load_skills_from_dir(
             loaded and loose ``.md`` notes are ignored. Vendor-native
             directories pass False so ordinary Markdown there does not become a
             permanent-context skill.
+        mark_inherited: Mark every loaded skill as
+            :attr:`Skill.inherited` — set for vendor-native directories an
+            external harness also reads.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
@@ -925,6 +940,7 @@ def load_skills_from_dir(
                 agent_skills,
                 strict=strict,
                 root=root,
+                inherited=mark_inherited,
             )
         except Exception as e:
             logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
@@ -940,6 +956,7 @@ def load_skills_from_dir(
                 agent_skills,
                 strict=strict,
                 root=root,
+                inherited=mark_inherited,
             )
         except Exception as e:
             logger.warning(f"Failed to load skill from {path}: {e}")
@@ -1031,6 +1048,7 @@ def _load_user_skills_from_dirs(
         all_skills,
         "compatible user skills",
         load_regular_md=False,
+        mark_inherited=True,
     )
 
     logger.debug(
@@ -1106,6 +1124,7 @@ def _load_and_merge_from_dirs(
     source_label: str,
     exclude_dirs: set[Path] | None = None,
     load_regular_md: bool = True,
+    mark_inherited: bool = False,
 ) -> None:
     """Load skills from multiple directories, merging with deduplication.
 
@@ -1121,6 +1140,8 @@ def _load_and_merge_from_dirs(
         exclude_dirs: Passed through to load_skills_from_dir().
         load_regular_md: Passed through to load_skills_from_dir(); vendor-native
             directories pass False to load only ``SKILL.md`` skills.
+        mark_inherited: Passed through to load_skills_from_dir(); set for
+            vendor-native directories an external harness also reads.
     """
     for skills_dir in dirs:
         if not skills_dir.exists():
@@ -1133,6 +1154,7 @@ def _load_and_merge_from_dirs(
                 skills_dir,
                 exclude_dirs=exclude_dirs,
                 load_regular_md=load_regular_md,
+                mark_inherited=mark_inherited,
             )
             _merge_loaded_skills(
                 source_dir=skills_dir,
@@ -1252,6 +1274,7 @@ def load_project_skills(
                 all_skills,
                 "compatible project skills",
                 load_regular_md=False,
+                mark_inherited=True,
             )
 
     logger.debug(

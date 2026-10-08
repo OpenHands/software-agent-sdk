@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory() as td:
     os.environ["HOME"] = str(home)
     skill_mod.USER_SKILLS_DIRS = [home / ".agents" / "skills"]
     write_skill(home / ".claude" / "skills", "claude-user-skill", "FROM_CLAUDE_HOME")
+    write_skill(home / ".codex" / "skills", "codex-user-skill", "FROM_CODEX_HOME")
 
     off = load_available_skills(include_user=True)
     print("disabled user skills:", sorted(off))
@@ -86,7 +87,7 @@ with tempfile.TemporaryDirectory() as td:
             return loaded._installed_suffix or ""
 
     acp = ACPAgent(
-        acp_command=["claude-code-acp"],
+        acp_command=["npx", "@zed-industries/claude-agent-acp"],
         agent_context=AgentContext(load_compatible_skills=True),
     )
     acp_ctx = acp.agent_context
@@ -94,8 +95,12 @@ with tempfile.TemporaryDirectory() as td:
     print("ACP constructed skills:", [s.name for s in acp_ctx.skills])
     assert acp.acp_skill_sourcing is None
     native_prompt = rendered_suffix(acp)
-    print("ACP default prompt has vendor skill:", "claude-user-skill" in native_prompt)
+    # The Claude CLI reads ~/.claude/skills itself, so that skill is suppressed;
+    # it does not read ~/.codex/skills, so that skill stays reachable.
+    print("ACP default prompt has claude skill:", "claude-user-skill" in native_prompt)
+    print("ACP default prompt has codex skill:", "codex-user-skill" in native_prompt)
     assert "claude-user-skill" not in native_prompt
+    assert "codex-user-skill" in native_prompt
 
     managed = _apply_acp_skill_sourcing(acp, "openhands_managed")
     assert isinstance(managed, ACPAgent)

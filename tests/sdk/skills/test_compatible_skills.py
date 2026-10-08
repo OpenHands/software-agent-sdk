@@ -245,3 +245,57 @@ def test_vendor_loose_markdown_is_not_loaded(tmp_path):
     skills = load_project_skills(tmp_path, include_compatible=True)
 
     assert [s.name for s in skills] == ["real-skill"]
+
+
+# -- provenance (`Skill.inherited`) -------------------------------------------
+
+
+def test_vendor_skill_is_marked_inherited(user_home):
+    """Compatible-loaded skills carry provenance so a downstream harness can
+    tell which skills it already discovers itself."""
+    _write_skill(user_home / ".claude" / "skills", "vendor")
+
+    (vendor,) = skill_module.load_user_skills(include_compatible=True)
+    assert vendor.inherited is True
+
+
+def test_openhands_skill_is_not_marked_inherited(user_home):
+    _write_skill(user_home / ".agents" / "skills", "owned")
+
+    (owned,) = skill_module.load_user_skills(include_compatible=True)
+    assert owned.inherited is False
+
+
+def test_project_vendor_skill_is_marked_inherited(tmp_path):
+    _write_skill(tmp_path / ".codex" / "skills", "vendor")
+
+    (vendor,) = load_project_skills(tmp_path, include_compatible=True)
+    assert vendor.inherited is True
+
+
+def test_inherited_survives_agent_context_round_trip(user_home):
+    """The flag must survive the context round-trip, where the context is
+    revalidated and the flag that produced the skill is no longer set."""
+    _write_skill(user_home / ".claude" / "skills", "vendor")
+
+    context = AgentContext(load_compatible_skills=True)
+    (vendor,) = context.skills
+    assert vendor.inherited is True
+
+    dumped = AgentContext.model_validate(context.model_dump())
+    (vendor,) = dumped.skills
+    assert vendor.inherited is True
+
+
+def test_explicit_vendor_sourced_skill_is_not_inherited(user_home):
+    """A caller's ``source`` path alone never sets provenance."""
+    _write_skill(user_home / ".claude" / "skills", "review")
+
+    explicit = Skill(
+        name="explicit",
+        content="c",
+        source=str(user_home / ".claude" / "skills" / "review" / "SKILL.md"),
+    )
+    context = AgentContext(skills=[explicit])
+
+    assert [s.inherited for s in context.skills] == [False]
