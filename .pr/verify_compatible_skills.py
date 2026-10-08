@@ -68,8 +68,10 @@ with tempfile.TemporaryDirectory() as td:
     # ACP runtime sourcing: the validator keeps vendor user skills (the runtime
     # is unknown at construction), and the render decides per runtime. A
     # directly-built agent (no finalize) has no runtime yet (sourcing None), so
-    # it must NOT put the vendor skill its native CLI already reads into the
-    # prompt — but it must still render its other skills.
+    # it must NOT advertise any auto-loaded compatible skill: it runs no
+    # OpenHands tools, so the <SKILLS> catalog it renders is advisory only and a
+    # vendor dir other than the CLI's own is unreachable. Its non-inherited
+    # skills still render.
     from unittest.mock import patch
 
     from openhands.sdk import Conversation
@@ -95,12 +97,13 @@ with tempfile.TemporaryDirectory() as td:
     print("ACP constructed skills:", [s.name for s in acp_ctx.skills])
     assert acp.acp_skill_sourcing is None
     native_prompt = rendered_suffix(acp)
-    # The Claude CLI reads ~/.claude/skills itself, so that skill is suppressed;
-    # it does not read ~/.codex/skills, so that skill stays reachable.
+    # The ACP agent exposes no invoke_skill tool and the catalog omits each
+    # skill's location, so no auto-loaded compatible skill is reachable — not
+    # even from another vendor's directory.
     print("ACP default prompt has claude skill:", "claude-user-skill" in native_prompt)
     print("ACP default prompt has codex skill:", "codex-user-skill" in native_prompt)
     assert "claude-user-skill" not in native_prompt
-    assert "codex-user-skill" in native_prompt
+    assert "codex-user-skill" not in native_prompt
 
     managed = _apply_acp_skill_sourcing(acp, "openhands_managed")
     assert isinstance(managed, ACPAgent)

@@ -126,8 +126,6 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_command,
     get_acp_provider,
 )
-from openhands.sdk.skills import Skill
-from openhands.sdk.skills.skill import COMPATIBLE_SKILLS_SUBDIRS
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -324,47 +322,24 @@ def _strip_managed_skills(context: AgentContext) -> AgentContext:
     )
 
 
-def _skill_vendor_subdir(skill: Skill) -> str | None:
-    """The top-level vendor directory a compatible skill came from, if any.
-
-    ``~/.claude/skills/x/SKILL.md`` → ``.claude``. Returns ``None`` for a skill
-    that is not inherited, has no usable source, or sits outside every known
-    compatible directory.
-    """
-    if not skill.inherited or not skill.source:
-        return None
-    normalised = "/" + skill.source.replace("\\", "/").strip("/") + "/"
-    for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS:
-        if f"/{parent}/{leaf}/" in normalised:
-            return parent
-    return None
-
-
-def _strip_inherited_skills(
-    context: AgentContext, *, native_subdirs: Collection[str] | None
-) -> AgentContext:
-    """Context without the compatible skills the CLI also reads natively.
+def _strip_inherited_skills(context: AgentContext) -> AgentContext:
+    """Context without the compatible skills an external harness auto-loaded.
 
     Applied when the runtime that launches the CLI is not yet known (a
-    directly-built agent, sourcing ``None``). ``native_subdirs`` names the
-    top-level vendor directories the selected CLI discovers on its own; each
-    inherited skill whose source sits in one of them is dropped, because the
-    CLI would otherwise advertise it twice. Skills from *other* vendors are
-    kept — a Claude CLI does not read ``~/.codex/skills``, so leaving those in
-    the prompt is the only way its agent can reach them.
+    directly-built agent, sourcing ``None``). An ACP agent runs no OpenHands
+    tools — :attr:`ACPAgent.supports_openhands_tools` is ``False`` — so the
+    ``<SKILLS>`` catalog it renders is advisory only: the prompt tells the model
+    to call ``invoke_skill``, which this agent does not expose, and
+    :func:`~openhands.sdk.skills.skill.to_prompt` omits each skill's location.
+    The CLI can therefore read only the skill bodies it discovers natively.
 
-    ``native_subdirs is None`` means the CLI is unknown: no skill can be proven
-    duplicated, so nothing is dropped. Explicit, user, public and marketplace
-    skills are never inherited and always stay.
+    An inherited skill is either the CLI's own vendor directory (``~/.claude``
+    for Claude Code), which the CLI already reads, or another vendor's
+    (``~/.codex``), which it cannot reach. Advertising either one is redundant
+    or misleading, so every inherited skill is dropped. Explicit, user, public
+    and marketplace skills are never inherited and always stay.
     """
-    if not native_subdirs:
-        return context
-    drop = set(native_subdirs)
-    remaining = [
-        s
-        for s in context.skills
-        if not (s.inherited and _skill_vendor_subdir(s) in drop)
-    ]
+    remaining = [s for s in context.skills if not s.inherited]
     if len(remaining) == len(context.skills):
         return context
     return context.model_copy(update={"skills": remaining})
@@ -1969,14 +1944,14 @@ class ACPAgent(AgentBase):
         default=None,
         description=(
             "Who supplies this ACP agent's skills (#4019). ``None`` (default): "
-            "the runtime is not yet known — a directly-built agent renders its "
-            "catalog except the vendor-native skills its CLI already reads, so "
-            "explicit, user, public and marketplace skills still reach the "
-            "prompt. ``'native'``: OpenHands injects none of its managed "
-            "catalog; the render drops all of it. ``'openhands_managed'``: also "
-            "inject the resolved catalog, for a container CLI that cannot reach "
-            "the host's configuration. ``finalize`` sets the runtime value from "
-            "the ``LaunchRuntime`` for server launches."
+            "the runtime is not yet known — a directly-built agent keeps its "
+            "explicit, user, public and marketplace skills but drops the "
+            "compatible skills it auto-loaded, which its CLI cannot invoke. "
+            "``'native'``: OpenHands injects none of its managed catalog; the "
+            "render drops all of it. ``'openhands_managed'``: also inject the "
+            "resolved catalog, for a container CLI that cannot reach the host's "
+            "configuration. ``finalize`` sets the runtime value from the "
+            "``LaunchRuntime`` for server launches."
         ),
     )
 
@@ -2609,18 +2584,14 @@ class ACPAgent(AgentBase):
         # known and the CLI reads its own host configuration and the repository,
         # so drop every managed skill source. ``None`` — the runtime is not yet
         # known (a directly-built agent that never ran through ``finalize``), so
-        # drop only the vendor-native skills the CLI would also read, keeping
-        # explicit / user / public / marketplace skills. ``openhands_managed`` —
-        # a container CLI cannot reach the host, so keep the full catalog.
+        # drop the compatible skills it auto-loaded while keeping explicit /
+        # user / public / marketplace skills. ``openhands_managed`` — a
+        # container CLI cannot reach the host, so keep the full catalog.
         if self.acp_skill_sourcing == "native":
             if _managed_catalog_is_injected(agent_context):
                 agent_context = _strip_managed_skills(agent_context)
         elif self.acp_skill_sourcing is None:
-            provider = self._resolved_provider()
-            agent_context = _strip_inherited_skills(
-                agent_context,
-                native_subdirs=provider.native_skill_subdirs if provider else None,
-            )
+            agent_context = _strip_inherited_skills(agent_context)
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:

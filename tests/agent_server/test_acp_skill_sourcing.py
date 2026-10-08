@@ -389,12 +389,16 @@ def test_direct_acp_conversation_drops_only_compatible_skills(
     assert "my-skill" in _installed_suffix(agent, project)
 
 
-def test_direct_acp_keeps_other_vendors_skills(tmp_path: Path, monkeypatch) -> None:
-    """A Claude CLI does not read ``.codex/skills``, so those skills stay.
+def test_direct_acp_drops_inherited_skills_from_other_vendors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A directly-built ACP agent advertises no auto-loaded compatible skill.
 
-    Only the selected provider's own native directory is suppressed; a skill
-    loaded from another vendor's directory would otherwise become unreachable,
-    since neither OpenHands nor the CLI would advertise it.
+    An ACP agent runs no OpenHands tools, so the rendered ``<SKILLS>`` catalog
+    has no invocation path: the prompt names ``invoke_skill`` (which the agent
+    does not expose) and omits each skill's location. A skill loaded from
+    another vendor's directory than the selected CLI's — here ``.codex`` under a
+    Claude CLI — is therefore unreachable, so it must not be advertised.
     """
     _vendor_skill_in_home(tmp_path, monkeypatch, name="claude-skill", vendor=".claude")
     _vendor_skill_in_home(tmp_path, monkeypatch, name="codex-skill", vendor=".codex")
@@ -403,13 +407,14 @@ def test_direct_acp_keeps_other_vendors_skills(tmp_path: Path, monkeypatch) -> N
     suffix = _installed_suffix(_acp_agent(load_compatible_skills=True), project)
 
     assert "claude-skill" not in suffix
-    assert "codex-skill" in suffix
+    assert "codex-skill" not in suffix
 
 
-def test_direct_acp_keeps_own_vendor_skill_for_codex(
+def test_direct_acp_drops_inherited_skills_regardless_of_provider(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The suppression follows the provider, not a fixed directory."""
+    """The suppression is provider-independent — a CLI for another vendor also
+    cannot invoke a catalog entry, so its inherited skills leave too."""
     _vendor_skill_in_home(tmp_path, monkeypatch, name="claude-skill", vendor=".claude")
     _vendor_skill_in_home(tmp_path, monkeypatch, name="codex-skill", vendor=".codex")
     project = _workspace(tmp_path)
@@ -427,7 +432,7 @@ def test_direct_acp_keeps_own_vendor_skill_for_codex(
     suffix = _installed_suffix(agent, project)
 
     assert "codex-skill" not in suffix
-    assert "claude-skill" in suffix
+    assert "claude-skill" not in suffix
 
 
 def test_direct_acp_keeps_explicit_skill_sourced_from_vendor_dir(

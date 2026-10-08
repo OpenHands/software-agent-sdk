@@ -334,18 +334,6 @@ class ACPProviderInfo:
     them — see :class:`ACPEnvConflictSpec`.
     """
 
-    native_skill_subdirs: tuple[str, ...] = ()
-    """Vendor-native skill directory names this CLI reads on its own.
-
-    Each entry is a top-level directory name (``".claude"``,
-    ``".codex"``, …) whose ``skills/`` subdirectory the CLI discovers
-    natively. Used to avoid advertising the same skill twice in an ACP prompt:
-    only the directories the CLI actually reads are suppressed, so a skill
-    loaded from another vendor's directory stays visible. Empty for a CLI that
-    reads none of the compatible directories (or whose behaviour is unknown),
-    which then suppresses nothing.
-    """
-
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -552,10 +540,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
                     strip=("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
                 ),
             ),
-            # Claude Code discovers ``~/.claude/skills`` (and the in-repo
-            # equivalent) itself, so a compatible skill loaded from there would
-            # be duplicated in the prompt.
-            native_skill_subdirs=(".claude",),
         ),
         "codex": ACPProviderInfo(
             key="codex",
@@ -573,7 +557,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             file_secrets=_CODEX_FILE_SECRETS,
             binary_name=ACP_INSTALL_CATALOG["codex"].binary_name,
             data_dir_env_var="CODEX_HOME",
-            native_skill_subdirs=(".codex",),
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
@@ -602,7 +585,6 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",
-            native_skill_subdirs=(".gemini",),
         ),
         "kimi-code": ACPProviderInfo(
             key="kimi-code",
