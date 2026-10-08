@@ -4,15 +4,11 @@ name: TypeScript client endpoint audit
 on:
     push:
         branches: [main]
-  # Required for the "Comment audit report on PR" step: it is gated on
-  # github.event_name == 'pull_request' and relies on the PR context
-  # (context.issue.number), neither of which exists on a push event.
     pull_request:
 
-# Needed so the audit can post its report as a comment on the PR.
+# The audit only reads the checked-out tree and writes to the job summary.
 permissions:
     contents: read
-    pull-requests: write
 
 defaults:
     run:
@@ -26,12 +22,12 @@ jobs:
         timeout-minutes: 15
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7.0.1
 
-            - name: Use Node.js 22.x
-              uses: actions/setup-node@v6
+            - name: Use Node.js 24
+              uses: actions/setup-node@v7
               with:
-                  node-version: 22.x
+                  node-version: '24'
                   cache: npm
                   cache-dependency-path: clients/typescript/package-lock.json
 
@@ -41,32 +37,58 @@ jobs:
             - name: Test endpoint-audit tooling
               run: npm run test:endpoint-audit-tooling
 
+            # A release PR pins a version whose openapi.json is published only after merge.
+            - name: Resolve pinned Agent Server
+              id: pinned
+              working-directory: .
+              run: python3 .github/scripts/resolve_typescript_client_agent_server.py
+
+            - name: Install uv
+              if: steps.pinned.outputs.use_source_contract == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Export unreleased Agent Server contract from source
+              if: steps.pinned.outputs.use_source_contract == 'true'
+              working-directory: .
+              run: |
+                  uv sync --frozen --package openhands-agent-server
+                  OPENHANDS_SUPPRESS_BANNER=1 uv run python .github/scripts/export_agent_server_openapi.py \
+                    --output "$RUNNER_TEMP/openapi.json"
+                  echo "AGENT_SERVER_OPENAPI_PATH=$RUNNER_TEMP/openapi.json" >> "$GITHUB_ENV"
+
             - name: Endpoint audit (report-only — client vs pinned release contract)
               run: npm run audit:endpoints
 
             - name: Upload audit report
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v7
               with:
                   name: endpoint-audit
                   path: clients/typescript/.audit/
           # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
                   include-hidden-files: true
 
-      # Post the report as a single, self-updating comment on the PR. Runs even
-      # when the audit gate fails (the report is written before the gate), so
-      # reviewers see the mismatches that failed the check.
-            - name: Comment audit report on PR
-              if: always() && github.event_name == 'pull_request'
-              uses: actions/github-script@v7
+      # The report's only destination. A job summary needs no token, so it
+      # renders identically for fork and same-repo PRs.
+            - name: Write audit report to the job summary
+              if: always()
+              uses: actions/github-script@v9
               with:
                   script: |
-                      const { postEndpointAuditReport } = require(
-                        './.github/scripts/post-typescript-endpoint-audit-report.cjs'
+                      const fs = require('node:fs');
+                      const reportPath =
+                        'clients/typescript/.audit/endpoint-audit.json';
+                      if (!fs.existsSync(reportPath)) {
+                        core.warning(`No audit report at ${reportPath}.`);
+                        return;
+                      }
+                      const { renderEndpointAuditReport } = require(
+                        './.github/scripts/render-typescript-endpoint-audit-report.cjs'
                       );
-                      await postEndpointAuditReport({
-                        github,
-                        context,
-                        core,
-                        reportPath: 'clients/typescript/.audit/endpoint-audit.json',
-                      });
+                      const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                      await core.summary
+                        .addRaw(renderEndpointAuditReport(report))
+                        .write();

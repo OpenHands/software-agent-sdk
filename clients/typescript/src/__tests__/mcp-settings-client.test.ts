@@ -29,7 +29,7 @@ function mergePatch(target: JsonObject, patch: JsonObject): JsonObject {
 
 function installStatefulSettingsServer(initial: MCPConfig) {
   const catalog = clone(initial) as unknown as JsonObject;
-  const fetchMock = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     const settingsKey = decodeURIComponent(url.pathname.split('/').at(-1) ?? '');
     const method = init?.method;

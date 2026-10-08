@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -68,6 +68,8 @@ class FinishExecutor(ToolExecutor):
 
 class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
     """Tool for signaling the completion of a task or conversation."""
+
+    user_selectable: ClassVar[bool] = False
 
     @classmethod
     def create(

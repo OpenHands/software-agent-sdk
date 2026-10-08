@@ -275,6 +275,32 @@ def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path)
     assert conv.llm_registry.get("ask-agent-llm").stream is False
 
 
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_during_in_flight_llm_call(mock_transport, tmp_path, agent):
+    """Regression test for #5082: while the agent LLM has a call in flight its
+    telemetry holds the open span, which cannot be deep-copied.
+    """
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    answers = []
+
+    def transport(llm, *args, **kwargs):
+        if llm.usage_id != "ask-agent-llm":
+            answers.append(conv.ask_agent("How's the progress?"))
+        return create_mock_model_response("answer")
+
+    mock_transport.side_effect = transport
+    agent.llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert answers == ["answer"]
+    assert conv.llm_registry.get("ask-agent-llm").telemetry is not agent.llm.telemetry
+
+
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
 def test_remote_conversation_ask_agent(mock_ws_client, agent):
     mock_ws_client.return_value.wait_until_ready.return_value = True
@@ -433,9 +459,130 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     assert tool_msg.name == "terminal"
 
 
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_drops_in_flight_action_without_observation(
+    mock_completion, tmp_path, agent
+):
+    """ask_agent must drop an in-flight ActionEvent that has no observation yet."""
+    mock_completion.return_value = create_mock_llm_response("answer")
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],
+        )
+    )
+    conv.state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="List the files")],
+            ),
+        )
+    )
+
+    # In-flight action with NO matching observation.
+    tool_call = MessageToolCall(
+        id="call_inflight",
+        name="terminal",
+        arguments=json.dumps({"command": "ls -la"}),
+        origin="completion",
+    )
+    conv.state.events.append(
+        ActionEvent(
+            source="agent",
+            thought=[TextContent(text="Listing files")],
+            action=MockAction(command="ls -la"),
+            tool_name="terminal",
+            tool_call_id="call_inflight",
+            tool_call=tool_call,
+            llm_response_id="response_1",
+        )
+    )
+
+    conv.ask_agent("What did you find?")
+
+    messages = mock_completion.call_args.kwargs["messages"]
+    assistant_tool_calls = [
+        m for m in messages if m.role == "assistant" and m.tool_calls
+    ]
+    assert assistant_tool_calls == [], (
+        "Orphaned tool_use must be dropped from the ask_agent context"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exception handling tests
 # ---------------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_filters_incomplete_parallel_tool_calls(
+    mock_completion, tmp_path, agent
+):
+    mock_completion.return_value = create_mock_llm_response("One tool completed.")
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],
+        )
+    )
+
+    conv.state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="Inspect two files")]
+            ),
+        )
+    )
+    for call_id in ("call_complete", "call_pending"):
+        conv.state.events.append(
+            ActionEvent(
+                source="agent",
+                thought=[],
+                action=MockAction(command=f"cat {call_id}"),
+                tool_name="terminal",
+                tool_call_id=call_id,
+                tool_call=MessageToolCall(
+                    id=call_id,
+                    name="terminal",
+                    arguments=json.dumps({"command": f"cat {call_id}"}),
+                    origin="completion",
+                ),
+                llm_response_id="parallel_response",
+            )
+        )
+    conv.state.events.append(
+        ObservationEvent(
+            source="environment",
+            observation=MockObservation(result="done"),
+            action_id="action_complete",
+            tool_name="terminal",
+            tool_call_id="call_complete",
+        )
+    )
+
+    assert conv.ask_agent("What completed?") == "One tool completed."
+
+    messages = mock_completion.call_args.kwargs["messages"]
+    tool_calls = [call for message in messages for call in (message.tool_calls or [])]
+    assert tool_calls == []
+    assert [message for message in messages if message.role == "tool"] == []
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")

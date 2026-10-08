@@ -7,10 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import libtmux
 import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import (
+    _cleanup_stale_tmux_sessions,
     _default_server_tmux_tmpdir,
     _ensure_server_tmux_tmpdir,
     _get_root_path,
@@ -59,6 +61,26 @@ def test_ensure_server_tmux_tmpdir_respects_existing_env(tmp_path, monkeypatch):
     assert was_defaulted is False
     assert tmux_tmpdir == existing
     assert not existing.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+def test_cleanup_stale_tmux_sessions_includes_isolated_sockets(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="oh-cleanup-") as socket_dir:
+        monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
+        servers = [
+            libtmux.Server(socket_name=name)
+            for name in ["openhands", "openhands-" + "a" * 32, "unrelated"]
+        ]
+        try:
+            for server in servers:
+                server.new_session(session_name="test")
+            _cleanup_stale_tmux_sessions()
+            assert not servers[0].sessions
+            assert not servers[1].sessions
+            assert servers[2].sessions
+        finally:
+            for server in servers:
+                server.cmd("kill-server")
 
 
 class TestStaticFilesServing:
@@ -265,10 +287,9 @@ class TestServiceParallelization:
     """Test that services are started and stopped in parallel."""
 
     async def test_services_start_in_parallel(self):
-        """Test that VSCode, Desktop, and Tool Preload services start concurrently."""
+        """Test that VSCode and Tool Preload services start concurrently."""
         # Create mock services that take some time to start
         mock_vscode_service = AsyncMock()
-        mock_desktop_service = AsyncMock()
         mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
@@ -290,7 +311,6 @@ class TestServiceParallelization:
             return True
 
         mock_vscode_service.start = AsyncMock(side_effect=slow_start)
-        mock_desktop_service.start = AsyncMock(side_effect=slow_start)
         mock_tool_preload_service.start = AsyncMock(side_effect=slow_start)
 
         # Mock the service getters
@@ -304,10 +324,6 @@ class TestServiceParallelization:
                 return_value=mock_vscode_service,
             ),
             patch(
-                "openhands.agent_server.api.get_desktop_service",
-                return_value=mock_desktop_service,
-            ),
-            patch(
                 "openhands.agent_server.api.get_tool_preload_service",
                 return_value=mock_tool_preload_service,
             ),
@@ -319,18 +335,16 @@ class TestServiceParallelization:
             async with api_lifespan(mock_app):
                 pass
 
-            assert max_concurrent_starts == 3
+            assert max_concurrent_starts == 2
 
             # Verify all services were started
             mock_vscode_service.start.assert_called_once()
-            mock_desktop_service.start.assert_called_once()
             mock_tool_preload_service.start.assert_called_once()
 
     async def test_services_stop_in_parallel(self):
-        """Test that VSCode, Desktop, and Tool Preload services stop concurrently."""
+        """Test that VSCode and Tool Preload services stop concurrently."""
         # Create mock services that take some time to stop
         mock_vscode_service = AsyncMock()
-        mock_desktop_service = AsyncMock()
         mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
@@ -339,10 +353,8 @@ class TestServiceParallelization:
             await asyncio.sleep(0.1)
 
         mock_vscode_service.start = AsyncMock(return_value=True)
-        mock_desktop_service.start = AsyncMock(return_value=True)
         mock_tool_preload_service.start = AsyncMock(return_value=True)
         mock_vscode_service.stop = AsyncMock(side_effect=slow_stop)
-        mock_desktop_service.stop = AsyncMock(side_effect=slow_stop)
         mock_tool_preload_service.stop = AsyncMock(side_effect=slow_stop)
 
         # Mock the service getters
@@ -356,17 +368,17 @@ class TestServiceParallelization:
                 return_value=mock_vscode_service,
             ),
             patch(
-                "openhands.agent_server.api.get_desktop_service",
-                return_value=mock_desktop_service,
-            ),
-            patch(
                 "openhands.agent_server.api.get_tool_preload_service",
                 return_value=mock_tool_preload_service,
             ),
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_backend_manager = AsyncMock()
+            mock_app.state = SimpleNamespace(
+                config=Config(),
+                canvas_extension_backend_manager=mock_backend_manager,
+            )
 
             async with api_lifespan(mock_app):
                 # Exit the context to trigger shutdown
@@ -374,8 +386,8 @@ class TestServiceParallelization:
 
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
-            mock_desktop_service.stop.assert_called_once()
             mock_tool_preload_service.stop.assert_called_once()
+            mock_backend_manager.shutdown.assert_awaited_once()
 
     async def test_services_handle_none_values(self):
         """Test that the lifespan handles None service values correctly."""
@@ -388,7 +400,6 @@ class TestServiceParallelization:
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch("openhands.agent_server.api.get_desktop_service", return_value=None),
             patch(
                 "openhands.agent_server.api.get_tool_preload_service", return_value=None
             ),
@@ -403,6 +414,37 @@ class TestServiceParallelization:
 
             # Verify conversation service was set up
             assert mock_app.state.conversation_service == mock_conversation_service
+
+    async def test_registry_starts_before_conversation_recovery(self):
+        events = []
+        registry = SimpleNamespace(
+            configure_service=lambda _service: events.append("configure"),
+            start=AsyncMock(side_effect=lambda: events.append("registry")),
+            shutdown=AsyncMock(),
+        )
+        service = AsyncMock()
+        service.__aenter__.side_effect = lambda: events.append("service") or service
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service",
+                return_value=None,
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = SimpleNamespace(
+                config=Config(), conversation_registry=registry
+            )
+
+            async with api_lifespan(mock_app):
+                pass
+
+        assert events[:3] == ["configure", "registry", "service"]
 
     async def test_lifespan_defaults_and_restores_tmux_tmpdir(
         self, tmp_path, monkeypatch
@@ -419,7 +461,6 @@ class TestServiceParallelization:
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
-            patch("openhands.agent_server.api.get_desktop_service", return_value=None),
             patch(
                 "openhands.agent_server.api.get_tool_preload_service", return_value=None
             ),
