@@ -3,11 +3,15 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.agent.acp_agent import (
+    ACPAgent,
+    ACPSkillSourcing,
+    _managed_catalog_is_injected,
+    _strip_managed_skills,
+)
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import AgentLaunchAdditions
@@ -17,9 +21,6 @@ from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.tool.defaults import launch_tool_specs
 from openhands.sdk.tool.spec import Tool
-
-
-ACPSkillSourcing = Literal["native", "openhands_managed"]
 
 
 class LaunchRuntime(BaseModel):
@@ -157,29 +158,28 @@ def _with_load_memory(agent: AgentBase) -> AgentBase:
 def _apply_acp_skill_sourcing(
     agent: AgentBase, sourcing: ACPSkillSourcing
 ) -> AgentBase:
-    if sourcing != "native" or not isinstance(agent, ACPAgent):
+    """Record the runtime's skill sourcing on an ACP agent.
+
+    The agent renders the ACP prompt itself, so the sourcing has to live on the
+    agent — ``finalize`` is the only code that knows the runtime. Recorded even
+    when nothing needs stripping: a managed deployment whose catalog arrives
+    later (lazy flags, plugin skills) must not be rendered under the native
+    default a directly-built agent carries.
+    """
+    if not isinstance(agent, ACPAgent):
         return agent
     context = agent.agent_context
-    if context is None or not (
-        context.skills
-        or context.load_user_skills
-        or context.load_public_skills
-        or context.load_compatible_skills
-        or context.registered_marketplaces
+    stripped = context
+    if (
+        context is not None
+        and sourcing == "native"
+        and _managed_catalog_is_injected(context)
     ):
+        stripped = _strip_managed_skills(context)
+    if stripped is context and agent.acp_skill_sourcing == sourcing:
         return agent
     return agent.model_copy(
-        update={
-            "agent_context": context.model_copy(
-                update={
-                    "skills": [],
-                    "load_user_skills": False,
-                    "load_public_skills": False,
-                    "load_compatible_skills": False,
-                    "registered_marketplaces": [],
-                }
-            )
-        }
+        update={"acp_skill_sourcing": sourcing, "agent_context": stripped}
     )
 
 

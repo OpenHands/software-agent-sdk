@@ -164,6 +164,13 @@ _USAGE_UPDATE_TIMEOUT: float = float(os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", 
 # session state is still valid on the server side.
 _ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3"))
 
+# Who supplies an ACP agent's skills (#4019), mirroring the agent-server's
+# ``Config.acp_skill_sourcing``. ``native``: the ACP CLI reads the user's own
+# configuration and the repository, so OpenHands injects none of its managed
+# catalog. ``openhands_managed``: also inject the resolved catalog (a container
+# CLI cannot reach the host's configuration).
+ACPSkillSourcing = Literal["native", "openhands_managed"]
+
 # After a timeout/cancellation, wait briefly for the ACP prompt task to react
 # to session/cancel before rewiring callbacks for the next turn.
 _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
@@ -281,6 +288,38 @@ ACP_SENTINEL_USAGE_ID = "acp-managed"
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
     return LLM(model="acp-managed", usage_id=ACP_SENTINEL_USAGE_ID)
+
+
+def _managed_catalog_is_injected(context: AgentContext) -> bool:
+    """Whether ``context`` would put OpenHands-managed skills in the ACP prompt."""
+    return bool(
+        context.skills
+        or context.load_user_skills
+        or context.load_public_skills
+        or context.load_compatible_skills
+        or context.registered_marketplaces
+    )
+
+
+def _strip_managed_skills(context: AgentContext) -> AgentContext:
+    """Context with every OpenHands-managed skill source cleared (#4019).
+
+    Applied under ``native`` sourcing — the CLI reads its own host configuration
+    and the repository, so injecting our catalog would duplicate it. Flags and
+    marketplace registrations are cleared too because they resolve to skills
+    later (project skills, plugin skills); clearing only ``skills`` would let
+    them back into the prompt. Explicit ``skills`` are managed by definition and
+    are cleared with the rest.
+    """
+    return context.model_copy(
+        update={
+            "skills": [],
+            "load_user_skills": False,
+            "load_public_skills": False,
+            "load_compatible_skills": False,
+            "registered_marketplaces": [],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1878,6 +1917,19 @@ class ACPAgent(AgentBase):
             "enable it; the SDK owns where the root lives."
         ),
     )
+    acp_skill_sourcing: ACPSkillSourcing = Field(
+        default="native",
+        description=(
+            "Who supplies this ACP agent's skills (#4019). 'native' (default): "
+            "the CLI reads its own host configuration and the repository, so "
+            "OpenHands injects none of its managed catalog — the render drops "
+            "the context's skills. 'openhands_managed': also inject the resolved "
+            "catalog, for a container CLI that cannot reach the host's "
+            "configuration. ``finalize`` sets this from the ``LaunchRuntime`` "
+            "for server launches; a directly-built agent keeps the 'native' "
+            "default."
+        ),
+    )
 
     @field_validator("agent_context")
     @classmethod
@@ -2504,6 +2556,15 @@ class ACPAgent(AgentBase):
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
+        # Under native sourcing the CLI reads its own host configuration and the
+        # repository, so drop every managed skill source from the rendered prompt
+        # (#4019). Done at render time rather than construction: a server launch
+        # builds the agent before its runtime is known, so a managed deployment
+        # must still inject the catalog.
+        if self.acp_skill_sourcing == "native" and _managed_catalog_is_injected(
+            agent_context
+        ):
+            agent_context = _strip_managed_skills(agent_context)
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:

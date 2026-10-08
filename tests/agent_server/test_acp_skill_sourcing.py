@@ -246,6 +246,68 @@ def test_native_sourcing_drops_vendor_user_skills(tmp_path: Path, monkeypatch) -
     assert "review" not in _installed_suffix(agent, project)
 
 
+def _vendor_skill_in_home(tmp_path: Path, monkeypatch, name: str = "review") -> None:
+    from openhands.sdk.skills import skill as skill_module
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(skill_module, "USER_SKILLS_DIRS", [home / ".agents" / "skills"])
+    vendor_dir = home / ".claude" / "skills" / name
+    vendor_dir.mkdir(parents=True)
+    (vendor_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: d\n---\nhost vendor body\n"
+    )
+
+
+def test_direct_acp_conversation_does_not_inject_vendor_skills(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A directly-built ACP agent (no ``finalize``) keeps the native default.
+
+    Nothing in the direct path knows the runtime, so the agent must not render
+    the vendor user skills its native CLI already reads — otherwise the catalog
+    appears twice in the prompt (round-4 finding). The construction still keeps
+    ``skills`` so a managed runtime can recover them.
+    """
+    _vendor_skill_in_home(tmp_path, monkeypatch)
+    project = _workspace(tmp_path)
+
+    agent = _acp_agent(load_compatible_skills=True)
+
+    context = agent.agent_context
+    assert context is not None
+    assert [s.name for s in context.skills] == ["review"]
+    assert agent.acp_skill_sourcing == "native"
+    assert "review" not in _installed_suffix(agent, project)
+
+
+def test_direct_acp_conversation_injects_skills_when_marked_managed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An agent explicitly marked ``openhands_managed`` renders its catalog."""
+    _vendor_skill_in_home(tmp_path, monkeypatch)
+    project = _workspace(tmp_path)
+
+    agent = _acp_agent(load_compatible_skills=True).model_copy(
+        update={"acp_skill_sourcing": "openhands_managed"}
+    )
+
+    assert "review" in _installed_suffix(agent, project)
+
+
+def test_finalize_records_the_runtime_sourcing_on_the_agent() -> None:
+    """``finalize`` stamps the runtime choice so the render can honour it."""
+    agent = _apply_acp_skill_sourcing(_acp_agent(current_datetime=None), "native")
+    assert isinstance(agent, ACPAgent)
+    assert agent.acp_skill_sourcing == "native"
+
+    managed = _apply_acp_skill_sourcing(
+        _acp_agent(current_datetime=None), "openhands_managed"
+    )
+    assert isinstance(managed, ACPAgent)
+    assert managed.acp_skill_sourcing == "openhands_managed"
+
+
 def test_native_sourcing_clears_lazy_skill_sources() -> None:
     """Flags and marketplace registrations resolve to skills later, so a strip
     that only emptied ``skills`` would let them back in."""

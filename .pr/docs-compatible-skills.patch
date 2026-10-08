@@ -59,7 +59,7 @@ index 1d1a71e..20ad9be 100644
 +<Note>
 +ACP agents (Claude Code, Codex, Gemini CLI) read `AGENTS.md` / `CLAUDE.md` and their own project skills from the session working directory, so OpenHands clears the project-scope flags (`load_project_skills` and `load_compatible_skills`) for ACP agents to avoid loading that content twice.
 +
-+Whether an ACP agent also receives the user-scope skill catalog depends on the runtime that launches its CLI. A host-local CLI reads the user's own configuration, so OpenHands injects nothing (`native` sourcing). A container CLI cannot reach the host's home directory, so the server injects the resolved catalog — including any vendor user skills that `load_compatible_skills` discovered — via `openhands_managed` sourcing.
++Whether an ACP agent also receives the user-scope skill catalog depends on the runtime that launches its CLI. A host-local CLI reads the user's own configuration, so OpenHands injects nothing (`native` sourcing). A container CLI cannot reach the host's home directory, so the server injects the resolved catalog — including any vendor user skills that `load_compatible_skills` discovered — via `openhands_managed` sourcing. A directly-built ACP agent (built in Python rather than launched through the server) keeps the `native` default and injects nothing.
 +</Note>
 +
  ## Loading Public Skills

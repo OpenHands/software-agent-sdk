@@ -65,9 +65,24 @@ with tempfile.TemporaryDirectory() as td:
     print("AgentContext skills:", [s.name for s in ctx.skills])
 
     # ACP runtime sourcing: the validator keeps vendor user skills (the runtime
-    # is unknown at construction), and finalize decides per runtime.
+    # is unknown at construction), and the render decides per runtime. A
+    # directly-built agent (no finalize) keeps the native default, so it must
+    # NOT put the vendor skill its native CLI already reads into the prompt.
+    from unittest.mock import patch
+
+    from openhands.sdk import Conversation
     from openhands.sdk.agent import ACPAgent
     from openhands.sdk.launch.finalize import _apply_acp_skill_sourcing
+
+    def rendered_suffix(agent: ACPAgent) -> str:
+        project = ws / "acp-project"
+        project.mkdir(exist_ok=True)
+        with patch.object(ACPAgent, "_start_acp_server"):
+            conversation = Conversation(agent=agent, workspace=str(project))
+            conversation._ensure_agent_ready()
+            loaded = conversation.agent
+            assert isinstance(loaded, ACPAgent)
+            return loaded._installed_suffix or ""
 
     acp = ACPAgent(
         acp_command=["claude-code-acp"],
@@ -76,16 +91,17 @@ with tempfile.TemporaryDirectory() as td:
     acp_ctx = acp.agent_context
     assert acp_ctx is not None
     print("ACP constructed skills:", [s.name for s in acp_ctx.skills])
+    assert acp.acp_skill_sourcing == "native"
+    native_prompt = rendered_suffix(acp)
+    print("ACP native prompt has vendor skill:", "claude-user-skill" in native_prompt)
+    assert "claude-user-skill" not in native_prompt
 
     managed = _apply_acp_skill_sourcing(acp, "openhands_managed")
-    assert managed.agent_context is not None
+    assert isinstance(managed, ACPAgent)
     print(
         "ACP managed skills:",
         [s.name for s in managed.agent_context.skills],
     )
-
-    native = _apply_acp_skill_sourcing(acp, "native")
-    assert native.agent_context is not None
-    print("ACP native skills:", [s.name for s in native.agent_context.skills])
+    assert "claude-user-skill" in rendered_suffix(managed)
 
 print("OK")
