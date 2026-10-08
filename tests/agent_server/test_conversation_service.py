@@ -145,6 +145,49 @@ async def test_server_resolved_tool_modules_are_persisted(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_max_budget_per_run_persisted_and_exposed(tmp_path):
+    """A budget set at creation persists in meta.json and surfaces on GET.
+
+    Reloading through a fresh service (server restart) must keep the bound so a
+    resumed run is still capped, and the composed ConversationInfo must expose
+    it alongside max_iterations.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=2.5,
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        info, _ = await service.start_conversation(request)
+        assert info.max_budget_per_run == pytest.approx(2.5)
+
+    meta = json.loads((conversations_dir / info.id.hex / "meta.json").read_text())
+    assert meta["max_budget_per_run"] == pytest.approx(2.5)
+
+    async with ConversationService(conversations_dir=conversations_dir) as service2:
+        reloaded = await service2.get_conversation(info.id)
+        assert reloaded is not None
+        assert reloaded.max_budget_per_run == pytest.approx(2.5)
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_rejects_non_positive_budget(tmp_path):
+    """The creation contract validates the budget as strictly positive."""
+    with pytest.raises(ValueError):
+        StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            max_budget_per_run=0.0,
+        )
+
+
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
     tool_call = MessageToolCall.from_chat_tool_call(
         ChatCompletionMessageToolCall(
