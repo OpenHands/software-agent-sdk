@@ -26,6 +26,7 @@ ARG INSTALL_ACP_PROVIDERS=claude-code,codex,gemini-cli
 # join this list later (see OpenHands/software-agent-sdk#4645) — the parsing
 # below is written so that's a one-case addition, not a signature change.
 ARG INSTALL_CAPABILITIES=vscode,browser,docker
+ARG ENABLE_VSCODE=true
 
 ####################################################################################
 # Canonical Python + Node runtime
@@ -241,8 +242,8 @@ RUN set -eux; \
 # and Git APIs. Development tools and optional capabilities live in base-image.
 ####################################################################################
 FROM ${BASE_IMAGE} AS base-image-minimal
-ARG USERNAME UID GID PORT
-
+ARG USERNAME UID GID PORT ENABLE_VSCODE
+ENV OH_ENABLE_VSCODE=${ENABLE_VSCODE}
 
 ARG OPENHANDS_BUILD_GIT_SHA=unknown
 ARG OPENHANDS_BUILD_GIT_REF=unknown
