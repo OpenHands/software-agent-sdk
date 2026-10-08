@@ -5,18 +5,15 @@ import pytest
 from openhands.sdk.llm.cost_budget import BudgetReservation, CostBudget
 
 
-class _Costs:
-    """A mutable stand-in for a conversation's recorded-cost source."""
-
-    def __init__(self, value: float = 0.0) -> None:
-        self.value = value
-
-    def __call__(self) -> float:
-        return self.value
+def _settle(budget: CostBudget, amount: float) -> None:
+    """Reserve and immediately settle ``amount``, as a completed call would."""
+    reservation = budget.try_reserve(amount)
+    assert reservation is not None
+    budget.settle(reservation, amount)
 
 
 def test_reserve_denies_when_it_would_exceed_limit():
-    budget = CostBudget(1.0, _Costs())
+    budget = CostBudget(1.0)
 
     assert budget.try_reserve(0.4) is not None
     assert budget.try_reserve(0.4) is not None
@@ -26,7 +23,7 @@ def test_reserve_denies_when_it_would_exceed_limit():
 
 
 def test_settle_records_actual_cost_and_frees_capacity():
-    budget = CostBudget(1.0, _Costs())
+    budget = CostBudget(1.0)
 
     reservation = budget.try_reserve(0.5)
     assert reservation is not None
@@ -43,37 +40,31 @@ def test_settle_records_actual_cost_and_frees_capacity():
 
 
 def test_live_total_includes_in_flight_reservations():
-    budget = CostBudget(10.0, _Costs())
-    budget.start_run()
-    seed = budget.try_reserve(0.0)
-    assert seed is not None
-    budget.settle(seed, 3.0)
-    reservation = budget.try_reserve(2.0)
-    assert reservation is not None
+    budget = CostBudget(10.0)
+    _settle(budget, 3.0)
+    assert budget.try_reserve(2.0) is not None
     assert budget.live_total == pytest.approx(5.0)
 
 
-def test_start_run_seeds_spend_from_recorded_cost():
-    costs = _Costs(4.0)
-    budget = CostBudget(10.0, costs)
-    budget.start_run()
-    assert budget.spent == pytest.approx(4.0)
-    # 4.0 recorded + 7.0 attempted > 10.0
-    assert budget.try_reserve(7.0) is None
-    assert budget.try_reserve(6.0) is not None
+def test_reseed_clears_prior_run_spend():
+    budget = CostBudget(10.0)
+    _settle(budget, 7.0)
+    assert budget.spent == pytest.approx(7.0)
+
+    budget.reseed()
+    assert budget.spent == 0.0
+    assert budget.reserved == 0.0
+    # A fresh run gets the full allowance again.
+    assert budget.try_reserve(7.0) is not None
 
 
 def test_child_shares_reservation_pool_but_bounds_its_own_spend():
-    parent_costs = _Costs()
-    child_costs = _Costs()
-    parent = CostBudget(10.0, parent_costs)
-    parent.start_run()
-    child = parent.child(1.0, child_costs)
+    parent = CostBudget(10.0)
+    child = parent.child(1.0)
 
     # Child spend draws on the shared pool.
     reservation = child.try_reserve(0.9)
     assert reservation is not None
-    child_costs.value = 0.9
     child.settle(reservation, 0.9)
     assert parent.reserved == pytest.approx(0.0)
     assert parent.live_total == pytest.approx(0.9)
@@ -86,14 +77,10 @@ def test_child_shares_reservation_pool_but_bounds_its_own_spend():
 
 def test_child_cannot_exceed_a_tighter_ancestor_ceiling():
     """A delegate with a larger budget still cannot breach its parent's cap."""
-    parent = CostBudget(1.0, _Costs())
-    parent.start_run()
+    parent = CostBudget(1.0)
     # The child declares a *larger* budget than the parent.
-    child = parent.child(5.0, _Costs())
-
-    grant = parent.try_reserve(0.0)
-    assert grant is not None
-    parent.settle(grant, 0.8)
+    child = parent.child(5.0)
+    _settle(parent, 0.8)
 
     # The child's own $5 limit would admit $0.50, but the parent's $1 cap sees
     # $1.30 total and refuses. `limit` reports the tightest enforced ceiling.
@@ -105,7 +92,7 @@ def test_child_cannot_exceed_a_tighter_ancestor_ceiling():
 
 def test_concurrent_reservations_cannot_overshoot():
     """A shared budget admits at most the calls that fit, even in parallel."""
-    budget = CostBudget(1.0, _Costs())
+    budget = CostBudget(1.0)
     barrier = threading.Barrier(8)
     granted: list[BudgetReservation] = []
     lock = threading.Lock()
@@ -129,11 +116,8 @@ def test_concurrent_reservations_cannot_overshoot():
 
 
 def test_denial_detail_names_the_limit_and_attempted_call():
-    budget = CostBudget(1.0, _Costs())
-    budget.start_run()
-    seed = budget.try_reserve(0.0)
-    assert seed is not None
-    budget.settle(seed, 0.9)
+    budget = CostBudget(1.0)
+    _settle(budget, 0.9)
     detail = budget.denial_detail(0.5)
     assert "$1.0000" in detail
     assert "$0.9000" in detail
@@ -143,6 +127,6 @@ def test_denial_detail_names_the_limit_and_attempted_call():
 
 def test_non_positive_limit_is_rejected():
     with pytest.raises(ValueError):
-        CostBudget(0.0, _Costs())
+        CostBudget(0.0)
     with pytest.raises(ValueError):
-        CostBudget(1.0, _Costs()).child(0.0, _Costs())
+        CostBudget(1.0).child(0.0)

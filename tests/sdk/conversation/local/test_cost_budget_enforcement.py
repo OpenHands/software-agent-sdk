@@ -31,6 +31,7 @@ def _conversation(tmp: Path, *, max_budget_per_run: float | None) -> LocalConver
         num_retries=0,
         input_cost_per_token=1e-5,
         output_cost_per_token=1e-5,
+        max_output_tokens=2000,
     )
     return Conversation(
         agent=Agent(llm=llm, tools=[]),
@@ -82,3 +83,32 @@ def test_run_completes_and_exposes_accumulated_cost_within_budget():
         assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
         cost = conv.conversation_stats.get_combined_metrics().accumulated_cost
         assert cost == pytest.approx(0.02)
+
+
+def test_budget_is_per_run_not_lifetime():
+    """A second run gets a fresh allowance; earlier spend does not drain it."""
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        # Each run records 0.02; one call reserves ~0.06 worst case (agent system
+        # prompt + 2000 output tokens). 0.07 admits a run only if the prior
+        # run's 0.02 does not count against it: a lifetime budget would see 0.02
+        # already spent plus the next ~0.06 reservation and refuse.
+        conv = _conversation(tmp, max_budget_per_run=0.07)
+
+        def fake_completion(**kwargs):
+            return _response_with_cost(kwargs.get("model", "gpt-4o-mini"))
+
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion", side_effect=fake_completion
+        ):
+            conv.send_message(Message(role="user", content=[TextContent(text="one")]))
+            conv.run()
+            assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+
+            conv.send_message(Message(role="user", content=[TextContent(text="two")]))
+            conv.run()
+
+        assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+        # Lifetime cost still accumulates across runs, for reporting.
+        cost = conv.conversation_stats.get_combined_metrics().accumulated_cost
+        assert cost == pytest.approx(0.04)

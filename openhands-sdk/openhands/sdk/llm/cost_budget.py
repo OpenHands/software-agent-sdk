@@ -5,32 +5,29 @@ concurrent callers (parallel delegates, subagents under one budget) all read
 the same total and pass, and a single call can still overshoot by its own
 worst case. ``CostBudget`` therefore *reserves* each call's worst-case cost
 before it is sent and settles it once the call completes, releasing the
-remainder. Reserved + settled is a live upper bound on what the conversation
-can owe, which also answers "how much has this conversation accumulated so far"
-while it is still running.
+remainder. Settled + reserved is a live upper bound on what the current run can
+owe.
 
-Settled cost is carried on a shared ledger, so a parent and its subagents
-contend on one ceiling even though a subagent's metrics join the parent only
-after it finishes. The ledger is seeded once per run from the conversation's
-combined metrics, which bounds spend across every LLM in the conversation --
-agent, condenser, fallback, and already-synced subagents -- without
-double-counting across runs. A derived child view keeps every ancestor ceiling
-and enforces the tightest one, so a delegate declaring a larger budget than its
-parent cannot spend past the parent's cap.
+Settled cost is carried on a ledger shared by a parent and its subagents, so the
+whole tree contends on one running total even though a subagent's metrics join
+the parent only after it finishes. The ledger is reset at the start of each
+top-level run (see :meth:`reseed`), which makes ``max_budget_per_run`` a
+per-run ceiling rather than a lifetime cap. A derived child view keeps every
+ancestor ceiling and enforces the tightest one, so a delegate declaring a larger
+budget than its parent cannot spend past the parent's cap.
 
 Pre-call reservation only covers the LLM call wrappers that install a
 reservation (``LLM.completion``/``acompletion``/...). Agents that delegate to an
 external process -- notably :class:`~openhands.sdk.agent.acp_agent.ACPAgent`,
-whose prompts never pass through those wrappers -- do not reserve, so a budget
-on such a conversation is a *post-hoc* ceiling: the run loop checks recorded
-cost after each step, which still stops the run rather than admitting an
-unbounded call.
+whose prompts never pass through those wrappers -- do not reserve, so a budget on
+such a conversation is a *post-hoc* ceiling: the run loop checks recorded cost
+after each step, which still stops the run rather than admitting an unbounded
+call.
 """
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -56,33 +53,31 @@ class BudgetReservation:
 class CostBudget:
     """A cost ceiling (USD) enforced by pre-call reservation.
 
-    ``limit`` bounds the combined cost of the conversation (and, for a shared
-    tree, of its subagents). The ledger is shared by derived child views, each
-    of which honours the tightest ``limit`` among itself and its ancestors over
-    the same running total.
+    ``limit`` bounds the cost accrued in the current run (see :meth:`reseed`).
+    The ledger is shared by derived child views, each of which honours the
+    tightest ``limit`` among itself and its ancestors over the same running
+    total.
     """
 
-    def __init__(self, limit: float, cost_source: Callable[[], float]) -> None:
+    def __init__(self, limit: float) -> None:
         if limit <= 0:
             raise ValueError("Cost budget limit must be strictly positive")
         self._limit = limit
-        self._cost_source = cost_source
         self._ledger = _Ledger()
         self._ancestor_limits: tuple[float, ...] = ()
 
-    def child(self, limit: float, cost_source: Callable[[], float]) -> CostBudget:
+    def child(self, limit: float) -> CostBudget:
         """Derive a subagent view with its own (usually smaller) ceiling.
 
         Shares the parent's ledger, so the whole tree contends on one running
-        total, but reads the recorded cost source from the child conversation
-        and enforces its own limit *and* every ancestor ceiling. A child cannot
-        declare a larger budget than its parent and spend past the parent's cap.
+        total, and enforces its own limit *and* every ancestor ceiling. A child
+        cannot declare a larger budget than its parent and spend past the
+        parent's cap.
         """
         if limit <= 0:
             raise ValueError("Cost budget limit must be strictly positive")
         view = CostBudget.__new__(CostBudget)
         view._limit = limit
-        view._cost_source = cost_source
         view._ledger = self._ledger
         view._ancestor_limits = (*self._ancestor_limits, self._limit)
         return view
@@ -121,14 +116,16 @@ class CostBudget:
         with self._ledger.lock:
             return self._ledger.settled + self._ledger.reserved
 
-    def start_run(self) -> None:
-        """Seed the ledger from recorded cost so each run gets a fresh allowance.
+    def reseed(self) -> None:
+        """Start a fresh per-run allowance.
 
-        Called at the start of a top-level run; a run that inherits a parent's
-        budget shares the ledger and must not re-seed it mid-flight.
+        Zeroes the shared ledger so each top-level ``run()``/``arun()`` gets its
+        own ``max_budget_per_run`` allowance rather than inheriting earlier runs'
+        spend. A run that inherited a parent's budget shares the parent's ledger
+        and must not reseed it mid-flight.
         """
         with self._ledger.lock:
-            self._ledger.settled = max(0.0, self._cost_source())
+            self._ledger.settled = 0.0
             self._ledger.reserved = 0.0
 
     def try_reserve(self, amount: float) -> BudgetReservation | None:

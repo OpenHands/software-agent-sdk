@@ -207,6 +207,9 @@ class LocalConversation(BaseConversation):
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _mcp_tool_provider: MCPToolProvider
     _llm_call_context: LLMCallContext
+    # Lifetime recorded cost at the last run start; ``max_budget_per_run`` is a
+    # per-run ceiling measured from here.
+    _budget_run_baseline: float
 
     def __init__(
         self,
@@ -492,8 +495,9 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
-        # Hard cost ceiling (USD) for the conversation; None disables it.
+        # Hard cost ceiling (USD) per run; None disables it.
         self.max_budget_per_run = max_budget_per_run
+        self._budget_run_baseline = 0.0
         inherited_budget = (
             _parent_llm_call_context.cost_budget
             if _parent_llm_call_context is not None
@@ -507,12 +511,10 @@ class LocalConversation(BaseConversation):
         if max_budget_per_run is not None:
             if inherited_budget is not None:
                 # A subagent shares its parent's reservation pool so parent and
-                # children contend on one ceiling; its own limit bounds it too.
-                self._cost_budget = inherited_budget.child(
-                    max_budget_per_run, self._combined_cost
-                )
+                # children contend on one ceiling; the tightest limit applies.
+                self._cost_budget = inherited_budget.child(max_budget_per_run)
             else:
-                self._cost_budget = CostBudget(max_budget_per_run, self._combined_cost)
+                self._cost_budget = CostBudget(max_budget_per_run)
                 self._owns_budget = True
             self._llm_call_context = replace(
                 self._llm_call_context, cost_budget=self._cost_budget
@@ -738,7 +740,15 @@ class LocalConversation(BaseConversation):
         return self._state.stats
 
     def _combined_cost(self) -> float:
-        """Combined recorded cost across the conversation's LLMs (USD)."""
+        """Recorded cost across the conversation's LLMs in the current run (USD).
+
+        Subtracts the run-start baseline so ``max_budget_per_run`` bounds the
+        current run rather than draining every later run with earlier spend.
+        """
+        return self._combined_cost_total() - self._budget_run_baseline
+
+    def _combined_cost_total(self) -> float:
+        """Lifetime recorded cost across the conversation's LLMs (USD)."""
         return self.conversation_stats.get_combined_metrics().accumulated_cost
 
     def _latest_acp_prompt_message_id(self) -> str | None:
@@ -751,15 +761,15 @@ class LocalConversation(BaseConversation):
         return acp_prompt_messages[-1].id if acp_prompt_messages else None
 
     def _budget_exceeded_detail(self) -> str | None:
-        """Error detail if the conversation has hit its cost budget, else None.
+        """Error detail if the run has hit its cost budget, else None.
 
-        Bounds total spend across all of the conversation's LLMs (agent,
-        condenser, ...), complementing the iteration cap which only bounds step
-        count. Uses live cost (recorded + in-flight reservations) so a run in
-        progress cannot slip past the ceiling between checks.
+        Bounds spend across all of the conversation's LLMs (agent, condenser,
+        ...) in the current run, complementing the iteration cap which only
+        bounds step count. Uses live cost (recorded + in-flight reservations) so
+        a run in progress cannot slip past the ceiling between checks.
 
         ACP prompts bypass the pre-call reservation path, so for those the
-        post-step check below is the backstop that still stops the run.
+        recorded-cost check below is the backstop that still stops the run.
         """
         if self._cost_budget is None:
             return None
@@ -779,16 +789,18 @@ class LocalConversation(BaseConversation):
         )
 
     def _begin_budget_run(self) -> None:
-        """Start a fresh budget allowance for a top-level run.
+        """Start a fresh per-run budget allowance for a top-level run.
 
-        Seeds the ledger from the conversation's recorded combined cost so the
-        ceiling is per-run (matching ``max_budget_per_run``). A conversation that
-        only inherited a parent's budget shares the parent's ledger and must not
-        re-seed it mid-flight.
+        Records the run-start baseline and reseeds the ledger, so each
+        ``run()``/``arun()`` gets its own ``max_budget_per_run`` allowance rather
+        than inheriting earlier runs' spend. A conversation that only inherited a
+        parent's budget shares the parent's ledger and must not reseed it
+        mid-flight.
         """
+        self._budget_run_baseline = self._combined_cost_total()
         if self._owns_budget:
             assert self._cost_budget is not None
-            self._cost_budget.start_run()
+            self._cost_budget.reseed()
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
         """Mark the run failed with a run-limit ConversationErrorEvent."""

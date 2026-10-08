@@ -173,7 +173,9 @@ class _ConversationInfoBase(BaseModel):
         gt=0,
         description=(
             "Maximum cost in USD the agent may spend in a single run before "
-            "stopping. Enforcement is pre-call and reservation-based. ``None`` "
+            "stopping. Pre-call and reservation-based on the SDK's LLM call "
+            "path; agents that delegate to an external process (for example "
+            "ACP) stop once recorded cost reaches the limit instead. ``None`` "
             "leaves the run unbounded."
         ),
     )
