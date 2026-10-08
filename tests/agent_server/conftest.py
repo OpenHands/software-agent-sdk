@@ -47,11 +47,11 @@ def isolate_persistence_dir(tmp_path, monkeypatch):
 def isolate_service_singletons():
     """Restore the module service singletons after each test.
 
-    The non-deferred lifespan publishes the conversation and bash services it
-    builds to ``conversation_service._conversation_service`` /
-    ``bash_service._bash_event_service`` so import-time callers (sockets.py)
-    agree with REST. Tests that run a lifespan with mocked services would
-    otherwise leave a mock behind for later tests in the session.
+    The non-deferred lifespan publishes the process-default conversation and
+    bash services to ``conversation_service._conversation_service`` /
+    ``bash_service._bash_event_service`` (and clears them on shutdown). Tests
+    that build those singletons directly, or that patch service construction,
+    would otherwise leave a service (or mock) behind for later tests.
     """
     from openhands.agent_server import bash_service, conversation_service
 

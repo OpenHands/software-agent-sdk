@@ -1,19 +1,19 @@
 """The non-deferred lifespan builds services from ``create_app(config)``.
 
-Regression coverage for #5590: ``api_lifespan`` used to call the process-global
-``get_default_conversation_service()`` / ``get_default_bash_event_service()``,
-which resolve ``get_default_config()`` from ``OH_*`` environment variables. When
-an agent-server runs in-process with an explicit ``Config`` while the environment
-points at a different store (e.g. a live Cloud runtime sandbox exporting
-``OH_CONVERSATIONS_PATH``), conversations were written into the env-derived store
-instead of ``config.conversations_path``.
+Regression coverage for #5590: the non-deferred lifespan must build the
+conversation and bash event services from the ``Config`` the app was created
+with, never from ``get_default_config()``/``OH_*``. Otherwise an in-process app
+(while the environment points at another store, e.g. a live Cloud runtime
+sandbox exporting ``OH_CONVERSATIONS_PATH``) writes conversations into the
+env-derived store instead of ``config.conversations_path``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -26,13 +26,11 @@ from openhands.agent_server import (
     conversation_service as conversation_service_module,
 )
 from openhands.agent_server.api import api_lifespan, create_app
+from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.conversation_service import get_default_conversation_service
+from openhands.agent_server.models import ExecuteBashRequest, StartConversationRequest
 from openhands.agent_server.persistence import reset_stores
-from openhands.agent_server.sockets import (
-    _get_bash_event_service,
-    _get_conversation_service,
-)
 from openhands.sdk import LLM, Agent
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -98,6 +96,10 @@ def _conversation_dirs(path: Path) -> list[str]:
     return sorted(p.name for p in path.iterdir()) if path.exists() else []
 
 
+def _bash_event_files(path: Path) -> list[str]:
+    return sorted(p.name for p in path.iterdir()) if path.exists() else []
+
+
 def test_conversation_stored_under_config_path_without_env(tmp_path):
     config = _config(tmp_path)
     config.workspace_path.mkdir(parents=True)
@@ -159,9 +161,51 @@ def test_create_app_without_argument_uses_environment_default(tmp_path, monkeypa
         assert app.state.conversation_service.conversations_dir == env_conversations
 
 
-def test_rest_service_uses_config_and_publishes_matching_singletons(tmp_path):
+def test_bash_websocket_routes_to_the_config_built_service(tmp_path, monkeypatch):
+    """A real bash-events WebSocket must use the app's Config-backed service.
+
+    Observable behavior: a command sent over the socket is written under
+    ``config.bash_events_dir``, not the env-derived default directory.
+    """
+    host_bash = tmp_path / "host" / "bash_events"
+    monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(host_bash))
+    monkeypatch.setattr(config_module, "_default_config", None)
+
     config = _config(tmp_path)
     config.workspace_path.mkdir(parents=True)
+    app = create_app(config)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/sockets/bash-events") as ws:
+            ws.send_json(
+                {"command": "echo ws-routed", "cwd": str(config.workspace_path)}
+            )
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if any(
+                    "BashOutput" in name
+                    for name in _bash_event_files(config.bash_events_dir)
+                ):
+                    break
+                time.sleep(0.05)
+
+    assert any(
+        "BashOutput" in name for name in _bash_event_files(config.bash_events_dir)
+    )
+    assert not host_bash.exists()
+
+
+def test_explicit_config_app_does_not_commandeer_default_getters(tmp_path):
+    """An explicit-config app must not hijack the process-default getters.
+
+    Those getters back a concurrently running default app; the explicit app
+    keeps its own services on ``app.state``.
+    """
+    config = _config(tmp_path)
+    config.workspace_path.mkdir(parents=True)
+
+    default_conversation_service = get_default_conversation_service()
+    default_bash_service = get_default_bash_event_service()
 
     app = create_app(config)
     with TestClient(app) as client:
@@ -171,18 +215,8 @@ def test_rest_service_uses_config_and_publishes_matching_singletons(tmp_path):
         )
         assert app.state.bash_event_service.bash_events_dir == config.bash_events_dir
 
-        # Import-time callers (sockets.py) read the module singletons; they must
-        # resolve the same instances REST handlers operate on.
-        assert (
-            conversation_service_module._conversation_service
-            is app.state.conversation_service
-        )
-        assert bash_service_module._bash_event_service is app.state.bash_event_service
-
-        ws = MagicMock()
-        ws.app = app
-        assert _get_conversation_service(ws) is app.state.conversation_service
-        assert _get_bash_event_service(ws) is app.state.bash_event_service
+    assert get_default_conversation_service() is default_conversation_service
+    assert get_default_bash_event_service() is default_bash_service
 
 
 async def test_lifespan_exits_the_config_built_conversation_service(tmp_path):
@@ -200,6 +234,50 @@ async def test_lifespan_exits_the_config_built_conversation_service(tmp_path):
     # Leaving the lifespan must exit the service it entered.
     with pytest.raises(ValueError, match="inactive_service"):
         await service.start_conversation(_start_request(config.workspace_path))
+
+
+async def test_lifespan_closes_bash_service_and_kills_running_commands(tmp_path):
+    """Commands must not outlive the app that started them.
+
+    A long-running command is started through the lifespan's bash service;
+    leaving the lifespan must close the service, killing the command's process
+    group and refusing new work.
+    """
+    config = _config(tmp_path)
+    config.workspace_path.mkdir(parents=True)
+    app = create_app(config)
+    pid_file = tmp_path / "child.pid"
+
+    async with api_lifespan(app):
+        bash_svc = app.state.bash_event_service
+        await bash_svc.start_bash_command(
+            ExecuteBashRequest(
+                command=f"echo $$ > {pid_file}; exec sleep 300",
+                cwd=str(config.workspace_path),
+            )
+        )
+        deadline = time.monotonic() + 10
+        while not pid_file.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert pid_file.exists(), "command never started"
+        pid = int(pid_file.read_text().strip())
+
+    # The process group must be gone once the app has shut down.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+    # The closed service must reject new work.
+    with pytest.raises(RuntimeError, match="closed"):
+        await bash_svc.start_bash_command(
+            ExecuteBashRequest(command="echo late", cwd=str(config.workspace_path))
+        )
 
 
 def test_deferred_init_lifespan_does_not_publish_service_singletons(tmp_path):

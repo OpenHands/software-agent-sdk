@@ -265,22 +265,26 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 await stop_stateless_services()
             return
 
-        # Non-deferred (legacy) path: build and enter the conversation
-        # service as part of the lifespan, exactly as before. The services are
-        # built from the Config the app was created with, never from the
-        # process-global default config, so an in-process app cannot be routed
-        # into a store selected by ambient OH_* environment variables.
+        # Non-deferred (legacy) path: build and enter the services as part of
+        # the lifespan. They are built from the Config the app was created with
+        # so an in-process app is never routed into a store selected by ambient
+        # OH_* environment variables via get_default_config().
         service = ConversationService.get_instance(config)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
         bash_svc = BashEventService(bash_events_dir=config.bash_events_dir)
-        # Publish to the module singletons so import-time callers that still
-        # read them (sockets.py) resolve the same instance as REST, mirroring
-        # the deferred-init path in InitService.initialize.
-        conversation_service_module._conversation_service = service
-        bash_service_module._bash_event_service = bash_svc
         api.state.bash_event_service = bash_svc
+
+        # The module singletons back the process-default services returned by
+        # get_default_conversation_service()/get_default_bash_event_service().
+        # Only an app built from the process-default config may own them; an
+        # explicit-config app keeps its services on app.state so it cannot
+        # commandeer the default getters from a concurrently running app.
+        owns_singletons = getattr(api.state, "uses_default_config", True)
+        if owns_singletons:
+            conversation_service_module._conversation_service = service
+            bash_service_module._bash_event_service = bash_svc
 
         conversation_registry.configure_service(service)
         # Runtime cleanup must precede external-catalog recovery so stale
@@ -316,6 +320,16 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                         await retention_task
 
                 await stop_stateless_services()
+
+                # Close bash before the conversation service exits so running
+                # commands cannot outlive the app. Clear the singletons only
+                # while they still point at this app, so a still-running app's
+                # services are never dropped by a later shutdown.
+                await bash_svc.close()
+                if conversation_service_module._conversation_service is service:
+                    conversation_service_module._conversation_service = None
+                if bash_service_module._bash_event_service is bash_svc:
+                    bash_service_module._bash_event_service = None
     finally:
         # Outer finally so a startup failure cannot leak the drain task, and
         # after `async with service` so terminal events are still accepted.
@@ -729,10 +743,12 @@ def create_app(config: Config | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
+    uses_default_config = config is None
     if config is None:
         config = get_default_config()
     app = _create_fastapi_instance(config)
     app.state.config = config
+    app.state.uses_default_config = uses_default_config
     app.state.conversation_registry = create_conversation_registry(config)
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
     app.state.app_backend_session_store = AppBackendSessionStore()
