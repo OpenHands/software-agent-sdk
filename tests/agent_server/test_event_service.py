@@ -19,7 +19,11 @@ from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+    RunSlot,
+)
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
     AskUserResponseRequest,
@@ -1849,6 +1853,31 @@ class TestEventServiceRespondToAskUser:
         event_service._maybe_end_run_session()
         assert released == [True]
         assert event_service._run_session_slot is None
+
+    @pytest.mark.asyncio
+    async def test_ask_user_rearm_keeps_slot_on_one_slot_server(self, event_service):
+        """A pending re-arm must not let a competitor take the freed slot.
+
+        The server has a single run slot, held by the paused run that is about
+        to drain its callbacks. An answer lands in that window, so the resume is
+        recorded as a re-arm. If the run releases the permit here, a competing
+        conversation claims it and the accepted answer waits indefinitely.
+        """
+        semaphore = asyncio.Semaphore(1)
+        event_service._run_semaphore = semaphore
+        owner = await RunSlot.acquire(semaphore)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.current_task()
+
+        event_service._ask_user_resume_requested = True
+        # The paused run's `finally` runs `_maybe_end_run_session` from its own
+        # task before the flagged re-arm.
+        event_service._maybe_end_run_session()
+
+        # The permit is still held: a competitor cannot acquire the one slot.
+        assert event_service._run_session_slot is owner
+        with pytest.raises(ConversationRunLimitExceeded):
+            await RunSlot.acquire(semaphore)
 
     @pytest.mark.asyncio
     async def test_timeout_resolves_pending_request_as_cancel(self, event_service):
