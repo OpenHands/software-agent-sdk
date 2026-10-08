@@ -245,16 +245,23 @@ def test_default_preinstalled_acp_providers_matches_dockerfile_and_workflow() ->
     assert f"'{default_csv}'" in workflow_text
 
 
-def test_server_workflow_publishes_python_slim_without_acp_providers() -> None:
+def test_server_workflow_publishes_python_slim_without_optional_extras() -> None:
     workflow_text = SERVER_WORKFLOW.read_text(encoding="utf-8")
 
-    assert re.search(
+    slim_entries = re.findall(
         r"- variant: python-slim\n"
         r"\s+custom_tags: python\n"
         r"\s+image_flavor: slim\n"
-        r"\s+acp_provider_flavor: none",
+        r"\s+acp_provider_flavor: none\n"
+        r"\s+install_capabilities: browser,docker\n"
+        r"\s+enable_vscode: 'false'\n"
+        r"\s+target: binary\n"
+        r"\s+arch: (amd64|arm64)",
         workflow_text,
     )
+    assert slim_entries == ["amd64", "arm64"]
+    assert 'elif [ -n "${{ matrix.install_capabilities }}" ]; then' in workflow_text
+    assert "ENABLE_VSCODE=${{ env.ENABLE_VSCODE }}" in workflow_text
     assert (
         "INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}"
         in workflow_text

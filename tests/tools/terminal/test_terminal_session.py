@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
 
@@ -829,6 +830,114 @@ done && echo "success"
 
 
 @parametrize_terminal_types
+def test_chained_script_with_multiple_heredocs(terminal_type):
+    command = """printf start; python - <<'PY'
+print('first')
+PY
+printf middle; python - <<'PY'
+print('second')
+PY
+sleep 0.2; printf done; echo completed > completion-marker
+"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 0
+            assert "start" in obs.text
+            assert "first" in obs.text
+            assert "middle" in obs.text
+            assert "second" in obs.text
+            assert "done" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            marker = Path(temp_dir, "completion-marker")
+            assert marker.read_text().strip() == "completed"
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_chained_heredoc_script_preserves_trailing_exit_status(terminal_type):
+    command = "cat <<'EOF'\nbody\nEOF\nfalse\n"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 1
+            assert "body" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<A <<B\na\nA\nb\nB\nsleep 0.2; touch completion-marker",
+        'cat <<E"OF"\nbody\nEOF\nsleep 0.2; touch completion-marker',
+        "cat <<EOF &\nbody\nEOF\nsleep 0.2; touch completion-marker",
+    ],
+)
+def test_parser_fallback_heredocs_wait_for_trailing_command(terminal_type, command):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.metadata.exit_code == 0
+            assert Path(temp_dir, "completion-marker").exists()
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_heredoc_completion_preserves_aliases_and_ignores_stdout_redirect(
+    terminal_type,
+):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(
+                session,
+                "alias oh_test='echo alias-expanded'; cat <<EOF\nbody\nEOF\noh_test",
+            )
+            assert obs.metadata.exit_code == 0
+            assert "alias-expanded" in obs.text
+
+            obs = _run_bash_action(
+                session,
+                "cat <<EOF\nbody\nEOF\nexec > redirected.txt; false",
+                timeout=3,
+            )
+            assert obs.metadata.exit_code == 1
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert (
+                "__OH_COMMAND_FINISHED_"
+                not in Path(temp_dir, "redirected.txt").read_text()
+            )
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
 def test_multiple_multiline_commands(terminal_type):
     """Test that multiple commands separated by newlines are rejected."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -1153,5 +1262,99 @@ def test_pager_does_not_hijack_terminal(tmp_path, terminal_type):
         assert obs.metadata.exit_code == 0
         assert "def encode" in obs.text
         assert "diff --git" not in obs.text
+    finally:
+        session.close()
+
+
+@parametrize_terminal_types
+def test_indented_heredoc_echo_is_stripped(terminal_type):
+    """A tab-indented heredoc must not leak the wrapper or completion marker.
+
+    readline consumes leading tabs when echoing a line, so the echo no longer
+    matches the text sent byte for byte. The exact ``removeprefix`` used to
+    strip it then failed and the whole wrapper, plus both halves of the marker,
+    appeared in the observation.
+    """
+    command = "cat <<-EOF\n\tindented\n\tEOF\nprintf done"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir, terminal_type=terminal_type
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert obs.is_error is False
+            assert obs.metadata.exit_code == 0
+            assert "indented" in obs.text
+            assert "done" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert "__openhands_status" not in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+def test_no_change_timeout_strips_heredoc_wrapper(terminal_type):
+    """A soft timeout must not leak the wrapper for a grouped heredoc script.
+
+    Only the completed branch stripped the marker, so a command that timed out
+    returned the echoed wrapper and the completion marker to the agent.
+    """
+    command = "cat <<'EOF'\nbody\nEOF\nsleep 5; echo done"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        session = create_terminal_session(
+            work_dir=temp_dir,
+            terminal_type=terminal_type,
+            no_change_timeout_seconds=2,
+        )
+        session.initialize()
+        try:
+            obs = _run_bash_action(session, command)
+
+            assert "body" in obs.text
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert "__openhands_status" not in obs.text
+
+            # A follow-up poll sees the same screen and must stay clean too.
+            obs = _run_bash_action(session, "", is_input=False, timeout=10)
+            assert "__OH_COMMAND_FINISHED_" not in obs.text
+            assert "__openhands_status" not in obs.text
+        finally:
+            session.close()
+
+
+@parametrize_terminal_types
+@pytest.mark.parametrize(
+    "follow_up", ["echo second", "cat <<'EOF'\nsecond\nEOF\necho end"]
+)
+def test_running_heredoc_rejects_new_command_without_wrapper(
+    tmp_path, terminal_type, follow_up
+):
+    session = create_terminal_session(
+        work_dir=tmp_path,
+        terminal_type=terminal_type,
+        no_change_timeout_seconds=2,
+    )
+    session.initialize()
+    try:
+        session.execute(
+            TerminalAction(command="cat <<'EOF'\nbody\nEOF\nsleep 8; echo done\n")
+        )
+        assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
+
+        obs = session.execute(TerminalAction(command=follow_up))
+        assert obs.is_error
+        assert "__openhands_status" not in obs.text
+        assert "__OH_COMMAND_FINISHED_" not in obs.text
+
+        obs = session.execute(TerminalAction(command="", timeout=10))
+        assert "done" in obs.text
+        assert "__openhands_status" not in obs.text
+        assert "__OH_COMMAND_FINISHED_" not in obs.text
+
+        obs = session.execute(TerminalAction(command="echo second"))
+        assert not obs.is_error
+        assert "second" in obs.text
     finally:
         session.close()
