@@ -174,8 +174,6 @@ class CondenserSettings(BaseModel):
 
     condenser_kind: CondenserKind = Field(
         default="llm_summarizing",
-        description="Discriminator for the condenser settings union.",
-        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
     enabled: bool = Field(
         default=True,
@@ -216,11 +214,6 @@ class LLMSummarizingCondenserSettings(CondenserSettings):
 
     condenser_kind: Literal["llm_summarizing"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="llm_summarizing",
-        description=(
-            "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
-            "selects the default LLM summarizing condenser."
-        ),
-        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
     max_tokens: int | None = Field(
         default=None,
@@ -323,11 +316,6 @@ class NoOpCondenserSettings(CondenserSettings):
     max_size: ClassVar[int] = 240  # type: ignore[reportIncompatibleVariableOverride]
     condenser_kind: Literal["no_op"] = Field(  # type: ignore[reportIncompatibleVariableOverride]
         default="no_op",
-        description=(
-            "Discriminator for the condenser settings union. ``'no_op'`` selects "
-            "a condenser that leaves conversation views unchanged."
-        ),
-        json_schema_extra={SETTINGS_METADATA_KEY: SettingsFieldMetadata().model_dump()},
     )
 
     def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
