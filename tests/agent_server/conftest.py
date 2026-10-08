@@ -49,16 +49,23 @@ def isolate_service_singletons():
 
     The non-deferred lifespan publishes the process-default conversation and
     bash services to ``conversation_service._conversation_service`` /
-    ``bash_service._bash_event_service`` (and clears them on shutdown). Tests
-    that build those singletons directly, or that patch service construction,
-    would otherwise leave a service (or mock) behind for later tests.
+    ``bash_service._bash_event_service`` (mirroring its ownership stack, cleared
+    on shutdown). Tests that build those singletons directly, or that patch
+    service construction, would otherwise leave a service (or mock) behind for
+    later tests.
     """
-    from openhands.agent_server import bash_service, conversation_service
+    from openhands.agent_server import (
+        api as api_mod,
+        bash_service,
+        conversation_service,
+    )
 
     conversation_before = conversation_service._conversation_service
     bash_before = bash_service._bash_event_service
+    owners_before = list(api_mod._default_service_owners)
     try:
         yield
     finally:
         conversation_service._conversation_service = conversation_before
         bash_service._bash_event_service = bash_before
+        api_mod._default_service_owners[:] = owners_before

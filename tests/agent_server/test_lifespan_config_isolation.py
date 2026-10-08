@@ -219,6 +219,69 @@ def test_explicit_config_app_does_not_commandeer_default_getters(tmp_path):
     assert get_default_bash_event_service() is default_bash_service
 
 
+def test_explicit_process_default_config_app_owns_default_getters(
+    tmp_path, monkeypatch
+):
+    """Passing the process-default Config explicitly must not split services.
+
+    ``create_app(get_default_config())`` uses the very same Config the no-arg
+    factory would, so it owns the default getters rather than leaving them on a
+    detached instance.
+    """
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "conv"))
+    monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(tmp_path / "bash"))
+    monkeypatch.setattr(config_module, "_default_config", None)
+
+    default_config = config_module.get_default_config()
+    app = create_app(default_config)
+    assert app.state.owns_default_singletons is True
+
+    with TestClient(app) as client:
+        client.get("/ready")
+        assert get_default_conversation_service() is app.state.conversation_service
+        assert get_default_bash_event_service() is app.state.bash_event_service
+
+
+def test_overlapping_default_apps_restore_the_running_app(tmp_path, monkeypatch):
+    """Whichever default app stops, the survivor keeps owning the getters.
+
+    Two default-config apps publish to the same singletons. Stopping either one
+    must leave the getters on the still-running app instead of constructing
+    services outside any lifespan — covering both shutdown orders.
+    """
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "conv"))
+    monkeypatch.setenv("OH_BASH_EVENTS_DIR", str(tmp_path / "bash"))
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path / "tmux"))
+    monkeypatch.setattr(config_module, "_default_config", None)
+
+    app_a = create_app()
+    app_b = create_app()
+    assert app_a.state.config is app_b.state.config
+
+    for stop_first, survivor in ((app_b, app_a), (app_a, app_b)):
+        client_a = TestClient(app_a).__enter__()
+        client_b = TestClient(app_b).__enter__()
+        client_a.get("/ready")
+        client_b.get("/ready")
+        survivor_service = survivor.state.conversation_service
+        survivor_bash = survivor.state.bash_event_service
+        try:
+            assert get_default_conversation_service() is (
+                app_b.state.conversation_service
+            )
+            stop_first_client = client_a if stop_first is app_a else client_b
+            stop_first_client.__exit__(None, None, None)
+            # The survivor's services must be republished to the getters.
+            assert get_default_conversation_service() is survivor_service
+            assert get_default_bash_event_service() is survivor_bash
+        finally:
+            client_a.__exit__(None, None, None)
+            client_b.__exit__(None, None, None)
+        # Neither app's services remain once both have stopped.
+        assert get_default_conversation_service() is not survivor_service
+        assert get_default_bash_event_service() is not survivor_bash
+
+
 async def test_lifespan_exits_the_config_built_conversation_service(tmp_path):
     config = _config(tmp_path)
     config.workspace_path.mkdir(parents=True)

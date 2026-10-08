@@ -36,6 +36,7 @@ from openhands.agent_server.canvas_extensions_router import canvas_extensions_ro
 from openhands.agent_server.config import (
     Config,
     get_default_config,
+    is_default_config,
 )
 from openhands.agent_server.conversation_registry import (
     create_conversation_registry,
@@ -159,10 +160,47 @@ def _cleanup_stale_tmux_sessions() -> None:
             logger.warning("Failed to cleanup tmux socket %s: %s", socket_name, e)
 
 
+# Default-config apps, innermost/last-started last. The module singletons always
+# mirror the last entry, so overlapping default apps agree with the getters, and
+# an app that shuts down restores the still-running app beneath it.
+_default_service_owners: list[
+    tuple[FastAPI, ConversationService, BashEventService]
+] = []
+
+
+def _publish_default_services() -> None:
+    """Point the module singletons at the current default-config owner."""
+    if _default_service_owners:
+        _, service, bash_svc = _default_service_owners[-1]
+        conversation_service_module._conversation_service = service
+        bash_service_module._bash_event_service = bash_svc
+    else:
+        conversation_service_module._conversation_service = None
+        bash_service_module._bash_event_service = None
+
+
+def _register_default_owner(
+    api: FastAPI, service: ConversationService, bash_svc: BashEventService
+) -> None:
+    _default_service_owners[:] = [
+        owner for owner in _default_service_owners if owner[0] is not api
+    ]
+    _default_service_owners.append((api, service, bash_svc))
+    _publish_default_services()
+
+
+def _deregister_default_owner(api: FastAPI) -> None:
+    _default_service_owners[:] = [
+        owner for owner in _default_service_owners if owner[0] is not api
+    ]
+    _publish_default_services()
+
+
 @asynccontextmanager
 async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     tmux_tmpdir, tmux_tmpdir_was_defaulted = _ensure_server_tmux_tmpdir()
     secret_resolution: local_secret_resolution | None = None
+    owns_default_services = False
     try:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
@@ -266,9 +304,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             return
 
         # Non-deferred (legacy) path: build and enter the services as part of
-        # the lifespan. They are built from the Config the app was created with
-        # so an in-process app is never routed into a store selected by ambient
-        # OH_* environment variables via get_default_config().
+        # the lifespan, using the Config the app was created with.
         service = ConversationService.get_instance(config)
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
@@ -276,15 +312,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         bash_svc = BashEventService(bash_events_dir=config.bash_events_dir)
         api.state.bash_event_service = bash_svc
 
-        # The module singletons back the process-default services returned by
-        # get_default_conversation_service()/get_default_bash_event_service().
-        # Only an app built from the process-default config may own them; an
-        # explicit-config app keeps its services on app.state so it cannot
-        # commandeer the default getters from a concurrently running app.
-        owns_singletons = getattr(api.state, "uses_default_config", True)
-        if owns_singletons:
-            conversation_service_module._conversation_service = service
-            bash_service_module._bash_event_service = bash_svc
+        # The module singletons back get_default_conversation_service() /
+        # get_default_bash_event_service(). Only an app built from the
+        # process-default Config registers as their owner; an explicit-config app
+        # keeps its services on app.state and leaves the getters untouched.
+        if getattr(api.state, "owns_default_singletons", False):
+            owns_default_services = True
+            _register_default_owner(api, service, bash_svc)
 
         conversation_registry.configure_service(service)
         # Runtime cleanup must precede external-catalog recovery so stale
@@ -322,15 +356,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 await stop_stateless_services()
 
                 # Close bash before the conversation service exits so running
-                # commands cannot outlive the app. Clear the singletons only
-                # while they still point at this app, so a still-running app's
-                # services are never dropped by a later shutdown.
+                # commands cannot outlive the app.
                 await bash_svc.close()
-                if conversation_service_module._conversation_service is service:
-                    conversation_service_module._conversation_service = None
-                if bash_service_module._bash_event_service is bash_svc:
-                    bash_service_module._bash_event_service = None
     finally:
+        # Deregister here so a startup failure after registration still
+        # republishes the singletons to the app below us (or clears them).
+        if owns_default_services:
+            _deregister_default_owner(api)
         # Outer finally so a startup failure cannot leak the drain task, and
         # after `async with service` so terminal events are still accepted.
         if secret_resolution is not None:
@@ -743,12 +775,13 @@ def create_app(config: Config | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
-    uses_default_config = config is None
     if config is None:
         config = get_default_config()
     app = _create_fastapi_instance(config)
     app.state.config = config
-    app.state.uses_default_config = uses_default_config
+    # An app owns the process-global service singletons when it was built from
+    # the process-default Config, whether passed explicitly or resolved here.
+    app.state.owns_default_singletons = is_default_config(config)
     app.state.conversation_registry = create_conversation_registry(config)
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
     app.state.app_backend_session_store = AppBackendSessionStore()

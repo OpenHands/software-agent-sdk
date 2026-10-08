@@ -544,3 +544,13 @@ def get_default_config() -> Config:
         _default_config = load_config()
         assert _default_config is not None
     return _default_config
+
+
+def is_default_config(config: Config) -> bool:
+    """Whether ``config`` is the process-default Config instance.
+
+    Used to decide which app owns the process-global service singletons. Does
+    not force the default config to load, so an explicit config is never
+    compared against a freshly read environment.
+    """
+    return _default_config is not None and config is _default_config
