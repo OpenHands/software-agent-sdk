@@ -32,7 +32,7 @@ TMPDIR=/tmp uv run --frozen python .pr/run_review_reproducers.py
 - [After](evidence/review-after.log): sibling completes; all waiters finish;
   concurrent old-pool checkout returns an observation; standalone exit returns
   `exit_code=-1`; stderr is readable and empty stderr recoverable; dead setup
-  is rejected; warm checkin drops from 256 ms to 1 ms.
+  is rejected; warm checkin drops from 256 ms to below 1 ms (rounded to 0 ms).
 - The F6 snippet deliberately uses `SystemExit("not reproduced: setup failure
   was detected")` on success, so its after-run process status is **1**, not a
   failing fix. Its output and the committed regression test establish the result.
