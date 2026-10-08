@@ -55,7 +55,12 @@ def test_get_includes_manifest_page_contributions(client: TestClient, tmp_path: 
         name="demo-extension",
         display_name="Demo Extension",
         pages=[
-            {"id": "dashboard", "title": "Dashboard", "path": "/dashboard"},
+            {
+                "id": "dashboard",
+                "title": "Dashboard",
+                "nav_label": "Dash",
+                "path": "/dashboard",
+            },
             {"id": "reports", "title": "Reports", "path": "/reports"},
         ],
     )
@@ -67,7 +72,12 @@ def test_get_includes_manifest_page_contributions(client: TestClient, tmp_path: 
     manifest = resp.json()["manifest"]
     assert manifest["display_name"] == "Demo Extension"
     assert manifest["contributes"]["pages"] == [
-        {"id": "dashboard", "title": "Dashboard", "path": "/dashboard"},
+        {
+            "id": "dashboard",
+            "title": "Dashboard",
+            "nav_label": "Dash",
+            "path": "/dashboard",
+        },
         {"id": "reports", "title": "Reports", "path": "/reports"},
     ]
 
@@ -78,7 +88,12 @@ def test_list_includes_manifest_page_contributions(client: TestClient, tmp_path:
         name="demo-extension",
         display_name="Demo Extension",
         pages=[
-            {"id": "dashboard", "title": "Dashboard", "path": "/dashboard"},
+            {
+                "id": "dashboard",
+                "title": "Dashboard",
+                "nav_label": "Dash",
+                "path": "/dashboard",
+            },
             {"id": "reports", "title": "Reports", "path": "/reports"},
         ],
     )
@@ -93,6 +108,7 @@ def test_list_includes_manifest_page_contributions(client: TestClient, tmp_path:
         "dashboard",
         "reports",
     ]
+    assert ext["manifest"]["contributes"]["pages"][0]["nav_label"] == "Dash"
 
 
 def test_unreadable_manifest_after_install_yields_null_manifest(
