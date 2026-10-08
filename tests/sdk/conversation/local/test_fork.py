@@ -178,6 +178,26 @@ def test_fork_preserves_metrics_when_requested():
         assert combined.accumulated_cost == pytest.approx(1.5)
 
 
+def test_fork_does_not_share_source_budget_ledger():
+    """A fork is independent: it must not reserve against the source's budget."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            max_budget_per_run=1.0,
+        )
+        fork = src.fork()
+
+        # The fork carries the source's ceiling...
+        assert fork.max_budget_per_run == pytest.approx(1.0)
+        assert fork._cost_budget is not None
+        # ...but owns its own ledger rather than sharing the source's.
+        assert src._cost_budget is not None
+        assert fork._cost_budget is not src._cost_budget
+        assert fork._cost_budget._ledger is not src._cost_budget._ledger
+
+
 def test_fork_copies_agent_state():
     """agent_state dict should be carried over to the fork."""
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -757,10 +757,26 @@ class LocalConversation(BaseConversation):
         condenser, ...), complementing the iteration cap which only bounds step
         count. Uses live cost (recorded + in-flight reservations) so a run in
         progress cannot slip past the ceiling between checks.
+
+        ACP prompts bypass the pre-call reservation path, so for those the
+        post-step check below is the backstop that still stops the run.
         """
         if self._cost_budget is None:
             return None
-        return self._cost_budget.exceeded_detail()
+        detail = self._cost_budget.exceeded_detail()
+        if detail is not None:
+            return detail
+        if self.max_budget_per_run is None:
+            # Inherited a parent's ceiling without one of its own; the shared
+            # ledger already enforces it.
+            return None
+        spent = self._combined_cost()
+        if spent < self.max_budget_per_run:
+            return None
+        return (
+            f"Agent reached maximum budget limit (${self.max_budget_per_run:.4f}); "
+            f"accumulated cost ${spent:.4f}."
+        )
 
     def _begin_budget_run(self) -> None:
         """Start a fresh budget allowance for a top-level run.
@@ -910,11 +926,18 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_budget_per_run=self.max_budget_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
-                _parent_llm_call_context=self._llm_call_context,
+                # A fork is an independent conversation: inherit the source's
+                # non-budget call context but not its ceiling, so the fork's
+                # calls never reserve against the source's ledger. Its own
+                # max_budget_per_run (copied from the source) starts fresh.
+                _parent_llm_call_context=replace(
+                    self._llm_call_context, cost_budget=None
+                ),
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);

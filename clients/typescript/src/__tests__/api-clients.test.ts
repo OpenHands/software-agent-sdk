@@ -1946,6 +1946,46 @@ describe('Auxiliary API clients', () => {
     });
   });
 
+  it('RemoteConversation.start sends the per-conversation cost budget', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'conv-123' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace);
+
+    await conversation.start({ initialMessage: 'hello', maxBudgetPerRun: 2.5 });
+
+    const [, init] = (global.fetch as Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({
+      max_budget_per_run: 2.5,
+    });
+  });
+
+  it('RemoteConversation.start omits the budget when unset', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'conv-123' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace);
+
+    await conversation.start({ initialMessage: 'hello' });
+
+    const [, init] = (global.fetch as Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({
+      max_budget_per_run: null,
+    });
+  });
+
   it('HttpClient can parse blob responses when requested', async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(new Blob(['zip-data']), {

@@ -84,6 +84,25 @@ def test_child_shares_reservation_pool_but_bounds_its_own_spend():
     assert parent.try_reserve(0.5) is not None
 
 
+def test_child_cannot_exceed_a_tighter_ancestor_ceiling():
+    """A delegate with a larger budget still cannot breach its parent's cap."""
+    parent = CostBudget(1.0, _Costs())
+    parent.start_run()
+    # The child declares a *larger* budget than the parent.
+    child = parent.child(5.0, _Costs())
+
+    grant = parent.try_reserve(0.0)
+    assert grant is not None
+    parent.settle(grant, 0.8)
+
+    # The child's own $5 limit would admit $0.50, but the parent's $1 cap sees
+    # $1.30 total and refuses. `limit` reports the tightest enforced ceiling.
+    assert child.try_reserve(0.5) is None
+    assert child.limit == pytest.approx(1.0)
+    # Within the shared cap the child is admitted.
+    assert child.try_reserve(0.1) is not None
+
+
 def test_concurrent_reservations_cannot_overshoot():
     """A shared budget admits at most the calls that fit, even in parallel."""
     budget = CostBudget(1.0, _Costs())
