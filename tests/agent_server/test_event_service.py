@@ -67,7 +67,7 @@ from openhands.sdk.event.llm_convertible import (
 )
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
-from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm import MessageToolCall, TextContent, content_to_str
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -4148,14 +4148,60 @@ async def test_ask_user_answer_hands_off_run_on_one_slot_server(
 
     release.set()
 
-    # The successor run reuses the retained permit and completes even though the
-    # contender is waiting for the slot the paused run still holds.
-    deadline = time.monotonic() + 5.0
-    while llm._call_count < 2 and time.monotonic() < deadline:
+    # The successor run reuses the retained permit and runs to completion even
+    # though the contender is waiting for the slot the paused run still holds.
+    # A second LLM call alone is not proof: a successor that failed on the
+    # answer would also call the LLM and release the permit. So assert the
+    # observable outcome — the run reaches FINISHED, consumed the answer into
+    # the ask_user observation, and produced the agent's follow-up reply.
+    from openhands.sdk.tool.builtins.ask_user import AskUserObservation
+
+    def _ask_user_observation() -> AskUserObservation | None:
+        with conv._state as state:
+            for event in state.active_branch():
+                if (
+                    isinstance(event, ObservationEvent)
+                    and event.tool_name == "ask_user"
+                    and isinstance(event.observation, AskUserObservation)
+                    and event.observation.resolution == "accept"
+                ):
+                    return event.observation
+        return None
+
+    def _final_agent_text() -> str:
+        with conv._state as state:
+            for event in reversed(state.active_branch()):
+                if isinstance(event, MessageEvent) and event.source == "agent":
+                    return "".join(content_to_str(event.llm_message.content))
+        return ""
+
+    deadline = time.monotonic() + 10.0
+    status = await es._get_execution_status()
+    observation = _ask_user_observation()
+    while time.monotonic() < deadline and (
+        status != ConversationExecutionStatus.FINISHED or observation is None
+    ):
         await asyncio.sleep(0.02)
+        status = await es._get_execution_status()
+        observation = _ask_user_observation()
+
     assert llm._call_count == 2, (
         "the accepted answer was stranded: the successor run never started "
         f"(call_count={llm._call_count})"
+    )
+    assert status == ConversationExecutionStatus.FINISHED, (
+        "the successor run did not complete; it left the conversation at "
+        f"{status} (call_count={llm._call_count})"
+    )
+    assert observation is not None, (
+        "the successor run never consumed the accepted answer into an "
+        "ask_user observation"
+    )
+    selections = observation.answers.get("auth", [])
+    assert [selection.option_id for selection in selections] == ["jwt"]
+    assert "JWT" in _final_agent_text(), (
+        "the successor run finished without producing the agent's follow-up "
+        "reply, so it did not consume the answer"
     )
 
     # Only once the whole chain settles is the permit returned to the pool,
