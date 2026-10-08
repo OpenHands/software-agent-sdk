@@ -1292,10 +1292,12 @@ def _mk_tool_start(
     raw_input: Any | None = None,
     raw_output: Any | None = None,
     content: Any | None = None,
+    field_meta: dict[str, Any] | None = None,
 ) -> Any:
     from acp.schema import ToolCallStart
 
     start = MagicMock(spec=ToolCallStart)
+    start.field_meta = field_meta
     start.tool_call_id = tool_call_id
     start.title = title
     start.kind = kind
@@ -1315,10 +1317,12 @@ def _mk_tool_progress(
     raw_input: Any | None = None,
     raw_output: Any | None = None,
     content: Any | None = None,
+    field_meta: dict[str, Any] | None = None,
 ) -> Any:
     from acp.schema import ToolCallProgress
 
     progress = MagicMock(spec=ToolCallProgress)
+    progress.field_meta = field_meta
     progress.tool_call_id = tool_call_id
     progress.title = title
     progress.kind = kind
@@ -1482,6 +1486,45 @@ class TestACPToolCallProgressCollapse:
         assert client.accumulated_tool_calls[0]["status"] == "completed"
 
 
+@pytest.mark.asyncio
+async def test_subagent_tool_call_events_carry_parent_tool_call_id() -> None:
+    client = _OpenHandsACPBridge()
+    events: list[Any] = []
+    client.on_event = events.append
+    subagent_meta = {"claudeCode": {"parentToolUseId": "task-1"}}
+
+    await client.session_update("s1", _mk_tool_start("task-1", title="Task"))
+    await client.session_update(
+        "s1", _mk_tool_start("tc-sub", field_meta=subagent_meta)
+    )
+    await client.session_update("s1", _mk_tool_progress("tc-sub", status="completed"))
+
+    assert [(e.tool_call_id, e.parent_tool_call_id) for e in events] == [
+        ("task-1", None),
+        ("tc-sub", "task-1"),
+        ("tc-sub", "task-1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_parent_tool_call_id_reported_on_progress_reaches_terminal() -> None:
+    client = _OpenHandsACPBridge()
+    events: list[Any] = []
+    client.on_event = events.append
+
+    await client.session_update("s1", _mk_tool_start("tc-sub"))
+    await client.session_update(
+        "s1",
+        _mk_tool_progress(
+            "tc-sub",
+            status="completed",
+            field_meta={"claudeCode": {"parentToolUseId": "task-1"}},
+        ),
+    )
+
+    assert [e.parent_tool_call_id for e in events] == [None, "task-1"]
+
+
 # ---------------------------------------------------------------------------
 # Activity heartbeat
 # ---------------------------------------------------------------------------
@@ -1546,6 +1589,7 @@ class TestACPActivityHeartbeat:
         client.on_activity = lambda: signals.append(True)
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Read file"
         start.kind = "read"
@@ -1567,6 +1611,7 @@ class TestACPActivityHeartbeat:
 
         # Need a ToolCallStart first
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Read"
         start.kind = "read"
@@ -1581,6 +1626,7 @@ class TestACPActivityHeartbeat:
         signals.clear()
 
         progress = MagicMock(spec=ToolCallProgress)
+        progress.field_meta = None
         progress.tool_call_id = "tc-1"
         progress.title = None
         progress.kind = None
@@ -1617,6 +1663,7 @@ class TestACPActivityHeartbeat:
 
         for i in range(5):
             start = MagicMock(spec=ToolCallStart)
+            start.field_meta = None
             start.tool_call_id = f"tc-{i}"
             start.title = f"Tool {i}"
             start.kind = "read"
@@ -1638,6 +1685,7 @@ class TestACPActivityHeartbeat:
         assert client.on_activity is None
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Tool"
         start.kind = "read"
@@ -1657,6 +1705,7 @@ class TestACPActivityHeartbeat:
         client.on_activity = MagicMock(side_effect=RuntimeError("boom"))
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Tool"
         start.kind = "read"
@@ -4082,6 +4131,7 @@ class TestACPToolCallAccumulation:
         client = _OpenHandsACPBridge()
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Read file"
         start.kind = "read"
@@ -4111,6 +4161,7 @@ class TestACPToolCallAccumulation:
 
         # Start
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-2"
         start.title = "Execute command"
         start.kind = "execute"
@@ -4123,6 +4174,7 @@ class TestACPToolCallAccumulation:
 
         # Progress
         progress = MagicMock(spec=ToolCallProgress)
+        progress.field_meta = None
         progress.tool_call_id = "tc-2"
         progress.title = None  # not updated
         progress.kind = None  # not updated
@@ -4149,6 +4201,7 @@ class TestACPToolCallAccumulation:
 
         for i in range(3):
             start = MagicMock(spec=ToolCallStart)
+            start.field_meta = None
             start.tool_call_id = f"tc-{i}"
             start.title = f"Tool {i}"
             start.kind = "read"
@@ -4202,6 +4255,7 @@ class TestACPToolCallLiveEmission:
         client.on_event = events.append
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Read file"
         start.kind = "read"
@@ -4219,6 +4273,7 @@ class TestACPToolCallLiveEmission:
         assert events[0].raw_output is None
 
         progress = MagicMock(spec=ToolCallProgress)
+        progress.field_meta = None
         progress.tool_call_id = "tc-1"
         progress.title = None
         progress.kind = None
@@ -4261,6 +4316,7 @@ class TestACPToolCallLiveEmission:
 
         def make_start(tc_id: str) -> Any:
             s = MagicMock(spec=ToolCallStart)
+            s.field_meta = None
             s.tool_call_id = tc_id
             s.title = f"Tool {tc_id}"
             s.kind = "read"
@@ -4272,6 +4328,7 @@ class TestACPToolCallLiveEmission:
 
         def make_progress(tc_id: str, status: str) -> Any:
             p = MagicMock(spec=ToolCallProgress)
+            p.field_meta = None
             p.tool_call_id = tc_id
             p.title = None
             p.kind = None
@@ -4339,6 +4396,7 @@ class TestACPToolCallLiveEmission:
         assert client.on_event is None
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Read"
         start.kind = "read"
@@ -4361,6 +4419,7 @@ class TestACPToolCallLiveEmission:
         client.on_event = MagicMock(side_effect=RuntimeError("boom"))
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Read"
         start.kind = "read"
@@ -4437,6 +4496,28 @@ class TestACPCancelInflightToolCalls:
         # Only the pending one gets a synthetic terminal event.
         assert [e.tool_call_id for e in emitted] == ["tc-live"]
 
+    @pytest.mark.asyncio
+    async def test_superseded_subagent_call_keeps_parent_tool_call_id(self):
+        agent = _make_agent()
+        agent._client = _OpenHandsACPBridge()
+        emitted: list = []
+        agent._client.on_event = emitted.append
+        await agent._client.session_update(
+            "s1",
+            _mk_tool_start(
+                "tc-sub",
+                status="pending",
+                field_meta={"claudeCode": {"parentToolUseId": "task-1"}},
+            ),
+        )
+
+        agent._cancel_inflight_tool_calls()
+
+        assert [(e.status, e.parent_tool_call_id) for e in emitted] == [
+            ("pending", "task-1"),
+            ("failed", "task-1"),
+        ]
+
     def test_callback_errors_are_swallowed(self):
         """A raising on_event during cancellation must not break the retry path."""
         agent = _make_agent()
@@ -4501,6 +4582,7 @@ class TestACPCancelInflightToolCalls:
             if call_count == 1:
                 # First attempt: stream a pending tool call, then fail
                 start = MagicMock(spec=ToolCallStart)
+                start.field_meta = None
                 start.tool_call_id = "toolu_AAA"
                 start.title = "Read file"
                 start.kind = "read"
@@ -4512,6 +4594,7 @@ class TestACPCancelInflightToolCalls:
                 raise ConnectionError("reset by peer")
             # Retry: fresh tool call id reaches terminal state
             start = MagicMock(spec=ToolCallStart)
+            start.field_meta = None
             start.tool_call_id = "toolu_BBB"
             start.title = "Read file"
             start.kind = "read"
@@ -4612,6 +4695,7 @@ class TestACPToolCallEmission:
                 ("tc-2", "Execute bash", "execute", "failed", {"command": "ls"}, None),
             ]:
                 start = MagicMock(spec=ToolCallStart)
+                start.field_meta = None
                 start.tool_call_id = tool_call_id
                 start.title = title
                 start.kind = kind
@@ -4683,6 +4767,7 @@ class TestACPToolCallEmission:
 
         pre_count = len(events)
         trailing = MagicMock(spec=ToolCallStart)
+        trailing.field_meta = None
         trailing.tool_call_id = "tc-late"
         trailing.title = "Late arrival"
         trailing.kind = "read"
@@ -9894,6 +9979,7 @@ class TestACPBridgeMasking:
         client.on_event = events.append
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Running: echo SEKRET"
         start.kind = "execute"
@@ -9926,6 +10012,7 @@ class TestACPBridgeMasking:
         client.on_event = events.append
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Run"
         start.kind = "execute"
@@ -9937,6 +10024,7 @@ class TestACPBridgeMasking:
 
         # Terminal progress frame carries the secret in its cumulative output.
         progress = MagicMock(spec=ToolCallProgress)
+        progress.field_meta = None
         progress.tool_call_id = "tc-1"
         progress.title = None
         progress.kind = None
@@ -9964,6 +10052,7 @@ class TestACPBridgeMasking:
         client.mask = _redacting_mask
 
         start = MagicMock(spec=ToolCallStart)
+        start.field_meta = None
         start.tool_call_id = "tc-1"
         start.title = "Run"
         start.kind = "execute"
@@ -9977,6 +10066,7 @@ class TestACPBridgeMasking:
             side_effect=ACPFileCredentialSyncError("writeback failed")
         )
         progress = MagicMock(spec=ToolCallProgress)
+        progress.field_meta = None
         progress.tool_call_id = "tc-1"
         progress.title = None
         progress.kind = None

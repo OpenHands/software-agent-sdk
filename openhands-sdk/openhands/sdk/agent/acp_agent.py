@@ -1000,6 +1000,15 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     return result
 
 
+def _parent_tool_call_id(meta: dict[str, Any] | None) -> str | None:
+    """Return the spawning tool call id claude-agent-acp stamps on subagent updates."""
+    claude_code = (meta or {}).get("claudeCode")
+    if not isinstance(claude_code, dict):
+        return None
+    parent = claude_code.get("parentToolUseId")
+    return parent if isinstance(parent, str) else None
+
+
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     """Read lines from *source* and forward only JSON-RPC lines to *dest*.
 
@@ -1445,6 +1454,7 @@ class _OpenHandsACPBridge:
                 "raw_input": update.raw_input,
                 "raw_output": update.raw_output,
                 "content": _serialize_tool_content(update.content),
+                "parent_tool_call_id": _parent_tool_call_id(update.field_meta),
             }
             self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
@@ -1483,6 +1493,9 @@ class _OpenHandsACPBridge:
                         updated["raw_output"] = update.raw_output
                     if update.content is not None:
                         updated["content"] = _serialize_tool_content(update.content)
+                    parent = _parent_tool_call_id(update.field_meta)
+                    if parent is not None:
+                        updated["parent_tool_call_id"] = parent
                     self._mask_tool_call_entry(updated)
                     self.accumulated_tool_calls[index] = updated
                     target = updated
@@ -1533,6 +1546,7 @@ class _OpenHandsACPBridge:
                 raw_output=raw_output,
                 content=tc.get("content"),
                 is_error=tc.get("status") == "failed",
+                parent_tool_call_id=tc.get("parent_tool_call_id"),
             )
             self.on_event(event)
         except Exception:
@@ -3372,6 +3386,7 @@ class ACPAgent(AgentBase):
                         raw_output=tc.get("raw_output"),
                         content=tc.get("content"),
                         is_error=True,
+                        parent_tool_call_id=tc.get("parent_tool_call_id"),
                     )
                 )
             except Exception:
