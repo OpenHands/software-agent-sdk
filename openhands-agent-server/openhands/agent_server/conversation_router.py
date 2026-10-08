@@ -52,6 +52,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.persistence import get_llm_profile_store
 from openhands.sdk import LLM
+from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
@@ -342,6 +343,10 @@ async def start_conversation(
     except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as e:
         raise launch_http_exception(e) from e
     except ClientToolRegistrationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    except CostBudgetUnsupportedError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e

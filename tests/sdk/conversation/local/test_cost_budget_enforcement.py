@@ -112,3 +112,39 @@ def test_budget_is_per_run_not_lifetime():
         # Lifetime cost still accumulates across runs, for reporting.
         cost = conv.conversation_stats.get_combined_metrics().accumulated_cost
         assert cost == pytest.approx(0.04)
+
+
+def test_acp_agent_rejects_budget():
+    """Pre-call reservation is impossible for out-of-process ACP prompts, so a
+    budget on an ACP conversation is rejected instead of silently unenforced.
+    """
+    from openhands.sdk.agent.acp_agent import ACPAgent
+    from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        with pytest.raises(CostBudgetUnsupportedError, match="ACP agents"):
+            Conversation(
+                agent=ACPAgent(acp_command=["echo", "test"]),
+                workspace=str(tmp),
+                persistence_dir=str(tmp / "persist"),
+                max_budget_per_run=1.0,
+                visualizer=None,
+                delete_on_close=False,
+            )
+
+
+def test_acp_agent_without_budget_is_allowed():
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        conv = Conversation(
+            agent=ACPAgent(acp_command=["echo", "test"]),
+            workspace=str(tmp),
+            persistence_dir=str(tmp / "persist"),
+            visualizer=None,
+            delete_on_close=False,
+        )
+        assert conv.max_budget_per_run is None
+        assert conv._cost_budget is None

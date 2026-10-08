@@ -151,13 +151,12 @@ class ConversationConfig(BaseModel):
         gt=0,
         description=(
             "Maximum cost in USD the agent may spend in a single run before "
-            "stopping. Enforcement is pre-call and reservation-based on the "
-            "SDK's LLM call path: each LLM call reserves its worst-case cost "
-            "before being sent, so a run cannot overshoot the budget by a whole "
-            "step. Agents that delegate to an external process (for example "
-            "ACP) do not reserve before sending; for those the run stops once "
-            "recorded cost reaches the limit. ``None`` (the default) leaves the "
-            "run unbounded."
+            "stopping. Enforcement is pre-call and reservation-based: each LLM "
+            "call reserves its worst-case cost before being sent, so a run "
+            "cannot overshoot the budget by a whole step. Not supported for ACP "
+            "agents, whose prompts bypass the SDK's LLM call path — supplying a "
+            "budget with an ACP agent is rejected rather than accepted as an "
+            "unenforceable cap. ``None`` (the default) leaves the run unbounded."
         ),
     )
     stuck_detection: bool = Field(

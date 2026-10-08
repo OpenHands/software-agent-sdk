@@ -5,6 +5,18 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 ISSUE_URL = "https://github.com/OpenHands/software-agent-sdk/issues/new"
 
 
+class CostBudgetUnsupportedError(ValueError):
+    """Raised when a cost budget is requested for an agent that cannot enforce it.
+
+    Pre-call budget enforcement reserves a call's worst-case cost on the SDK's
+    LLM call path. An :class:`~openhands.sdk.agent.acp_agent.ACPAgent` delegates
+    each prompt to an external process that owns the model and reports usage only
+    after the turn, so the SDK cannot reserve before sending and a single prompt
+    can exceed the ceiling. The budget is therefore rejected rather than accepted
+    as an unenforceable post-hoc cap.
+    """
+
+
 class WebSocketConnectionError(RuntimeError):
     """Raised when WebSocket connection fails to establish within the timeout."""
 

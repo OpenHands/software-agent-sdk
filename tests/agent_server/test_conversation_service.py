@@ -37,6 +37,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent, AgentBase, Message, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -186,6 +187,28 @@ async def test_start_conversation_rejects_non_positive_budget(tmp_path):
             confirmation_policy=NeverConfirm(),
             max_budget_per_run=0.0,
         )
+
+
+@pytest.mark.asyncio
+async def test_start_acp_conversation_rejects_budget(tmp_path):
+    """An ACP conversation cannot enforce a pre-call budget, so creation fails.
+
+    The SDK raises before launching the ACP process (the budget check runs in
+    ``LocalConversation.__init__``), so no subprocess is needed here.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        max_budget_per_run=1.0,
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(CostBudgetUnsupportedError):
+            await service.start_conversation(request)
 
 
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:

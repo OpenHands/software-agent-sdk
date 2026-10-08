@@ -18,7 +18,10 @@ from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    CostBudgetUnsupportedError,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -275,6 +278,11 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
+            max_budget_per_run: Maximum cost in USD per run. Enforced before each
+                      LLM call by reserving the call's worst-case cost. Not
+                      supported for ACP agents (their prompts bypass the SDK LLM
+                      call path); passing a budget with one raises
+                      :class:`CostBudgetUnsupportedError`.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -508,6 +516,17 @@ class LocalConversation(BaseConversation):
         # that inherited a parent's budget shares its ledger and must never
         # re-seed it mid-flight.
         self._owns_budget = False
+        if max_budget_per_run is not None and isinstance(self.agent, ACPAgent):
+            # ACP prompts run in an external process that reports usage only
+            # after the turn, so the SDK cannot reserve a worst-case cost before
+            # sending and a single prompt can exceed the ceiling. Reject the
+            # budget rather than accept an unenforceable cap.
+            raise CostBudgetUnsupportedError(
+                "max_budget_per_run is not supported for ACP agents: their "
+                "prompts bypass the SDK's pre-call cost reservation, so a single "
+                "prompt can exceed the budget before it is recorded. Use a "
+                "regular (LLM) agent to enforce a per-conversation budget."
+            )
         if max_budget_per_run is not None:
             if inherited_budget is not None:
                 # A subagent shares its parent's reservation pool so parent and

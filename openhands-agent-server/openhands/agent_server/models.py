@@ -174,9 +174,9 @@ class _ConversationInfoBase(BaseModel):
         description=(
             "Maximum cost in USD the agent may spend in a single run before "
             "stopping. Pre-call and reservation-based on the SDK's LLM call "
-            "path; agents that delegate to an external process (for example "
-            "ACP) stop once recorded cost reaches the limit instead. ``None`` "
-            "leaves the run unbounded."
+            "path; not supported for ACP agents, whose prompts bypass that path "
+            "(a budget supplied with an ACP agent is rejected). ``None`` leaves "
+            "the run unbounded."
         ),
     )
     stuck_detection: bool = Field(

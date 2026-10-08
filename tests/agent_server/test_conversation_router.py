@@ -29,6 +29,7 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.exceptions import CostBudgetUnsupportedError
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.launch import LaunchRuntime, LaunchStores, finalize
 from openhands.sdk.llm import llm_profile_store
@@ -564,6 +565,30 @@ def test_start_conversation_new(
 
         # Verify service was called
         mock_conversation_service.start_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_acp_budget_returns_422(client, mock_conversation_service):
+    """A budget on an ACP conversation surfaces as a 422, not a 500."""
+    mock_conversation_service.start_conversation.side_effect = (
+        CostBudgetUnsupportedError("max_budget_per_run is not supported for ACP")
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {"kind": "ACPAgent", "acp_command": ["echo", "test"]},
+            "workspace": {"working_dir": "/tmp/test"},
+            "max_budget_per_run": 1.0,
+        }
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 422
+        assert "max_budget_per_run" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
