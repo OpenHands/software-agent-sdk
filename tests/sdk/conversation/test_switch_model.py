@@ -536,6 +536,60 @@ def test_switch_llm_then_send_message(empty_profile_store):
     conv.send_message("hello")
 
 
+def test_switch_llm_before_first_message_registers_stats(empty_profile_store):
+    """A pre-run switch must register the LLM with ConversationStats.
+
+    Agent initialization used to subscribe ConversationStats to the registry
+    only on the first message/run. A switch before that point registered the
+    LLM in the registry but never in stats, so its subsequent tokens and cost
+    were omitted from the conversation totals.
+    """
+    conv = _make_conversation()
+
+    conv.switch_llm(_make_llm("inline-model", "early-switch"))
+
+    switched_llm = conv.llm_registry.get("early-switch")
+    assert (
+        conv.conversation_stats.usage_to_metrics["early-switch"] is switched_llm.metrics
+    )
+
+    # Simulate the switched LLM being used before the first run is initialized.
+    switched_llm.metrics.add_cost(0.25)
+    switched_llm.metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=25,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=8000,
+        response_id="pre-run-switch",
+    )
+    combined = conv.conversation_stats.get_combined_metrics()
+    assert combined.accumulated_cost == 0.25
+    accumulated_token_usage = combined.accumulated_token_usage
+    assert accumulated_token_usage is not None
+    assert accumulated_token_usage.prompt_tokens == 100
+    assert accumulated_token_usage.completion_tokens == 25
+
+    # Initialization must preserve the same metrics object rather than
+    # registering a duplicate or resetting the stats entry.
+    conv.send_message("hello")
+    assert (
+        conv.conversation_stats.usage_to_metrics["early-switch"] is switched_llm.metrics
+    )
+
+
+def test_switch_profile_before_first_message_registers_stats(profile_store):
+    """Profile switches before the first message follow the same stats path."""
+    conv = _make_conversation()
+
+    conv.switch_profile("fast")
+
+    switched_llm = conv.llm_registry.get("profile:fast")
+    assert (
+        conv.conversation_stats.usage_to_metrics["profile:fast"] is switched_llm.metrics
+    )
+
+
 def test_switch_between_two_llms(empty_profile_store):
     """Consecutive switch_llm calls under distinct usage_ids each register
     their own slot and end up as the agent's LLM.
