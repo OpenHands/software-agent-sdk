@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import warnings
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -198,8 +199,13 @@ def _read_only_log(log_dir: str) -> str:
 
 
 def _completion_with_provider_auth_header(
-    log_dir: str, *, extra_headers: dict[str, str], fail: bool = False
-) -> None:
+    log_dir: str,
+    *,
+    extra_headers: dict[str, str],
+    fail: bool = False,
+    error_message: str = "provider failed",
+    completion_kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run one completion whose provider adds ``Authorization`` in place.
 
     Some LiteLLM provider handlers (e.g. DeepSeek) write the bearer token into
@@ -215,19 +221,23 @@ def _completion_with_provider_auth_header(
         num_retries=0,
     )
 
+    received_kwargs: dict[str, Any] = {}
+
     def provider(**kwargs):
+        received_kwargs.update(kwargs)
         kwargs["extra_headers"]["Authorization"] = "Bearer provider-secret"
         if fail:
-            raise ValueError("provider failed")
+            raise ValueError(error_message)
         return create_mock_litellm_response(content="ok")
 
     messages = [Message(role="user", content=[TextContent(text="hi")])]
     with patch("openhands.sdk.llm.llm.litellm_completion", side_effect=provider):
         if fail:
             with pytest.raises(Exception):
-                llm.completion(messages)
+                llm.completion(messages, **(completion_kwargs or {}))
         else:
-            llm.completion(messages)
+            llm.completion(messages, **(completion_kwargs or {}))
+    return received_kwargs
 
 
 @pytest.mark.parametrize("fail", [False, True], ids=["response", "error"])
@@ -262,3 +272,45 @@ def test_log_completions_redact_caller_credential_headers():
     assert logged_headers["api-key"] == "<redacted>"
     assert logged_headers["Proxy-Authorization"] == "<redacted>"
     assert logged_headers["X-Trace-Id"] == "trace-1"
+
+
+def test_log_completions_redact_credential_options_without_changing_request():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        received_kwargs = _completion_with_provider_auth_header(
+            temp_dir,
+            extra_headers={"X-Trace-Id": "trace-1"},
+            completion_kwargs={
+                "api_key": "caller-secret",
+                "aws_secret_access_key": "aws-secret",
+                "max_completion_tokens": 42,
+            },
+        )
+        raw = _read_only_log(temp_dir)
+
+    logged_kwargs = json.loads(raw)["kwargs"]
+    assert received_kwargs["api_key"] == "caller-secret"
+    assert received_kwargs["aws_secret_access_key"] == "aws-secret"
+    assert received_kwargs["max_completion_tokens"] == 42
+    assert "caller-secret" not in raw
+    assert "aws-secret" not in raw
+    assert logged_kwargs["api_key"] == "<redacted>"
+    assert logged_kwargs["aws_secret_access_key"] == "<redacted>"
+    assert logged_kwargs["max_completion_tokens"] == 42
+    assert logged_kwargs["extra_headers"]["X-Trace-Id"] == "trace-1"
+
+
+def test_log_completions_redact_credentials_in_provider_error():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _completion_with_provider_auth_header(
+            temp_dir,
+            extra_headers={"X-Trace-Id": "trace-1"},
+            fail=True,
+            error_message="provider failed: api_key='error-secret'",
+        )
+        raw = _read_only_log(temp_dir)
+
+    error = json.loads(raw)["error"]
+    assert "error-secret" not in raw
+    assert "<redacted>" in error["message"]
+    assert "<redacted>" in error["repr"]
+    assert "<redacted>" in error["traceback"]
