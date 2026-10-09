@@ -303,6 +303,22 @@ def test_view_line_numbers_match_file_lines(tmp_path, content, numbered_lines):
     assert result.text.splitlines()[1:] == numbered_lines
 
 
+@pytest.mark.parametrize("content", ["a\nb", "a\nb\n", "a\nb\n\n", "a\n\n", "\n"])
+def test_ranged_view_preserves_final_line(tmp_path, content):
+    path = tmp_path / "range.txt"
+    path.write_text(content)
+    line_count = len(content.splitlines())
+    full = file_editor(command="view", path=str(path))
+    ranged = file_editor(command="view", path=str(path), view_range=[1, line_count])
+    last = file_editor(
+        command="view", path=str(path), view_range=[line_count, line_count]
+    )
+    assert full.text is not None
+    assert ranged.text == full.text
+    assert last.text is not None
+    assert last.text.splitlines()[1:] == full.text.splitlines()[-1:]
+
+
 def test_view_directory(editor):
     editor, test_file = editor
     parent_dir = test_file.parent

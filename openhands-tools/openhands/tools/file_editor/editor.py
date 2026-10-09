@@ -415,10 +415,7 @@ class FileEditor:
 
         file_content = self.read_file(path, start_line=start_line, end_line=end_line)
 
-        # Get the detected encoding
-        output = self._make_output(
-            "\n".join(file_content.splitlines()), str(path), start_line
-        )  # Remove extra newlines
+        output = self._make_output(file_content, str(path), start_line)
 
         # Prepend warning if we truncated the end_line
         if warning_message:
