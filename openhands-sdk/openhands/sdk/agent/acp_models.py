@@ -119,3 +119,52 @@ class ACPModelInfo(BaseModel):
             name=name if isinstance(name, str) else None,
             description=description if isinstance(description, str) else None,
         )
+
+
+class ACPModelDiscoveryError(BaseModel):
+    """Why an ACP server could not report its models."""
+
+    code: str = Field(
+        description=(
+            "Same codes as a conversation's cold-start ``ConversationErrorEvent``: "
+            "``ACPAuthRequired``, ``ACPStartupTimeout``, ``ACPSpawnError`` or "
+            "``ACPInitError``."
+        ),
+    )
+    detail: str = Field(description="Human-readable, secret-free cause.")
+
+
+class ACPModelDiscovery(BaseModel):
+    """What an ACP server reports for a fresh session, before any conversation."""
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    agent_name: str | None = Field(
+        default=None, description="Server name from ``initialize``."
+    )
+    agent_version: str | None = Field(
+        default=None, description="Server version from ``initialize``."
+    )
+    current_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Model the server picks when none is requested — its own default "
+            "for the given credentials. May be an opaque alias such as "
+            '``"default"``; match it against ``available_models`` for a label.'
+        ),
+    )
+    available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            "Models the server offers for the given credentials. Empty when the "
+            "server does not report any."
+        ),
+    )
+    supports_runtime_model_switch: bool = Field(
+        default=False,
+        description="Whether a conversation can switch among these models live.",
+    )
+    error: ACPModelDiscoveryError | None = Field(
+        default=None,
+        description="Set when the server could not start a session.",
+    )

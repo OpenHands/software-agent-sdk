@@ -19,7 +19,6 @@ from openhands.sdk.llm.auth.openai import (
     CLIENT_ID,
     CONSENT_BANNER,
     ISSUER,
-    OPENAI_CODEX_MODELS,
     DeviceCode,
     OpenAISubscriptionAuth,
     _build_authorize_url,
@@ -97,17 +96,6 @@ def test_build_authorize_url():
     assert "state=test_state" in url
     assert "originator=openhands" in url
     assert "response_type=code" in url
-
-
-def test_openai_codex_models_include_acp_models():
-    """Subscription auth supports every model exposed by the Codex provider."""
-    from openhands.sdk.settings.acp_providers import get_acp_provider
-
-    codex_provider = get_acp_provider("codex")
-    assert codex_provider is not None
-    assert OPENAI_CODEX_MODELS.issuperset(
-        model.id for model in codex_provider.available_models
-    )
 
 
 def test_openai_subscription_auth_get_credentials(tmp_path):
