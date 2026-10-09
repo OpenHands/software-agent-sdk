@@ -1,5 +1,6 @@
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 from logging import getLogger
 from typing import Any
@@ -14,6 +15,69 @@ from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 
 
 logger = getLogger(__name__)
+
+# Model-info discovery must never block LLM construction indefinitely.
+#
+# Some providers (self-hosted / OpenAI-compatible such as ``lemonade``,
+# ``ollama`` and ``vllm``) resolve model info by making a live HTTP request to
+# the model server rather than reading a static cost map. litellm performs that
+# request synchronously with no timeout, so if the endpoint is unreachable -- or
+# accidentally points back at the caller (e.g. a reverse proxy that forwards to
+# this very process) -- the call hangs forever. Because ``LLM`` construction is
+# synchronous and runs this probe in ``_post_init``, an indefinite hang freezes
+# any caller, including an async server's event loop.
+#
+# Bound every probe with this deadline. ``model_info`` is an optional
+# enhancement (callers already handle ``None``), so timing out degrades
+# gracefully instead of deadlocking.
+MODEL_INFO_DISCOVERY_TIMEOUT = 10.0
+
+
+def _run_with_deadline[T](
+    func: Callable[..., T],
+    *args,
+    timeout: float | None = None,
+    **kwargs,
+) -> T | None:
+    """Run a (possibly network-bound, non-cancellable) sync call with a deadline.
+
+    Returns ``None`` if the call does not finish within ``timeout`` so that
+    model-info discovery never blocks the caller indefinitely.
+
+    The call runs on a dedicated daemon thread. A timed-out probe cannot be
+    cancelled, but because the thread is a daemon it is never joined at
+    interpreter shutdown -- so an endpoint that is reachable-but-silent (which
+    only litellm's much larger socket timeout would bound) delays neither the
+    caller nor process exit. A fresh thread per call also means a stuck probe
+    cannot saturate a shared worker pool and starve later discovery.
+    """
+    if timeout is None:
+        timeout = MODEL_INFO_DISCOVERY_TIMEOUT
+
+    result: list[T] = []
+
+    def _target() -> None:
+        try:
+            result.append(func(*args, **kwargs))
+        except Exception as e:
+            logger.debug("Model-info probe raised; ignoring: %s", e)
+
+    thread = threading.Thread(target=_target, name="model-info-discovery", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:
+        # Interpreter is shutting down and will not start new threads. Model
+        # info is optional, so skip discovery rather than probing inline (which
+        # could re-introduce the very hang this guard exists to bound).
+        return None
+    thread.join(timeout)
+    if thread.is_alive():
+        logger.warning(
+            "Timed out after %ss while fetching model info; continuing without it.",
+            timeout,
+        )
+        return None
+    return result[0] if result else None
 
 
 def _merge_raw_model_metadata(model_info: Mapping[str, Any]) -> dict[str, Any]:
@@ -100,7 +164,11 @@ def _get_model_info_from_litellm_proxy(
         if secret_api_key:
             headers["Authorization"] = f"Bearer {secret_api_key}"
 
-        response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
+        response = httpx.get(
+            f"{base_url}/v1/model/info",
+            headers=headers,
+            timeout=MODEL_INFO_DISCOVERY_TIMEOUT,
+        )
         data = response.json().get("data", [])
         # Match against either the public alias (`model_name`) or the
         # underlying provider/model_name form (`litellm_params.model`). The proxy itself
@@ -128,8 +196,14 @@ def _get_model_info_from_litellm_proxy(
             underlying_model = current.get("litellm_params", {}).get("model")
             underlying_model_info = None
             if isinstance(underlying_model, str) and underlying_model != stripped:
+                # Bound this probe too: like the discovery calls below, it is a
+                # synchronous, network-bound litellm lookup with no timeout, and
+                # it runs inside ``LLM._post_init`` -- so an unreachable
+                # underlying endpoint here would reintroduce the same deadlock.
                 try:
-                    underlying_model_info = get_model_info(underlying_model)
+                    underlying_model_info = _run_with_deadline(
+                        get_model_info, underlying_model
+                    )
                 except Exception as e:
                     logger.debug(
                         f"get_model_info(underlying={underlying_model}) failed: {e}"
@@ -159,7 +233,7 @@ def get_litellm_model_info(
     # Try to get model info via openrouter or litellm proxy first
     try:
         if model.startswith("openrouter"):
-            model_info = get_model_info(model)
+            model_info = _run_with_deadline(get_model_info, model)
             if model_info:
                 return _merge_raw_model_metadata(model_info)
     except Exception as e:
@@ -180,13 +254,13 @@ def get_litellm_model_info(
 
     # Fallbacks: try base name variants
     try:
-        model_info = get_model_info(model.split(":")[0])
+        model_info = _run_with_deadline(get_model_info, model.split(":")[0])
         if model_info:
             return _merge_raw_model_metadata(model_info)
     except Exception:
         pass
     try:
-        model_info = get_model_info(model.split("/")[-1])
+        model_info = _run_with_deadline(get_model_info, model.split("/")[-1])
         if model_info:
             return _merge_raw_model_metadata(model_info)
     except Exception:
