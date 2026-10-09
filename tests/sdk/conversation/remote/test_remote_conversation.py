@@ -15,18 +15,22 @@ from openhands.sdk.conversation.exceptions import (
     ConversationRunError,
     WebSocketConnectionError,
 )
+from openhands.sdk.conversation.impl import remote_conversation as remote_module
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.request import StartConversationRequest
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, Metrics, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
-from openhands.sdk.workspace import RemoteWorkspace
+from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
 class TestRemoteConversation:
@@ -169,6 +173,244 @@ class TestRemoteConversation:
 
         mock_client_instance.request.side_effect = custom_side_effect
         return ws_callback
+
+    @pytest.mark.parametrize("kind", ["Agent", "ACPAgent"])
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_attach_uses_server_agent_without_creating_or_changing_settings(
+        self, mock_ws_client, kind
+    ):
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+        expected = self.agent if kind == "Agent" else ACPAgent(acp_command=["test-acp"])
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value["agent"] = expected.model_dump(mode="json")
+                response.json.return_value["max_iterations"] = 500
+            return response
+
+        client.request.side_effect = respond
+        conversation = RemoteConversation.attach(
+            workspace=self.workspace, conversation_id=cid, visualizer=None
+        )
+        assert type(conversation.agent) is type(expected)
+        if kind == "Agent":
+            assert conversation.agent.llm.model == expected.llm.model
+            assert conversation.agent.tools == expected.tools
+        else:
+            assert isinstance(conversation.agent, ACPAgent)
+            assert isinstance(expected, ACPAgent)
+            assert conversation.agent.acp_command == expected.acp_command
+        assert conversation.id == cid
+        conversation.close()
+        assert all(call.args[0] == "GET" for call in client.request.call_args_list)
+        client.close.assert_not_called()  # The caller still owns the workspace.
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_attach_restores_persisted_tool_modules(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value.update(
+                    agent=self.agent.model_dump(mode="json"),
+                    max_iterations=500,
+                    tool_module_qualnames={
+                        "TerminalTool": "openhands.tools.terminal.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation.attach(
+            workspace=self.workspace, conversation_id=cid, visualizer=None
+        )
+
+        restore_tool_registrations.assert_called_once_with(
+            {"TerminalTool": "openhands.tools.terminal.definition"}
+        )
+        conversation.close()
+
+    def test_attach_reports_a_missing_tool_module(self):
+        with (
+            patch.object(
+                remote_module.importlib,
+                "import_module",
+                side_effect=ModuleNotFoundError("No module named 'optional_tools'"),
+            ) as import_module,
+            pytest.raises(
+                ImportError,
+                match=(
+                    "Cannot attach to a conversation that uses tool "
+                    "'OptionalTool'.*optional_tools.definition"
+                ),
+            ),
+        ):
+            remote_module._restore_tool_registrations(
+                {"OptionalTool": "optional_tools.definition"}
+            )
+
+        import_module.assert_called_once_with("optional_tools.definition")
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation._restore_tool_registrations"
+    )
+    def test_constructor_attach_restores_persisted_tool_modules(
+        self, restore_tool_registrations, mock_ws_client
+    ):
+        """The ``RemoteConversation(conversation_id=...)`` path must also restore.
+
+        ``Conversation(..., conversation_id=...)`` routes here rather than
+        through ``attach``/``create``, so skipping the restore would leave the
+        persisted tools unregistered and their events undeserializable.
+        """
+        mock_ws_client.return_value.wait_until_ready.return_value = True
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+
+        def respond(method, url, **kwargs):
+            response = original(method, url, **kwargs)
+            if method == "GET" and url == f"/api/conversations/{cid}":
+                response.json.return_value.update(
+                    agent=self.agent.model_dump(mode="json"),
+                    max_iterations=500,
+                    tool_module_qualnames={
+                        "TerminalTool": "openhands.tools.terminal.definition"
+                    },
+                )
+            return response
+
+        client.request.side_effect = respond
+
+        conversation = RemoteConversation(
+            agent=self.agent, workspace=self.workspace, conversation_id=cid
+        )
+
+        restore_tool_registrations.assert_called_once_with(
+            {"TerminalTool": "openhands.tools.terminal.definition"}
+        )
+        # An attach must not create a conversation.
+        assert not [
+            call
+            for call in client.request.call_args_list
+            if call.args[0] == "POST" and call.args[1] == "/api/conversations"
+        ]
+        conversation.close()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_create_from_profile_uses_resolved_agent(self, mock_ws_client):
+        cid, profile_id = uuid.uuid4(), uuid.uuid4()
+        hooks = HookConfig.model_validate({"stop": [{"hooks": [{"command": "true"}]}]})
+        client = self.setup_mock_client(str(cid))
+        original = client.request.side_effect
+        created = False
+
+        def respond(method, url, **kwargs):
+            nonlocal created
+            if method == "GET" and url == f"/api/conversations/{cid}" and not created:
+                return httpx.Response(
+                    404, request=httpx.Request(method, self.host + url)
+                )
+            response = original(method, url, **kwargs)
+            if method == "POST" and url == "/api/conversations":
+                payload = kwargs["json"]
+                assert payload["agent_profile_id"] == str(profile_id)
+                assert "agent" not in payload and payload["secrets"] == {}
+                parsed = StartConversationRequest.model_validate(payload)
+                assert parsed.agent_profile_id == profile_id
+                assert payload["max_iterations"] == 17
+                assert payload["tags"] == {"automationrun": "run-one"}
+                assert payload["stuck_detection"] is False
+                assert parsed.hook_config == hooks
+                assert payload["observability_metadata"] == {"run": "one"}
+                assert payload["observability_tags"] == ["automation"]
+                assert payload["observability_span_name"] == "scheduled-task"
+                assert payload["user_id"] == "operator"
+                response.json.return_value["agent"] = self.agent.model_dump(mode="json")
+                response.json.return_value["max_iterations"] = 17
+                created = True
+            return response
+
+        client.request.side_effect = respond
+        conversation = RemoteConversation.create(
+            workspace=self.workspace,
+            request=StartConversationRequest(
+                workspace=LocalWorkspace(working_dir=self.workspace.working_dir),
+                conversation_id=cid,
+                agent_profile_id=profile_id,
+                max_iterations=17,
+                tags={"automationrun": "run-one"},
+                stuck_detection=False,
+                hook_config=hooks,
+                observability_metadata={"run": "one"},
+                observability_tags=["automation"],
+                observability_span_name="scheduled-task",
+                user_id="operator",
+            ),
+            visualizer=None,
+        )
+        assert client.request.call_args_list[0].args == ("POST", "/api/conversations")
+        assert conversation.max_iteration_per_run == 17
+        assert conversation.id == cid
+        assert conversation.agent.llm.model == self.agent.llm.model
+        conversation.set_title("Scheduled run")
+        assert any(
+            c.args == ("PATCH", f"/api/conversations/{cid}")
+            and c.kwargs["json"] == {"title": "Scheduled run"}
+            for c in client.request.call_args_list
+        )
+        conversation.close()
+
+    @pytest.mark.parametrize("status", [403, 404])
+    @pytest.mark.parametrize("operation", ["attach", "create"])
+    def test_failed_explicit_operation_does_not_try_the_other_operation(
+        self, status, operation
+    ):
+        cid = uuid.uuid4()
+        client = self.setup_mock_client(str(cid))
+        client.request.side_effect = None
+        client.request.return_value = httpx.Response(
+            status, request=httpx.Request("GET", f"{self.host}/api/conversations/{cid}")
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            if operation == "attach":
+                RemoteConversation.attach(self.workspace, cid, visualizer=None)
+            else:
+                RemoteConversation.create(
+                    self.workspace,
+                    StartConversationRequest(
+                        agent=self.agent,
+                        workspace=LocalWorkspace(working_dir="/tmp"),
+                        conversation_id=cid,
+                    ),
+                    visualizer=None,
+                )
+        expected_method = "GET" if operation == "attach" else "POST"
+        assert [call.args[0] for call in client.request.call_args_list] == [
+            expected_method
+        ]
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -1231,7 +1473,11 @@ class TestRemoteConversation:
 
         mock_ws_client.return_value = Mock()
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
-        conversation._get_last_error_detail = Mock(return_value="boom")
+        error = ConversationErrorEvent(
+            source="environment",
+            code="LLMAuthenticationError",
+            detail="invalid api key",
+        )
         ws_callback = mock_ws_client.call_args.kwargs["callback"]
 
         original_side_effect = mock_client_instance.request.side_effect
@@ -1239,6 +1485,7 @@ class TestRemoteConversation:
         def post_run_seeds_error(method, url, **kwargs):
             resp = original_side_effect(method, url, **kwargs)
             if method == "POST" and url.endswith("/run"):
+                conversation.state.events.add_event(error)
                 ws_callback(
                     ConversationStateUpdateEvent(key="execution_status", value="error")
                 )
@@ -1246,10 +1493,15 @@ class TestRemoteConversation:
 
         mock_client_instance.request.side_effect = post_run_seeds_error
 
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(ConversationRunError) as excinfo:
             conversation.run(blocking=True, poll_interval=10.0)
 
-        assert "boom" in str(excinfo.value) or "error" in str(excinfo.value).lower()
+        attached = excinfo.value.conversation_error
+        assert attached is not None
+        assert attached is error
+        classification = attached.classification
+        assert classification is not None
+        assert classification.kind == "auth"
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

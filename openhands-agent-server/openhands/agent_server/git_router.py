@@ -4,9 +4,16 @@ import asyncio
 import functools
 import logging
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path as PathParam, Query
+from fastapi import APIRouter, HTTPException, Path as PathParam, Query, Request
 
+from openhands.agent_server._secrets_exposure import get_config
+from openhands.agent_server.git_provider_service import (
+    GitProviderAPIError,
+    UnsupportedGitProviderError,
+    search_provider_repositories,
+)
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
@@ -16,10 +23,17 @@ from openhands.sdk.git.git_commits import (
     get_git_commits,
 )
 from openhands.sdk.git.git_diff import get_git_diff
-from openhands.sdk.git.models import GitChange, GitCommitsPage, GitDiff
+from openhands.sdk.git.models import (
+    GitChange,
+    GitCommitsPage,
+    GitDiff,
+    GitProviderRepositoryPage,
+)
+from openhands.sdk.workspace.repo import GitProvider
 
 
 git_router = APIRouter(prefix="/git", tags=["Git"])
+runtime_git_router = APIRouter(prefix="/git", tags=["Git"])
 logger = logging.getLogger(__name__)
 
 
@@ -112,7 +126,37 @@ async def _get_commit_file_diff(path: str, commit: str) -> GitDiff:
         return GitDiff(modified=None, original=None)
 
 
+@git_router.get("/repositories/search", response_model=GitProviderRepositoryPage)
+async def git_repositories_search(
+    request: Request,
+    provider: Annotated[GitProvider, Query(description="Git provider to search")],
+    query: Annotated[
+        str | None, Query(description="Optional repository name filter")
+    ] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=100, description="Maximum repositories to return")
+    ] = 100,
+    page_id: Annotated[
+        str | None, Query(description="Provider-specific page cursor")
+    ] = None,
+) -> GitProviderRepositoryPage:
+    """List repositories accessible to a configured git provider token."""
+    try:
+        return await search_provider_repositories(
+            get_config(request),
+            provider,
+            query=query,
+            limit=limit,
+            page_id=page_id,
+        )
+    except UnsupportedGitProviderError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except GitProviderAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e)) from e
+
+
 @git_router.get("/changes")
+@runtime_git_router.get("/changes")
 async def git_changes_query(
     path: str = Query(..., description="The git repository path"),
     ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
@@ -129,6 +173,7 @@ async def git_changes_query(
 
 
 @git_router.get("/diff")
+@runtime_git_router.get("/diff")
 async def git_diff_query(
     path: str = Query(..., description="The file path to get diff for"),
     ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
@@ -154,6 +199,7 @@ async def git_diff_query(
 
 
 @git_router.get("/commits")
+@runtime_git_router.get("/commits")
 async def git_commits_query(
     path: str = Query(..., description="The git repository path"),
     limit: int = Query(50, ge=1, le=200, description="Maximum commits to return"),
@@ -168,6 +214,7 @@ async def git_commits_query(
 
 
 @git_router.get("/commits/{sha}/changes")
+@runtime_git_router.get("/commits/{sha}/changes")
 async def git_commit_changes_query(
     sha: str = PathParam(..., pattern=_SHA_PATTERN, description="Commit SHA"),
     path: str = Query(..., description="The git repository path"),

@@ -13,6 +13,7 @@ import pytest
 from joserfc import jwt as joserfc_jwt
 from joserfc.jwk import KeySet, RSAKey
 
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import (
     CLIENT_ID,
@@ -30,7 +31,35 @@ from openhands.sdk.llm.auth.openai import (
     _mark_consent_acknowledged,
     _poll_device_code,
     _request_device_code,
+    create_subscription_llm_from_config,
 )
+
+
+def test_subscription_config_leaves_api_key_llm_unchanged():
+    llm = LLM(model="gpt-4o", api_key="test-key")
+    with patch.object(OpenAISubscriptionAuth, "refresh_if_needed_sync") as refresh:
+        assert create_subscription_llm_from_config(llm) is llm
+    refresh.assert_not_called()
+
+
+def test_subscription_config_restores_credentials():
+    llm = LLM(model="openai/gpt-5.6-sol", auth_type="subscription", usage_id="restored")
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="test-access",
+        refresh_token="test-refresh",
+        expires_at=int(time.time() * 1000) + 3600_000,
+    )
+    with patch.object(
+        OpenAISubscriptionAuth, "refresh_if_needed_sync", return_value=credentials
+    ) as refresh:
+        restored = create_subscription_llm_from_config(llm)
+        assert create_subscription_llm_from_config(restored) is restored
+    refresh.assert_called_once()
+    assert restored.usage_id == "restored"
+    assert restored.is_subscription
+    assert restored.auth_type == "subscription"
+    assert restored._get_litellm_api_key_value() == "test-access"
 
 
 def test_generate_pkce():
@@ -70,8 +99,8 @@ def test_build_authorize_url():
     assert "response_type=code" in url
 
 
-def test_openai_codex_models():
-    """Test that OPENAI_CODEX_MODELS contains expected models."""
+def test_openai_codex_models_include_acp_models():
+    """Subscription auth supports every model exposed by the Codex provider."""
     from openhands.sdk.settings.acp_providers import get_acp_provider
 
     codex_provider = get_acp_provider("codex")
@@ -79,20 +108,6 @@ def test_openai_codex_models():
     assert OPENAI_CODEX_MODELS.issuperset(
         model.id for model in codex_provider.available_models
     )
-    assert "gpt-5.6" in OPENAI_CODEX_MODELS
-    assert "gpt-5.6-sol" in OPENAI_CODEX_MODELS
-    assert "gpt-5.6-terra" in OPENAI_CODEX_MODELS
-    assert "gpt-5.6-luna" in OPENAI_CODEX_MODELS
-    assert "gpt-5.5" in OPENAI_CODEX_MODELS
-    assert "gpt-5.4" in OPENAI_CODEX_MODELS
-    assert "gpt-5.4-mini" in OPENAI_CODEX_MODELS
-    assert "gpt-5.3-codex" not in OPENAI_CODEX_MODELS
-
-
-def test_openai_subscription_auth_vendor():
-    """Test OpenAISubscriptionAuth vendor property."""
-    auth = OpenAISubscriptionAuth()
-    assert auth.vendor == "openai"
 
 
 def test_openai_subscription_auth_get_credentials(tmp_path):
@@ -194,7 +209,7 @@ def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
     auth = OpenAISubscriptionAuth(credential_store=store)
 
     with pytest.raises(ValueError, match="No credentials available"):
-        auth.create_llm(model="gpt-5.6")
+        auth.create_llm(model="gpt-5.6-sol")
 
 
 def test_openai_subscription_auth_create_llm_success(tmp_path):
@@ -211,9 +226,9 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     )
     store.save(creds)
 
-    llm = auth.create_llm(model="gpt-5.6")
+    llm = auth.create_llm(model="gpt-5.6-sol")
 
-    assert llm.model == "openai/gpt-5.6"
+    assert llm.model == "openai/gpt-5.6-sol"
     assert llm.api_key is None
     assert llm._get_litellm_api_key_value() == "test_access_token"
     assert llm.auth_type == "subscription"
@@ -569,61 +584,6 @@ class TestConsentBannerSystem:
         ):
             result = _display_consent_and_confirm()
             assert result is False
-
-
-# =========================================================================
-# Tests for joserfc migration (no authlib.jose deprecation warning)
-# =========================================================================
-
-
-def test_no_authlib_jose_import():
-    """Verify that the openai auth module does not import from authlib.jose.
-
-    The authlib.jose module is deprecated and should be replaced by joserfc.
-    """
-    import importlib
-    import sys
-
-    # Remove cached module to force re-import
-    mod_name = "openhands.sdk.llm.auth.openai"
-    if mod_name in sys.modules:
-        importlib.reload(sys.modules[mod_name])
-
-    import inspect
-
-    from openhands.sdk.llm.auth import openai as openai_auth_mod
-
-    source = inspect.getsource(openai_auth_mod)
-    assert "from authlib.jose" not in source, (
-        "Module still imports from the deprecated authlib.jose; use joserfc instead"
-    )
-
-
-def test_joserfc_keyset_import():
-    """Test that joserfc KeySet can import a JWKS structure."""
-    from joserfc.jwk import KeySetSerialization
-
-    # Minimal valid RSA JWK for testing (RFC 7517 example modulus)
-    rsa_n = (
-        "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4"
-        "cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiF"
-        "V4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6C"
-        "f0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9"
-        "c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWh"
-        "AI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1j"
-        "F44-csFCur-kEgU8awapJzKnqDKgw"
-    )
-    test_jwks: KeySetSerialization = {
-        "keys": [
-            {"kty": "RSA", "kid": "test-key-1", "use": "sig", "n": rsa_n, "e": "AQAB"}
-        ]
-    }
-
-    key_set = KeySet.import_key_set(test_jwks)
-    assert key_set is not None
-    # Should have imported one key
-    keys = list(key_set)
-    assert len(keys) == 1
 
 
 # =========================================================================

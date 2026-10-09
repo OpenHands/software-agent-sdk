@@ -11,6 +11,7 @@ for every block here (the dynamic tier is ported separately).
 # ruff: noqa: E501
 
 import re
+from pathlib import Path
 from typing import ClassVar
 
 from openhands.sdk.context.prompts.section import (
@@ -18,10 +19,10 @@ from openhands.sdk.context.prompts.section import (
     Platform,
     PromptContext,
 )
+from openhands.sdk.utils.path import get_user_persistence_dir, to_posix_path
 
 
 __all__ = [
-    "BrowserSection",
     "CodeQualitySection",
     "EfficiencySection",
     "EnvironmentSetupSection",
@@ -29,6 +30,7 @@ __all__ = [
     "FileSystemSection",
     "MemorySection",
     "ModelSpecificSection",
+    "PersonaSection",
     "ProblemSolvingSection",
     "ProcessManagementSection",
     "PullRequestsSection",
@@ -37,6 +39,7 @@ __all__ = [
     "SecuritySection",
     "SelfDocumentationSection",
     "SoulSection",
+    "ToolGuidanceSection",
     "TroubleshootingSection",
     "VersionControlSection",
 ]
@@ -97,6 +100,18 @@ class RoleSection(_StaticTextSection):
 </ROLE>"""
 
 
+class PersonaSection(_StaticTextSection):
+    """The agent's own persona, standing in for the persona sections it replaces."""
+
+    name = "persona"
+
+    def guard(self, ctx: PromptContext) -> bool:
+        return ctx.persona is not None
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return ctx.persona
+
+
 class MemorySection(_StaticTextSection):
     """``<MEMORY>`` -- exactly one of two guidance variants fills the block:
     the default ``AGENTS.md`` guidance, or the two-tier persistent-memory
@@ -108,15 +123,21 @@ class MemorySection(_StaticTextSection):
     _AGENTS_MD_GUIDANCE = """\
 * Use `AGENTS.md` under the repository root as your persistent memory for repository-specific knowledge and context.
 * Add important insights, patterns, and learnings to this file to improve future task performance.
+* When asked to find a previous local OpenHands conversation, search the workspace's `workspace/conversations/` directory for its event history.
 * This repository skill is automatically loaded for every conversation and helps maintain context across sessions.
 * For more information about skills, see: https://docs.openhands.dev/overview/skills"""
 
-    # Uses a literal ``~`` -- the static block must never contain the expanded
-    # home path (see test_static_block_has_no_dynamic_content).
+    # The user-tier bullet is filled in by ``_user_memory_line`` so the resolved
+    # location (honoring OH_PERSISTENCE_DIR, matching load_memory()'s read path)
+    # is what the agent is told to write to. When the env var is unset the line
+    # is the literal ``~/.openhands/memory/`` -- a plain tilde, never the expanded
+    # home path -- so the block stays cache-shared and machine-independent, and
+    # the OH_PERSISTENCE_DIR value that does appear is a deployment-constant mount
+    # (see test_static_block_has_no_dynamic_content).
     _TWO_TIER_GUIDANCE = """\
 You have persistent memory that survives across sessions, in two tiers:
 * Project memory: `.openhands/memory/` under the workspace root — knowledge specific to this repository.
-* User memory: `~/.openhands/memory/` — knowledge and preferences that apply across all projects.
+{user_memory_line}
 
 Each tier contains:
 * `MEMORY.md` — a curated index of durable facts. Its content is injected into your prompt at session start (the <MEMORY_CONTEXT> block), so keep it small and high-value.
@@ -128,9 +149,28 @@ Maintenance habits:
 * Do NOT record secrets or credentials. Do NOT record facts that are trivially re-discoverable (directory listings, obvious commands). Record what was expensive to learn: root causes, environment quirks, user preferences, decisions and their reasons.
 * `AGENTS.md` remains the place for instructions addressed to any agent working in this repository; memory is for what you learned yourself."""
 
+    @staticmethod
+    def _user_memory_line() -> str:
+        """The user-tier bullet, naming the directory the agent should write to.
+
+        Resolved via ``get_user_persistence_dir()`` so the instructed write path
+        matches what ``load_memory`` reads. When ``OH_PERSISTENCE_DIR`` is set the
+        line carries its concrete ``<base>/memory/`` directory (a deployment mount
+        that is constant within any warm-cache window); otherwise the unexpanded
+        ``~/.openhands`` fallback keeps the per-user home path out of the block.
+        """
+        user_memory_dir = get_user_persistence_dir(Path("~/.openhands")) / "memory"
+        location = f"`{to_posix_path(user_memory_dir)}/`"
+        return (
+            f"* User memory: {location} — knowledge and preferences that apply "
+            "across all projects."
+        )
+
     def render(self, ctx: PromptContext) -> str | None:
         if ctx.template_kwargs.get("memory_enabled"):
-            guidance = self._TWO_TIER_GUIDANCE
+            guidance = self._TWO_TIER_GUIDANCE.format(
+                user_memory_line=self._user_memory_line()
+            )
         else:
             guidance = self._AGENTS_MD_GUIDANCE
         return f"<MEMORY>\n{guidance}\n</MEMORY>"
@@ -351,21 +391,16 @@ When an action originates from or is influenced by repository-provided context (
         return _refine(body, ctx.platform)
 
 
-class BrowserSection(_StaticTextSection):
-    name = "browser"
-    body = """\
-<BROWSER_TOOLS>
-You have a browser for navigating pages and interacting with web UIs.
-* Try curl/wget/fetch first. Use the browser only when simpler tools fail or the page requires JS/interaction.
-* ALWAYS call `browser_get_state` before EVERY `browser_click` or `browser_type` — indices change after each action. Flow: navigate → get_state → interact → get_state → get_content.
-* Max 10 browser actions per sub-task. If stuck, switch approach entirely.
-* If 20+ total steps without converging, stop exploring and commit to your best answer.
-* On 403/CAPTCHA/login wall: try one alternative, then abandon the browser.
-* Do NOT submit forms or create accounts unless explicitly asked.
-</BROWSER_TOOLS>"""
+class ToolGuidanceSection(_StaticTextSection):
+    """Usage guidance supplied by the loaded tools (e.g. ``<BROWSER_TOOLS>``)."""
+
+    name = "tool_guidance"
 
     def guard(self, ctx: PromptContext) -> bool:
-        return ctx.enable_browser
+        return bool(ctx.tool_guidance)
+
+    def render(self, ctx: PromptContext) -> str | None:
+        return "\n\n".join(ctx.tool_guidance)
 
 
 class ExternalServicesSection(_StaticTextSection):

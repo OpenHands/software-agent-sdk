@@ -16,6 +16,7 @@ def write_extension(
     display_name: str = "My Extension",
     description: str = "",
     entrypoint: str = "dist/index.js",
+    pages: list[dict[str, str]] | None = None,
 ) -> Path:
     """Write a valid, loadable canvas extension package to *directory*."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -27,6 +28,8 @@ def write_extension(
         "description": description,
         "entrypoint": entrypoint,
     }
+    if pages is not None:
+        manifest["contributes"] = {"pages": pages}
     (directory / MANIFEST_FILENAME).write_text(json.dumps(manifest))
     entry_file = directory / entrypoint
     entry_file.parent.mkdir(parents=True, exist_ok=True)

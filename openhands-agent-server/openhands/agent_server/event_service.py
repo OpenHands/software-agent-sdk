@@ -11,11 +11,13 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.conversation_lease import (
     DEFAULT_LEASE_TTL_SECONDS,
     ConversationLease,
     ConversationOwnershipLostError,
 )
+from openhands.agent_server.managed_llm_key import register_managed_llm_key_refresh
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -23,14 +25,19 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.acp_agent import ACTIVITY_SIGNAL_INTERVAL
 from openhands.sdk.agent.acp_file_credentials import (
     CODEX_AUTH_SECRET_NAME,
     is_valid_codex_auth,
 )
+from openhands.sdk.agent.stream_context import StreamProgress
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.events_list_base import EventsListBase
+from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.goal import (
     GoalController,
     GoalDone,
@@ -46,7 +53,7 @@ from openhands.sdk.conversation.impl.local_conversation import (
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
-from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -64,11 +71,13 @@ from openhands.sdk.event import (
     ObservationBaseEvent,
     StreamingDeltaEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.error_classification import ErrorClassification, FailureKind
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -86,6 +95,89 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
+
+
+class ConversationRunLimitExceeded(RuntimeError):
+    """The server has no capacity to start another conversation run."""
+
+
+class _RunPermit:
+    """Ref-counted permit shared by the chained runs of one admission session."""
+
+    __slots__ = ("semaphore", "refs")
+
+    def __init__(self, semaphore: asyncio.Semaphore | None) -> None:
+        self.semaphore = semaphore
+        self.refs = 0
+
+
+class RunSlot:
+    """A run permit, shared across the chained runs of one admission session.
+
+    A conversation admits work in *chains*: a run that re-arms for input
+    stranded while it was wrapping up, every round of a ``/goal`` loop, and the
+    replacement run after an internal ACP supersede interrupt. Allocating a
+    fresh permit per run leaves a gap between the runs in which a competing
+    request can claim the just-freed permit, so the chained run gets a spurious
+    429 after its predecessor already yielded (or, for ACP, after the caller
+    already killed the in-flight prompt). Sharing one permit across the chain
+    closes that gap: the underlying semaphore token is returned only once every
+    handle to the session permit has been released.
+    """
+
+    def __init__(self, permit: _RunPermit) -> None:
+        self._permit: _RunPermit | None = permit
+        permit.refs += 1
+
+    @classmethod
+    async def acquire(
+        cls, semaphore: asyncio.Semaphore | None, *, wait: bool = False
+    ) -> "RunSlot":
+        if semaphore is not None:
+            if not wait:
+                # acquire() cannot suspend when capacity is available, so this
+                # check-and-acquire is atomic on the server's event loop.
+                if semaphore.locked():
+                    raise ConversationRunLimitExceeded(
+                        "Conversation run limit reached. Retry the request later."
+                    )
+            # ``wait=True`` is for a continuation whose message the caller was
+            # already told was accepted (a re-armed run). It blocks for a token
+            # instead of turning into a spurious 429 that would strand input.
+            await semaphore.acquire()
+        return cls(_RunPermit(semaphore))
+
+    def share(self) -> "RunSlot":
+        """Return another live handle to the same permit (no new token)."""
+        permit = self._permit
+        if permit is None:
+            raise RuntimeError("run slot has already been released")
+        return RunSlot(permit)
+
+    @property
+    def live_handles(self) -> int:
+        """Number of handles currently holding this permit (0 once released)."""
+        permit = self._permit
+        return permit.refs if permit is not None else 0
+
+    def release(self) -> bool:
+        """Return this handle. True iff the underlying permit was returned."""
+        permit = self._permit
+        if permit is None:
+            return False
+        self._permit = None
+        permit.refs -= 1
+        if permit.refs <= 0 and permit.semaphore is not None:
+            permit.semaphore.release()
+            permit.semaphore = None
+            return True
+        return False
+
+    def __enter__(self) -> "RunSlot":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
 
 
 class CredentialBindingActivationTooLate(RuntimeError):
@@ -115,16 +207,28 @@ class EventService:
 
     stored: StoredConversation
     conversations_dir: Path
+    # Agent for a NEW conversation. meta.json (``stored``) no longer carries the
+    # agent — base_state.json is its single source of truth — so the creating
+    # caller passes it here. On resume this is ``None`` and the agent is loaded
+    # from base_state.json.
+    agent: AgentBase | None = None
     cipher: Cipher | None = None
     mcp_tool_provider: MCPToolProvider | None = None
     credential_bindings: dict[str, VersionedCredentialBinding] = field(
         default_factory=dict
     )
+    bash_event_service: BashEventService | None = field(default=None, init=False)
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
+    _persisted_events: EventLog | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
+    )
+    # Its own fan-out, not the event bus: frames are not events, and only the
+    # session socket consumes them.
+    _stream_pub_sub: PubSub[StreamProgress] = field(
+        default_factory=lambda: PubSub[StreamProgress](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
@@ -146,11 +250,25 @@ class EventService:
     _lease_task: asyncio.Task | None = field(default=None, init=False)
     _external_lease_renewal: bool = field(default=False, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    _run_semaphore: asyncio.Semaphore | None = field(default=None, init=False)
+    # Permit for this conversation's current admission session. Held for the
+    # whole chain of runs (initial run, any re-arm for stranded input, ACP
+    # supersede restart, every /goal round) so a chained run cannot be refused in
+    # the gap where a predecessor yields its permit. Released once the chain
+    # ends (see _maybe_end_run_session).
+    _run_session_slot: RunSlot | None = field(default=None, init=False)
+    # Count of in-flight continuations that must keep the session permit alive
+    # even though no run task is currently active (a live /goal loop, or the
+    # ACP supersede window between interrupting the old prompt and starting the
+    # replacement run).
+    _run_session_pins: int = field(default=0, init=False)
     # Background task for a /goal loop that is running inside this conversation.
     _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
     _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
     # Monotonic clock of the last activity, used for idle eviction.
     _last_active_monotonic: float = field(default_factory=time.monotonic, init=False)
+    # Monotonic clock of the last throttled streaming heartbeat.
+    _last_stream_activity_signal: float = field(default=float("-inf"), init=False)
     # Subscribers attached at startup; later ones (e.g. websockets) are external.
     _internal_subscriber_ids: set[UUID] = field(default_factory=set, init=False)
 
@@ -170,26 +288,23 @@ class EventService:
     async def save_meta(self):
         with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
-            meta_file.write_text(
+            atomic_write_text(
+                meta_file,
                 self.stored.model_dump_json(
                     context={
                         "cipher": self.cipher,
                     }
-                )
+                ),
             )
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:
+        # meta.json (StoredConversation) no longer carries the agent, so there is
+        # no agent_context secret to scrub here — only the stored secrets map.
+        # The agent's own secret scrub happens on base_state.json (see
+        # _scrub_persisted_credentials).
         secrets = dict(self.stored.secrets)
         secrets.pop(secret_name, None)
-        return self.stored.model_copy(
-            update={
-                "secrets": secrets,
-                "agent": _without_agent_context_secret(
-                    self.stored.agent,
-                    secret_name,
-                ),
-            }
-        )
+        return self.stored.model_copy(update={"secrets": secrets})
 
     async def _scrub_persisted_credentials(
         self,
@@ -392,6 +507,25 @@ class EventService:
             raise ValueError("inactive_service")
         return self._conversation
 
+    @classmethod
+    def for_persisted_events(
+        cls, stored: StoredConversation, conversations_dir: Path
+    ) -> "EventService":
+        """Open append-only history without starting a conversation runtime."""
+        service = cls(stored=stored, conversations_dir=conversations_dir)
+        conversation_dir = conversations_dir / stored.id.hex
+        service._persisted_events = EventLog(
+            LocalFileStore(str(conversation_dir)), dir_path=EVENTS_DIR
+        )
+        return service
+
+    def _events_for_read(self) -> EventLog:
+        if self._persisted_events is not None:
+            return self._persisted_events
+        if self._conversation is None:
+            raise ValueError("inactive_service")
+        return self._conversation._state.events
+
     def _get_event_sync(self, event_id: str) -> Event | None:
         """Private sync function to get a single event.
 
@@ -399,15 +533,11 @@ class EventService:
         EventLog reads are safe without the FIFOLock because events are
         append-only and immutable once written.
         """
-        if not self._conversation:
-            raise ValueError("inactive_service")
-        events = self._conversation._state.events
+        events = self._events_for_read()
         index = events.get_index(event_id)
         return events[index]
 
     async def get_event(self, event_id: str) -> Event | None:
-        if not self._conversation:
-            raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_event_sync, event_id)
 
@@ -479,10 +609,7 @@ class EventService:
             difference between "loads instantly" and "blocks for seconds"
             for long conversations.
         """
-        if not self._conversation:
-            raise ValueError("inactive_service")
-
-        events = self._conversation._state.events
+        events = self._events_for_read()
         total = len(events)
 
         # Convert datetime to ISO string for comparison (ISO strings are comparable)
@@ -545,8 +672,6 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> EventPage:
-        if not self._conversation:
-            raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
@@ -575,10 +700,7 @@ class EventService:
         EventLog reads are safe without the FIFOLock because events are
         append-only and immutable once written.
         """
-        if not self._conversation:
-            raise ValueError("inactive_service")
-
-        events = self._conversation._state.events
+        events = self._events_for_read()
 
         # Fast path: with no filters, the count is just the sequence length
         # and we can avoid reading any event payloads from disk.
@@ -615,8 +737,6 @@ class EventService:
         timestamp__lt: datetime | None = None,
     ) -> int:
         """Count events matching the given filters."""
-        if not self._conversation:
-            raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
@@ -654,6 +774,26 @@ class EventService:
         with self._conversation._state as state:
             if state.execution_status != ConversationExecutionStatus.ERROR:
                 state.execution_status = ConversationExecutionStatus.ERROR
+
+    def _publish_error_event_sync(self, exc: BaseException) -> None:
+        """Emit a ConversationErrorEvent so the UI sees the failure detail.
+
+        For LLM/runtime failures that would otherwise only reach the logs — the
+        run-loop backstop and auto-title generation (issue #16686). Best-effort:
+        never raises (the caller is an error handler).
+        """
+        if not self._conversation:
+            return
+        try:
+            error_event = ConversationErrorEvent(
+                source="environment",
+                code=type(exc).__name__,
+                detail=str(exc),
+            )
+            with self._conversation._state:
+                self._conversation._on_event(error_event)
+        except Exception:
+            logger.exception("Failed to publish backstop ConversationErrorEvent")
 
     def _create_state_update_event_sync(self) -> ConversationStateUpdateEvent:
         if not self._conversation:
@@ -718,34 +858,64 @@ class EventService:
                 did_mark_acp_prompt_superseded,
                 active_acp_prompt_has_latest_message,
             ) = await self._mark_running_acp_prompt_superseded()
-            interrupted_acp = False
             if did_mark_acp_prompt_superseded:
+                # Pin the session permit *before* killing the in-flight prompt.
+                # The interrupt below makes that run yield its permit on the way
+                # out; if the replacement run then had to acquire a fresh one it
+                # could be refused (429) after we already destroyed the
+                # conversation's working run. The pin keeps the permit the
+                # outgoing run holds alive across the supersede window.
+                self._pin_run_session()
                 self._acp_internal_rerun_requested = True
-                interrupted_acp = True
-                await self.interrupt(internal_acp_rerun=True)
-                if self._explicit_interrupt_generation != explicit_interrupt_generation:
-                    return
-            try:
-                await self.run(
-                    acp_internal_rerun_generation=explicit_interrupt_generation
-                )
-                self._acp_internal_rerun_requested = False
-            except ValueError as e:
-                # run() refused. If a run is still wrapping up (its
-                # wait_for_pending tail), the message we just appended won't be
-                # picked up by it, so record explicit run intent for
-                # _run_and_publish to honor once that task clears. Tracking the
-                # request — rather than inferring it later from an IDLE status —
-                # is what keeps a deliberate run=False append, or an IDLE reached
-                # via another path, from triggering an unwanted run.
-                # "inactive_service" is terminal and must not re-arm.
-                if (
-                    str(e) == "conversation_already_running"
-                    and not active_acp_prompt_has_latest_message
-                ):
-                    self._rerun_requested = True
-                    if interrupted_acp:
+                try:
+                    await self.interrupt(internal_acp_rerun=True)
+                    if (
+                        self._explicit_interrupt_generation
+                        != explicit_interrupt_generation
+                    ):
+                        return
+                    await self.run(
+                        acp_internal_rerun_generation=explicit_interrupt_generation
+                    )
+                    self._acp_internal_rerun_requested = False
+                except ValueError as e:
+                    # run() refused. If a run is still wrapping up (its
+                    # wait_for_pending tail), the message we just appended won't
+                    # be picked up by it, so record explicit run intent for
+                    # _run_and_publish to honor once that task clears. Tracking
+                    # the request — rather than inferring it later from an IDLE
+                    # status — is what keeps a deliberate run=False append, or an
+                    # IDLE reached via another path, from triggering an unwanted
+                    # run. "inactive_service" is terminal and must not re-arm.
+                    if (
+                        str(e) == "conversation_already_running"
+                        and not active_acp_prompt_has_latest_message
+                    ):
+                        self._rerun_requested = True
                         self._acp_internal_rerun_requested = True
+                finally:
+                    self._unpin_run_session()
+            else:
+                try:
+                    await self.run(
+                        acp_internal_rerun_generation=explicit_interrupt_generation
+                    )
+                    self._acp_internal_rerun_requested = False
+                except ConversationRunLimitExceeded as exc:
+                    # Nothing was interrupted here, so a capacity refusal is a
+                    # clean backpressure signal. The message is already saved,
+                    # so tell the caller to retry /run without resending.
+                    raise ConversationRunLimitExceeded(
+                        "Message saved, but the conversation run limit was "
+                        "reached. Retry POST /api/conversations/"
+                        f"{self.stored.id}/run without resending the message."
+                    ) from exc
+                except ValueError as e:
+                    if (
+                        str(e) == "conversation_already_running"
+                        and not active_acp_prompt_has_latest_message
+                    ):
+                        self._rerun_requested = True
 
     def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
         """Mark the currently running ACP prompt superseded if needed.
@@ -821,6 +991,19 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    async def subscribe_to_stream_progress(
+        self, subscriber: Subscriber[StreamProgress]
+    ) -> UUID:
+        """Register for stream-progress frames.
+
+        No initial push, unlike :meth:`subscribe_to_events`: a client that
+        connects mid-stream gets the real text with the durable event.
+        """
+        return self._stream_pub_sub.subscribe(subscriber)
+
+    async def unsubscribe_from_stream_progress(self, subscriber_id: UUID) -> bool:
+        return self._stream_pub_sub.unsubscribe(subscriber_id)
+
     def _emit_event_from_thread(self, event: Event) -> None:
         """Helper to safely emit events from non-async contexts (e.g., callbacks).
 
@@ -884,11 +1067,21 @@ class EventService:
         from openhands.sdk.agent import ACPAgent
 
         if isinstance(agent, ACPAgent):
-            from openhands.agent_server.server_details_router import (
-                update_last_execution_time,
-            )
-
             agent._on_activity = update_last_execution_time
+
+    def _signal_stream_activity(self) -> None:
+        """Refresh the runtime idle timer while a completion streams.
+
+        Deltas are never persisted, so the durable-event path that calls
+        update_last_execution_time() is silent for the length of a stream.
+        Signalled from the producer so it survives deltas leaving the shared
+        bus; throttled like the ACP bridge's _maybe_signal_activity.
+        """
+        now = time.monotonic()
+        if now - self._last_stream_activity_signal < ACTIVITY_SIGNAL_INTERVAL:
+            return
+        self._last_stream_activity_signal = now
+        update_last_execution_time()
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
@@ -972,10 +1165,26 @@ class EventService:
         working_dir = Path(workspace.working_dir)
         working_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_workspace_is_git_repo(working_dir)
-        agent_cls = type(self.stored.agent)
-        agent = agent_cls.model_validate(
-            self.stored.agent.model_dump(context={"expose_secrets": True}),
+        # base_state.json is the single source of truth for the agent. On resume
+        # (base_state exists) pass ``agent=None`` so LocalConversation keeps the
+        # persisted agent. On a new conversation the creating caller supplied the
+        # agent via ``self.agent``; deep-copy it (expose_secrets) so the running
+        # agent is independent of the caller's object.
+        base_state_exists = await asyncio.to_thread(
+            (self.conversation_dir / BASE_STATE).exists
         )
+        if base_state_exists:
+            agent: AgentBase | None = None
+        else:
+            if self.agent is None:
+                raise ValueError(
+                    "Cannot start a new conversation without an agent: no "
+                    "base_state.json to resume and no agent was provided."
+                )
+            agent_cls = type(self.agent)
+            agent = agent_cls.model_validate(
+                self.agent.model_dump(context={"expose_secrets": True}),
+            )
 
         # Create LocalConversation with plugins and hook_config.
         # Plugins are loaded lazily on first run()/send_message() call.
@@ -987,16 +1196,18 @@ class EventService:
             self._pub_sub, loop=asyncio.get_running_loop()
         )
 
-        # Only wire token streaming for agents that can actually emit token
-        # callbacks. SDK LLM agents need stream=True, while ACP agents emit
-        # AgentMessageChunk text through their bridge without exposing an LLM.
-        streaming_enabled = isinstance(agent, ACPAgent) or any(
-            llm.stream for llm in agent.get_all_llms()
-        )
-        logger.debug(
-            "Token streaming: %s",
-            "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
-        )
+        # Token streaming is wired only for agents that can actually emit token
+        # callbacks (SDK LLM agents with stream=True, or ACP agents). For a NEW
+        # conversation the agent is known here, so decide now. On RESUME the
+        # agent is loaded from base_state.json during construction, so defer the
+        # decision until after (see the post-construction block below).
+        def _agent_can_stream(a: AgentBase) -> bool:
+            return isinstance(a, ACPAgent) or any(
+                llm.stream for llm in a.get_all_llms()
+            )
+
+        streaming_enabled = _agent_can_stream(agent) if agent is not None else True
+        streaming_decided = agent is not None
 
         def _publish_stream_delta(
             content: str | None = None,
@@ -1016,8 +1227,19 @@ class EventService:
                 content=content,
                 reasoning_content=reasoning_content,
             )
+            self._signal_stream_activity()
             with suppress(RuntimeError):  # main loop already closed during teardown
                 asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+
+        def _publish_stream_progress(frame: StreamProgress) -> None:
+            # Same cross-thread hop as _publish_stream_delta: called from the
+            # run thread, or the ACP portal thread.
+            if not self._main_loop or not self._main_loop.is_running():
+                return
+            with suppress(RuntimeError):  # main loop already closed during teardown
+                asyncio.run_coroutine_threadsafe(
+                    self._stream_pub_sub(frame), self._main_loop
+                )
 
         def _token_streaming_callback(chunk: LLMStreamChunk | str) -> None:
             if isinstance(chunk, str):
@@ -1043,6 +1265,7 @@ class EventService:
             conversation_id=self.stored.id,
             callbacks=[self._callback_wrapper],
             token_callbacks=([_token_streaming_callback] if streaming_enabled else []),
+            stream_callbacks=[_publish_stream_progress],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
@@ -1054,11 +1277,23 @@ class EventService:
             observability_metadata=self.stored.observability_metadata,
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
+            observability_parent_span_context=self.stored.observability_parent_span_context,
             mcp_tool_provider=self.mcp_tool_provider,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
+        # On resume the agent was unknown at construction time (loaded from
+        # base_state.json), so decide token streaming now and disable it when the
+        # resolved agent can't emit token callbacks.
+        if not streaming_decided:
+            streaming_enabled = _agent_can_stream(conversation.agent)
+            logger.debug(
+                "Token streaming: %s",
+                "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
+            )
+            if not streaming_enabled:
+                conversation.set_token_callbacks(None)
         self._conversation = conversation
         if isinstance(conversation.agent, ACPAgent):
             for secret_name, binding in self.credential_bindings.items():
@@ -1067,6 +1302,11 @@ class EventService:
                     binding,
                 )
         self._conversation._state.set_write_guard(self._write_guard)
+
+        # Inert unless the deployment opted in (OH_LLM_API_KEY_REFRESH_URL plus
+        # OH_LLM_API_KEY_REFRESH_BASE_URLS); see #5189.
+        register_managed_llm_key_refresh(self._conversation.agent)
+
         if not self._external_lease_renewal:
             self._lease_task = asyncio.create_task(self._renew_lease_loop())
 
@@ -1109,7 +1349,14 @@ class EventService:
                     for e in state.events
                 )
                 if not already_observed:
+                    # The persisted HEAD can lag this action when the process
+                    # dies after writing the event file but before autosaving
+                    # leaf_event_id. Parent the recovery result to the action
+                    # explicitly; otherwise normal tree stamping attaches it to
+                    # the stale HEAD, making the action and result siblings and
+                    # leaving an orphan tool result on the active branch.
                     error_event = AgentErrorEvent(
+                        parent_id=first_action.id,
                         tool_name=first_action.tool_name,
                         tool_call_id=first_action.tool_call_id,
                         error=(
@@ -1126,7 +1373,59 @@ class EventService:
         # Publish initial state update
         await self._publish_state_update()
 
-    async def run(self, acp_internal_rerun_generation: int | None = None):
+    def _pin_run_session(self) -> None:
+        """Keep the session permit alive across a run-free continuation.
+
+        A /goal loop and the ACP supersede window both have moments with no run
+        task active but definite intent to run again. Pinning covers those gaps
+        so the permit they were admitted under is not returned and re-claimed by
+        a competing request, which would turn the continuation's own ``run()``
+        into a spurious 429.
+        """
+        self._run_session_pins += 1
+
+    def _unpin_run_session(self) -> None:
+        if self._run_session_pins > 0:
+            self._run_session_pins -= 1
+        self._maybe_end_run_session()
+
+    def _maybe_end_run_session(self) -> None:
+        """Return the session permit once no chain run or pin still needs it."""
+        owner = self._run_session_slot
+        if owner is None:
+            return
+        if self._run_session_pins > 0:
+            return
+        task = self._run_task
+        if task is not None and not task.done():
+            # The run body calling this from its own ``finally`` is not a
+            # successor. Treating it as one deferred the release to the task's
+            # done callback, i.e. until after ``wait_for_pending`` and the
+            # final state publish. A conversation that is already terminal
+            # (its status is readable over REST) therefore still occupied a run
+            # slot, and a competing request was refused with a spurious
+            # ConversationRunLimitExceeded.
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:  # no running loop (sync caller)
+                current = None
+            if task is not current:
+                return
+            # A re-arm for input parked while this run was wrapping up must
+            # keep the permit: the caller was already told its message was
+            # accepted, so a refusal here would strand it.
+            if self._rerun_requested or self._acp_internal_rerun_requested:
+                return
+        self._run_session_slot = None
+        owner.release()
+
+    async def run(
+        self,
+        acp_internal_rerun_generation: int | None = None,
+        *,
+        run_slot: RunSlot | None = None,
+        wait_for_capacity: bool = False,
+    ):
         """Run the conversation asynchronously in the background.
 
         This method starts the conversation run in a background task and returns
@@ -1139,6 +1438,7 @@ class EventService:
 
         Raises:
             ValueError: If the service is inactive or conversation is already running.
+            ConversationRunLimitExceeded: If all server run slots are occupied.
         """
         if not self._conversation or self._closing:
             raise ValueError("inactive_service")
@@ -1168,7 +1468,47 @@ class EventService:
             # Start run in background
             loop = asyncio.get_running_loop()
 
+            # A run may belong to a chain (re-arm for stranded input, ACP
+            # supersede restart, one round of a /goal loop). Chained runs reuse
+            # this conversation's session permit instead of acquiring a fresh
+            # one, so they cannot be refused in the gap where a predecessor
+            # yields its permit and a competitor claims it. Only the first run
+            # of a chain acquires capacity; the permit is returned once the
+            # whole chain (plus any pin, e.g. a live /goal loop) is done.
+            owner = self._run_session_slot
+            if owner is None:
+                owner = (
+                    run_slot.share()
+                    if run_slot is not None
+                    else await RunSlot.acquire(
+                        self._run_semaphore, wait=wait_for_capacity
+                    )
+                )
+                self._run_session_slot = owner
+            elif run_slot is not None:
+                # A reservation offered on top of an already-held session is
+                # redundant; return it so it is not leaked.
+                run_slot.release()
+            slot = owner.share()
+
+            worker: asyncio.Future | None = None
+
+            def settle(done: asyncio.Future | None = None) -> None:
+                # Cancellation of the asyncio waiter does not stop a sync thread.
+                if done is worker and worker is not None and not worker.cancelled():
+                    # Retrieve errors even if the waiter was cancelled.
+                    worker.exception()
+                if worker is not None and not worker.done():
+                    # A sync worker is still executing; its own done callback
+                    # releases this handle once the thread actually exits.
+                    return
+                slot.release()
+                self._maybe_end_run_session()
+
+            run_generation = self._explicit_interrupt_generation
+
             async def _run_and_publish():
+                nonlocal worker
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -1192,11 +1532,17 @@ class EventService:
                         and type(conversation).arun is not BaseConversation.arun
                         and type(conversation.agent).astep is not AgentBase.astep
                     )
+                    if self._explicit_interrupt_generation != run_generation:
+                        return
                     if has_native_arun:
                         await conversation.arun()
                     else:
-                        await loop.run_in_executor(self._run_executor, conversation.run)
-                except Exception:
+                        worker = loop.run_in_executor(
+                            self._run_executor, conversation.run
+                        )
+                        worker.add_done_callback(settle)
+                        await asyncio.shield(worker)
+                except Exception as exc:
                     logger.exception("Error during conversation run")
                     # Backstop: a run that raised before reaching its own error
                     # handling (e.g. an ACP cold-start failure in init_state,
@@ -1204,8 +1550,17 @@ class EventService:
                     # status at IDLE/RUNNING. Force ERROR so the finally's
                     # _publish_state_update() surfaces the failure instead of a
                     # misleading non-error state.
+                    #
+                    # Also surface the detail to the UI (issue #16686). A
+                    # ConversationRunError means run()/arun() already emitted its
+                    # own event, so skip it there to avoid duplicating the error.
+                    if not isinstance(exc, ConversationRunError):
+                        await loop.run_in_executor(
+                            None, self._publish_error_event_sync, exc
+                        )
                     await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:
+                    settle()
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.
                     # This prevents a race condition where the conversation status
@@ -1257,11 +1612,21 @@ class EventService:
                             )
                         )
                         if should_restart:
+                            # This re-arm reuses the session permit the run that
+                            # is ending here already holds, so it cannot be
+                            # refused for capacity even if a competing request
+                            # claims a freshly-freed permit elsewhere. That is
+                            # what makes blindly parking the request safe: the
+                            # parked input is always picked up by this call.
                             try:
                                 await self.run(
                                     acp_internal_rerun_generation=rerun_generation
                                     if acp_internal_rerun_still_valid
-                                    else None
+                                    else None,
+                                    # The message this re-arm picks up was
+                                    # already accepted (200), so waiting for a
+                                    # token beats a 429 that would strand it.
+                                    wait_for_capacity=True,
                                 )
                             except ValueError as e:
                                 if str(e) == "conversation_already_running":
@@ -1274,6 +1639,20 @@ class EventService:
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
+            # Finally, release even if the task is cancelled before its
+            # coroutine enters its own try/finally.
+            self._run_task.add_done_callback(settle)
+
+    async def wait_for_run_completion(
+        self, timeout: float | None = None
+    ) -> ConversationExecutionStatus:
+        """Wait for the active run task without cancelling it on timeout."""
+        run_task = self._run_task
+        if run_task is not None:
+            done, _ = await asyncio.wait({run_task}, timeout=timeout)
+            if not done:
+                raise TimeoutError("Conversation run timed out")
+        return await self._get_execution_status()
 
     async def start_goal_loop(
         self,
@@ -1326,10 +1705,33 @@ class EventService:
             if self._closing:
                 raise ValueError("inactive_service")
             self._goal_loop_outcome = None
-            self._goal_loop_task = asyncio.create_task(self._run_goal_loop(controller))
+            await self._schedule_goal_loop(controller)
+
+    async def _schedule_goal_loop(
+        self, controller: GoalController, *, resume: bool = False
+    ) -> None:
+        # Reserve capacity before spawning the loop so a full server refuses
+        # /goal with 429 up front (matching /run), rather than admitting the
+        # request and failing mid-loop.
+        slot = await RunSlot.acquire(self._run_semaphore)
+        if self._run_session_slot is None:
+            self._run_session_slot = slot
+        else:
+            slot.release()
+        # Hold the session permit for the loop's whole lifetime. Every round's
+        # run() reuses it (no fresh acquire), so a competitor cannot steal the
+        # permit during the judge call between rounds and turn the next round
+        # into a spurious 429.
+        self._pin_run_session()
+        self._goal_loop_task = asyncio.create_task(
+            self._run_goal_loop(controller, resume=resume)
+        )
 
     async def _run_goal_loop(
-        self, controller: GoalController, *, resume: bool = False
+        self,
+        controller: GoalController,
+        *,
+        resume: bool = False,
     ) -> None:
         """Drive one active ``/goal`` loop inside this conversation.
 
@@ -1396,11 +1798,20 @@ class EventService:
                 if status in (
                     ConversationExecutionStatus.PAUSED,
                     ConversationExecutionStatus.ERROR,
-                    ConversationExecutionStatus.STUCK,
                 ):
                     logger.info("Goal loop halted early: status=%s", status)
                     await _emit_status(active=False, status="interrupted")
                     return
+                if status == ConversationExecutionStatus.STUCK:
+                    # The stuck detector is a heuristic that often fires during
+                    # legitimate iteration (re-running a test, retrying an edit).
+                    # The goal loop already has an authoritative judge that
+                    # audits completion each round, so a STUCK run is not a
+                    # reason to halt the whole goal -- proceed to the judge and
+                    # let it decide continue-vs-stop (sending a followup nudge
+                    # that breaks the agent out of any genuine loop). Only
+                    # PAUSED/ERROR (real stop signals) terminate the goal.
+                    logger.info("Goal loop continuing past stuck run")
                 step = await loop.run_in_executor(None, _snapshot_and_judge)
                 if isinstance(step, GoalDone):
                     self._goal_loop_outcome = step.outcome
@@ -1439,6 +1850,10 @@ class EventService:
                     await _emit_status(active=False, status="interrupted")
         finally:
             self._goal_loop_task = None
+            # Release the permit held for the loop's whole lifetime. The
+            # reservation made in _schedule_goal_loop (or the permit inherited
+            # from a round's run) is returned here.
+            self._unpin_run_session()
 
     async def stop_goal_loop(self) -> bool:
         """Cancel the active ``/goal`` loop inside this conversation.
@@ -1513,9 +1928,7 @@ class EventService:
             if self._closing:  # see start_goal_loop: close() may have begun teardown
                 raise ValueError("inactive_service")
             self._goal_loop_outcome = None
-            self._goal_loop_task = asyncio.create_task(
-                self._run_goal_loop(controller, resume=True)
-            )
+            await self._schedule_goal_loop(controller, resume=True)
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
@@ -1583,6 +1996,13 @@ class EventService:
         """Update secrets in the conversation."""
         if not self._conversation:
             raise ValueError("inactive_service")
+        profile = self.stored.launched_agent_profile
+        if profile is not None:
+            secrets = {
+                name: value
+                for name, value in secrets.items()
+                if profile.allows_secret(name)
+            }
         if CODEX_AUTH_SECRET_NAME in self.credential_bindings:
             secrets = dict(secrets)
             secrets.pop(CODEX_AUTH_SECRET_NAME, None)
@@ -1628,13 +2048,13 @@ class EventService:
 
         For a conversation that has already started, runs the (blocking)
         protocol-level ``session/set_model`` round-trip in a worker thread; for
-        one not yet run, the SDK defers the switch (persist-only). Either way it
-        mirrors the new model into ``meta.json`` so the switch survives an
-        agent-server restart: ``start()`` rebuilds the agent from
-        ``self.stored.agent`` and ``ConversationState.create()`` copies that over
-        the persisted base_state.json on resume. Only ``acp_model`` needs
-        updating — ``model_post_init`` re-derives the sentinel ``llm.model`` on
-        reload.
+        one not yet run, the SDK defers the switch (persist-only). Either way the
+        switched model is persisted as the authoritative value in
+        ``base_state.json``: ``LocalConversation.switch_acp_model`` sets
+        ``state.agent`` to an agent copy carrying the new ``acp_model``, which the
+        autosave path writes to base_state. On resume the agent is rebuilt from
+        base_state (the single source of truth), so no ``meta.json`` mirror is
+        needed.
         """
         if self._conversation is None:
             # Match the inactive-service convention of the other event-service
@@ -1644,16 +2064,19 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
-        self.stored = self.stored.model_copy(
-            update={"agent": self.stored.agent.model_copy(update={"acp_model": model})}
-        )
-        await self.save_meta()
 
     async def close(self):
+        if self.bash_event_service is not None:
+            await self.bash_event_service.close()
         self._closing = True
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False
         self._acp_internal_rerun_requested = False
+        # Drop any pin held by a supersede window that is being torn down, then
+        # return this conversation's session permit; close() cancels the runs
+        # that would otherwise have done so, and a leaked permit would shrink
+        # server capacity permanently.
+        self._run_session_pins = 0
 
         # Cancel any in-progress /goal loop first so it cannot start a new run
         # while we drain the current one below.
@@ -1671,7 +2094,8 @@ class EventService:
 
         # Drain in-flight run before teardown so MCP close doesn't race
         # with a tool call mid-step.
-        if self._run_task is not None and not self._run_task.done():
+        run_task = self._run_task
+        if run_task is not None and not run_task.done():
             if self._conversation is not None:
                 loop = asyncio.get_running_loop()
                 try:
@@ -1684,16 +2108,21 @@ class EventService:
             # transition to PAUSED cleanly.  For the legacy thread-pool
             # path the underlying thread keeps running but the wrapper
             # task still settles, unblocking the wait below.
-            self._run_task.cancel()
+            run_task.cancel()
             try:
-                await asyncio.wait_for(self._run_task, timeout=10.0)
+                await asyncio.wait_for(run_task, timeout=10.0)
             except asyncio.CancelledError:
                 pass  # Expected after cancel()
             except Exception as exc:
                 logger.warning("Run task did not exit cleanly during close: %s", exc)
             self._run_task = None
 
+        # The run(s) above have yielded their chain handles; return the session
+        # permit now that teardown has dropped any pin.
+        self._maybe_end_run_session()
+
         await self._pub_sub.close()
+        await self._stream_pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.close)

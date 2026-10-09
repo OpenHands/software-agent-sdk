@@ -1,3 +1,4 @@
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent.base import AgentBase
@@ -77,3 +78,46 @@ def test_send_message_appends_once():
 
     # Ensure callback saw both events
     assert set(seen_ids) == {e.id for e in conversation.state.events}
+
+
+def test_user_callback_runs_after_event_is_persisted():
+    """A user callback (e.g. a socket publish) must never see an event before
+    it is durable: it should already be able to resolve the event's sequence
+    number via ``EventLog.get_index``.
+    """
+    agent = ConversationDefaultCallbackDummyAgent()
+    seen_indices: list[int] = []
+
+    conversation = Conversation(
+        agent=agent,
+        callbacks=[
+            lambda e: seen_indices.append(conversation.state.events.get_index(e.id))
+        ],
+    )
+
+    conversation._ensure_agent_ready()
+
+    assert seen_indices == [0]
+
+
+def test_persist_failure_blocks_downstream_callback():
+    """If persisting an event raises, no user callback runs for it: nothing is
+    announced for an event that never reached disk.
+    """
+    agent = ConversationDefaultCallbackDummyAgent()
+    seen_ids: list[str] = []
+
+    conversation = Conversation(
+        agent=agent, callbacks=[lambda e: seen_ids.append(e.id)]
+    )
+    conversation._ensure_agent_ready()
+
+    duplicate = conversation.state.events[0]
+    assert seen_ids == [duplicate.id]
+
+    # Re-emitting an event whose ID is already in the log makes
+    # EventLog.append raise. The user callback must not see this attempt.
+    with pytest.raises(ValueError, match="already exists"):
+        conversation._on_event(duplicate)
+
+    assert seen_ids == [duplicate.id]

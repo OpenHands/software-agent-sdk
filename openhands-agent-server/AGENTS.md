@@ -22,7 +22,7 @@ conversations, long-running bash, slow webhooks, websocket back-pressure, etc.
 
 ### Running stress tests
 
-The suite is **excluded from default collection** via `addopts = -m 'not stress'`
+The suite is **excluded from default collection** via `addopts = -m 'not stress and not acp_live'`
 in `pyproject.toml`. Override the filter with `-m stress`:
 
 ```bash
@@ -96,15 +96,6 @@ through JSON (`model_dump` → revalidate), which strips `TestLLM`'s private
    the `assert` explaining the likely regression (see existing tests for examples).
 7. **POSIX-only** — the suite uses `psutil.num_fds()`, file locks, bash pipelines,
    and shell builtins. No Windows shims.
-
-### Known-bug xfail markers
-
-Known agent-server bugs are surfaced as `@pytest.mark.xfail(strict=True)` in
-`tests/agent_server/test_*.py` (outside the stress directory). Each marker
-includes a `reason` string with a description and a tracking issue link
-(under [#3117](https://github.com/OpenHands/software-agent-sdk/issues/3117)).
-If a test starts passing (`XPASS`), the bug is fixed and the marker should be
-removed.
 
 ## Live server integration tests
 

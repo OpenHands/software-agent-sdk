@@ -6,6 +6,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
@@ -21,14 +22,15 @@ from openhands.sdk.conversation.types import (
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.skills import KeywordTrigger, Skill
 
 
 class SendMessageDummyAgent(AgentBase):
-    def __init__(self):
+    def __init__(self, agent_context: AgentContext | None = None):
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        super().__init__(llm=llm, tools=[])
+        super().__init__(llm=llm, tools=[], agent_context=agent_context)
 
     def init_state(
         self, state: ConversationState, on_event: ConversationCallbackType
@@ -849,3 +851,159 @@ async def test_acp_arun_leaves_queued_message_idle_at_iteration_cap(tmp_path):
 
     assert prompts_seen == ["initial request"]
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+
+# --- Skill activation wiring -------------------------------------------------
+# Characterization tests for the skill-activation block in
+# LocalConversation.send_message(). AgentContext.get_user_message_suffix() has
+# its own unit tests; these pin the conversation-level contract: which fields
+# of the MessageEvent carry the activation, what happens to the user's own
+# text, and how ConversationState remembers activations across turns.
+
+
+def _python_tips_skill() -> Skill:
+    return Skill(
+        name="python_tips",
+        content="Use list comprehensions for better performance.",
+        source="python-tips.md",
+        trigger=KeywordTrigger(keywords=["python", "performance"]),
+    )
+
+
+def test_send_message_activates_skill_on_trigger_match():
+    """A keyword match wires the skill into the event and conversation state."""
+    agent = SendMessageDummyAgent(
+        agent_context=AgentContext(skills=[_python_tips_skill()])
+    )
+    conversation = Conversation(agent=agent)
+
+    user_text = "How can I improve my Python code performance?"
+    conversation.send_message(user_text)
+
+    user_event = conversation.state.events[-1]
+    assert isinstance(user_event, MessageEvent)
+
+    # The user's own message is not rewritten ...
+    assert len(user_event.llm_message.content) == 1
+    assert isinstance(user_event.llm_message.content[0], TextContent)
+    assert user_event.llm_message.content[0].text == user_text
+
+    # ... the recalled knowledge rides alongside it in extended_content.
+    assert len(user_event.extended_content) == 1
+    assert "Use list comprehensions" in user_event.extended_content[0].text
+    assert user_event.activated_skills == ["python_tips"]
+
+    # The state records the activation so later turns can skip the skill.
+    assert conversation.state.activated_knowledge_skills == ["python_tips"]
+
+    # The fold into the LLM payload happens at to_llm_message() time.
+    llm_message = user_event.to_llm_message()
+    assert len(llm_message.content) == 2
+    assert isinstance(llm_message.content[0], TextContent)
+    assert llm_message.content[0].text == user_text
+    assert isinstance(llm_message.content[1], TextContent)
+    assert llm_message.content[1].text == user_event.extended_content[0].text
+
+
+def test_send_message_skips_already_activated_skill():
+    """A skill fires once per conversation, not once per matching message."""
+    agent = SendMessageDummyAgent(
+        agent_context=AgentContext(skills=[_python_tips_skill()])
+    )
+    conversation = Conversation(agent=agent)
+
+    conversation.send_message("Tell me about python performance")
+    conversation.send_message("More python tips please")
+
+    user_events = [
+        e
+        for e in conversation.state.events
+        if isinstance(e, MessageEvent) and e.source == "user"
+    ]
+    first_event, second_event = user_events
+
+    assert first_event.activated_skills == ["python_tips"]
+    assert len(first_event.extended_content) == 1
+
+    assert second_event.activated_skills == []
+    assert second_event.extended_content == []
+
+    # Recorded once, not duplicated.
+    assert conversation.state.activated_knowledge_skills == ["python_tips"]
+
+
+def test_send_message_without_trigger_match_leaves_event_plain():
+    """No keyword match: the event carries no activation and state stays empty."""
+    agent = SendMessageDummyAgent(
+        agent_context=AgentContext(skills=[_python_tips_skill()])
+    )
+    conversation = Conversation(agent=agent)
+
+    conversation.send_message("How do I write JavaScript code?")
+
+    user_event = conversation.state.events[-1]
+    assert isinstance(user_event, MessageEvent)
+    assert user_event.activated_skills == []
+    assert user_event.extended_content == []
+    assert conversation.state.activated_knowledge_skills == []
+
+
+def test_send_message_without_agent_context_leaves_event_plain():
+    """No agent_context: the activation block is a no-op."""
+    agent = SendMessageDummyAgent()
+    conversation = Conversation(agent=agent)
+
+    conversation.send_message("Tell me about python performance")
+
+    user_event = conversation.state.events[-1]
+    assert isinstance(user_event, MessageEvent)
+    assert user_event.activated_skills == []
+    assert user_event.extended_content == []
+    assert conversation.state.activated_knowledge_skills == []
+
+
+def test_send_message_activates_all_matching_skills():
+    """Every matching skill activates on the same message."""
+    testing_skill = Skill(
+        name="testing_framework",
+        content="Use pytest for comprehensive testing with fixtures.",
+        source="testing-framework.md",
+        trigger=KeywordTrigger(keywords=["testing", "pytest"]),
+    )
+    agent = SendMessageDummyAgent(
+        agent_context=AgentContext(skills=[_python_tips_skill(), testing_skill])
+    )
+    conversation = Conversation(agent=agent)
+
+    conversation.send_message("I need help with python testing using pytest")
+
+    user_event = conversation.state.events[-1]
+    assert isinstance(user_event, MessageEvent)
+    # Activation order is deterministic: AgentContext.skills declaration order.
+    assert user_event.activated_skills == ["python_tips", "testing_framework"]
+    # All matched skills are merged into a single extended_content block.
+    assert len(user_event.extended_content) == 1
+    assert "Use list comprehensions" in user_event.extended_content[0].text
+    assert "Use pytest" in user_event.extended_content[0].text
+    assert conversation.state.activated_knowledge_skills == [
+        "python_tips",
+        "testing_framework",
+    ]
+
+
+def test_send_message_user_message_suffix_without_skill_match():
+    """A static user_message_suffix reaches extended_content with no activation."""
+    agent = SendMessageDummyAgent(
+        agent_context=AgentContext(user_message_suffix="Always cite your sources.")
+    )
+    conversation = Conversation(agent=agent)
+
+    conversation.send_message("How do I write JavaScript code?")
+
+    user_event = conversation.state.events[-1]
+    assert isinstance(user_event, MessageEvent)
+    assert user_event.activated_skills == []
+    assert [c.text for c in user_event.extended_content] == [
+        "Always cite your sources."
+    ]
+    assert conversation.state.activated_knowledge_skills == []

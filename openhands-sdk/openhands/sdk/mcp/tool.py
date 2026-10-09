@@ -15,7 +15,13 @@ if TYPE_CHECKING:
 import mcp.types
 from litellm import ChatCompletionToolParam
 from openai.types.responses import FunctionToolParam
-from pydantic import Field, ValidationError
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
@@ -41,6 +47,44 @@ logger = get_logger(__name__)
 
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
+
+# mcp 2.x dumps its snake_case attribute names unless by_alias=True; mcp 1.x
+# only reads the camelCase wire names. Keys inside inputSchema/outputSchema
+# are user JSON Schema and must never be renamed.
+_MCP_TOOL_WIRE_KEYS: Final[dict[str, str]] = {
+    "input_schema": "inputSchema",
+    "output_schema": "outputSchema",
+    "meta": "_meta",
+}
+_MCP_NESTED_WIRE_KEYS: Final[dict[str, dict[str, str]]] = {
+    "annotations": {
+        "read_only_hint": "readOnlyHint",
+        "destructive_hint": "destructiveHint",
+        "idempotent_hint": "idempotentHint",
+        "open_world_hint": "openWorldHint",
+    },
+    "execution": {"task_support": "taskSupport"},
+    "icons": {"mime_type": "mimeType"},
+}
+
+
+def _mcp_tool_to_wire_keys(data: Any) -> Any:
+    """Normalize a serialized mcp.types.Tool to the MCP spec's camelCase keys."""
+    if not isinstance(data, dict):
+        return data
+    out = {_MCP_TOOL_WIRE_KEYS.get(k, k): v for k, v in data.items()}
+    for key, renames in _MCP_NESTED_WIRE_KEYS.items():
+        value = out.get(key)
+        if isinstance(value, dict):
+            out[key] = {renames.get(k, k): v for k, v in value.items()}
+        elif isinstance(value, list):
+            out[key] = [
+                {renames.get(k, k): v for k, v in item.items()}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+    return out
 
 
 # NOTE: We don't define MCPToolAction because it
@@ -244,6 +288,20 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
 
+    @field_validator("mcp_tool", mode="before")
+    @classmethod
+    def _read_either_mcp_spelling(cls, v: Any) -> Any:
+        return _mcp_tool_to_wire_keys(v)
+
+    @field_serializer("mcp_tool", mode="wrap")
+    def _write_mcp_wire_spelling(
+        self, v: mcp.types.Tool, handler: SerializerFunctionWrapHandler
+    ):
+        # Persisted events outlive the resolved mcp major; always write the
+        # spec's wire names so every mcp version can read them back. No return
+        # annotation, so the OpenAPI schema keeps referencing mcp.types.Tool.
+        return _mcp_tool_to_wire_keys(handler(v))
+
     @property
     def name(self) -> str:  # type: ignore[override]
         """Return the MCP tool name instead of the class name."""
@@ -333,7 +391,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         try:
             annotations = (
                 ToolAnnotations.model_validate(
-                    mcp_tool.annotations.model_dump(exclude_none=True)
+                    mcp_tool.annotations.model_dump(exclude_none=True, by_alias=True)
                 )
                 if mcp_tool.annotations
                 else None

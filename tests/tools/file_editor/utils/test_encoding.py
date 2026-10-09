@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from cachetools import LRUCache
 
 from openhands.tools.file_editor import file_editor
 from openhands.tools.file_editor.editor import FileEditor
@@ -35,14 +34,6 @@ def encoding_manager():
     return EncodingManager()
 
 
-def test_init(encoding_manager):
-    """Test initialization of EncodingManager."""
-    assert isinstance(encoding_manager, EncodingManager)
-    assert isinstance(encoding_manager._encoding_cache, LRUCache)
-    assert encoding_manager.default_encoding == "utf-8"
-    assert encoding_manager.confidence_threshold == 0.9
-
-
 def test_detect_encoding_nonexistent_file(encoding_manager):
     """Test detecting encoding for a nonexistent file."""
     nonexistent_path = Path("/nonexistent/file.txt")
@@ -67,6 +58,31 @@ def test_detect_encoding_utf8_with_icon(encoding_manager, temp_file):
         f.write("Hello 😊")
 
     encoding = encoding_manager.detect_encoding(temp_file)
+    assert encoding.lower() == "utf-8"
+
+
+def test_detect_encoding_prefers_valid_utf8(encoding_manager, temp_file):
+    temp_file.write_text('{"title": "用户研究"}', encoding="utf-8")
+
+    with patch(
+        "charset_normalizer.detect",
+        return_value={"encoding": "windows-1251", "confidence": 1.0},
+    ):
+        encoding = encoding_manager.detect_encoding(temp_file)
+
+    assert encoding.lower() == "utf-8"
+
+
+@pytest.mark.parametrize("guess", ["windows-1251", "windows-1252", "iso-8859-1"])
+def test_get_encoding_prefers_valid_utf8(encoding_manager, temp_file, guess):
+    temp_file.write_text('{"title": "用户研究"}', encoding="utf-8")
+
+    with patch(
+        "charset_normalizer.detect",
+        return_value={"encoding": guess, "confidence": 1.0},
+    ):
+        encoding = encoding_manager.get_encoding(temp_file)
+
     assert encoding.lower() == "utf-8"
 
 

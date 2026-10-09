@@ -14,8 +14,15 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import ActionEvent, AgentErrorEvent, Event, ObservationEvent
-from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.event import (
+    ActionEvent,
+    AgentErrorEvent,
+    Event,
+    MessageEvent,
+    ObservationEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.workspace import LocalWorkspace
@@ -151,3 +158,91 @@ async def test_expired_lease_takeover_fences_stale_writer_with_disk_events(tmp_p
 
             with pytest.raises(ConversationOwnershipLostError):
                 primary_state.execution_status = ConversationExecutionStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_crash_recovery_error_is_on_active_branch_for_next_turn(tmp_path):
+    """A restart between event-file append and persisted HEAD must remain resumable.
+
+    This reproduces the production ordering with real ConversationService,
+    LocalConversation, EventLog, and filesystem persistence:
+
+    1. Persist an action while the conversation is RUNNING.
+    2. Simulate process death after the action file lands but before
+       ``leaf_event_id`` is saved by rewinding only the persisted HEAD.
+    3. Let a second service take over the expired lease and synthesize the
+       crash-recovery AgentErrorEvent.
+    4. Append a real follow-up user message, like the Iterate watchdog does.
+    5. Build the view's manipulation indices, the same operation the
+       summarizing condenser performs before the next LLM turn.
+
+    The current implementation writes the recovery error as a sibling of the
+    action (both parented to the stale HEAD), so the active branch contains a
+    tool result without its tool call and manipulation_indices raises KeyError.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(_request(workspace_dir))
+        assert primary._event_services is not None
+        event_service = primary._event_services[conversation_info.id]
+        state = await event_service.get_state()
+        conversation = event_service._conversation
+        assert conversation is not None
+        conversation_dir = conversations_dir / conversation_info.id.hex
+
+        # Establish a realistic active branch before the in-flight action.
+        system_prompt = SystemPromptEvent(
+            system_prompt=TextContent(text="You are a coding agent."), tools=[]
+        )
+        conversation._on_event(system_prompt)
+        user_message = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="run the command")]
+            ),
+        )
+        conversation._on_event(user_message)
+        stale_leaf = state.leaf_event_id
+        assert stale_leaf == user_message.id
+
+        running_action = _create_running_terminal_action("chatcmpl-tool-crash-recovery")
+        conversation._on_event(running_action)
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        assert state.leaf_event_id == running_action.id
+
+        # Reproduce the crash window: the action event file exists, while the
+        # base snapshot still points at the preceding user message.
+        base_state_path = conversation_dir / "base_state.json"
+        base_state = json.loads(base_state_path.read_text())
+        base_state["leaf_event_id"] = stale_leaf
+        base_state_path.write_text(json.dumps(base_state))
+        _expire_lease(conversation_dir)
+
+        async with ConversationService(
+            conversations_dir=conversations_dir
+        ) as secondary:
+            assert secondary._event_services is not None
+            recovered = secondary._event_services[conversation_info.id]
+            recovered_state = await recovered.get_state()
+
+            disk_events = _load_disk_events(conversation_dir)
+            recovery_error = next(
+                event for event in disk_events if isinstance(event, AgentErrorEvent)
+            )
+            assert recovery_error.tool_call_id == running_action.tool_call_id
+
+            # Resume exactly as a follow-up automation does.
+            await recovered.send_message(
+                Message(
+                    role="user",
+                    content=[TextContent(text="continue after the restart")],
+                ),
+                run=False,
+            )
+
+            # Must not raise: the next turn/condenser needs a valid tool-call
+            # boundary in the active branch.
+            recovered_state.view.manipulation_indices

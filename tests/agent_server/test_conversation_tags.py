@@ -236,7 +236,6 @@ async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path)
     tags = {"source": "pipeline", "symbol": "gold"}
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         tags=tags,
@@ -246,6 +245,7 @@ async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path)
 
     event_service = EventService(
         stored=stored,
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         conversations_dir=tmp_path / "conversations",
     )
 
@@ -277,7 +277,6 @@ async def test_event_service_start_forwards_observability_span_name(tmp_path):
     """EventService.start() must pass stored child span names to LocalConversation."""
     stored = StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir=str(tmp_path)),
         confirmation_policy=NeverConfirm(),
         observability_span_name="pr_review_evaluation",
@@ -287,6 +286,7 @@ async def test_event_service_start_forwards_observability_span_name(tmp_path):
 
     event_service = EventService(
         stored=stored,
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
         conversations_dir=tmp_path / "conversations",
     )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import multiprocessing
 import socket
 import time
@@ -22,11 +23,11 @@ from starlette.responses import PlainTextResponse, Response
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.llm import Message, TextContent, TokenCallbackType
-from openhands.sdk.llm.llm import LLMCallContext
+from openhands.sdk.llm import LLMCallContext, Message, TextContent, TokenCallbackType
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config
+from openhands.sdk.mcp.exceptions import MCPError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.mcp.utils import MCPToolProvider
 from openhands.sdk.testing import TestLLM
@@ -246,8 +247,18 @@ def test_reconciliation_targets_replaced_agent(tmp_path: Path) -> None:
 
     client._tools_reconciled_callback(cast(MCPClient, client), [replacement])
 
-    assert set(conversation.agent.tools_map) == {"replacement"}
-    assert set(old_agent.tools_map) == {"initial"}
+    updated_mcp_tools = {
+        name
+        for name, tool in conversation.agent.tools_map.items()
+        if isinstance(tool, MCPToolDefinition)
+    }
+    old_mcp_tools = {
+        name
+        for name, tool in old_agent.tools_map.items()
+        if isinstance(tool, MCPToolDefinition)
+    }
+    assert updated_mcp_tools == {"replacement"}
+    assert old_mcp_tools == {"initial"}
     conversation.close()
 
 
@@ -503,3 +514,52 @@ def test_refresh_recovers_after_server_was_temporarily_unavailable(
         assert set(conversation.agent.tools_map) == {"changing", "new_tool"}
     finally:
         conversation.close()
+
+
+class FailingMCPToolProvider:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def create_tools(
+        self,
+        mcp_config: dict[str, MCPServer],
+        timeout: float = 30.0,
+        *,
+        on_tools_changed: Any = None,
+        on_tools_reconciled: Any = None,
+    ) -> MCPClient:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        MCPError("MCP Connection Failure"),
+        OSError("offline"),
+        RuntimeError("unhealthy server"),
+    ],
+)
+def test_mcp_startup_failure_does_not_abort_conversation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, error: Exception
+) -> None:
+    conversation = LocalConversation(
+        agent=Agent(
+            llm=LLM(model="test-model", api_key=SecretStr("test-key")),
+            tools=[],
+            include_default_tools=[],
+            mcp_config=coerce_mcp_config({"broken": {"command": "missing-mcp"}}),
+        ),
+        workspace=str(tmp_path),
+        visualizer=None,
+        mcp_tool_provider=FailingMCPToolProvider(error),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        conversation._ensure_agent_ready()
+
+    assert conversation._agent_ready
+    assert any(
+        "MCP server startup failed for broken" in record.message
+        for record in caplog.records
+    )
+    conversation.close()

@@ -3,12 +3,13 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -18,7 +19,7 @@ from fastapi import FastAPI
 from openhands.agent_server import bash_router as bash_router_module
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
-from openhands.agent_server.models import BashCommand
+from openhands.agent_server.models import BashCommand, BashEventSortOrder, BashOutput
 from openhands.agent_server.server_details_router import (
     mark_initialization_complete,
     server_details_router,
@@ -91,6 +92,151 @@ async def test_bash_timeout_runs_sigterm_trap(
     assert secret not in caplog.text
 
 
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Stop tests need the Unix process-group backend.",
+)
+
+
+async def _wait_for_command_exit(
+    client: httpx.AsyncClient, cmd_id: UUID, deadline: float = 8.0
+) -> list[dict]:
+    """Poll bash events until the command publishes a terminal output."""
+    end = time.monotonic() + deadline
+    while time.monotonic() < end:
+        items = (
+            await client.get(
+                "/api/bash/bash_events/search",
+                params={"command_id__eq": str(cmd_id)},
+            )
+        ).json()["items"]
+        if any(
+            e["kind"] == "BashOutput" and e.get("exit_code") is not None for e in items
+        ):
+            return items
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"command {cmd_id} did not finish")
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_terminates_group_and_records_output(
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+):
+    marker = tmp_path / "stop_cleanup_ran"
+    ready = tmp_path / "shell_ready"
+    resp = await client.post(
+        "/api/bash/start_bash_command",
+        json={
+            "command": (f"trap 'touch {marker}; exit 0' TERM; touch {ready}; sleep 30"),
+            "timeout": 60,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    cmd_id = resp.json()["id"]
+
+    # Wait until the shell has installed its TERM trap: stopping earlier
+    # would signal a shell that cannot run cleanup yet.
+    ready_deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert time.monotonic() < ready_deadline, "shell never became ready"
+        await asyncio.sleep(0.1)
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+    assert stop.json() == {"success": True}
+
+    items = await _wait_for_command_exit(client, UUID(cmd_id))
+    assert any(e.get("exit_code") is not None for e in items)
+
+    await asyncio.sleep(0.2)  # let the trap's filesystem write land
+    assert marker.exists(), "SIGTERM trap did not run; stop skipped escalation."
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_terminates_descendants(
+    client: httpx.AsyncClient,
+):
+    """A background child holding the pipes must die with the group.
+
+    With a pid-only kill the surviving child would keep stdout open and
+    the command would never publish a terminal output; only a process
+    group signal finishes promptly.
+    """
+    resp = await client.post(
+        "/api/bash/start_bash_command",
+        json={"command": "sleep 60 & sleep 45", "timeout": 120},
+    )
+    assert resp.status_code == 200, resp.text
+    cmd_id = resp.json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+    assert stop.status_code == 200, stop.text
+
+    items = await _wait_for_command_exit(client, UUID(cmd_id))
+    assert any(e.get("exit_code") is not None for e in items)
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_leaves_concurrent_command_running(
+    client: httpx.AsyncClient,
+):
+    first = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "sleep 30", "timeout": 60},
+        )
+    ).json()["id"]
+    second = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "sleep 30", "timeout": 60},
+        )
+    ).json()["id"]
+
+    stop = await client.post(f"/api/bash/bash_commands/{first}/stop")
+    assert stop.status_code == 200, stop.text
+    await _wait_for_command_exit(client, UUID(first))
+
+    others = (
+        await client.get(
+            "/api/bash/bash_events/search",
+            params={"command_id__eq": second},
+        )
+    ).json()["items"]
+    assert not any(
+        e["kind"] == "BashOutput" and e.get("exit_code") is not None for e in others
+    ), "concurrent command was affected by the stop"
+
+    stop_second = await client.post(f"/api/bash/bash_commands/{second}/stop")
+    assert stop_second.status_code == 200, stop_second.text
+    await _wait_for_command_exit(client, UUID(second))
+
+
+@posix_only
+@pytest.mark.timeout(30)
+async def test_stop_bash_command_idempotent_for_finished_and_unknown(
+    client: httpx.AsyncClient,
+):
+    unknown = await client.post(f"/api/bash/bash_commands/{uuid4()}/stop")
+    assert unknown.status_code == 404, unknown.text
+
+    cmd_id = (
+        await client.post(
+            "/api/bash/start_bash_command",
+            json={"command": "echo hi", "timeout": 10},
+        )
+    ).json()["id"]
+    await _wait_for_command_exit(client, UUID(cmd_id))
+
+    for _ in range(2):
+        stop = await client.post(f"/api/bash/bash_commands/{cmd_id}/stop")
+        assert stop.status_code == 200, stop.text
+
+
 async def test_bash_execution_error_log_omits_command(
     bash_service: BashEventService,
     caplog: pytest.LogCaptureFixture,
@@ -108,6 +254,121 @@ async def test_bash_execution_error_log_omits_command(
 
     assert "Error executing bash command" in caplog.text
     assert secret not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# search_bash_events
+# ---------------------------------------------------------------------------
+
+
+async def test_search_bash_events_filters_and_paginates(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    other_command_id = uuid4()
+
+    command = BashCommand(command="echo target", id=command_id, timestamp=_OLD)
+    output_0 = BashOutput(
+        command_id=command_id,
+        order=0,
+        stdout="first",
+        timestamp=_OLD.replace(microsecond=1),
+    )
+    output_1 = BashOutput(
+        command_id=command_id,
+        order=1,
+        stdout="second",
+        timestamp=_OLD.replace(microsecond=2),
+    )
+    other_output = BashOutput(
+        command_id=other_command_id,
+        order=0,
+        stdout="other",
+        timestamp=_OLD.replace(microsecond=3),
+    )
+    for event in (command, output_0, output_1, other_output):
+        service._save_event_to_file(event)
+
+    first_page = await service.search_bash_events(
+        kind__eq="BashOutput",
+        command_id__eq=command_id,
+        sort_order=BashEventSortOrder.TIMESTAMP,
+        limit=1,
+    )
+    assert [event.id for event in first_page.items] == [output_0.id]
+    assert first_page.next_page_id is not None
+
+    second_page = await service.search_bash_events(
+        kind__eq="BashOutput",
+        command_id__eq=command_id,
+        sort_order=BashEventSortOrder.TIMESTAMP,
+        page_id=first_page.next_page_id,
+        limit=10,
+    )
+    assert [event.id for event in second_page.items] == [output_1.id]
+    assert second_page.next_page_id is None
+
+
+async def test_search_bash_events_runs_blocking_scan_off_event_loop(
+    tmp_path: Path,
+):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    service._save_event_to_file(BashCommand(command="echo ok"))
+
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.to_thread",
+        wraps=asyncio.to_thread,
+    ) as to_thread:
+        page = await service.search_bash_events(limit=10)
+
+    assert len(page.items) == 1
+    assert to_thread.call_count == 1
+    assert to_thread.call_args.args[0] == service._search_bash_events_sync
+
+
+async def test_get_bash_event_runs_blocking_scan_off_event_loop(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command = BashCommand(command="echo ok")
+    service._save_event_to_file(command)
+
+    with patch(
+        "openhands.agent_server.bash_service.asyncio.to_thread",
+        wraps=asyncio.to_thread,
+    ) as to_thread:
+        event = await service.get_bash_event(command.id.hex)
+
+    assert event is not None
+    assert event.id == command.id
+    assert to_thread.call_count == 1
+    assert to_thread.call_args.args[0] == service._get_bash_event_sync
+
+
+async def test_concurrent_searches_serialize_filesystem_scans(tmp_path: Path):
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    service._save_event_to_file(BashCommand(command="echo ok"))
+
+    active = 0
+    max_active = 0
+    original_search = service._search_bash_events_sync
+
+    def tracked_search(*args):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            # Keep the worker occupied long enough for all concurrent callers
+            # to queue on the async semaphore.
+            time.sleep(0.02)
+            return original_search(*args)
+        finally:
+            active -= 1
+
+    with patch.object(service, "_search_bash_events_sync", tracked_search):
+        pages = await asyncio.gather(
+            *(service.search_bash_events(limit=10) for _ in range(8))
+        )
+
+    assert all(len(page.items) == 1 for page in pages)
+    assert max_active == 1
 
 
 # ---------------------------------------------------------------------------

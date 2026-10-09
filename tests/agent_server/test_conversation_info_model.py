@@ -56,13 +56,27 @@ def _make_stored(state: ConversationState) -> StoredConversation:
     workspace = LocalWorkspace(working_dir=state.workspace.working_dir)
     return StoredConversation(
         id=state.id,
-        agent=state.agent,
         workspace=workspace,
         title="Test",
         metrics=None,
         created_at=utc_now(),
         updated_at=utc_now(),
     )
+
+
+def test_tool_module_qualnames_are_returned_to_attaching_clients():
+    agent = Agent(
+        llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm"),
+        tools=[],
+    )
+    state = _make_state(agent)
+    stored = _make_stored(state).model_copy(
+        update={"tool_module_qualnames": {"TerminalTool": "example.terminal"}}
+    )
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.tool_module_qualnames == {"TerminalTool": "example.terminal"}
 
 
 def test_current_model_id_is_lifted_from_acp_agent():

@@ -90,14 +90,16 @@ class AgentLaunchAdditions(BaseModel):
     )
 
 
-class StartConversationRequest(BaseModel):
-    """Payload to create a new conversation.
+class ConversationConfig(BaseModel):
+    """Shared conversation configuration — everything except the agent.
 
-    Supports any concrete :class:`AgentBase` implementation, including regular
-    OpenHands agents and ACP agents. Clients may provide either a concrete
-    ``agent`` payload or an ``agent_settings`` payload; when ``agent_settings``
-    is provided without ``agent``, the settings are validated with the
-    ``agent_kind`` discriminator and converted to the appropriate agent type.
+    This is the common base for :class:`StartConversationRequest` (which adds the
+    ``agent``/``agent_settings``/``agent_profile_id`` family) and the
+    agent-server's ``StoredConversation`` (which does NOT persist the agent —
+    the agent's single source of truth is ``ConversationState`` /
+    ``base_state.json``). Keeping the agent off this base is what makes the
+    duplication structurally impossible rather than something a reviewer has to
+    remember to exclude.
     """
 
     workspace: LocalWorkspace = Field(
@@ -256,6 +258,14 @@ class StartConversationRequest(BaseModel):
             "span names for grouping or signal routing."
         ),
     )
+    observability_parent_span_context: str | None = Field(
+        default=None,
+        description=(
+            "Serialized parent span context used to attach this conversation to "
+            "an upstream automation or integration trace."
+        ),
+    )
+
     autotitle: bool = Field(
         default=True,
         description=(
@@ -276,33 +286,49 @@ class StartConversationRequest(BaseModel):
         ),
     )
 
+
+class StartConversationRequest(ConversationConfig):
+    """Payload to create a new conversation.
+
+    Extends :class:`ConversationConfig` with the agent source: a stored Agent
+    Profile (``agent_profile_id``), resolved agent settings (``agent_settings``),
+    or an ``agent`` built in code. The server builds the conversation's agent
+    from that source at launch; this model only validates it.
+
+    Note: the agent lives here on the *request*, deliberately not on
+    ``ConversationConfig``. The persisted record (``StoredConversation``) does
+    not carry the agent — its single source of truth is ``ConversationState`` /
+    ``base_state.json``.
+    """
+
     agent_settings: dict[str, Any] | None = Field(
         default=None,
-        exclude=True,
         description=(
-            "Optional agent settings payload. If `agent` is omitted, this is "
-            "validated with the AgentSettingsBase `agent_kind` discriminator and "
-            "used to construct the concrete agent."
+            "Reference-free agent settings, validated with the AgentSettingsBase "
+            "`agent_kind` discriminator. The server builds the agent from them "
+            "at launch. Ignored when `agent` is set."
         ),
     )
     agent_profile_id: UUID | None = Field(
         default=None,
         description=(
-            "Optional agent profile ID. When set, the agent-server resolves the "
-            "referenced profile server-side (stores + cipher are required) and "
-            "builds the agent from it. Mutually exclusive with `agent` and "
-            "`agent_settings`. The SDK validator enforces exclusivity only — "
-            "resolution happens in conversation_service, not here."
+            "Stored Agent Profile to launch. The server resolves it with its own "
+            "stores. Mutually exclusive with `agent` and `agent_settings`."
         ),
     )
     agent: AgentBase = Field(default=cast(AgentBase, None))
 
     @model_validator(mode="before")
     @classmethod
-    def _populate_agent_from_settings(cls, data: Any) -> Any:
+    def _normalize_agent_source(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        payload = dict(data)
+        # ``agent`` has no nullable type of its own; a null means "not this source".
+        payload = {
+            name: value
+            for name, value in data.items()
+            if name != "agent" or value is not None
+        }
         has_profile_id = payload.get("agent_profile_id") is not None
         has_agent = payload.get("agent") is not None
         has_agent_settings = payload.get("agent_settings") is not None
@@ -311,26 +337,29 @@ class StartConversationRequest(BaseModel):
                 "`agent_profile_id` is mutually exclusive with"
                 " `agent` and `agent_settings`"
             )
-        if not has_profile_id:
-            if payload.get("agent") is None and has_agent_settings:
-                from openhands.sdk.settings.model import validate_agent_settings
+        if has_agent:
+            payload["agent_settings"] = None
+        if not has_agent and has_agent_settings:
+            from openhands.sdk.settings.model import validate_agent_settings
 
-                try:
-                    payload["agent"] = validate_agent_settings(
-                        payload["agent_settings"]
-                    ).create_agent()
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(str(exc)) from exc
-            elif isinstance(payload.get("agent"), dict):
-                agent_payload = dict(payload["agent"])
-                if "kind" not in agent_payload and "llm" in agent_payload:
-                    agent_payload["kind"] = "Agent"
-                payload["agent"] = agent_payload
+            try:
+                validate_agent_settings(payload["agent_settings"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(str(exc)) from exc
+        elif isinstance(payload.get("agent"), dict):
+            agent_payload = dict(payload["agent"])
+            if "kind" not in agent_payload and "llm" in agent_payload:
+                agent_payload["kind"] = "Agent"
+            payload["agent"] = agent_payload
         return payload
 
     @model_validator(mode="after")
     def _require_agent(self) -> StartConversationRequest:
-        if self.agent is None and self.agent_profile_id is None:
+        if (
+            self.agent is None
+            and self.agent_settings is None
+            and self.agent_profile_id is None
+        ):
             raise ValueError(
                 "One of `agent`, `agent_settings`, or"
                 " `agent_profile_id` must be provided"

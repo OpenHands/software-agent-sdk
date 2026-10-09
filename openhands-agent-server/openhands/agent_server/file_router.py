@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import fnmatch
 import io
 import json
@@ -9,7 +10,7 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import IO, Annotated, Literal
+from typing import IO, Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
@@ -25,7 +26,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from openhands.agent_server._secret_redaction import redacted_file_bytes
+from openhands.agent_server._secret_redaction import (
+    redacted_json_bytes,
+    should_redact,
+)
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
@@ -38,6 +42,7 @@ from openhands.sdk.git.utils import (
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.files import is_temp_file
 
 
 class SubdirectoryEntry(BaseModel):
@@ -63,6 +68,18 @@ class HomeResponse(BaseModel):
 
 logger = get_logger(__name__)
 file_router = APIRouter(prefix="/file", tags=["Files"])
+file_discovery_router = APIRouter(prefix="/file", tags=["Files"])
+_FILE_DOWNLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "content": {
+            # Existing routes advertised this media type. Runtime aliases discard it.
+            "application/json": {"schema": {}},
+            "application/octet-stream": {
+                "schema": {"type": "string", "format": "binary"}
+            },
+        }
+    }
+}
 
 
 async def _upload_file(path: str, file: UploadFile) -> Success:
@@ -139,24 +156,50 @@ async def _download_file(path: str) -> FileResponse:
         )
 
 
+_TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+
+
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     """Create a zip archive for source_dir using only Python stdlib APIs.
 
     Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
     are redacted on the way into the archive so a downloaded trajectory never
-    leaks API keys — see ``redacted_file_bytes``.
+    leaks API keys — see ``redacted_json_bytes``. Top-level directories in
+    ``_TRAJECTORY_EXCLUDED_TOP_DIRS`` hold runtime credentials and are omitted.
+
+    The conversation may still be running and saving state while this walks
+    it, so files that are still being written (``*.tmp``) are skipped, and so
+    are entries that disappear between listing and reading. Each JSON file is
+    read once, so the bytes checked for secrets are the bytes that get
+    archived.
     """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
+                if path.relative_to(source_dir).parts[0] in (
+                    _TRAJECTORY_EXCLUDED_TOP_DIRS
+                ):
+                    continue
+                if is_temp_file(path):
+                    # A save in progress (or left by a crash), from
+                    # atomic_write_text or the lease's owner_lease.tmp; the
+                    # file it replaces is archived.
+                    continue
                 arcname = str(path.relative_to(source_dir.parent))
-                if path.is_file():
-                    redacted = redacted_file_bytes(path)
-                    if redacted is not None:
-                        archive.writestr(arcname, redacted)
-                        continue
-                archive.write(path, arcname)
+                # Skip entries removed or renamed away after rglob listed them.
+                with contextlib.suppress(FileNotFoundError):
+                    if should_redact(path) and path.is_file():
+                        zinfo = zipfile.ZipInfo.from_file(path, arcname)
+                        data = path.read_bytes()
+                        redacted = redacted_json_bytes(data, path)
+                        archive.writestr(
+                            zinfo,
+                            data if redacted is None else redacted,
+                            compress_type=zipfile.ZIP_DEFLATED,
+                        )
+                    else:
+                        archive.write(path, arcname)
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
@@ -655,12 +698,60 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.get("/download")
+@file_router.get(
+    "/download", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
 ) -> FileResponse:
     """Download a file from the workspace using query parameter (preferred method)."""
     return await _download_file(path)
+
+
+@file_router.post("/create_directory")
+async def create_directory(
+    path: Annotated[str, Query(description="Absolute directory path to create")],
+) -> Success:
+    """Create a directory in the workspace, including any missing parents.
+
+    Idempotent: an existing directory succeeds and its contents are left
+    untouched. Creating over an existing file, or under a path whose parent is
+    a file, is a client error (400) rather than a server fault.
+    """
+    update_last_execution_time()
+    logger.info(f"Creating directory: {path}")
+
+    target_path = Path(path)
+    if not target_path.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+
+    try:
+        await asyncio.to_thread(lambda: target_path.mkdir(parents=True, exist_ok=True))
+    except (FileExistsError, NotADirectoryError):
+        # mkdir(exist_ok=True) still raises when the final component exists as a
+        # non-directory; NotADirectoryError covers a parent component being a
+        # file. Both are the caller's path being wrong, not a server fault.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path exists and is not a directory",
+        )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+    except Exception as e:
+        logger.error(f"Failed to create directory {path}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create directory: {str(e)}",
+        )
+
+    logger.info(f"Created directory {target_path}")
+    return Success()
 
 
 def _list_home_favorites(
@@ -711,7 +802,7 @@ def _list_root_locations() -> list[FileBrowserEntry]:
     return [FileBrowserEntry(label="/", path="/")]
 
 
-@file_router.get("/home")
+@file_discovery_router.get("/home")
 async def get_home_directory(
     include_hidden: Annotated[
         bool,
@@ -734,7 +825,7 @@ async def get_home_directory(
     )
 
 
-@file_router.get("/search_subdirs")
+@file_discovery_router.get("/search_subdirs")
 async def search_subdirs(
     path: Annotated[
         str,
@@ -746,7 +837,7 @@ async def search_subdirs(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     include_hidden: Annotated[
         bool,
@@ -764,8 +855,6 @@ async def search_subdirs(
     the ``next_page_id`` returned by the previous page (the lowercase name of
     the first item to include on the next page).
     """
-    assert limit > 0
-    assert limit <= 100
 
     target = Path(path)
     if not target.is_absolute():
@@ -821,7 +910,11 @@ async def search_subdirs(
     return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
 
-@file_router.get("/download-trajectory/{conversation_id}")
+@file_router.get(
+    "/download-trajectory/{conversation_id}",
+    responses=_FILE_DOWNLOAD_RESPONSES,
+    response_class=FileResponse,
+)
 async def download_trajectory(
     conversation_id: UUID,
 ) -> FileResponse:
@@ -845,7 +938,9 @@ async def download_trajectory(
     )
 
 
-@file_router.get("/archive")
+@file_router.get(
+    "/archive", responses=_FILE_DOWNLOAD_RESPONSES, response_class=FileResponse
+)
 async def archive_directory(
     path: Annotated[
         str, Query(description="Absolute path of the directory to archive")

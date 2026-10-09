@@ -25,8 +25,54 @@ strong bias toward simplicity and maintainable code.
   matters, and what to do instead.
 </ROLE>
 
+## Cross-Repository Boundaries
+
+This repository owns the Python SDK and Agent Server: agent and tool behavior, conversations, workspaces, events, and the canonical REST/WebSocket API. Related responsibilities live elsewhere:
+
+- [`OpenHands/OpenHands`](https://github.com/OpenHands/OpenHands) owns Agent Canvas UI, frontend state, backend selection, and local-stack orchestration.
+- `clients/typescript/` mirrors the Agent Server API for browser-compatible TypeScript clients.
+- [`OpenHands/extensions`](https://github.com/OpenHands/extensions) owns reusable skills, plugins, automations, and integrations; [`OpenHands/automation`](https://github.com/OpenHands/automation) owns automation definitions, scheduling, webhooks, run history, dispatch, and sandbox lifecycle orchestration; this repository executes the dispatched conversations.
+
+The usual flow is SDK/Agent Server → OpenAPI contract → `clients/typescript` → Agent Canvas. Implement backend behavior and endpoints in the Python SDK or Agent Server packages first, then update the typed client and downstream applications as needed. If a PR is opened in the wrong repository, explicitly recommend closing and moving it to the repository that owns the change rather than merging it here.
+
+All pull requests must comply with [`.agents/skills/custom-codereview-guide.md`](.agents/skills/custom-codereview-guide.md), in addition to the repository's contribution requirements and CI checks.
+
+For issue triage, read [the review guide](.agents/skills/custom-codereview-guide.md#issue-triage-ownership-and-scope)
+for ownership and scope; PR evidence is not an issue-readiness requirement.
+
+## Review-Facing Implementation Checklist
+
+Code should satisfy the repository review checkpoints before the PR is opened:
+
+- Trace cross-layer changes through every affected public entry point, including
+  factories, constructors, registries, serialization, REST/WebSocket transport,
+  `clients/typescript/`, and create/resume/fork paths. Do not add a field or
+  option at one layer while another supported path drops or ignores it.
+- Treat public Python and server APIs, defaults, serialized events, persisted
+  settings, and stored conversations as compatibility surfaces. Use the
+  deprecation, schema-version migration, and golden-fixture mechanisms described
+  below instead of one-off shims.
+- Give tasks, processes, connections, plugins, event loops, and persistent
+  artifacts an owner. Cancellation must stop underlying work; close and rollback
+  paths must cover success, failure, and cancellation; shared conversation state
+  must use its existing synchronization mechanism.
+- Route credentials through `openhands.sdk.utils.pydantic_secrets` and verify the
+  full input, serialization, persistence, logging, resume, and delivery path.
+  Never introduce a parallel redaction or secret-sentinel implementation.
+- Verify imports, executables, dependency installation, paths, and process
+  cleanup in every affected production artifact, including the packaged Agent
+  Server, Docker images, and relevant host platforms. A mocked unit test alone
+  does not validate a packaging or installation change.
+- Every LLM request built in this repo must place a `system` message before the
+  first `user` message (see "LLM message construction invariant" in
+  `DEVELOPMENT.md`). This covers the agent loop and all standalone calls
+  (condensers, goal judge, profile pre-flight ping, security analyzers, etc.).
+  The first message role must be `system`, or there must be a documented
+  exception (ACP agents, subscription/Codex transport).
+
 ## Repository Memory
 - Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.retry_decorator()` (tenacity `retry`, which wraps coroutines natively — there is no separate async retry path) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
+- Async LLM hard timeouts belong inside the tenacity-decorated attempt so each timeout is retryable; stream idle timeouts wrap each `__anext__()` call so receiving a chunk resets the idle deadline. Both become LiteLLM `Timeout` errors before retry classification and eventually map to `LLMTimeoutError` after retries are exhausted.
 - `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
 - OpenHands provider LLMs keep public config as `openhands/<model>` and translate to `litellm_proxy/<model>` plus the OpenHands proxy `api_base` only at LiteLLM boundaries. Legacy persisted proxy payloads are migrated once at settings/profile load boundaries; do not add downstream UI reverse-mapping for the normal path.
 - Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config structure and semantics; downstream apps should own client-specific ordering, icons, widgets, and slash-command presentation.
@@ -37,7 +83,7 @@ strong bias toward simplicity and maintainable code.
 - Persisted settings compatibility is enforced by `.github/scripts/check_persisted_settings_compat.py` plus `tests/sdk/persisted_settings_baselines/vN/` golden fixtures. When a versioned persisted settings shape changes incompatibly, bump the relevant schema version constant, add the migration step, and add a fixture for the old shape.
 - The persisted-settings compatibility check builds its historical PyPI baseline environment with `uv` and a PyPI release-date `exclude-newer` cutoff, and golden fixtures may include a top-level `__expected__` map of dotted paths whose post-migration values must be preserved.
 
-- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a real migration chain (`AGENT_SETTINGS_SCHEMA_VERSION` is at 5) plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
+- Prefer removing genuinely temporary compatibility fields and serializers outright rather than carrying legacy settings shims in the SDK. Note that persisted settings now ship with a real migration chain (`AGENT_SETTINGS_SCHEMA_VERSION` is at 8) plus golden fixtures and a CI gate, so check `tests/sdk/persisted_settings_baselines/` before deleting anything that looks like a shim — it may be load-bearing for an older persisted payload.
 - Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
 - `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
 - Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
@@ -67,6 +113,7 @@ strong bias toward simplicity and maintainable code.
 - Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
 - Tool availability filtering belongs in `openhands-sdk/openhands/sdk/tool/registry.py` via `list_usable_tools()`, which preserves registration order and defaults tools to usable unless they expose an `is_usable()` callable. Environment-specific checks like Chromium detection should live on the concrete tool class (`BrowserToolSet.is_usable()`), while agent-server surfaces such as `/server_info` should consume the registry helper rather than re-implement per-tool filtering.
 - Pydantic secret field helpers live in `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`. `serialize_secret()` handles serialization (cipher / `expose_secrets` / default Pydantic masking); `validate_secret()` handles deserialization (cipher decryption, redacted/empty → `None`); `is_redacted_secret()` checks for the sentinel; `REDACTED_SECRET_VALUE` is the canonical sentinel string. For `dict[str, str]` fields whose values are all secrets, wrap each value in `SecretStr` and call `serialize_secret` per value (see `LookupSecret._serialize_secrets`). Do not hand-roll redaction logic in field serializers.
+- Agent-server persistence detects whether settings or secret payloads contain values by exercising the real Pydantic secret-serialization pipeline with `_SecretProbeCipher` (`persistence/models.py`). Do not replace this with a hardcoded field list or a recursive `SecretStr` walk: fields such as `AgentContext.secrets` store plain strings and only become secret-bearing inside their serializers.
 
 - `LookupSecret` normalizes hostless URLs against `OH_INTERNAL_SERVER_URL` (set by `openhands-agent-server.__main__` from the bound host/port, rewriting wildcard binds to loopback) and otherwise falls back to `http://127.0.0.1:8000`, so relative secret URLs can safely target the current agent-server instance.
 
@@ -135,7 +182,9 @@ consult each relevant package-level AGENTS.md.
 
 The `.pr/` directory is intentionally temporary by repository policy: the
 `PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
-PR-only reviewer context and automatically removes it after PR approval.
+PR-only reviewer context. It removes the directory after approval for
+same-repository PRs. If artifacts reach `main`, the workflow opens or updates a
+cleanup PR against `main`.
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
 
@@ -157,14 +206,14 @@ mkdir -p .pr
 ## How It Works
 
 1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
-2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
-3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+2. **Approval cleanup**: For same-repository PRs, approval removes `.pr/` from the PR branch via commit
+3. **Post-merge cleanup**: If `.pr/` reaches `main`, including through a fork PR, the workflow opens or updates a cleanup PR against `main`
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+- Cleanup PRs follow the normal review and required-check protections for `main`
 
 ## When to Use
 
@@ -283,6 +332,7 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - DON'T write TEST CLASSES unless absolutely necessary!
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
+- Assert observable behavior rather than source text, static implementation lists, private helpers or state, generic framework behavior, exhaustive default/export mirrors, or mock wiring. Tests should survive behavior-preserving refactors.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
 # Stress Tests
@@ -313,7 +363,8 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 
 <REPO>
 <PROJECT_STRUCTURE>
-- This is a `uv`-managed Python monorepo (single `uv.lock` at repo root) with multiple distributable packages: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- This is a monorepo with a `uv`-managed Python workspace (single `uv.lock` at repo root) and a separately managed npm package under `clients/typescript/`. The Python distributable packages are: `openhands-sdk/` (SDK), `openhands-tools/` (built-in tools), `openhands-workspace/` (workspace impls), and `openhands-agent-server/` (server runtime).
+- `clients/typescript/` contains the browser-compatible TypeScript client, with its own `package-lock.json`, npm scripts, and Vitest tests.
 - `examples/` contains runnable patterns; `tests/` is split by domain (`tests/sdk`, `tests/tools`, `tests/workspace`, `tests/agent_server`, etc.).
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 </PROJECT_STRUCTURE>
@@ -321,13 +372,14 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 <QUICK_COMMANDS>
 - Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
 - Lint/format: `make lint`, `make format`
-- Run tests: `uv run pytest`
+- Run Python tests: `uv run pytest`
+- Set up and validate the TypeScript client: `cd clients/typescript && npm ci && npm run lint && npm run build && npm test`
 - Run agent-server stress tests: `uv run pytest -m stress` (see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md))
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`
 - Run SDK examples: see [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
 - The example workflow runs `uv run pytest tests/examples/test_examples.py --run-examples`; each successful example must print an `EXAMPLE_COST: ...` line to stdout (use `EXAMPLE_COST: 0` for non-LLM examples).
-- Example scripts in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping logic in a `def main()` function. The `def main` pattern creates unnecessary nesting that makes examples harder to read; keep the code flat and script-like.
+- Linear walkthroughs in `examples/` should use top-level code flow (e.g. `with` blocks, bare statements) rather than wrapping the whole example in `def main()`. CLI-style examples with argument-driven branches may use a `main()` entrypoint.
 - Conversation plugins passed via `plugins=[...]` are lazy-loaded on the first `send_message()` or `run()`, so example code should inspect plugin-added skills or `resolved_plugins` only after that first interaction.
 </QUICK_COMMANDS>
 
