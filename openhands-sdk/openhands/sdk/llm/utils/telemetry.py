@@ -17,6 +17,7 @@ from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import sanitize_dict
 
 
 logger = get_logger(__name__)
@@ -188,7 +189,7 @@ class Telemetry(BaseModel):
 
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
-        self._req_ctx = telemetry_ctx or {}
+        self._req_ctx = _redact_request_headers(telemetry_ctx or {})
         self._open_span()
 
     def on_response(
@@ -464,6 +465,26 @@ class Telemetry(BaseModel):
                     f.write(log_data)
         except Exception as e:
             warnings.warn(f"Telemetry logging failed: {e}")
+
+
+def _redact_request_headers(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Return ``ctx`` with its logged request headers copied and redacted.
+
+    The logged ``kwargs`` share their header dicts with the live call, and some
+    LiteLLM providers write ``Authorization`` into them in place. Copying here,
+    before the call, keeps such mutations and caller-supplied credential
+    headers out of completion logs.
+    """
+    kwargs = ctx.get("kwargs")
+    if not isinstance(kwargs, dict):
+        return ctx
+    return {
+        **ctx,
+        "kwargs": {
+            k: sanitize_dict(v) if k in ("extra_headers", "headers") else v
+            for k, v in kwargs.items()
+        },
+    }
 
 
 def _safe_json(obj: Any) -> Any:

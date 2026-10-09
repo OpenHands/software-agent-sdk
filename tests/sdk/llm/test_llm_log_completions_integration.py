@@ -10,6 +10,7 @@ import tempfile
 import warnings
 from unittest.mock import patch
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -187,3 +188,77 @@ def test_llm_log_completions_with_tool_calls():
 
         assert "response" in log_data
         assert log_data["response"]["choices"][0]["message"]["tool_calls"] is not None
+
+
+def _read_only_log(log_dir: str) -> str:
+    log_files = os.listdir(log_dir)
+    assert len(log_files) == 1, f"Expected 1 log file, got {log_files}"
+    with open(os.path.join(log_dir, log_files[0]), encoding="utf-8") as f:
+        return f.read()
+
+
+def _completion_with_provider_auth_header(
+    log_dir: str, *, extra_headers: dict[str, str], fail: bool = False
+) -> None:
+    """Run one completion whose provider adds ``Authorization`` in place.
+
+    Some LiteLLM provider handlers (e.g. DeepSeek) write the bearer token into
+    the caller's ``extra_headers`` dict during the call.
+    """
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="test-log-completions-headers",
+        log_completions=True,
+        log_completions_folder=log_dir,
+        extra_headers=extra_headers,
+        num_retries=0,
+    )
+
+    def provider(**kwargs):
+        kwargs["extra_headers"]["Authorization"] = "Bearer provider-secret"
+        if fail:
+            raise ValueError("provider failed")
+        return create_mock_litellm_response(content="ok")
+
+    messages = [Message(role="user", content=[TextContent(text="hi")])]
+    with patch("openhands.sdk.llm.llm.litellm_completion", side_effect=provider):
+        if fail:
+            with pytest.raises(Exception):
+                llm.completion(messages)
+        else:
+            llm.completion(messages)
+
+
+@pytest.mark.parametrize("fail", [False, True], ids=["response", "error"])
+def test_log_completions_omit_provider_added_auth_header(fail):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _completion_with_provider_auth_header(
+            temp_dir, extra_headers={"X-Trace-Id": "trace-1"}, fail=fail
+        )
+        raw = _read_only_log(temp_dir)
+
+    logged_headers = json.loads(raw)["kwargs"]["extra_headers"]
+    assert "provider-secret" not in raw
+    assert "Authorization" not in logged_headers
+    assert logged_headers["X-Trace-Id"] == "trace-1"
+
+
+def test_log_completions_redact_caller_credential_headers():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _completion_with_provider_auth_header(
+            temp_dir,
+            extra_headers={
+                "X-Trace-Id": "trace-1",
+                "api-key": "caller-api-key",
+                "Proxy-Authorization": "Basic caller-proxy-secret",
+            },
+        )
+        raw = _read_only_log(temp_dir)
+
+    logged_headers = json.loads(raw)["kwargs"]["extra_headers"]
+    assert "caller-api-key" not in raw
+    assert "caller-proxy-secret" not in raw
+    assert logged_headers["api-key"] == "<redacted>"
+    assert logged_headers["Proxy-Authorization"] == "<redacted>"
+    assert logged_headers["X-Trace-Id"] == "trace-1"
