@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
+import warnings
 from types import MappingProxyType
 from typing import get_args
 
 import pytest
+from deprecation import DeprecatedWarning
 
 from openhands.sdk.settings.acp_install_catalog import (
     PI_ACP_VERSION,
@@ -460,6 +463,34 @@ class TestProviderModelLists:
         option = ACP_PROVIDERS["claude-code"].available_models[0]
         with pytest.raises((AttributeError, TypeError)):
             option.id = "mutated"  # type: ignore[misc]
+
+
+class TestModelListDeprecation:
+    @pytest.fixture(autouse=True)
+    def _released(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "openhands.sdk.utils.deprecation._current_version", lambda: "1.54.0"
+        )
+
+    @pytest.mark.parametrize("name", ["available_models", "default_model"])
+    def test_reading_a_curated_model_field_warns(self, name: str) -> None:
+        with pytest.warns(DeprecatedWarning, match=f"ACPProviderInfo.{name}"):
+            getattr(ACP_PROVIDERS["codex"], name)
+
+    def test_other_uses_of_a_provider_do_not_warn(self) -> None:
+        info = ACP_PROVIDERS["codex"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert info.display_name == "Codex"
+            assert info == get_acp_provider("codex")
+            hash(info)
+            repr(info)
+
+    @pytest.mark.parametrize("module", ["openhands.sdk", "openhands.sdk.settings"])
+    def test_importing_the_model_option_warns(self, module: str) -> None:
+        with pytest.warns(DeprecatedWarning, match="ACPModelOption"):
+            option = importlib.import_module(module).ACPModelOption
+        assert option is ACPModelOption
 
 
 class TestBuildSessionModelMeta:
