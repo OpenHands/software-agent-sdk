@@ -9,6 +9,15 @@ from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 OPENHANDS_PROVIDER_PREFIX: Final[str] = "openhands/"
 LITELLM_PROXY_PREFIX: Final[str] = "litellm_proxy/"
 OPENHANDS_LLM_PROXY_BASE_URL: Final[str] = "https://llm-proxy.app.all-hands.dev"
+DIGITALOCEAN_PROVIDER_PREFIX: Final[str] = "digitalocean/"
+DIGITALOCEAN_INFERENCE_BASE_URL: Final[str] = "https://inference.do-ai.run/v1"
+
+# SDK provider prefix -> (LiteLLM prefix, default api_base). DigitalOcean goes
+# through ``openai/`` because LiteLLM's ``gradient_ai/`` route rejects ``tools``.
+_ROUTED_PROVIDERS: Final[dict[str, tuple[str, str]]] = {
+    OPENHANDS_PROVIDER_PREFIX: (LITELLM_PROXY_PREFIX, OPENHANDS_LLM_PROXY_BASE_URL),
+    DIGITALOCEAN_PROVIDER_PREFIX: ("openai/", DIGITALOCEAN_INFERENCE_BASE_URL),
+}
 
 
 class LiteLLMCallKwargs(TypedDict):
@@ -49,12 +58,12 @@ def _is_verified_openhands_model_name(model_name: str) -> bool:
 
 
 def litellm_call_kwargs(model: str, base_url: str | None) -> LiteLLMCallKwargs:
-    if is_openhands_provider_model(model):
-        model_name = model.removeprefix(OPENHANDS_PROVIDER_PREFIX)
-        return {
-            "model": f"{LITELLM_PROXY_PREFIX}{model_name}",
-            "api_base": base_url or OPENHANDS_LLM_PROXY_BASE_URL,
-        }
+    for prefix, (litellm_prefix, default_base_url) in _ROUTED_PROVIDERS.items():
+        if model.startswith(prefix):
+            return {
+                "model": f"{litellm_prefix}{model.removeprefix(prefix)}",
+                "api_base": base_url or default_base_url,
+            }
     return {"model": model, "api_base": base_url}
 
 
