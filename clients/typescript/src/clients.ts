@@ -1,3 +1,4 @@
+export { ACPClient } from './client/acp-client';
 export { AgentProfilesClient } from './client/agent-profiles-client';
 export {
   ConversationEventStream,
@@ -46,6 +47,7 @@ export {
   isAgentServerVersionError,
 } from './client/agent-server-compatibility';
 
+export type { ACPClientOptions } from './client/acp-client';
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
 export type { CanvasExtensionsClientOptions } from './client/canvas-extensions-client';

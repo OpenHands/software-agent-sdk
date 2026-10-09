@@ -37,6 +37,7 @@ from openhands.sdk.settings import (
     export_agent_settings_schema,
 )
 from openhands.sdk.settings.api_models import MCPServerPatch
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
 logger = get_logger(__name__)
@@ -529,9 +530,16 @@ async def create_secret(
     """Create or update a custom secret (upsert).
 
     Raises:
-        HTTPException: 400 if secret name format is invalid, 500 if file is corrupted.
+        HTTPException: 422 if the name or value is invalid, 500 if file is corrupted.
     """
     _validate_secret_name(secret.name)
+
+    value = secret.value.get_secret_value()
+    if not value.strip() or is_redacted_secret(value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Secret value must not be empty or redacted",
+        )
 
     config = get_config(request)
     store = get_secrets_store(config)
@@ -539,7 +547,7 @@ async def create_secret(
     try:
         store.set_secret(
             name=secret.name,
-            value=secret.value.get_secret_value(),
+            value=value,
             description=secret.description,
         )
     except RuntimeError as e:

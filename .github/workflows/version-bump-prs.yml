@@ -97,84 +97,6 @@ jobs:
 
                   echo "✅ All packages are resolvable on PyPI!"
 
-            - name: Create PR for OpenHands-CLI repo
-              id: cli_pr
-              continue-on-error: true
-              env:
-                  VERSION: ${{ steps.get_version.outputs.version }}
-              run: |
-                  set -euo pipefail
-
-                  REPO="OpenHands/openhands-cli"
-                  BRANCH="bump-sdk-$VERSION"
-
-                  echo "🔄 Creating PR for $REPO..."
-
-                  # Clone the repo
-                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-cli-repo
-                  cd openhands-cli-repo
-
-                  # Configure git
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-
-                  # Check if branch already exists on remote
-                  if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-                    echo "⚠️ Branch $BRANCH already exists, checking out existing branch"
-                    git fetch origin "$BRANCH"
-                    git checkout "$BRANCH"
-                  else
-                    # Create branch
-                    git checkout -b "$BRANCH"
-                  fi
-
-                  # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
-                  # The target repo uses exclude-newer-package to exempt openhands-sdk/tools
-                  # from its 7-day freshness guardrail, so no UV_EXCLUDE_NEWER override
-                  # is needed — doing so would actually break the per-package exemptions.
-                  # We use --no-cache to avoid stale index data from just-published packages.
-                  uv add --python 3.12 --no-cache \
-                    "openhands-sdk==$VERSION" \
-                    "openhands-tools==$VERSION"
-
-                  # Check if there are changes
-                  if git diff --quiet; then
-                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
-                    exit 0
-                  fi
-
-                  # Commit and push
-                  git add pyproject.toml uv.lock
-                  git commit -m "Bump openhands-sdk, openhands-tools to $VERSION" \
-                    -m "Automated version bump after PyPI release." \
-                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
-                  git push -u origin "$BRANCH"
-
-                  # Check if PR already exists
-                  EXISTING_PR=$(gh pr list --repo "$REPO" --head "$BRANCH" --json number --jq '.[0].number')
-                  if [ -n "$EXISTING_PR" ]; then
-                    echo "✅ PR #$EXISTING_PR already exists for $REPO"
-                  else
-                    # Create PR
-                    gh pr create \
-                      --repo "$REPO" \
-                      --title "Bump SDK packages to v$VERSION" \
-                      --body "## Automated Version Bump
-
-                  This PR updates the following packages to version **$VERSION**:
-                  - \`openhands-sdk\`
-                  - \`openhands-tools\`
-
-                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
-
-                  ---
-                  _This PR was automatically created by the version-bump-prs workflow._" \
-                      --base main \
-                      --head "$BRANCH"
-
-                    echo "✅ PR created for $REPO"
-                  fi
-
             - name: Create PR for automation repo
               id: automation_pr
               continue-on-error: true
@@ -420,7 +342,7 @@ jobs:
                   # Doc/test files: every current-version literal is a version example the
                   # docs-version-sync / dev-safe tests assert, so replace them all.
                   for path in (
-                      "AGENTS.md",
+                      ".agents/skills/local-stack-runtime/references/guide.md",
                       "scripts/dev-safe.mjs",
                       "scripts/check-sdk-version-sync.mjs",
                       "__tests__/scripts/dev-safe.test.ts",
@@ -443,7 +365,7 @@ jobs:
 
                   # On the "branch already exists" re-run path CURRENT_VERSION == $VERSION,
                   # so only check for leftover stale literals when we actually changed the version.
-                  if [ "$CURRENT_VERSION" != "$VERSION" ] && grep -q "$CURRENT_VERSION" AGENTS.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts; then
+                  if [ "$CURRENT_VERSION" != "$VERSION" ] && grep -q "$CURRENT_VERSION" .agents/skills/local-stack-runtime/references/guide.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts; then
                     echo "❌ Stale $CURRENT_VERSION remains in doc/test files"
                     exit 1
                   fi
@@ -471,7 +393,7 @@ jobs:
 
                   # Commit and push
                   git add config/defaults.json package.json package-lock.json
-                  git add AGENTS.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts
+                  git add .agents/skills/local-stack-runtime/references/guide.md scripts/dev-safe.mjs scripts/check-sdk-version-sync.mjs __tests__/scripts/dev-safe.test.ts
                   git commit -m "chore: bump agent-server to $VERSION" \
                     -m "Updates versions.agentServer in config/defaults.json to match software-agent-sdk v$VERSION, and syncs the @openhands/typescript-client pin (package.json/package-lock.json) plus doc/test version examples so check-sdk-version-sync.mjs stays green." \
                     -m "Automated version bump after PyPI release." \
@@ -509,7 +431,7 @@ jobs:
                   ## Summary
 
                   - Move versions.agentServer in config/defaults.json to $VERSION (bare semver.
-                  - Sync the @openhands/typescript-client pin to $VERSION in package.json and package-lock.json (root deps + node_modules entry with registry integrity), plus doc/test version examples in AGENTS.md, scripts/dev-safe.mjs, scripts/check-sdk-version-sync.mjs,and __tests__/scripts/dev-safe.test.ts.
+                  - Sync the @openhands/typescript-client pin to $VERSION in package.json and package-lock.json (root deps + node_modules entry with registry integrity), plus doc/test version examples in .agents/skills/local-stack-runtime/references/guide.md, scripts/dev-safe.mjs, scripts/check-sdk-version-sync.mjs,and __tests__/scripts/dev-safe.test.ts.
 
 
 
@@ -652,7 +574,6 @@ jobs:
               id: summary
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
-                  CLI_OUTCOME: ${{ steps.cli_pr.outcome }}
                   AUTOMATION_OUTCOME: ${{ steps.automation_pr.outcome }}
                   ENTERPRISE_OUTCOME: ${{ steps.enterprise_pr.outcome }}
                   OPENHANDS_OUTCOME: ${{ steps.openhands_pr.outcome }}
@@ -687,12 +608,11 @@ jobs:
                     fi
                   }
 
-                  check "OpenHands-CLI" "$CLI_OUTCOME" "https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION"
                   check "automation"    "$AUTOMATION_OUTCOME" "https://github.com/OpenHands/automation/pulls?q=is%3Apr+bump-sdk-$VERSION"
                   check "OpenHands"     "$OPENHANDS_OUTCOME" "https://github.com/OpenHands/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION"
                   check "enterprise"    "$ENTERPRISE_OUTCOME" "https://github.com/OpenHands/enterprise/pulls?q=is%3Apr+bump-sdk-$VERSION"
 
-                  TOTAL=4
+                  TOTAL=3
                   if [ "$FAILED_COUNT" -eq 0 ]; then
                     OVERALL="success"
                     SLACK_TEXT="🚀 *SDK v$VERSION published to PyPI!*\n\nVersion bump PRs created:\n$SUCCESS_LINKS\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION|View Release>"
@@ -756,7 +676,7 @@ jobs:
             - name: Install Node.js
               uses: actions/setup-node@v7
               with:
-                  node-version: 22
+                  node-version: '24'
                   cache: npm
                   cache-dependency-path: clients/typescript/package-lock.json
 
