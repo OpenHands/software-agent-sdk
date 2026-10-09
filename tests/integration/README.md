@@ -136,8 +136,8 @@ These tests stress test the condensation system's interaction with LLM APIs to e
   - Condensation succeeds once multiple atomic units make it available
 - **c04_token_condenser** - Tests that token-based condensation works correctly. Verifies that:
   - An agent can be configured with LLMSummarizingCondenser using max_tokens
-  - The condenser correctly uses get_token_count to measure conversation size
-  - Condensation is triggered when token limit is exceeded
+  - The real agent tokenizer measures deterministic conversation text above the configured limit
+  - Condensation summarizes the oversized message when the token limit is exceeded
 - **c05_size_condenser** - Tests that size-based condensation works correctly. Verifies that:
   - An agent can be configured with LLMSummarizingCondenser using max_size
   - The condenser correctly counts events to measure conversation size
