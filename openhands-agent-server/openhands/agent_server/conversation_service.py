@@ -30,6 +30,7 @@ from openhands.agent_server.launch import (
     launch_source,
     live_launch_runtime,
     request_secrets,
+    request_security_analyzer,
     scoped_secrets,
     server_launch_stores,
 )
@@ -1784,7 +1785,7 @@ class ConversationService:
                 else None
             ),
             confirmation_policy=request.confirmation_policy,
-            security_analyzer=request.security_analyzer,
+            security_analyzer=request_security_analyzer(request, self.cipher),
             secrets=secrets,
             reuse_request=request,
             max_budget_per_run=request.max_budget_per_run,

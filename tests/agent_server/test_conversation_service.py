@@ -59,6 +59,9 @@ from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.security.toolshield_llm_analyzer import (
+    ToolShieldLLMSecurityAnalyzer,
+)
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -4991,6 +4994,68 @@ async def test_settings_launch_builds_the_agent_once(conversation_service, tmp_p
 
     create_agent.assert_called_once()
     assert "browser_tool_set" in [t.name for t in captured["agent"].tools]
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_decrypts_encrypted_security_analyzer(
+    conversation_service, tmp_path
+):
+    """With secrets_encrypted=True the analyzer's nested LLM api_key must be
+    decrypted via the cipher before reaching the live EventService, exactly as
+    the agent and the secrets dict are.
+    """
+    cipher = Cipher("analyzer-cipher-key")
+    conversation_service.cipher = cipher
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    encrypted_guard_key = cipher.encrypt(SecretStr("sk-GUARD-plaintext"))
+    assert encrypted_guard_key is not None
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        security_analyzer=ToolShieldLLMSecurityAnalyzer(
+            llm=LLM(
+                model="gpt-4o-mini",
+                usage_id="guard",
+                api_key=SecretStr(encrypted_guard_key),
+            )
+        ),
+        secrets_encrypted=True,
+    )
+    # The request object parsed from the HTTP body still carries ciphertext.
+    assert isinstance(request.security_analyzer, ToolShieldLLMSecurityAnalyzer)
+    assert isinstance(request.security_analyzer.llm.api_key, SecretStr)
+    assert request.security_analyzer.llm.api_key.get_secret_value() == (
+        encrypted_guard_key
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_start_event_service(stored: StoredConversation, **kwargs):
+        agent = kwargs["launched"].agent
+        captured["security_analyzer"] = kwargs.get("security_analyzer")
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    analyzer = captured["security_analyzer"]
+    assert isinstance(analyzer, ToolShieldLLMSecurityAnalyzer)
+    assert isinstance(analyzer.llm.api_key, SecretStr)
+    assert analyzer.llm.api_key.get_secret_value() == "sk-GUARD-plaintext"
 
 
 @pytest.mark.asyncio
