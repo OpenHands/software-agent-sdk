@@ -512,6 +512,7 @@ class ConversationService:
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     conversation_idle_ttl_seconds: float | None = None
+    ask_user_timeout_seconds: float | None = None
     conversation_worktree_root: Path = field(
         default=Path("/tmp/conversation-worktrees")
     )
@@ -2248,6 +2249,7 @@ class ConversationService:
             conversation_worktree_root=config.conversation_worktree_root,
             acp_skill_sourcing=config.acp_skill_sourcing,
             enable_browser=config.enable_browser,
+            ask_user_timeout_seconds=config.ask_user_timeout_seconds,
         )
 
     async def _start_event_service(
@@ -2278,6 +2280,7 @@ class ConversationService:
             credential_bindings=credential_bindings,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
+            ask_user_timeout_seconds=self.ask_user_timeout_seconds,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.

@@ -19,9 +19,14 @@ from pydantic import SecretStr
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, RunSlot
+from openhands.agent_server.event_service import (
+    ConversationRunLimitExceeded,
+    EventService,
+    RunSlot,
+)
 from openhands.agent_server.file_router import _create_zip_from_directory
 from openhands.agent_server.models import (
+    AskUserResponseRequest,
     ConfirmationResponseRequest,
     EventPage,
     EventSortOrder,
@@ -43,7 +48,16 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.credential import CredentialSyncError
-from openhands.sdk.event import AgentErrorEvent, Event
+from openhands.sdk.event import (
+    AgentErrorEvent,
+    AskUserAnswer,
+    AskUserRequestError,
+    AskUserRequestEvent,
+    AskUserResponseEvent,
+    Event,
+    QuestionInfo,
+    QuestionOption,
+)
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import (
@@ -53,7 +67,7 @@ from openhands.sdk.event.llm_convertible import (
 )
 from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
-from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.llm import MessageToolCall, TextContent, content_to_str
 from openhands.sdk.mcp.config import coerce_mcp_config
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -1645,6 +1659,271 @@ class TestEventServiceRespondToConfirmation:
             )
 
 
+class TestEventServiceRespondToAskUser:
+    """Test cases for ask_user response handling."""
+
+    def _service_with_pending(
+        self,
+        request_id: str = "req-1",
+        questions: list[QuestionInfo] | None = None,
+    ):
+        request = AskUserRequestEvent(
+            request_id=request_id,
+            questions=questions or [QuestionInfo(id="auth", question="Which auth?")],
+            action_id="action-1",
+            tool_call_id="call-1",
+        )
+        state = MagicMock(spec=ConversationState)
+        state.active_branch.return_value = [request]
+        conversation = MagicMock()
+        conversation._state.__enter__ = MagicMock(return_value=state)
+        conversation._state.__exit__ = MagicMock(return_value=None)
+        return request, conversation
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_records_response_and_resumes_run(
+        self, event_service
+    ):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.respond_to_ask_user(
+            AskUserResponseRequest(
+                request_id="req-1",
+                action="accept",
+                answers={"auth": [AskUserAnswer(option_id="jwt", label="JWT")]},
+            )
+        )
+
+        conversation._on_event.assert_called_once()
+        response = conversation._on_event.call_args[0][0]
+        assert isinstance(response, AskUserResponseEvent)
+        assert response.request_id == "req-1"
+        assert response.action == "accept"
+        event_service.run.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_rejects_stale_request_id(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(AskUserRequestError):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(request_id="stale", action="cancel")
+            )
+
+        conversation._on_event.assert_not_called()
+        event_service.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_inactive_service(self, event_service):
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(request_id="req-1", action="cancel")
+            )
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_swallows_already_running(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock(
+            side_effect=ValueError("conversation_already_running")
+        )
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.respond_to_ask_user(
+            AskUserResponseRequest(request_id="req-1", action="cancel")
+        )
+
+        conversation._on_event.assert_called_once()
+        # The rejected resume is remembered so the exiting run task re-arms.
+        assert event_service._ask_user_resume_requested is True
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_rejects_unknown_option(self, event_service):
+        _, conversation = self._service_with_pending(
+            questions=[
+                QuestionInfo(
+                    id="auth",
+                    question="Which auth?",
+                    options=[QuestionOption(id="jwt", label="JWT")],
+                )
+            ]
+        )
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(AskUserRequestError):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(
+                    request_id="req-1",
+                    action="accept",
+                    answers={"auth": [AskUserAnswer(option_id="oauth", label="OAuth")]},
+                )
+            )
+
+        conversation._on_event.assert_not_called()
+        event_service.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_ask_user_rejects_multi_select_for_single_select(
+        self, event_service
+    ):
+        _, conversation = self._service_with_pending(
+            questions=[
+                QuestionInfo(
+                    id="auth",
+                    question="Which auth?",
+                    options=[
+                        QuestionOption(id="jwt", label="JWT"),
+                        QuestionOption(id="session", label="Session"),
+                    ],
+                )
+            ]
+        )
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(AskUserRequestError):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(
+                    request_id="req-1",
+                    action="accept",
+                    answers={
+                        "auth": [
+                            AskUserAnswer(option_id="jwt", label="JWT"),
+                            AskUserAnswer(option_id="session", label="Session"),
+                        ]
+                    },
+                )
+            )
+
+        conversation._on_event.assert_not_called()
+        event_service.run.assert_not_awaited()
+        # The permit guard is released even when validation rejects the answer.
+        assert event_service._ask_user_resume_pending is False
+
+    @pytest.mark.asyncio
+    async def test_resume_requested_only_set_for_already_running(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock(side_effect=ValueError("inactive_service"))
+        event_service._publish_state_update = AsyncMock()
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.respond_to_ask_user(
+                AskUserResponseRequest(request_id="req-1", action="cancel")
+            )
+
+        assert event_service._ask_user_resume_requested is False
+
+    @pytest.mark.asyncio
+    async def test_maybe_end_run_session_retains_permit_for_pending_answer(
+        self, event_service
+    ):
+        """A pending ask_user answer must keep the run slot.
+
+        Without retaining the permit, a paused run ending in the answer's tail
+        window would release the slot and a competing conversation could take
+        it, parking the accepted answer behind an unbounded wait.
+        """
+        released = []
+        owner = MagicMock()
+        owner.live_handles = 2
+        owner.release.side_effect = lambda: released.append(True)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.current_task()
+
+        # While the answer is pending the run slot is held.
+        event_service._ask_user_resume_pending = True
+        event_service._maybe_end_run_session()
+        assert released == []
+        assert event_service._run_session_slot is owner
+
+        # Once the answer has been resolved the permit is returned.
+        event_service._ask_user_resume_pending = False
+        event_service._maybe_end_run_session()
+        assert released == [True]
+        assert event_service._run_session_slot is None
+
+    @pytest.mark.asyncio
+    async def test_ask_user_rearm_keeps_slot_on_one_slot_server(self, event_service):
+        """A pending re-arm must not let a competitor take the freed slot.
+
+        The server has a single run slot, held by the paused run that is about
+        to drain its callbacks. An answer lands in that window, so the resume is
+        recorded as a re-arm. If the run releases the permit here, a competing
+        conversation claims it and the accepted answer waits indefinitely.
+        """
+        semaphore = asyncio.Semaphore(1)
+        event_service._run_semaphore = semaphore
+        owner = await RunSlot.acquire(semaphore)
+        event_service._run_session_slot = owner
+        event_service._run_task = asyncio.current_task()
+
+        event_service._ask_user_resume_requested = True
+        # The paused run's `finally` runs `_maybe_end_run_session` from its own
+        # task before the flagged re-arm.
+        event_service._maybe_end_run_session()
+
+        # The permit is still held: a competitor cannot acquire the one slot.
+        assert event_service._run_session_slot is owner
+        with pytest.raises(ConversationRunLimitExceeded):
+            await RunSlot.acquire(semaphore)
+
+    @pytest.mark.asyncio
+    async def test_timeout_resolves_pending_request_as_cancel(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.run = AsyncMock()
+        event_service._publish_state_update = AsyncMock()
+        event_service.ask_user_timeout_seconds = 0.01
+
+        await event_service._maybe_arm_ask_user_timeout()
+        task = event_service._ask_user_timeout_task
+        assert task is not None
+        await task
+
+        responses = [c.args[0] for c in conversation._on_event.call_args_list]
+        assert responses
+        assert isinstance(responses[0], AskUserResponseEvent)
+        assert responses[0].action == "cancel"
+        assert responses[0].source == "environment"
+        event_service.run.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_no_timeout_armed_when_disabled(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service.ask_user_timeout_seconds = None
+
+        await event_service._maybe_arm_ask_user_timeout()
+
+        assert event_service._ask_user_timeout_task is None
+
+    @pytest.mark.asyncio
+    async def test_close_resolves_pending_request_as_cancel(self, event_service):
+        _, conversation = self._service_with_pending()
+        event_service._conversation = conversation
+        event_service._pending_ask_user_request_id = "req-1"
+
+        await event_service._cancel_pending_ask_user_on_close()
+
+        conversation._on_event.assert_called_once()
+        response = conversation._on_event.call_args[0][0]
+        assert isinstance(response, AskUserResponseEvent)
+        assert response.action == "cancel"
+        assert event_service._pending_ask_user_request_id is None
+
+
 class TestEventServiceIsOpen:
     """Test cases for EventService.is_open method."""
 
@@ -2490,6 +2769,101 @@ class TestEventServiceStartWithRunningStatus:
                 if isinstance(call[0][0], AgentErrorEvent)
             ]
             assert len(error_event_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_resolves_pending_ask_user_without_duplicate_result(
+        self, event_service, tmp_path
+    ):
+        """A crash while paused on ask_user must yield exactly one result.
+
+        With RUNNING status the generic orphan-action recovery would emit an
+        AgentErrorEvent for the ask_user action; the ask_user restart resolution
+        then emits the cancel observation for the same tool call. Only the
+        observation may remain, and the request must be closed as 'cancel'.
+        """
+        from openhands.sdk.event import AgentErrorEvent, ObservationEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.llm import MessageToolCall, TextContent
+        from openhands.sdk.tool.builtins.ask_user import AskUserAction
+
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            action = ActionEvent(
+                source="agent",
+                thought=[TextContent(text="ask the user")],
+                action=AskUserAction(
+                    questions=[
+                        QuestionInfo(
+                            id="auth",
+                            question="Which auth?",
+                            options=[QuestionOption(id="jwt", label="JWT")],
+                        )
+                    ]
+                ),
+                tool_name="ask_user",
+                tool_call_id="call-1",
+                tool_call=MessageToolCall(
+                    id="call-1",
+                    name="ask_user",
+                    arguments='{"questions": []}',
+                    origin="completion",
+                ),
+                llm_response_id="response-1",
+            )
+            request = AskUserRequestEvent(
+                request_id="req-1",
+                questions=[
+                    QuestionInfo(
+                        id="auth",
+                        question="Which auth?",
+                        options=[QuestionOption(id="jwt", label="JWT")],
+                    )
+                ],
+                action_id=action.id,
+                tool_call_id="call-1",
+                tool_name="ask_user",
+            )
+
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [action, request]
+            mock_state.active_branch.return_value = [action, request]
+            mock_state.stats = MagicMock()
+            mock_state.__enter__ = MagicMock(return_value=mock_state)
+            mock_state.__exit__ = MagicMock(return_value=None)
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            emitted = [call[0][0] for call in mock_conv._on_event.call_args_list]
+            error_events = [e for e in emitted if isinstance(e, AgentErrorEvent)]
+            observations = [
+                e
+                for e in emitted
+                if isinstance(e, ObservationEvent) and e.tool_call_id == "call-1"
+            ]
+            responses = [e for e in emitted if isinstance(e, AskUserResponseEvent)]
+
+            # Exactly one tool result for the ask_user action, and the request
+            # is closed so no client is left waiting.
+            assert error_events == []
+            assert len(observations) == 1
+            assert len(responses) == 1
+            assert responses[0].action == "cancel"
 
     @pytest.mark.skipif(not shutil.which("git"), reason="git executable not found")
     @pytest.mark.asyncio
@@ -3651,6 +4025,192 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
         f"(call_count={parent_llm._call_count})"
     )
     assert es._run_task is None
+
+
+@pytest.mark.timeout(30)
+async def test_ask_user_answer_hands_off_run_on_one_slot_server(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """An accepted answer must hand the sole run slot to a successor run.
+
+    Faithful one-slot scenario: the server has a single run slot, the paused run
+    holds it, and a competing conversation is queued for it. The answer is
+    recorded while the paused run is still live (its ``_run_task`` not done, the
+    permit held). The exiting run must keep the permit for the re-arm it
+    schedules, so the successor run starts without acquiring a fresh slot and
+    completes even though the queued contender is waiting for one. Without the
+    retained permit the successor would queue behind the contender and the
+    answer would be stranded.
+    """
+    from openhands.sdk import Tool
+    from openhands.sdk.testing import TestLLM
+
+    (tmp_path / "ws").mkdir()
+    ask_args = json.dumps(
+        {
+            "questions": [
+                {
+                    "id": "auth",
+                    "question": "Which auth scheme?",
+                    "options": [
+                        {"id": "jwt", "label": "JWT bearer tokens"},
+                        {"id": "session", "label": "Server sessions"},
+                    ],
+                }
+            ]
+        }
+    )
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="I need a decision.")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-ask-1",
+                        name="ask_user",
+                        arguments=ask_args,
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant", content=[TextContent(text="Proceeding with JWT.")]
+            ),
+        ]
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="ask-handoff",
+        tools=[Tool(name="ask_user")],
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None
+    conv = es.get_conversation()
+
+    # Hold the run task alive after it pauses on ask_user (the request is
+    # recorded) but before _run_and_publish settles it, so the answer lands
+    # while the permit is still held and _run_task is not yet done.
+    paused = asyncio.Event()
+    release = asyncio.Event()
+    real_arun = conv.arun
+    gated_once = False
+
+    async def gated_arun() -> None:
+        nonlocal gated_once
+        await real_arun()
+        if not gated_once:
+            gated_once = True
+            paused.set()
+            await release.wait()
+
+    monkeypatch.setattr(conv, "arun", gated_arun)
+
+    # The server's only run slot.
+    semaphore = asyncio.Semaphore(1)
+    es._run_semaphore = semaphore
+
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="Add auth.")]), run=True
+    )
+    await asyncio.wait_for(paused.wait(), 10.0)
+    assert es._run_task is not None and not es._run_task.done()
+    assert es._run_session_slot is not None
+    assert semaphore.locked()
+
+    # A competing conversation queues for the only slot while the paused run
+    # still holds it. If the run dropped the permit on the way out, this
+    # contender would claim it and strand the successor run behind it.
+    contender_acquired = asyncio.Event()
+
+    async def contender() -> None:
+        await semaphore.acquire()
+        contender_acquired.set()
+
+    contender_task = asyncio.create_task(contender())
+    await asyncio.sleep(0)
+    assert not contender_acquired.is_set()
+
+    request = es._pending_ask_user_request_sync()
+    assert request is not None
+    await es.respond_to_ask_user(
+        AskUserResponseRequest(
+            request_id=request.request_id,
+            action="accept",
+            answers={"auth": [AskUserAnswer(option_id="jwt", label="JWT")]},
+        )
+    )
+    # Refused as "already running" while the paused task wraps up, so the run is
+    # re-armed by _run_and_publish once the task clears.
+    assert es._ask_user_resume_requested is True
+
+    release.set()
+
+    # The successor run reuses the retained permit and runs to completion even
+    # though the contender is waiting for the slot the paused run still holds.
+    # A second LLM call alone is not proof: a successor that failed on the
+    # answer would also call the LLM and release the permit. So assert the
+    # observable outcome — the run reaches FINISHED, consumed the answer into
+    # the ask_user observation, and produced the agent's follow-up reply.
+    from openhands.sdk.tool.builtins.ask_user import AskUserObservation
+
+    def _ask_user_observation() -> AskUserObservation | None:
+        with conv._state as state:
+            for event in state.active_branch():
+                if (
+                    isinstance(event, ObservationEvent)
+                    and event.tool_name == "ask_user"
+                    and isinstance(event.observation, AskUserObservation)
+                    and event.observation.resolution == "accept"
+                ):
+                    return event.observation
+        return None
+
+    def _final_agent_text() -> str:
+        with conv._state as state:
+            for event in reversed(state.active_branch()):
+                if isinstance(event, MessageEvent) and event.source == "agent":
+                    return "".join(content_to_str(event.llm_message.content))
+        return ""
+
+    deadline = time.monotonic() + 10.0
+    status = await es._get_execution_status()
+    observation = _ask_user_observation()
+    while time.monotonic() < deadline and (
+        status != ConversationExecutionStatus.FINISHED or observation is None
+    ):
+        await asyncio.sleep(0.02)
+        status = await es._get_execution_status()
+        observation = _ask_user_observation()
+
+    assert llm._call_count == 2, (
+        "the accepted answer was stranded: the successor run never started "
+        f"(call_count={llm._call_count})"
+    )
+    assert status == ConversationExecutionStatus.FINISHED, (
+        "the successor run did not complete; it left the conversation at "
+        f"{status} (call_count={llm._call_count})"
+    )
+    assert observation is not None, (
+        "the successor run never consumed the accepted answer into an "
+        "ask_user observation"
+    )
+    selections = observation.answers.get("auth", [])
+    assert [selection.option_id for selection in selections] == ["jwt"]
+    assert "JWT" in _final_agent_text(), (
+        "the successor run finished without producing the agent's follow-up "
+        "reply, so it did not consume the answer"
+    )
+
+    # Only once the whole chain settles is the permit returned to the pool,
+    # which finally lets the queued contender in.
+    await asyncio.wait_for(contender_acquired.wait(), timeout=5.0)
+    semaphore.release()
+    contender_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await contender_task
 
 
 def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) -> None:

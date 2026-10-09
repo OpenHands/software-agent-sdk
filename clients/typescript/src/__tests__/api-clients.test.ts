@@ -2447,6 +2447,168 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient.respondToAskUser throws AgentServerVersionError for old servers', async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await expect(
+      new ConversationClient({ host: 'http://example.com' }).respondToAskUser('c1', {
+        request_id: 'req-1',
+        action: 'accept',
+        answers: { color: { option_id: 'blue', label: 'Blue' } },
+      })
+    ).rejects.toMatchObject({
+      code: 'AGENT_SERVER_VERSION_TOO_OLD',
+      feature: 'ask-user',
+      requiredVersion: '1.54.0',
+      actualVersion: '1.22.1',
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('ConversationClient.respondToAskUser posts the typed response for a supported server', async () => {
+    const responses = [{ version: '1.54.0', uptime: 1, idle_time: 0 }, { success: true }];
+    global.fetch = vi.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await client.respondToAskUser('c1', {
+      request_id: 'req-1',
+      action: 'accept',
+      answers: { color: { option_id: 'blue', label: 'Blue' } },
+    });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/c1/events/respond_to_ask_user',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          request_id: 'req-1',
+          action: 'accept',
+          answers: { color: { option_id: 'blue', label: 'Blue' } },
+        }),
+      })
+    );
+  });
+
+  it('RemoteConversation.respondToAskUser posts the response', async () => {
+    global.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ version: '1.54.0', uptime: 1, idle_time: 0 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.respondToAskUser('req-1', 'decline');
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/conv-123/events/respond_to_ask_user',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ request_id: 'req-1', action: 'decline' }),
+      })
+    );
+  });
+
+  it('RemoteConversation.pendingAskUserRequest ignores a resolved request', async () => {
+    const requestEvent = {
+      id: 'event-1',
+      kind: 'AskUserRequestEvent',
+      timestamp: '2026-05-23T12:00:00Z',
+      source: 'agent',
+      request_id: 'req-1',
+      questions: [{ id: 'color', question: 'Which color?' }],
+      action_id: 'action-1',
+      tool_call_id: 'call-1',
+    };
+    const responseEvent = {
+      id: 'event-2',
+      kind: 'AskUserResponseEvent',
+      timestamp: '2026-05-23T12:00:01Z',
+      source: 'user',
+      request_id: 'req-1',
+      action: 'accept',
+    };
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const body = url.includes('/events/search')
+        ? { items: [requestEvent, responseEvent], next_page_id: null }
+        : { success: true };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    expect(await conversation.pendingAskUserRequest()).toBeNull();
+  });
+
+  it('RemoteConversation.pendingAskUserRequest returns an unresolved request', async () => {
+    const requestEvent = {
+      id: 'event-1',
+      kind: 'AskUserRequestEvent',
+      timestamp: '2026-05-23T12:00:00Z',
+      source: 'agent',
+      request_id: 'req-1',
+      questions: [{ id: 'color', question: 'Which color?' }],
+      action_id: 'action-1',
+      tool_call_id: 'call-1',
+    };
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      const body = url.includes('/events/search')
+        ? { items: [requestEvent], next_page_id: null }
+        : { success: true };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    expect(await conversation.pendingAskUserRequest()).toMatchObject({ request_id: 'req-1' });
+  });
+
   it('ConversationClient wraps SDK v1.23.0 conversation endpoints', async () => {
     const event = {
       id: 'event-1',

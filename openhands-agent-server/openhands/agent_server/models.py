@@ -20,6 +20,10 @@ from openhands.sdk.conversation.request import (  # re-export for backward compa
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.event.ask_user_schema import (
+    AskUserAnswer,
+    AskUserResponseAction,
+)
 from openhands.sdk.event.base import Event
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import (  # re-export
@@ -438,6 +442,20 @@ class ConfirmationResponseRequest(BaseModel):
 
     accept: bool
     reason: str = "User rejected the action."
+
+
+class AskUserResponseRequest(BaseModel):
+    """Payload to answer a pending ``ask_user`` request.
+
+    Mirrors MCP elicitation: exactly one of ``accept`` (with ``answers``),
+    ``decline``, or ``cancel``. ``answers`` is keyed by question id and each
+    value is the list of selections for that question (one element for a
+    single-select question, one or more for a ``multi_select`` question).
+    """
+
+    request_id: str
+    action: AskUserResponseAction
+    answers: dict[str, list[AskUserAnswer]] = Field(default_factory=dict)
 
 
 class Success(BaseModel):

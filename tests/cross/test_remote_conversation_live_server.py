@@ -702,6 +702,141 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+def test_ask_user_event_pair_over_real_server(server_env):
+    """Exercise the ask_user request/response pair through the live server.
+
+    Drives a scripted conversation that calls ``ask_user``, answers the pending
+    request over ``POST /events/respond_to_ask_user``, and checks the tool
+    observation. Also verifies a stale ``request_id`` is rejected with 409.
+    """
+    import asyncio
+
+    from openhands.agent_server.models import StartConversationRequest
+    from openhands.sdk import Tool
+    from openhands.sdk.event import (
+        AskUserRequestEvent,
+        ObservationEvent,
+    )
+    from openhands.sdk.llm import MessageToolCall, content_to_str
+    from openhands.sdk.testing import TestLLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    ask_args = json.dumps(
+        {
+            "questions": [
+                {
+                    "id": "auth",
+                    "question": "Which auth scheme?",
+                    "options": [
+                        {"id": "jwt", "label": "JWT bearer tokens"},
+                        {"id": "session", "label": "Server sessions"},
+                    ],
+                }
+            ]
+        }
+    )
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="I need a decision.")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call-ask-1",
+                        name="ask_user",
+                        arguments=ask_args,
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(
+                role="assistant",
+                content=[TextContent(text="Proceeding with JWT.")],
+            ),
+        ]
+    )
+
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o-mini", api_key=SecretStr("unused")),
+            tools=[Tool(name="ask_user")],
+        ),
+        workspace=LocalWorkspace(working_dir=str(server_env["workspace_path"])),
+        autotitle=False,
+    )
+    service = server_env["conversation_service"]
+    info, _ = asyncio.run(service.start_conversation(request))
+    event_service = asyncio.run(service.get_event_service(info.id))
+    assert event_service is not None
+    event_service.get_conversation().switch_llm(llm)
+
+    cid = str(info.id)
+    with httpx.Client(base_url=server_env["host"], timeout=15.0) as client:
+        sent = client.post(
+            f"/api/conversations/{cid}/events",
+            json={
+                "role": "user",
+                "content": [{"type": "text", "text": "Add auth."}],
+                "run": True,
+            },
+        )
+        assert sent.status_code == 200, sent.text
+
+        pending = None
+        for _ in range(150):
+            items = client.get(f"/api/conversations/{cid}/events/search").json()[
+                "items"
+            ]
+            pending = next(
+                (e for e in items if e["kind"] == "AskUserRequestEvent"), None
+            )
+            if pending is not None:
+                break
+            time.sleep(0.1)
+        assert pending is not None, "no AskUserRequestEvent over the live server"
+        ask_request = AskUserRequestEvent.model_validate(pending)
+        assert ask_request.tool_name == "ask_user"
+
+        stale = client.post(
+            f"/api/conversations/{cid}/events/respond_to_ask_user",
+            json={"request_id": "stale-id", "action": "cancel"},
+        )
+        assert stale.status_code == 409
+
+        accepted = client.post(
+            f"/api/conversations/{cid}/events/respond_to_ask_user",
+            json={
+                "request_id": ask_request.request_id,
+                "action": "accept",
+                "answers": {
+                    "auth": [{"option_id": "jwt", "label": "JWT bearer tokens"}]
+                },
+            },
+        )
+        assert accepted.status_code == 200, accepted.text
+
+        observation = None
+        for _ in range(150):
+            items = client.get(f"/api/conversations/{cid}/events/search").json()[
+                "items"
+            ]
+            observation = next(
+                (
+                    ObservationEvent.model_validate(e)
+                    for e in items
+                    if e["kind"] == "ObservationEvent"
+                    and e.get("tool_name") == "ask_user"
+                ),
+                None,
+            )
+            if observation is not None:
+                break
+            time.sleep(0.1)
+        assert observation is not None, "no ask_user observation after answering"
+        content = content_to_str(observation.to_llm_message().content)
+        assert "JWT" in "".join(content)
+
+
 def test_remote_conversation_created_from_agent_settings(server_env):
     from openhands.sdk.conversation.request import StartConversationRequest
     from openhands.sdk.workspace import LocalWorkspace

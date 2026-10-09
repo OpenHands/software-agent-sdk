@@ -326,6 +326,16 @@ class Config(BaseModel):
         default=True,
         description="Whether to preload tools",
     )
+    ask_user_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Default timeout, in seconds, for an unanswered `ask_user` request. "
+            "When set, an expired request resolves as 'cancel' so the run always "
+            "unblocks. None (default) waits indefinitely, matching confirmation "
+            "mode. A request may override this with its own `timeout_seconds`."
+        ),
+    )
     max_concurrent_runs: int = Field(
         default=10,
         ge=1,

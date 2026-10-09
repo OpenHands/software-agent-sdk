@@ -6,9 +6,9 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from queue import Empty, Queue
-from typing import TYPE_CHECKING, Final, Self, SupportsIndex, overload
+from typing import TYPE_CHECKING, Any, Final, Self, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -42,6 +42,12 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event.acp_tool_call import ACPToolCallEvent
+from openhands.sdk.event.ask_user import AskUserRequestEvent, AskUserResponseEvent
+from openhands.sdk.event.ask_user_schema import (
+    AskUserAnswer,
+    AskUserResponseAction,
+    normalize_ask_user_answers,
+)
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
@@ -1591,6 +1597,55 @@ class RemoteConversation(BaseConversation):
             (f"{CONVERSATIONS_PATH}/{self._id}/events/respond_to_confirmation"),
             json={"accept": False, "reason": reason},
         )
+
+    def respond_to_ask_user(
+        self,
+        request_id: str,
+        action: AskUserResponseAction,
+        answers: Mapping[
+            str, AskUserAnswer | Sequence[AskUserAnswer] | Mapping[str, Any]
+        ]
+        | None = None,
+    ) -> None:
+        """Answer the conversation's pending ``ask_user`` request.
+
+        ``action`` is ``"accept"`` (with ``answers`` keyed by question id),
+        ``"decline"``, or ``"cancel"``. Each answer may be an
+        :class:`AskUserAnswer`, a list of them (multi-select), or a plain
+        mapping with ``option_id``/``label`` keys. The server rejects the call
+        with 409 when ``request_id`` does not match the single pending request.
+        """
+        _send_request(
+            self._client,
+            "POST",
+            f"{CONVERSATIONS_PATH}/{self._id}/events/respond_to_ask_user",
+            json={
+                "request_id": request_id,
+                "action": action,
+                "answers": {
+                    question_id: [answer.model_dump() for answer in selections]
+                    for question_id, selections in normalize_ask_user_answers(
+                        answers
+                    ).items()
+                },
+            },
+        )
+
+    def pending_ask_user_request(self) -> AskUserRequestEvent | None:
+        """Return the conversation's single unresolved ``ask_user`` request."""
+        branch = self.state.events
+        resolved = {
+            event.request_id
+            for event in branch
+            if isinstance(event, AskUserResponseEvent)
+        }
+        for event in reversed(branch):
+            if (
+                isinstance(event, AskUserRequestEvent)
+                and event.request_id not in resolved
+            ):
+                return event
+        return None
 
     def pause(self) -> None:
         _send_request(

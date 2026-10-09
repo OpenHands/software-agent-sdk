@@ -114,6 +114,22 @@ export interface ConfirmationResponseRequest {
   reason?: string;
 }
 
+/** The user's selection(s) for one ask_user question. */
+export interface AskUserAnswer {
+  option_id: string;
+  label: string;
+}
+
+/** How an ask_user request resolved: accept, decline, or cancel. */
+export type AskUserResponseAction = 'accept' | 'decline' | 'cancel';
+
+/** Payload to answer a pending ask_user request. */
+export interface AskUserResponseRequest {
+  request_id: string;
+  action: AskUserResponseAction;
+  answers?: Record<string, AskUserAnswer[]>;
+}
+
 export interface CreateConversationRequest {
   agent: AgentBase;
   initial_message?: Message;
