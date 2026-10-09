@@ -40,7 +40,7 @@ FROM python:3.13.15-slim-trixie AS python-runtime
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20260920T000000Z
+ARG DEBIAN_SNAPSHOT=20261004T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
