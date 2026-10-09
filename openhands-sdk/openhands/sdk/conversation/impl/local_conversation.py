@@ -985,7 +985,20 @@ class LocalConversation(BaseConversation):
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
             fork_conv._state.confirmation_policy = self._state.confirmation_policy
-            fork_conv._state.security_analyzer = self._state.security_analyzer
+            # The fork gets its own analyzer: analyzers keep mutable runtime
+            # state in PrivateAttrs (e.g. ToolShieldLLMSecurityAnalyzer's action
+            # history) that a shared reference would mix between the two
+            # conversations. Round-trip via JSON like the agent above rather
+            # than model_copy(deep=True): a guardrail LLM may hold a lock that
+            # cannot be deep-copied, and expose_secrets keeps its credentials
+            # for the fork's cipher to re-encrypt.
+            source_analyzer = self._state.security_analyzer
+            if source_analyzer is not None:
+                fork_conv._state.security_analyzer = type(
+                    source_analyzer
+                ).model_validate(
+                    source_analyzer.model_dump(context={"expose_secrets": True}),
+                )
             # Conversation secrets (``secrets=`` / update_secrets) live in the
             # registry, not the agent. Assigning the field (rather than
             # mutating the registry) autosaves them, encrypted with the cipher.
