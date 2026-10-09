@@ -18,8 +18,8 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 INSTRUCTION = """
 Run these two commands using the terminal tool, in separate calls, in order:
 
-1. python -c "print('token pressure context ' * 1000)"
-2. python -c "print('second context payload ' * 1000)"
+1. python -c "print('token pressure context ' * 2000)"
+2. python -c "print('second context payload ' * 2000)"
 
 Do not redirect, truncate, or combine their output. The large output is intentional:
 we are testing conversation condensation. After both calls, reply "done".
@@ -57,13 +57,22 @@ class TokenCondenserTest(BaseIntegrationTest):
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=1000,  # Set high so it doesn't trigger on event count
-            max_tokens=5000,  # Low token limit to ensure condensation triggers
-            keep_first=1,  # Keep only initial user message (not tool loop start)
+            # One payload (~9k tokens for 2,000 reps) clears this by a wide margin, so
+            # neither side is tight against small differences in the system prompt or
+            # tool descriptions across the CI model matrix.
+            max_tokens=6000,  # Low token limit to ensure condensation triggers
+            # Keep the system prompt and the user instruction. With keep_first=1 the
+            # first condensation forgets the instruction, and command 2 then survives
+            # only if the LLM summary happens to preserve it.
+            keep_first=2,
         )
 
     @property
     def max_iteration_per_run(self) -> int:
-        return 10
+        # A condensation step still counts as an iteration: agent.step returns early
+        # after emitting the Condensation and the loop increments the counter. The
+        # happy path is therefore already ~4 iterations, so leave generous headroom.
+        return 20
 
     def conversation_callback(self, event):
         """Override callback to detect condensation events."""
@@ -81,15 +90,22 @@ class TokenCondenserTest(BaseIntegrationTest):
         logger.info(f"Token condenser test: max_tokens={self.condenser.max_tokens}")
 
     def verify_result(self) -> TestResult:
-        """Verify that condensation was triggered based on token count."""
-        if len(self.condensations) == 0:
+        """Verify that token-count-based condensation was triggered twice."""
+        if len(self.condensations) < 2:
             return TestResult(
                 success=False,
-                reason="Condensation not triggered. Token counting may not work.",
+                reason=(
+                    f"Expected at least 2 condensations, got "
+                    f"{len(self.condensations)}. Token counting may not work, or the "
+                    "second payload did not cross the token limit."
+                ),
             )
 
         events_summarized = len(self.condensations[0].forgotten_event_ids)
         return TestResult(
             success=True,
-            reason=f"Condensation triggered, summarizing {events_summarized} events.",
+            reason=(
+                f"Condensation triggered {len(self.condensations)} times, first "
+                f"summarizing {events_summarized} events."
+            ),
         )
