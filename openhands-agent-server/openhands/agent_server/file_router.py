@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import fnmatch
 import io
 import json
@@ -25,7 +26,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from openhands.agent_server._secret_redaction import redacted_file_bytes
+from openhands.agent_server._secret_redaction import (
+    redacted_json_bytes,
+    should_redact,
+)
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
@@ -38,6 +42,7 @@ from openhands.sdk.git.utils import (
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.files import is_temp_file
 
 
 class SubdirectoryEntry(BaseModel):
@@ -151,24 +156,50 @@ async def _download_file(path: str) -> FileResponse:
         )
 
 
+_TRAJECTORY_EXCLUDED_TOP_DIRS = frozenset({"acp"})
+
+
 def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     """Create a zip archive for source_dir using only Python stdlib APIs.
 
     Secret-bearing fields (LLM/AWS credentials) in the persisted JSON payloads
     are redacted on the way into the archive so a downloaded trajectory never
-    leaks API keys — see ``redacted_file_bytes``.
+    leaks API keys — see ``redacted_json_bytes``. Top-level directories in
+    ``_TRAJECTORY_EXCLUDED_TOP_DIRS`` hold runtime credentials and are omitted.
+
+    The conversation may still be running and saving state while this walks
+    it, so files that are still being written (``*.tmp``) are skipped, and so
+    are entries that disappear between listing and reading. Each JSON file is
+    read once, so the bytes checked for secrets are the bytes that get
+    archived.
     """
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.write(source_dir, source_dir.name)
             for path in sorted(source_dir.rglob("*")):
+                if path.relative_to(source_dir).parts[0] in (
+                    _TRAJECTORY_EXCLUDED_TOP_DIRS
+                ):
+                    continue
+                if is_temp_file(path):
+                    # A save in progress (or left by a crash), from
+                    # atomic_write_text or the lease's owner_lease.tmp; the
+                    # file it replaces is archived.
+                    continue
                 arcname = str(path.relative_to(source_dir.parent))
-                if path.is_file():
-                    redacted = redacted_file_bytes(path)
-                    if redacted is not None:
-                        archive.writestr(arcname, redacted)
-                        continue
-                archive.write(path, arcname)
+                # Skip entries removed or renamed away after rglob listed them.
+                with contextlib.suppress(FileNotFoundError):
+                    if should_redact(path) and path.is_file():
+                        zinfo = zipfile.ZipInfo.from_file(path, arcname)
+                        data = path.read_bytes()
+                        redacted = redacted_json_bytes(data, path)
+                        archive.writestr(
+                            zinfo,
+                            data if redacted is None else redacted,
+                            compress_type=zipfile.ZIP_DEFLATED,
+                        )
+                    else:
+                        archive.write(path, arcname)
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
@@ -806,7 +837,7 @@ async def search_subdirs(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     include_hidden: Annotated[
         bool,
@@ -824,8 +855,6 @@ async def search_subdirs(
     the ``next_page_id`` returned by the previous page (the lowercase name of
     the first item to include on the next page).
     """
-    assert limit > 0
-    assert limit <= 100
 
     target = Path(path)
     if not target.is_absolute():

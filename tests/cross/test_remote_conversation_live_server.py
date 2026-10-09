@@ -386,7 +386,7 @@ def test_preloaded_custom_tool_resolves_in_live_server(
 
     registry_snapshot = dict(tool_registry._REG)
     usability_snapshot = dict(tool_registry._USABILITY_REG)
-    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    tool_class_snapshot = dict(tool_registry._TOOL_CLASSES)
     monkeypatch.syspath_prepend(str(tmp_path))
     sys.modules.pop(package_name, None)
     sys.modules.pop(module_qualname, None)
@@ -431,8 +431,8 @@ def test_preloaded_custom_tool_resolves_in_live_server(
         tool_registry._REG.update(registry_snapshot)
         tool_registry._USABILITY_REG.clear()
         tool_registry._USABILITY_REG.update(usability_snapshot)
-        tool_registry._MODULE_QUALNAMES.clear()
-        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+        tool_registry._TOOL_CLASSES.clear()
+        tool_registry._TOOL_CLASSES.update(tool_class_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
@@ -700,6 +700,28 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
         shutil.rmtree(cwd_conversations)
+
+
+def test_remote_conversation_created_from_agent_settings(server_env):
+    from openhands.sdk.conversation.request import StartConversationRequest
+    from openhands.sdk.workspace import LocalWorkspace
+
+    working_dir = str(server_env["workspace_path"])
+    conversation = RemoteConversation.create(
+        RemoteWorkspace(host=server_env["host"], working_dir=working_dir),
+        StartConversationRequest(
+            agent_settings={
+                "agent_kind": "openhands",
+                "llm": {"model": "settings-model", "api_key": "sk-settings"},
+                "tools": [],
+            },
+            workspace=LocalWorkspace(working_dir=working_dir),
+        ),
+        visualizer=None,
+    )
+
+    assert conversation.agent.llm.model == "settings-model"
+    conversation.close()
 
 
 def test_openai_chat_completions_gateway_over_real_server(
@@ -1123,6 +1145,28 @@ def test_bash_command_endpoint_with_live_server(server_env):
     assert "8" in result.stdout, (
         f"Expected '8' (result of 5+3) not found in stdout: {result.stdout}"
     )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
+def test_stop_bash_command_endpoint_with_live_server(server_env):
+    """Stop a long-running command through the live server end to end."""
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/test_workspace"
+    )
+    command_id = workspace.start_command("sleep 30", timeout=60.0)
+    workspace.stop_command(command_id)
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        output = workspace.get_command_output(command_id)
+        if output is not None and output.get("exit_code") is not None:
+            break
+        time.sleep(0.2)
+    else:
+        pytest.fail(f"command {command_id} did not finish after stop")
 
 
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
@@ -2393,6 +2437,66 @@ def test_workspace_default_llm_resolves_active_profile_despite_settings_drift(
         assert explicit_llm.api_key is not None
         _assert_secret(explicit_llm.api_key, "sk-explicit-key")
         assert explicit_llm.usage_id == "profile:explicit-model"
+
+
+def test_workspace_named_llm_resolves_current_provider_credentials(
+    tmp_path, monkeypatch
+):
+    """Selecting a linked profile resolves credentials without activating it."""
+    with live_server_env(tmp_path, monkeypatch) as env:
+        workspace = RemoteWorkspace(
+            host=env["host"], working_dir=str(env["workspace_path"])
+        )
+        with httpx.Client(base_url=env["host"], timeout=10.0) as client:
+            settings_before = client.get("/api/settings").json()
+            connection = client.post(
+                "/api/llm/provider-connections",
+                json={
+                    "display_name": "Automation provider",
+                    "provider": "openai",
+                    "api_key": "sk-provider-old",
+                    "base_url": "https://provider.example/v1",
+                },
+            )
+            assert connection.status_code == 201
+            connection_id = connection.json()["id"]
+            saved = client.post(
+                "/api/profiles/automation-model",
+                json={
+                    "llm": {
+                        "model": "openai/gpt-4o-mini",
+                        "provider_connection_id": connection_id,
+                    }
+                },
+            )
+            assert saved.status_code == 201
+
+            detail = client.get("/api/profiles/automation-model").json()
+            assert detail["config"]["api_key"] is None
+            assert detail["config"]["base_url"] is None
+            assert detail["api_key_set"] is True
+
+            selected = workspace.get_llm(profile_name="automation-model")
+            assert selected.model == "openai/gpt-4o-mini"
+            assert selected.base_url == "https://provider.example/v1"
+            assert selected.api_key is not None
+            _assert_secret(selected.api_key, "sk-provider-old")
+
+            rotated = client.patch(
+                f"/api/llm/provider-connections/{connection_id}",
+                json={"api_key": "sk-provider-new"},
+            )
+            assert rotated.status_code == 200
+            selected = workspace.get_llm(profile_name="automation-model")
+            assert selected.api_key is not None
+            _assert_secret(selected.api_key, "sk-provider-new")
+
+            settings_after = client.get("/api/settings").json()
+            assert settings_after["active_profile"] == settings_before["active_profile"]
+            assert (
+                settings_after["agent_settings"]["llm"]
+                == settings_before["agent_settings"]["llm"]
+            )
 
 
 def test_settings_and_secrets_api_with_live_server(server_env):

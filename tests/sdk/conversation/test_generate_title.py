@@ -19,6 +19,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextContent
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+from openhands.sdk.settings import ACPAgentSettings
 
 
 def create_test_agent() -> Agent:
@@ -92,6 +93,22 @@ def test_generate_title_without_llm_uses_agent_llm(mock_completion):
 
     assert title == "Create Python Script"
     mock_completion.assert_called_once()
+
+
+def test_generate_title_skips_llm_for_settings_built_acp_agent(tmp_path):
+    agent = ACPAgentSettings(
+        acp_server="custom", acp_command=["true"], acp_model="claude-opus-4-7"
+    ).create_agent()
+    conv = Conversation(agent=agent, workspace=str(tmp_path), visualizer=None)
+    conv.state.events.append(create_user_message_event("Fix the login bug"))
+
+    with patch(
+        "openhands.sdk.conversation.title_utils.generate_title_with_llm"
+    ) as mock_llm_title:
+        title = conv.generate_title()
+
+    assert title == "Fix the login bug"
+    mock_llm_title.assert_not_called()
 
 
 def test_generate_title_no_user_messages():
@@ -428,3 +445,45 @@ def test_title_uses_real_http_transport(title_http_server, tmp_path, mode):
     assert bool(body.get("stream")) == (mode == "subscription")
     if mode != "chat":
         assert body["store"] is False
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_inline_reasoning(mock_completion):
+    """Guards #4530.
+
+    Providers that do not split chain-of-thought into `reasoning_content` return it
+    inline as `<think>...</think>`. The title is consumed verbatim, so without
+    stripping, truncation to `max_length` keeps the reasoning and discards the title.
+    """
+    llm = LLM(model="qwen3-32b", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response(
+        "<think>The user wants a CSV summary script. I will pick the features "
+        "emoji and keep it short.</think>✨ Summarise a CSV in Python"
+    )
+
+    title = generate_title_with_llm("Help me summarise a CSV", llm)
+
+    assert title == "✨ Summarise a CSV in Python"
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_strips_unterminated_reasoning(mock_completion):
+    """An unterminated block means the response was cut mid-thought, so there is no
+    title to salvage and the caller falls back to a truncated message title."""
+    llm = LLM(model="qwen3-32b", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response(
+        "<think>Let me consider what this conversation is really about"
+    )
+
+    assert generate_title_with_llm("Help me summarise a CSV", llm) is None
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_generate_title_keeps_text_without_reasoning(mock_completion):
+    """A normal response is unaffected."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="t")
+    mock_completion.return_value = create_mock_llm_response("✨ Create Python Script")
+
+    assert generate_title_with_llm("Help me write a script", llm) == (
+        "✨ Create Python Script"
+    )

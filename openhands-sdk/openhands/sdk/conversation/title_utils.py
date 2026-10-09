@@ -1,10 +1,12 @@
 """Utility functions for generating conversation titles."""
 
+import re
 from collections.abc import Callable, Sequence
 
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.call_context import LLMCallContext
 from openhands.sdk.logger import get_logger
 
 
@@ -59,10 +61,27 @@ def extract_first_user_message(events: Sequence[Event]) -> str | None:
     return None
 
 
+_REASONING_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED_REASONING = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning_blocks(text: str) -> str:
+    """Remove inline ``<think>`` reasoning from a model's text.
+
+    Providers that do not split chain-of-thought into ``reasoning_content`` return it
+    inline in ``content``. An unterminated block means the response was cut mid-thought,
+    so everything from the opening tag on is reasoning too.
+    """
+    text = _REASONING_BLOCK.sub("", text)
+    return _UNCLOSED_REASONING.sub("", text)
+
+
 def generate_title_with_llm(
     message: str,
     llm: LLM,
     max_length: int = 50,
+    *,
+    call_context: LLMCallContext | None = None,
     on_error: Callable[[Exception], None] | None = None,
 ) -> str | None:
     """Generate a conversation title using LLM.
@@ -126,13 +145,23 @@ def generate_title_with_llm(
             ),
         ]
 
-        response = llm.generate(messages, store=False)
+        response = llm.generate(
+            messages,
+            store=False,
+            call_context=call_context,
+        )
 
         # Extract the title from the response
         if response.message.content and isinstance(
             response.message.content[0], TextContent
         ):
-            title = response.message.content[0].text.strip()
+            title = strip_reasoning_blocks(response.message.content[0].text).strip()
+
+            if not title:
+                logger.warning(
+                    "LLM returned only reasoning content for title generation"
+                )
+                return None
 
             # Ensure the title isn't too long
             if len(title) > max_length:
@@ -172,6 +201,8 @@ def generate_title_from_message(
     message: str,
     llm: LLM | None = None,
     max_length: int = 50,
+    *,
+    call_context: LLMCallContext | None = None,
     on_error: Callable[[Exception], None] | None = None,
 ) -> str:
     """Generate a title from an already-extracted user message."""
@@ -182,7 +213,11 @@ def generate_title_from_message(
 
     if llm_to_use:
         llm_title = generate_title_with_llm(
-            message, llm_to_use, max_length, on_error=on_error
+            message,
+            llm_to_use,
+            max_length,
+            call_context=call_context,
+            on_error=on_error,
         )
         if llm_title:
             return llm_title
@@ -194,6 +229,8 @@ def generate_conversation_title(
     events: Sequence[Event],
     llm: LLM | None = None,
     max_length: int = 50,
+    *,
+    call_context: LLMCallContext | None = None,
     on_error: Callable[[Exception], None] | None = None,
 ) -> str:
     """Generate a title for a conversation based on the first user message.
@@ -221,5 +258,9 @@ def generate_conversation_title(
         raise ValueError("No user messages found in conversation events")
 
     return generate_title_from_message(
-        first_user_message, llm, max_length, on_error=on_error
+        first_user_message,
+        llm,
+        max_length,
+        call_context=call_context,
+        on_error=on_error,
     )
