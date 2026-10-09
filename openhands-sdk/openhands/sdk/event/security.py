@@ -17,7 +17,7 @@ class SecurityAnalysisEvent(Event):
     analyzer's verdict visible in the event log and UI even when the policy
     (for example ``NeverConfirm``) never consults it.
 
-    This event is not shown to the LLM.
+    This event is not sent to the LLM.
     """
 
     source: SourceType = "environment"
