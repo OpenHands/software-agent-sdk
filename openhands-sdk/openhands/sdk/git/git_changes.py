@@ -9,7 +9,11 @@ import logging
 import os
 from pathlib import Path
 
-from openhands.sdk.git.exceptions import GitCommandError, GitError
+from openhands.sdk.git.exceptions import (
+    GitCommandError,
+    GitError,
+    GitRepositoryError,
+)
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 from openhands.sdk.git.utils import (
     get_valid_ref,
@@ -221,8 +225,15 @@ def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
         for f in glob.glob("./*/.git", root_dir=cwd, recursive=True)
     }
 
-    # First try the workspace directory
-    changes = get_changes_in_repo(cwd, ref=ref)
+    # A workspace root can be a non-repository parent that directly contains
+    # the cloned repository. Keep an error for directories with no repository
+    # at or below the requested path.
+    try:
+        changes = get_changes_in_repo(cwd, ref=ref)
+    except GitRepositoryError:
+        if not git_dirs:
+            raise
+        changes = []
 
     # Filter out any changes which are inside one of the nested repositories.
     # This compares path ancestry rather than string prefixes: a nested
