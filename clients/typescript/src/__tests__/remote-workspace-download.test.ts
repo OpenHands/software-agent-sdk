@@ -31,6 +31,24 @@ describe('RemoteWorkspace downloads', () => {
     }
   );
 
+  it('preserves binary bytes when downloading a file', async () => {
+    const bytes = new Uint8Array([255, 0, 128, 254, 65]);
+    vi.spyOn(global, 'fetch').mockImplementation(
+      async () =>
+        new Response(bytes, {
+          headers: { 'content-type': 'application/octet-stream' },
+        })
+    );
+
+    const result = await workspace.fileDownload('/workspace/file.bin');
+    expect(result.file_size).toBe(bytes.byteLength);
+    expect(result.content).toBeInstanceOf(Blob);
+    expect([...new Uint8Array(await (result.content as Blob).arrayBuffer())]).toEqual([...bytes]);
+
+    const blob = await workspace.downloadAsBlob('/workspace/file.bin');
+    expect([...new Uint8Array(await blob.arrayBuffer())]).toEqual([...bytes]);
+  });
+
   it('triggers a download with the requested filename when a document is available', async () => {
     const link = { href: '', download: '', click: vi.fn() };
     const body = { appendChild: vi.fn(), removeChild: vi.fn() };

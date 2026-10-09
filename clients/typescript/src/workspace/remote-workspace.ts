@@ -183,6 +183,7 @@ export class RemoteWorkspace implements IWorkspace {
     const response = await this.client.get('/api/file/download', {
       params: { path: sourcePath },
       timeout: 60000,
+      responseType: 'blob',
     });
 
     let content: string | Blob;
