@@ -10407,7 +10407,7 @@ export type PolicyRailSecurityAnalyzerOutput = {
 /**
  * ProfileDetailResponse
  *
- * ``config.api_key`` is always nulled; use ``api_key_set`` instead.
+ * Secrets are nulled unless explicitly requested via X-Expose-Secrets.
  */
 export type ProfileDetailResponse = {
   /**
