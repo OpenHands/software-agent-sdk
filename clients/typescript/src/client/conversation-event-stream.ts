@@ -109,6 +109,25 @@ export class ConversationEventStream {
     this.retryTimer = this.handshakeTimer = undefined;
   }
 
+  private finishAttempt(
+    socket: WebSocket,
+    error: Error | null,
+    errorEvent: Event | null,
+    closeEvent: CloseEvent | null
+  ): void {
+    if (this.socket !== socket) return;
+    clearTimeout(this.handshakeTimer);
+    this.handshakeTimer = undefined;
+    this.socket = null;
+    this.update({
+      isConnected: false,
+      ...(error ? { error } : {}),
+    });
+    if (errorEvent) this.options.onError?.(errorEvent);
+    if (closeEvent) this.options.onClose?.(closeEvent);
+    this.scheduleReconnect();
+  }
+
   private connect(): void {
     if (!this.active) return;
     try {
@@ -124,7 +143,15 @@ export class ConversationEventStream {
         : new WebSocket(url.toString());
       this.socket = socket;
       this.handshakeTimer = setTimeout(() => {
-        if (this.socket === socket && socket.readyState === 0) socket.close();
+        if (this.socket === socket && socket.readyState === 0) {
+          this.finishAttempt(
+            socket,
+            new Error('WebSocket handshake timed out'),
+            new Event('error'),
+            null
+          );
+          socket.close();
+        }
       }, 10_000);
       socket.onopen = (event) => {
         if (this.socket !== socket || !this.active) return;
@@ -139,6 +166,15 @@ export class ConversationEventStream {
       };
       socket.onerror = (event) => {
         if (this.socket !== socket || !this.active) return;
+        if (socket.readyState !== 1) {
+          this.finishAttempt(
+            socket,
+            new Error('WebSocket connection failed before opening'),
+            event,
+            null
+          );
+          return;
+        }
         this.update({ isConnected: false });
         this.options.onError?.(event);
       };
@@ -147,21 +183,13 @@ export class ConversationEventStream {
           if (!this.active && this.socket === null) this.options.onClose?.(event);
           return;
         }
-        clearTimeout(this.handshakeTimer);
-        this.socket = null;
-        this.update({
-          isConnected: false,
-          ...(event.code !== 1000
-            ? {
-                error: new Error(
-                  `WebSocket closed with code ${event.code}: ${event.reason || 'Connection closed unexpectedly'}`
-                ),
-              }
-            : {}),
-        });
-        if (event.code !== 1000) this.options.onError?.(event);
-        this.options.onClose?.(event);
-        this.scheduleReconnect();
+        const error =
+          event.code !== 1000
+            ? new Error(
+                `WebSocket closed with code ${event.code}: ${event.reason || 'Connection closed unexpectedly'}`
+              )
+            : null;
+        this.finishAttempt(socket, error, error ? event : null, event);
       };
     } catch (error) {
       this.update({
