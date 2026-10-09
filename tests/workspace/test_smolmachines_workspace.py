@@ -235,3 +235,16 @@ def test_changed_forwarded_secret_rejected_before_vm_starts(fake_smol, monkeypat
         SmolMachinesWorkspace(keep_alive=True, machine_name="oh-credentials")
     assert machine.events == ["stop"]
     assert not fake_smol.connected
+
+
+def test_keep_alive_rejects_host_state_inside_guest_mount(fake_smol, tmp_path):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    with pytest.raises(ValueError, match="host state must be outside mount_dir"):
+        SmolMachinesWorkspace(
+            keep_alive=True,
+            machine_name="oh-overbroad-mount",
+            mount_dir=str(tmp_path),
+            host_port=38133,
+        )
+    assert not fake_smol.created
