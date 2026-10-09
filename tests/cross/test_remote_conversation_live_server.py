@@ -23,6 +23,7 @@ import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from openai.types.responses import ResponseInputItemParam
 from pydantic import SecretStr
+from websockets.sync.client import connect
 
 from openhands.agent_server.__main__ import preload_modules
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, Message, TextContent
@@ -30,7 +31,10 @@ from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Condensation,
+    CondensationRequest,
     CondensationSummaryEvent,
+    ContextWindowReminderEvent,
     ConversationStateUpdateEvent,
     Event,
     HookExecutionEvent,
@@ -41,6 +45,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
@@ -49,6 +54,11 @@ from openhands.sdk.subagent.registry import (
     get_registered_agent_definitions,
     register_agent,
     register_agent_if_absent,
+)
+from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool.builtins.new_context import (
+    NewContextAction,
+    NewContextObservation,
 )
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
@@ -184,6 +194,112 @@ def test_health_endpoints_return_ok_json(server_env):
             response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
             assert response.status_code == 200
             assert response.json() == {"status": "ok"}
+
+
+def test_agent_reset_settings_and_events_over_rest_and_websocket(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    handoff = "Continue from this exact handoff."
+    scripted = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                tool_calls=[
+                    MessageToolCall(
+                        id="reset-call",
+                        name="new_context",
+                        arguments=json.dumps({"handoff": handoff}),
+                        origin="completion",
+                    )
+                ],
+            ),
+            Message(role="assistant", content=[TextContent(text="Reset complete.")]),
+        ]
+    )
+    monkeypatch.setattr(LLM, "acompletion", scripted.acompletion)
+    monkeypatch.setattr(LLM, "get_token_count", lambda *_args, **_kwargs: 18000)
+    condenser = {"condenser_kind": "agent_reset", "enabled": True}
+    host = server_env["host"]
+    with httpx.Client(base_url=host, timeout=10) as client:
+        updated = client.patch(
+            "/api/settings", json={"agent_settings_diff": {"condenser": condenser}}
+        )
+        updated.raise_for_status()
+        assert updated.json()["agent_settings"]["condenser"] == condenser
+        created = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "agent_kind": "openhands",
+                    "llm": {
+                        "model": "gpt-4o-mini",
+                        "api_key": "test",
+                        "max_input_tokens": 20000,
+                    },
+                    "condenser": condenser,
+                    "tools": [],
+                },
+                "workspace": {"working_dir": str(server_env["workspace_path"])},
+                "autotitle": False,
+            },
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["id"]
+        base = f"/api/conversations/{conversation_id}"
+        sent = client.post(
+            f"{base}/events",
+            json={"content": [{"type": "text", "text": "Reset now."}], "run": False},
+        )
+        sent.raise_for_status()
+        client.post(f"{base}/run").raise_for_status()
+        status = client.get(base)
+        for _ in range(100):
+            status = client.get(base)
+            status.raise_for_status()
+            if status.json()["execution_status"] == "finished":
+                break
+            time.sleep(0.05)
+        assert status.json()["execution_status"] == "finished"
+        response = client.get(f"{base}/events/search", params={"limit": 100})
+        response.raise_for_status()
+        events = [Event.model_validate(item) for item in response.json()["items"]]
+
+    action = next(event for event in events if isinstance(event, ActionEvent))
+    observation = next(event for event in events if isinstance(event, ObservationEvent))
+    request = next(event for event in events if isinstance(event, CondensationRequest))
+    assert isinstance(action.action, NewContextAction)
+    assert action.action.handoff == handoff
+    assert isinstance(observation.observation, NewContextObservation)
+    assert observation.observation.input_event_id in {event.id for event in events}
+    assert request.trigger_action_id == action.id
+    assert any(isinstance(event, Condensation) for event in events)
+    assert any(isinstance(event, ContextWindowReminderEvent) for event in events)
+    expected = {
+        event.id: event
+        for event in events
+        if isinstance(
+            event,
+            (
+                ActionEvent,
+                ObservationEvent,
+                CondensationRequest,
+                Condensation,
+                ContextWindowReminderEvent,
+            ),
+        )
+    }
+    received = {}
+    with connect(
+        f"{host.replace('http://', 'ws://')}/sockets/events/{conversation_id}"
+        "?resend_all=true",
+        open_timeout=5,
+    ) as websocket:
+        while expected.keys() - received.keys():
+            event = Event.model_validate_json(websocket.recv(timeout=5))
+            if event.id in expected:
+                received[event.id] = event
+    assert received == expected
+    assert scripted.call_count == 2
 
 
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):

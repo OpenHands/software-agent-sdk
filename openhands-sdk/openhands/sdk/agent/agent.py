@@ -27,7 +27,10 @@ from openhands.sdk.agent.utils import (
     parse_tool_call_arguments,
     prepare_llm_messages,
 )
+from openhands.sdk.context.condenser import AgentResetCondenser
+from openhands.sdk.context.condenser.base import NoCondensationAvailableException
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation import (
     CancellationToken,
     ConversationCallbackType,
@@ -40,8 +43,10 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     Event,
+    InterruptEvent,
     MessageEvent,
     ObservationEvent,
+    PauseEvent,
     SystemPromptEvent,
     TokenEvent,
     UserRejectObservation,
@@ -93,6 +98,10 @@ from openhands.sdk.tool.builtins import (
     FinishTool,
     ThinkAction,
 )
+from openhands.sdk.tool.builtins.conversation_history import (
+    conversation_history_snapshot,
+)
+from openhands.sdk.tool.builtins.new_context import NewContextObservation
 from openhands.sdk.tool.builtins.vision_inspect import VISION_INSPECT_TOOL_NAME
 
 
@@ -392,8 +401,18 @@ class _ActionBatch:
             mark_finished: Called to set the conversation execution status
                 to FINISHED when the agent is done.
         """
-        # Nothing to finalise: no FinishTool, or it was blocked by a hook.
-        if not self.has_finish or self.action_events[-1].id in self.blocked_reasons:
+        if not self.has_finish:
+            for action in self.action_events:
+                if any(
+                    isinstance(event, ObservationEvent)
+                    and isinstance(event.observation, NewContextObservation)
+                    and not event.observation.is_error
+                    for event in self.results_by_id.get(action.id, [])
+                ):
+                    on_event(CondensationRequest(trigger_action_id=action.id))
+                    break
+            return
+        if self.action_events[-1].id in self.blocked_reasons:
             return
 
         should_continue, followup = check_iterative_refinement(self.action_events[-1])
@@ -512,6 +531,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         event history during initialization.
         """
         self._initialize(state)
+        if self.condenser is not None:
+            missing = self.condenser.required_tools() - self.tools_map.keys()
+            if missing:
+                raise ValueError(
+                    "Condenser requires tools: " + ", ".join(sorted(missing))
+                )
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
@@ -632,16 +657,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     ) -> None:
         """Prepare a batch, emit results, and handle finish."""
         state = conversation.state
-        batch = _ActionBatch.prepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-            span_owner=conversation,
-        )
+        with conversation_history_snapshot(conversation, action_events):
+            batch = _ActionBatch.prepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+                span_owner=conversation,
+            )
         batch.emit(conversation, on_event)
+        if (
+            conversation.cancel_token is not None
+            and conversation.cancel_token.is_cancelled
+        ):
+            return
         batch.finalize(
             on_event=on_event,
             check_iterative_refinement=lambda ae: (
@@ -667,16 +698,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         loop an ``await`` boundary between every tool invocation.
         """
         state = conversation.state
-        batch = await _ActionBatch.aprepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-            span_owner=conversation,
-        )
+        with conversation_history_snapshot(conversation, action_events):
+            batch = await _ActionBatch.aprepare(
+                action_events,
+                state=state,
+                executor=self._parallel_executor,
+                tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+                tools=self.tools_map,
+                cancel_token=conversation.cancel_token,
+                span_owner=conversation,
+            )
         batch.emit(conversation, on_event)
+        if (
+            conversation.cancel_token is not None
+            and conversation.cancel_token.is_cancelled
+        ):
+            return
         batch.finalize(
             on_event=on_event,
             check_iterative_refinement=lambda ae: (
@@ -688,6 +725,122 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ConversationExecutionStatus.FINISHED,
             ),
         )
+
+    def _recover_reset_request(
+        self, state: ConversationState, on_event: ConversationCallbackType
+    ) -> None:
+        if (
+            not isinstance(self.condenser, AgentResetCondenser)
+            or state.view.unhandled_condensation_request
+        ):
+            return
+        completed: dict[str, ObservationEvent] = {}
+        for event in reversed(list(state.active_branch())):
+            if isinstance(event, (Condensation, InterruptEvent, PauseEvent)):
+                return
+            if isinstance(event, ObservationEvent):
+                completed[event.action_id] = event
+            elif isinstance(event, ActionEvent):
+                if event.tool_name == FinishTool.name:
+                    return
+                result = completed.get(event.id)
+                if (
+                    result is not None
+                    and isinstance(result.observation, NewContextObservation)
+                    and not result.observation.is_error
+                ):
+                    on_event(CondensationRequest(trigger_action_id=event.id))
+                    return
+
+    @staticmethod
+    def _with_input_boundary(
+        on_event: ConversationCallbackType, input_event_id: str | None
+    ) -> ConversationCallbackType:
+        def emit(event: Event) -> None:
+            if isinstance(event, ObservationEvent) and isinstance(
+                event.observation, NewContextObservation
+            ):
+                event = event.model_copy(
+                    update={
+                        "observation": event.observation.model_copy(
+                            update={"input_event_id": input_event_id}
+                        )
+                    }
+                )
+            on_event(event)
+
+        return emit
+
+    def _context_capacity(
+        self, view: View, messages: list[Message]
+    ) -> tuple[bool, Event | None]:
+        if not isinstance(self.condenser, AgentResetCondenser):
+            return False, None
+        if self.llm.effective_max_input_tokens is None:
+            return False, None
+        count = self.llm.get_token_count(
+            messages,
+            tools=list(self.tools_map.values()),
+            add_security_risk_prediction=True,
+        )
+        return (
+            self.condenser.is_over_capacity(view, self.llm, token_count=count),
+            self.condenser.get_reminder(view, self.llm, token_count=count),
+        )
+
+    def _recover_context(
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        attempted: bool,
+    ) -> None:
+        if attempted:
+            raise NoCondensationAvailableException(
+                "Model input still exceeds capacity after one context recovery."
+            )
+        assert isinstance(self.condenser, AgentResetCondenser)
+        on_event(self.condenser.hard_context_reset(state.view, self.llm))
+
+    def _commit_condensation(
+        self,
+        state: ConversationState,
+        result: Condensation,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        request = state.view.pending_condensation_request
+        if (
+            isinstance(self.condenser, AgentResetCondenser)
+            and request is not None
+            and request.trigger_action_id is not None
+        ):
+            candidate = View(events=result.apply(state.view.events))
+            messages = prepare_llm_messages(candidate, condenser=None, llm=self.llm)
+            assert isinstance(messages, list)
+            if _should_handle_non_multimodal_image_input(self.llm, messages):
+                messages = _replace_latest_user_images_with_references(messages)
+            over_capacity, _ = self._context_capacity(candidate, messages)
+            if over_capacity:
+                raise NoCondensationAvailableException(
+                    "Cannot safely reset: the protected tool batch and user input "
+                    "exceed the model capacity."
+                )
+        on_event(result)
+
+    async def _arecover_context(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        attempted: bool,
+    ) -> None:
+        if attempted:
+            raise NoCondensationAvailableException(
+                "Model input still exceeds capacity after one context recovery."
+            )
+        assert isinstance(self.condenser, AgentResetCondenser)
+        snapshot = View(events=list(conversation.state.view.events))
+        async with conversation._released_state_lock_during_io():
+            result = await self.condenser.ahard_context_reset(snapshot, self.llm)
+        on_event(result)
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -708,7 +861,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         conversation: LocalConversation,
         on_event: ConversationCallbackType,
         stream: StreamContext,
+        *,
+        context_recovery_attempted: bool = False,
     ) -> None:
+        if (
+            conversation.cancel_token is not None
+            and conversation.cancel_token.is_cancelled
+        ):
+            return
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
@@ -720,6 +880,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             self._execute_actions(conversation, pending_actions, on_event)
             return
+
+        self._recover_reset_request(state, on_event)
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
@@ -752,7 +914,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         # Process condensation event before agent sampels another action
         if isinstance(_messages_or_condensation, Condensation):
-            on_event(_messages_or_condensation)
+            self._commit_condensation(state, _messages_or_condensation, on_event)
             return
 
         _messages = _messages_or_condensation
@@ -779,6 +941,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
                 state.execution_status = ConversationExecutionStatus.FINISHED
                 return
+
+        over_capacity, reminder = self._context_capacity(state.view, _messages)
+        if over_capacity:
+            self._recover_context(state, on_event, context_recovery_attempted)
+            self._step(conversation, on_event, stream, context_recovery_attempted=True)
+            return
+        if reminder is not None and not context_recovery_attempted:
+            on_event(reminder)
+            return
+        input_event_id = state.view.events[-1].id if state.view.events else None
 
         logger.debug(
             "Sending messages to LLM: "
@@ -856,6 +1028,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             raise e
         except LLMContextWindowExceedError as e:
+            if isinstance(self.condenser, AgentResetCondenser):
+                if context_recovery_attempted:
+                    raise
+                self._recover_context(state, on_event, False)
+                self._step(
+                    conversation, on_event, stream, context_recovery_attempted=True
+                )
+                return
             # If condenser is available and handles requests, trigger condensation
             if (
                 self.condenser is not None
@@ -877,7 +1057,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         match response_type:
             case LLMResponseType.TOOL_CALLS:
                 self._handle_tool_calls(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    self._with_input_boundary(on_event, input_event_id),
+                    stream,
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(
@@ -922,7 +1107,16 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         conversation: LocalConversation,
         on_event: ConversationCallbackType,
         stream: StreamContext,
+        *,
+        context_recovery_attempted: bool = False,
     ) -> None:
+        if (
+            conversation.cancel_token is not None
+            and conversation.cancel_token.is_cancelled
+        ):
+            # Deliver interrupt()'s queued task cancellation before leaving this run.
+            await asyncio.sleep(0)
+            raise asyncio.CancelledError
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
@@ -933,6 +1127,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             await self._aexecute_actions(conversation, pending_actions, on_event)
             return
+
+        self._recover_reset_request(state, on_event)
 
         if state.last_user_message_id is not None:
             reason = state.pop_blocked_message(state.last_user_message_id)
@@ -960,7 +1156,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         )
 
         if isinstance(_messages_or_condensation, Condensation):
-            on_event(_messages_or_condensation)
+            self._commit_condensation(state, _messages_or_condensation, on_event)
             return
 
         _messages = _messages_or_condensation
@@ -992,6 +1188,20 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
         )
+
+        over_capacity, reminder = self._context_capacity(state.view, _messages)
+        if over_capacity:
+            await self._arecover_context(
+                conversation, on_event, context_recovery_attempted
+            )
+            await self._astep(
+                conversation, on_event, stream, context_recovery_attempted=True
+            )
+            return
+        if reminder is not None and not context_recovery_attempted:
+            on_event(reminder)
+            return
+        input_event_id = state.view.events[-1].id if state.view.events else None
 
         try:
             # Release the state lock for just the network wait so send_message()
@@ -1070,6 +1280,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             raise e
         except LLMContextWindowExceedError as e:
+            if isinstance(self.condenser, AgentResetCondenser):
+                if context_recovery_attempted:
+                    raise
+                await self._arecover_context(conversation, on_event, False)
+                await self._astep(
+                    conversation, on_event, stream, context_recovery_attempted=True
+                )
+                return
             # If condenser is available and handles requests, trigger
             # condensation
             if (
@@ -1103,7 +1321,12 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         match response_type:
             case LLMResponseType.TOOL_CALLS:
                 await self._ahandle_tool_calls(
-                    message, llm_response, conversation, state, on_event, stream
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    self._with_input_boundary(on_event, input_event_id),
+                    stream,
                 )
             case LLMResponseType.CONTENT:
                 self._handle_content_response(

@@ -105,6 +105,11 @@ class CondensationRequest(Event):
 
     source: SourceType = "environment"
 
+    trigger_action_id: EventID | None = Field(
+        default=None,
+        description="The new_context action requesting this reset, if any.",
+    )
+
     @property
     def visualize(self) -> Text:
         text = Text()
@@ -129,4 +134,29 @@ class CondensationSummaryEvent(LLMConvertibleEvent):
         return Message(
             role="user",
             content=[TextContent(text=self.summary)],
+        )
+
+
+class ContextWindowReminderEvent(LLMConvertibleEvent):
+    """A persisted reminder to prepare for a new context window."""
+
+    source: SourceType = "environment"
+
+    @property
+    def visualize(self) -> Text:
+        return Text(str(self))
+
+    def to_llm_message(self) -> Message:
+        return Message(
+            role="user",
+            content=[
+                TextContent(
+                    text=(
+                        "The current context window is nearly full. Save important "
+                        "details in files, then call new_context with a concise "
+                        "handoff covering the task, progress, and next steps. Use "
+                        "conversation_history to retrieve earlier details when needed."
+                    )
+                )
+            ],
         )

@@ -1,3 +1,4 @@
+from openhands.sdk.context.condenser.agent_reset_condenser import AgentResetCondenser
 from openhands.sdk.context.condenser.base import (
     CondenserBase,
     NoCondensationAvailableException,
@@ -12,6 +13,7 @@ from openhands.sdk.context.condenser.pipeline_condenser import PipelineCondenser
 
 
 __all__ = [
+    "AgentResetCondenser",
     "CondenserBase",
     "RollingCondenser",
     "NoOpCondenser",

@@ -3,7 +3,7 @@ from enum import Enum
 from logging import getLogger
 
 from openhands.sdk.context.view import View
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import Condensation, ContextWindowReminderEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -74,6 +74,20 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
             otherwise.
         """
         return False
+
+    def required_tools(self) -> frozenset[str]:
+        """Tools that must be available when using this condenser."""
+        return frozenset()
+
+    def get_reminder(
+        self,
+        view: View,  # noqa: ARG002
+        agent_llm: LLM | None = None,  # noqa: ARG002
+        *,
+        token_count: int | None = None,  # noqa: ARG002
+    ) -> ContextWindowReminderEvent | None:
+        """Return a context preparation reminder, if needed."""
+        return None
 
 
 class PipelinableCondenserBase(CondenserBase):
