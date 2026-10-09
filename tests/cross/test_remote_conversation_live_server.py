@@ -186,6 +186,55 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_event_kind_filters_over_real_server(server_env):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")), tools=[])
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent": agent.model_dump(mode="json"),
+                "workspace": {"working_dir": str(server_env["workspace_path"])},
+                "autotitle": False,
+            },
+        )
+        response.raise_for_status()
+        events_url = f"/api/conversations/{response.json()['id']}/events"
+        for text in ("first", "second"):
+            response = client.post(
+                events_url,
+                json={"content": [{"type": "text", "text": text}], "run": False},
+            )
+            response.raise_for_status()
+
+        pages = []
+        for kind in (
+            "openhands.sdk.event.llm_convertible.message.MessageEvent",
+            "MessageEvent",
+        ):
+            response = client.get(f"{events_url}/count", params={"kind": kind})
+            response.raise_for_status()
+            assert response.json() == 2
+            response = client.get(
+                f"{events_url}/search", params={"kind": kind, "limit": 1}
+            )
+            response.raise_for_status()
+            page = response.json()
+            assert len(page["items"]) == 1
+            assert page["next_page_id"] is not None
+            pages.append(page)
+
+            response = client.get(
+                f"{events_url}/search",
+                params={"kind": kind, "page_id": page["next_page_id"], "limit": 1},
+            )
+            response.raise_for_status()
+            assert len(response.json()["items"]) == 1
+            assert response.json()["next_page_id"] is None
+            pages.append(response.json())
+
+        assert pages[:2] == pages[2:]
+
+
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     agent = Agent(
         llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
