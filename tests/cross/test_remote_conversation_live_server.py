@@ -50,6 +50,7 @@ from openhands.sdk.subagent.registry import (
     register_agent,
     register_agent_if_absent,
 )
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
@@ -2598,6 +2599,30 @@ def test_settings_and_secrets_api_with_live_server(server_env):
         value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
         assert value_resp.status_code == 200
         assert value_resp.text == "sk-updated-value"
+
+        invalid_update_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": REDACTED_SECRET_VALUE,
+                "description": "Must not persist",
+            },
+        )
+        assert invalid_update_resp.status_code == 422
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-updated-value"
+
+        invalid_create_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "EMPTY_SECRET", "value": ""},
+        )
+        assert invalid_create_resp.status_code == 422
+        listed_names = {
+            item["name"]
+            for item in client.get("/api/settings/secrets").json()["secrets"]
+        }
+        assert "EMPTY_SECRET" not in listed_names
 
         # Create another secret
         client.put(
