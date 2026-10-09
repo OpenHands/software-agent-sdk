@@ -90,26 +90,32 @@ def _source_of(installation_dir: Path, name: str) -> str:
     return data["extensions"][name]["source"]
 
 
-def test_list_cannot_load_metadata_while_install_session_is_open(
+@pytest.mark.parametrize("operation", ["install", "disable"])
+def test_list_cannot_load_metadata_while_another_session_is_open(
     manager: InstallationManager[MockExtension],
     installation_dir: Path,
     source_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
+    operation: str,
 ):
-    """Lost update: a list call that loads metadata before an install saves it
-    later overwrites the install's entry with a ``source="local"`` rediscovery.
-    The session lock must keep the list call from loading until install saves.
+    """Lost update: a list call that loads metadata before another session
+    saves later overwrites that session's change with a stale copy (for a fresh
+    install, plus a ``source="local"`` rediscovery). The session lock must keep
+    the list call from loading until the other session has saved.
     """
+    if operation == "disable":
+        manager.install(str(source_dir))
+
     original_load = InstallationMetadata.load_from_dir.__func__
-    install_loading = threading.Event()
+    writer_loading = threading.Event()
     list_loaded = threading.Event()
 
     def load(cls: type[InstallationMetadata], directory: Path):
         me = threading.current_thread().name
-        if me == "install":
-            install_loading.set()
+        if me == "writer":
+            writer_loading.set()
             assert not list_loaded.wait(0.5), (
-                "list_installed loaded metadata while install held its session"
+                "list_installed loaded metadata while another session was open"
             )
         result = original_load(cls, directory)
         if me == "list":
@@ -118,17 +124,25 @@ def test_list_cannot_load_metadata_while_install_session_is_open(
 
     monkeypatch.setattr(InstallationMetadata, "load_from_dir", classmethod(load))
 
-    def list_once_install_is_loading() -> None:
-        assert install_loading.wait(5)
+    def write() -> None:
+        if operation == "install":
+            manager.install(str(source_dir))
+        else:
+            manager.disable("magic-test")
+
+    def list_once_writer_is_loading() -> None:
+        assert writer_loading.wait(5)
         manager.list_installed()
 
-    errors = _run_threads(
-        ("install", lambda: manager.install(str(source_dir))),
-        ("list", list_once_install_is_loading),
-    )
+    errors = _run_threads(("writer", write), ("list", list_once_writer_is_loading))
 
     assert errors == []
-    assert _source_of(installation_dir, "magic-test") == str(source_dir)
+    data = json.loads(
+        InstallationMetadata.get_metadata_path(installation_dir).read_text()
+    )
+    entry = data["extensions"]["magic-test"]
+    assert entry["source"] == str(source_dir)
+    assert entry["enabled"] is (operation == "install")
 
 
 def test_unlocked_reader_never_sees_partial_metadata_during_save(
@@ -137,8 +151,9 @@ def test_unlocked_reader_never_sees_partial_metadata_during_save(
     source_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Torn read: ``get()`` reads without the session lock, so a save must swap
-    in a complete file rather than truncate and rewrite it in place.
+    """Torn read: a reader that does not take the lock (such as code reading
+    ``.installed.json`` directly) must never see a truncated file, so a save
+    must swap in a complete file rather than rewrite it in place.
     """
     manager.install(str(source_dir))
     metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
@@ -147,7 +162,8 @@ def test_unlocked_reader_never_sees_partial_metadata_during_save(
 
     def replace(src, dst) -> None:
         if Path(dst) == metadata_path:
-            seen_mid_save.append(manager.get("magic-test"))
+            loaded = InstallationMetadata.load_from_dir(installation_dir)
+            seen_mid_save.append(loaded.extensions.get("magic-test"))
         real_replace(src, dst)
 
     monkeypatch.setattr(files_module.os, "replace", replace)
@@ -156,6 +172,28 @@ def test_unlocked_reader_never_sees_partial_metadata_during_save(
 
     assert seen_mid_save, "save_to_dir did not write through an atomic replace"
     info = seen_mid_save[0]
+    assert info is not None
+    assert info.source == str(source_dir)
+
+
+def test_get_waits_for_an_open_session(
+    manager: InstallationManager[MockExtension],
+    installation_dir: Path,
+    source_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``get()`` reads under the lock, so it can never hold the file open
+    while a save replaces it (``os.replace`` fails on Windows in that case).
+    """
+    manager.install(str(source_dir))
+    monkeypatch.setattr(metadata_module, "_LOCK_TIMEOUT_SECONDS", 0.2)
+
+    with InstallationMetadata.open(installation_dir):
+        errors = _run_threads(("get", lambda: manager.get("magic-test")))
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], TimeoutError)
+    info = manager.get("magic-test")
     assert info is not None
     assert info.source == str(source_dir)
 

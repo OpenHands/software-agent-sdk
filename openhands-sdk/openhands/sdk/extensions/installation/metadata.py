@@ -149,6 +149,33 @@ class InstallationMetadata(BaseModel):
                 session will call ``sync()``.
         """
         installed_dir.mkdir(parents=True, exist_ok=True)
+        lock = cls._acquire_lock(installed_dir)
+        try:
+            return MetadataSession(
+                installed_dir, cls.load_from_dir(installed_dir), interface, lock=lock
+            )
+        except BaseException:
+            lock.release()
+            raise
+
+    @classmethod
+    def read(cls, installed_dir: Path) -> InstallationMetadata:
+        """Load metadata under the session lock, without saving.
+
+        For read-only callers. Holding the lock keeps the read from overlapping
+        a save, whose atomic replace fails on Windows while another handle has
+        the file open.
+        """
+        if not cls.get_metadata_path(installed_dir).exists():
+            return cls()
+        lock = cls._acquire_lock(installed_dir)
+        try:
+            return cls.load_from_dir(installed_dir)
+        finally:
+            lock.release()
+
+    @staticmethod
+    def _acquire_lock(installed_dir: Path) -> BaseFileLock:
         lock = FileLock(installed_dir / ".metadata.lock")
         try:
             lock.acquire(timeout=_LOCK_TIMEOUT_SECONDS)
@@ -161,13 +188,7 @@ class InstallationMetadata(BaseModel):
                 "Installation metadata lock acquisition timed out after "
                 f"{_LOCK_TIMEOUT_SECONDS}s"
             )
-        try:
-            return MetadataSession(
-                installed_dir, cls.load_from_dir(installed_dir), interface, lock=lock
-            )
-        except BaseException:
-            lock.release()
-            raise
+        return lock
 
     @classmethod
     def get_metadata_path(cls, installed_dir: Path) -> Path:
