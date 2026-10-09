@@ -8,9 +8,12 @@ smol machines run on Linux with KVM and on Apple Silicon macOS. No Docker
 daemon is needed.
 """
 
+import hashlib
+import json
 import os
 import time
 import uuid
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Self
 from urllib.request import urlopen
@@ -29,9 +32,16 @@ logger = get_logger(__name__)
 
 #: The port the agent server listens on inside the machine.
 GUEST_PORT = 8000
-#: Where a kept machine records the host port it publishes, so a later
-#: workspace that reuses it connects on the same port.
-PORT_FILE = "/etc/openhands-smolmachines-port"
+
+
+def _state_dir() -> Path:
+    """Local, private metadata; a guest cannot choose which host port we trust."""
+    root = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    directory = root / "openhands" / "smolmachines"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.chmod(0o700)
+    return directory
+
 
 # The agent server image ships either a compiled server or a Python module. Run
 # whichever it has, under tini as the image's own ENTRYPOINT does, with the
@@ -116,13 +126,16 @@ class SmolMachinesWorkspace(RemoteWorkspace):
     memory_mb: int | None = Field(default=4096, description="Machine memory in MiB.")
     storage_gb: int | None = Field(default=None, description="Storage disk size in GB.")
     machine_name: str | None = Field(
-        default=None, description="Machine name. Generated if None."
+        default=None,
+        description="Machine name. With keep_alive, a policy hash is appended so "
+        "a changed image, mount, or network policy uses a different machine.",
     )
     keep_alive: bool = Field(
         default=False,
         description="Stop instead of deleting the machine on cleanup, so a later "
-        "workspace with the same machine_name reuses it with its image already "
-        "pulled. Requires machine_name.",
+        "workspace with the same machine_name and policy reuses it with its image "
+        "already pulled. Host port and forwarded environment are verified using "
+        "private host state. Requires machine_name.",
     )
     run_as_root: bool = Field(
         default=True,
@@ -138,6 +151,7 @@ class SmolMachinesWorkspace(RemoteWorkspace):
     )
 
     _machine: Any = PrivateAttr(default=None)
+    _policy: str = PrivateAttr(default="")
 
     def model_post_init(self, context: Any) -> None:
         """Boot or reuse the machine, then connect once the server is healthy."""
@@ -147,6 +161,32 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             object.__setattr__(
                 self, "machine_name", f"openhands-{uuid.uuid4().hex[:12]}"
             )
+
+        if self.keep_alive:
+            # The name encodes the permissions under which this machine was created;
+            # an old, more permissive VM must never start under a new policy.
+            shape = {
+                "image": self.server_image,
+                "mount": os.path.abspath(self.mount_dir) if self.mount_dir else None,
+                "workdir": self.working_dir,
+                "network": self.network,
+                "hosts": self.allow_hosts,
+                "cidrs": self.allow_cidrs,
+                "cpus": self.cpus,
+                "memory": self.memory_mb,
+                "storage": self.storage_gb,
+                "root": self.run_as_root,
+            }
+            digest = hashlib.sha256(
+                json.dumps(shape, sort_keys=True).encode()
+            ).hexdigest()[:16]
+            object.__setattr__(self, "machine_name", f"{self.machine_name}-{digest}")
+            forwarded = {
+                key: os.environ[key] for key in self.forward_env if key in os.environ
+            }
+            self._policy = hashlib.sha256(
+                json.dumps(forwarded, sort_keys=True).encode()
+            ).hexdigest()
 
         started = time.time()
         self._machine = self._reuse() or self._create()
@@ -165,26 +205,43 @@ class SmolMachinesWorkspace(RemoteWorkspace):
         )
         super().model_post_init(context)
 
+    def _state_path(self) -> Path:
+        assert self.machine_name is not None
+        key = hashlib.sha256(self.machine_name.encode()).hexdigest()
+        return _state_dir() / f"{key}.json"
+
     def _reuse(self) -> Any:
-        """Return the kept machine named machine_name, started, or None."""
+        """Check host-owned policy and port before connecting (which starts a VM)."""
         if not self.keep_alive:
             return None
+        state_file = self._state_path()
+        if not state_file.exists():
+            return None
+        state = json.loads(state_file.read_text())
+        if state["policy"] != self._policy:
+            raise RuntimeError(
+                "Forwarded environment changed for kept smol machine "
+                f"{self.machine_name}; choose another machine_name or remove it"
+            )
+        recorded = state["port"]
+        if not isinstance(recorded, int) or not (1 <= recorded <= 65535):
+            raise RuntimeError(
+                f"Invalid host port for smol machine {self.machine_name}"
+            )
+        if self.host_port is not None and self.host_port != recorded:
+            raise RuntimeError(
+                f"smol machine {self.machine_name} publishes the agent server on "
+                f"port {recorded}, not {self.host_port}"
+            )
         smol = _smol()
         assert self.machine_name is not None
         try:
             machine = smol.Machine.connect(self.machine_name)
         except Exception as e:
             if getattr(e, "code", None) == "NOT_FOUND":
+                state_file.unlink(missing_ok=True)
                 return None
             raise
-        if machine.state() != "running":
-            machine.start()
-        recorded = int(bytes(machine.read_file(PORT_FILE)).decode().strip())
-        if self.host_port is not None and self.host_port != recorded:
-            raise RuntimeError(
-                f"smol machine {self.machine_name} publishes the agent server on "
-                f"port {recorded}, not {self.host_port}"
-            )
         object.__setattr__(self, "host_port", recorded)
         logger.info("Reusing smol machine %s on port %d", self.machine_name, recorded)
         return machine
@@ -229,7 +286,19 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             )
         )
         if self.keep_alive:
-            machine.write_file(PORT_FILE, str(self.host_port))
+            state_file = self._state_path()
+            temp = state_file.with_name(f"{state_file.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with os.fdopen(
+                    os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w"
+                ) as output:
+                    json.dump({"policy": self._policy, "port": self.host_port}, output)
+                os.replace(temp, state_file)
+            except BaseException:
+                machine.delete()
+                raise
+            finally:
+                temp.unlink(missing_ok=True)
         return machine
 
     def _wait_for_health(self, *, timeout: float) -> None:
