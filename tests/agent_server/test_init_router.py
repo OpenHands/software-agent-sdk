@@ -149,6 +149,14 @@ class TestBuildInitializedConfig:
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
 
+    def test_empty_secret_key_is_treated_as_unset(self):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base, InitRequest(session_api_keys=["s1"], secret_key=SecretStr(""))
+        )
+        assert merged.secret_key is not None
+        assert merged.secret_key.get_secret_value() == "s1"
+
 
 class TestRouterMounting:
     """Behavior of the /api/init endpoint outside the lifespan."""

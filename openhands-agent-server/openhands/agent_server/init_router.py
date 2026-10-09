@@ -166,7 +166,8 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
     updates: dict[str, Any] = {"deferred_init": False}
     if req.session_api_keys is not None:
         updates["session_api_keys"] = req.session_api_keys
-    if req.secret_key is not None:
+    # An empty secret_key is treated as unset, like an empty OH_SECRET_KEY.
+    if req.secret_key is not None and req.secret_key.get_secret_value():
         updates["secret_key"] = req.secret_key
     elif req.session_api_keys and base.secret_key is None:
         # Match the Config default: fall back to first session key when no
