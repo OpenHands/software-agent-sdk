@@ -10011,3 +10011,50 @@ class TestUnperformableAuthMethodLogging:
 
         assert "session creation may fail" in caplog.text
         assert "GEMINI_API_KEY is unset" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_live_token_masking_follows_update_secrets_reassignment(tmp_path):
+    """Secrets added after ACP session start must not leak through on_token.
+
+    ``update_secrets`` reassigns ``state.secret_registry`` to a fresh object, so
+    the ACP masker bound in ``_start_acp_server`` must read the current registry
+    on every call rather than capturing a bound method of the original registry;
+    otherwise a newly-added secret streams in cleartext through the live
+    ``on_token`` relay even though the persisted event is masked.
+    """
+    from acp.schema import AgentMessageChunk, TextContentBlock
+
+    agent = _make_agent()
+    state = _make_state(tmp_path)
+    conn = TestACPSessionIdPersistence._make_conn()
+    try:
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        bridge = agent._client
+        assert bridge is not None
+        streamed: list[str] = []
+        bridge.on_token = streamed.append
+
+        # Mirror LocalConversation.update_secrets: build a fresh registry object
+        # carrying the new secret and reassign it onto the state.
+        new_registry = state.secret_registry.model_copy(
+            update={"secret_sources": dict(state.secret_registry.secret_sources)}
+        )
+        new_registry.update_secrets({"MY_TOKEN": "sk-NEWLYADDED-123456"})
+        with state:
+            state.secret_registry = new_registry
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "token streamed: sk-NEWLYADDED-123456 tail"
+        await bridge.session_update("sess-new", chunk)
+
+        assert streamed, "on_token should have received the streamed chunk"
+        assert "sk-NEWLYADDED-123456" not in streamed[-1]
+        assert "<secret-hidden>" in streamed[-1]
+    finally:
+        agent._unregister_atexit_cleanup()
+        if agent._executor is not None:
+            agent._executor.close()
+            agent._executor = None
