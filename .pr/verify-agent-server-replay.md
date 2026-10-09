@@ -48,7 +48,7 @@ Result: **no failures and no unexpected passes** in any of the 34 families. Coun
 | F34 | 23 | 9 | 0 |
 | **Total** | **771** | **156** | **6** |
 
-- **Expected failure** means a known-bug bullet reproduced its bug at the command marked `# bug`. Each one has an issue; they are listed in #5653.
+- **Expected failure** means a known-bug bullet reproduced its bug at the command marked `# bug`. The medium and high ones are filed as issues and listed in #5653; low-severity ones stay as map bullets.
 - **Blocked** bullets are marked blocked in the map and are not executed: `F12.docker-runtime` (needs Docker), `F15.repo-search-github` (needs a GitHub token), `F16.vscode-running` (needs the VS Code server binary), `F24.login-complete` (needs a ChatGPT account and a human to sign in), `F31.storage-retention` (needs Docker), `F33.workspace-runtime-lifecycle` (needs Docker).
 - `map coverage`: 193 of 203 routes owned and driven, 10 excluded with reasons. `map check`: 930 sub-feature IDs, all recipes parse.
 - `uv run pytest tests/cross/test_verify_agent_server_skill.py`: 11 passed.
