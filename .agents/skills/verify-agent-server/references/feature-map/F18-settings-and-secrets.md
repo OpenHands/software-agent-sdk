@@ -50,7 +50,7 @@ Routes: `GET /api/settings/agent-schema`, `GET /api/settings/conversation-schema
 - `F18.persist-restart`: settings (plaintext key, model, conversation settings) and secrets read back unchanged after a restart with the same cipher key.
 - `F18.corrupted-files`: with an unparsable `settings.json`, GET silently returns defaults and PATCH is 409 without touching the file; with an unparsable `secrets.json` the list is empty, GET by name 404, PUT and DELETE 500; restoring the files restores the values.
 - `F18.no-cipher`: without any cipher key, `X-Expose-Secrets: encrypted` is 503, `plaintext` still works, both files store plaintext, and the secrets routes are open without a key.
-- `F18.secret-empty-value`: a PUT whose value is empty or the redaction placeholder must not leave a listed but unreadable secret or wipe an existing value.
+- `F18.secret-empty-value`: a PUT whose value is empty or the redaction placeholder is refused with 422 and neither lists an unreadable secret nor wipes an existing value.
 - `F18.dangling-pointers`: PATCH must refuse an `active_agent_profile_id` or `active_meta_profile` that names nothing, as the dedicated activate routes do (404).
 - `F18.secret-scope-profile-errors`: `GET /api/settings/secrets?agent_profile_id=` naming an agent profile whose file no longer validates, or arriving while the agent-profile store's lock is held elsewhere, must answer as the agent-profile routes do (400 and 503), not with an unhandled 500.
 - `F18.secret-name-contract`: the published OpenAPI description of the secret routes must name the status an invalid secret name actually gets (it says 400; the code answers 422).
@@ -679,7 +679,7 @@ Preconditions:
   reason in `exception`), `plaintext` still works, both files hold the raw
   values (still `0600`; the server logs `Saving ... in PLAINTEXT (no cipher
   configured)`), and without session keys anyone can read a secret's value.
-- **Placeholder secret value (`F18.secret-empty-value`), known bug.** PUT the
+- **Placeholder secret value (`F18.secret-empty-value`).** PUT the
   redaction placeholder over an existing secret, which is what a form that
   only edits the description sends back.
   ```sh
@@ -689,28 +689,28 @@ Preconditions:
   trap 'restore_token || true' EXIT
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET"
   control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_TOKEN", "value": "**********", "description": "qa f18 edited"}' \
-    --expect 200,422 --save F18.secret-empty-value/put-placeholder
-  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-empty-value/get-after-placeholder  # bug
+    --expect 422 --check detail eq 'Secret value must not be empty or redacted' --save F18.secret-empty-value/put-placeholder
+  control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET" --save F18.secret-empty-value/get-after-placeholder
   ```
-  The value reads back before the PUT (the control). Expected: the
-  placeholder PUT is refused (422) or keeps the stored value. Today it
-  answers 200 and the read is 404 `Secret not found`: `CustomSecret`'s
-  validator turns `**********` (and `""`) into `null`, so the placeholder
-  silently wipes `QA_F18_TOKEN` while the list still shows it with the new
-  description. The trap puts the secret back.
-- **Empty secret value (`F18.secret-empty-value`), known bug.** PUT a new
+  The value reads back before the PUT (the control). The placeholder PUT is
+  422 `Secret value must not be empty or redacted` and the stored value is
+  unchanged. (Before #5682 it answered 200 and silently wiped the value,
+  because `CustomSecret`'s validator turns `**********` and `""` into
+  `null`.) The trap puts the secret back if anything did change it.
+- **Empty secret value (`F18.secret-empty-value`).** PUT a new
   secret whose value is the empty string.
   ```sh
   trap 'control-agent-server api DELETE /api/settings/secrets/QA_F18_EMPTY --expect 200,404 >/dev/null || true' EXIT
   control-agent-server api GET /api/settings/secrets --check secrets contains QA_F18_TOKEN --check secrets not-contains QA_F18_EMPTY
   control-agent-server api GET /api/settings/secrets/QA_F18_TOKEN --expect 200 --check . eq "$QA_F18_SECRET"
-  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_EMPTY", "value": ""}' --expect 200,422 --save F18.secret-empty-value/put-empty
-  if control-agent-server api GET /api/settings/secrets --check secrets contains QA_F18_EMPTY --save F18.secret-empty-value/list-empty >/dev/null; then control-agent-server api GET /api/settings/secrets/QA_F18_EMPTY --expect 200 --save F18.secret-empty-value/get-empty; fi  # bug
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "QA_F18_EMPTY", "value": ""}' --expect 422 \
+    --check detail eq 'Secret value must not be empty or redacted' --save F18.secret-empty-value/put-empty
+  control-agent-server api GET /api/settings/secrets --check secrets not-contains QA_F18_EMPTY --save F18.secret-empty-value/list-empty
   ```
-  A listed secret is readable (the control: `QA_F18_TOKEN`). Expected: an
-  empty value is refused (then it is not listed) or stored and readable.
-  Today the PUT answers 200, the list shows `QA_F18_EMPTY` (description
-  `null`) and every read is 404 `Secret not found`. The trap deletes it.
+  A listed secret is readable (the control: `QA_F18_TOKEN`). The empty
+  value is 422 and `QA_F18_EMPTY` is not listed. (Before #5682 the PUT
+  answered 200 and listed a secret whose every read was 404.) The trap
+  deletes it if it was stored.
 - **Dangling agent-profile pointer (`F18.dangling-pointers`), known bug.** The
   activate route, and PATCH itself for an LLM profile name, refuse targets
   that do not exist; PATCH an `active_agent_profile_id` that names nothing.

@@ -4,7 +4,8 @@ What a consumer changes on a conversation that already exists, without
 recreating it: swap the agent's LLM for a caller-supplied config (inline key,
 a cipher token from an `encrypted` read, or a saved provider connection),
 switch it to a saved LLM profile, change the model an ACP conversation's
-subprocess runs, and load a plugin from the conversation's registered
+subprocess runs (and ask an ACP server which models it offers before any
+conversation exists), and load a plugin from the conversation's registered
 marketplaces into the live agent (its skills, commands and hooks). Every
 switch answers `{"success": true}`, is written to the conversation's
 `base_state.json`, shows up in `GET /api/conversations/{id}` and as a
@@ -12,14 +13,15 @@ switch answers `{"success": true}`, is written to the conversation's
 the next turn runs on the new model and its usage is recorded under the new
 LLM's `usage_id`.
 
-Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/_secrets_exposure.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/llm/llm_registry.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/plugin/`, `openhands-sdk/openhands/sdk/agent/acp_agent.py`
+Source: `openhands-agent-server/openhands/agent_server/conversation_router.py`, `openhands-agent-server/openhands/agent_server/event_service.py`, `openhands-agent-server/openhands/agent_server/_secrets_exposure.py`, `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`, `openhands-sdk/openhands/sdk/llm/llm_registry.py`, `openhands-sdk/openhands/sdk/llm/llm_profile_store.py`, `openhands-sdk/openhands/sdk/marketplace/`, `openhands-sdk/openhands/sdk/plugin/`, `openhands-sdk/openhands/sdk/agent/acp_agent.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`
 
 Needs: `llm`, `tmux`, `node`, `network`
 
 Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 `POST /api/conversations/{conversation_id}/switch_llm`,
 `POST /api/conversations/{conversation_id}/load_plugin`,
-`POST /api/conversations/{conversation_id}/switch_acp_model`
+`POST /api/conversations/{conversation_id}/switch_acp_model`,
+`POST /api/acp/models`
 
 ## Sub-features
 
@@ -43,6 +45,8 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - `F09.acp-model-live`: on an ACP conversation with a live session, `switch_acp_model` switches the subprocess's model in place (same ACP session) and `current_model_id`, `acp_model` and `base_state.json` follow; a blank model is 400, a model the provider does not offer is refused and changes nothing, and the next turn runs on the switched model in the same session.
 - `F09.acp-model-live-unknown`: a live switch to a model id the provider does not offer (not in `available_models`) is a client error (400, as for a blank model), not a 500.
 - `F09.acp-model-live-timeout`: a live switch whose `session/set_model` round-trip outlasts `acp_prompt_timeout` is 504 with `detail` `Internal Server Error` and leaves the model unchanged.
+- `F09.acp-discover`: `POST /api/acp/models` starts the ACP server in a throwaway session and answers its name, version, default model and offered models without creating a conversation; a stored secret passed by `LookupSecret` reference reaches the server and changes what it offers.
+- `F09.acp-discover-errors`: discovery answers 401 without a valid key; a `custom` server without `acp_command` and a body without `agent_settings` are 422; a server that cannot be launched is 200 with `error.code` `ACPSpawnError` and no models, not an HTTP error.
 - `F09.ts-client`: the TypeScript client's `ConversationClient.switchLLM`, `switchProfile` and `switchAcpModel` and `ConversationManager.switchProfile` reach the routes: each switch resolves and reads back through `getConversation`, an unknown profile rejects with 404, `switchAcpModel` on a regular conversation with 400, a call without a key with 401, and `switchAcpModel` on an ACP conversation that has not run resolves and stores the model.
 - `F09.ts-client-acp-docs`: the TypeScript client's `switchAcpModel` docstrings describe what the server does before an ACP conversation's first run (200, the model is stored for the first session), not a 409.
 - `F09.load-plugin`: `load_plugin` with `<plugin>@<marketplace>` from a local marketplace registered on the agent's `agent_context` answers 200 and merges the plugin's skill, its command and its hooks into the live agent, visible in `GET`, `base_state.json` and on the socket.
@@ -58,7 +62,9 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   `POST /api/conversations/{id}/switch_llm` `{"llm": {...LLM fields...}}`,
   `POST /api/conversations/{id}/switch_profile` `{"profile_name": "..."}`,
   `POST /api/conversations/{id}/switch_acp_model` `{"model": "..."}`,
-  `POST /api/conversations/{id}/load_plugin` `{"plugin_ref": "<plugin>[@<marketplace>]"}`.
+  `POST /api/conversations/{id}/load_plugin` `{"plugin_ref": "<plugin>[@<marketplace>]"}`,
+  `POST /api/acp/models` `{"agent_settings": {...ACP settings...}, "secrets": {...}, "refresh": false}`
+  (answers an `ACPModelDiscovery`, not `{"success": true}`).
   Each answers `{"success": true}`; every recipe below drives them.
 - Second views: `GET /api/conversations/{id}` (`agent.llm`, `agent.condenser.llm`,
   `stats.usage_to_metrics.<usage_id>`, `current_model_id`, `agent.acp_model`,
@@ -73,6 +79,7 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
   (conversations and runs).
 - SDK: `LocalConversation.switch_llm(llm)`, `switch_profile(name)`,
   `switch_acp_model(model)` and `load_plugin(ref)` are what the routes call;
+  `discover_acp_models(settings, ...)` is what `POST /api/acp/models` calls;
   over HTTP `RemoteConversation.load_plugin(ref)` posts to `load_plugin`
   (`F09.load-plugin-sdk` drives it).
   `RemoteConversation` has no `switch_llm`, `switch_profile` or
@@ -80,7 +87,8 @@ Routes: `POST /api/conversations/{conversation_id}/switch_profile`,
 - TypeScript client: `ConversationClient.switchProfile(id, name)`,
   `switchLLM(id, llm)`, `switchAcpModel(id, model)`;
   `RemoteConversation.switchProfile`, `switchLlm`, `switchAcpModel`;
-  `ConversationManager.switchProfile`. There is no TypeScript `loadPlugin`.
+  `ConversationManager.switchProfile`; `ACPClient.discoverModels(request)`
+  posts to `POST /api/acp/models`. There is no TypeScript `loadPlugin`.
   `F09.ts-client` drives the `ConversationClient` methods and
   `ConversationManager.switchProfile` (the `RemoteConversation` methods post
   the same bodies to the same routes).
@@ -537,6 +545,38 @@ Preconditions:
   answers 504 with `detail` rewritten to `Internal Server Error` (the
   server's 5xx handler; `exception` is `504: `), and the conversation keeps
   `sonnet` everywhere: a timed-out switch changes nothing locally.
+- **ACP model discovery (`F09.acp-discover`).** Ask the repository's fake
+  ACP server (`tests/sdk/agent/fake_acp_models_server.py`, run with the
+  checkout's Python, so it needs neither `node` nor a model) what it offers,
+  first with no credentials, then with a stored `FAKE_ACP_KEY` passed by
+  reference, which unlocks a third model.
+  ```sh
+  FAKE_ACP=$(jq -nc --arg py "$PWD/.venv/bin/python" --arg f "$PWD/tests/sdk/agent/fake_acp_models_server.py" '{agent_kind: "acp", acp_server: "custom", acp_command: [$py, $f]}')
+  control-agent-server api POST /api/acp/models --json "{\"agent_settings\": $FAKE_ACP}" --expect 200 --quiet \
+    --check agent_name eq fake-acp --check agent_version eq 1.2.3 --check current_model_id eq m1 \
+    --check available_models.0.model_id eq m1 --check available_models.1.model_id eq m2 --check available_models.2 missing \
+    --check error eq null --save F09.acp-discover/models
+  control-agent-server api PUT /api/settings/secrets --json '{"name": "FAKE_ACP_KEY", "value": "qa-f09-acp-key"}' --expect 200 --quiet
+  control-agent-server api POST /api/acp/models \
+    --json "{\"agent_settings\": $FAKE_ACP, \"secrets\": {\"FAKE_ACP_KEY\": {\"kind\": \"LookupSecret\", \"url\": \"/api/settings/secrets/FAKE_ACP_KEY\"}}}" \
+    --expect 200 --quiet --check available_models.2.model_id eq premium --check error eq null --save F09.acp-discover/stored-secret
+  control-agent-server api DELETE /api/settings/secrets/FAKE_ACP_KEY --expect 200 --quiet
+  ```
+  The first call answers `fake-acp` 1.2.3 on `m1` with `m1` and `m2`; with
+  the stored key the server also offers `premium`. No conversation is
+  created.
+- **Discovery errors (`F09.acp-discover-errors`).** No key, no command, no
+  settings, and a command that does not exist.
+  ```sh
+  control-agent-server api POST /api/acp/models --auth bad --json "{\"agent_settings\": $FAKE_ACP}" --expect 401 --save F09.acp-discover-errors/auth
+  control-agent-server api POST /api/acp/models --json '{"agent_settings": {"agent_kind": "acp", "acp_server": "custom"}}' --expect 422 \
+    --check detail contains 'acp_command must be set' --quiet --save F09.acp-discover-errors/no-command
+  control-agent-server api POST /api/acp/models --json '{}' --expect 422 --check detail.0.loc.1 eq agent_settings --quiet
+  control-agent-server api POST /api/acp/models --json '{"agent_settings": {"agent_kind": "acp", "acp_server": "custom", "acp_command": ["/nonexistent/qa-f09-acp"]}}' \
+    --expect 200 --quiet --check error.code eq ACPSpawnError --check available_models.0 missing --check current_model_id eq null --save F09.acp-discover-errors/spawn
+  ```
+  A launch failure is reported in the body (`error.code`, `error.detail`)
+  with a 200, so a picker can show it; only a bad request is an HTTP error.
 - **TypeScript client (`F09.ts-client`).** `ConversationClient` and
   `ConversationManager` from the built client in `clients/typescript/dist`
   (built here when missing, which needs `npm` and the network), on a fresh
@@ -747,6 +787,11 @@ Preconditions:
 
 ## Gotchas
 
+- `POST /api/acp/models` caches a successful answer for five minutes per
+  launch command, arguments and resolved secrets; send `"refresh": true`
+  to ask the server again. Failed discoveries are not cached. In Docker
+  runtime mode the route answers 501 (discovery runs only where
+  conversations run in-process).
 - Every switch answers `{"success": true}` and nothing else; read the result
   back with `GET /api/conversations/{id}` (which serves the autosaved
   `base_state.json`, so on an idle conversation it shows a switch

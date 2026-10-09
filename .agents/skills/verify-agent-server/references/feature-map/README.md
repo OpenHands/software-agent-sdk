@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: `8ba966d1d3af49f08e04349c055009e1614b48d6` (first pass, 2026-10-07).
 
-The map has **930 sub-features**.
+The map has **932 sub-features**.
 
 ## Baseline preconditions
 
@@ -69,7 +69,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F06 | [Conversation events and the events WebSocket](F06-conversation-events.md) | appending messages, event search, count, get and batch get with filters and paging, the events WebSocket (auth, snapshot, replay, live frames), history across restart | `POST`/`GET /api/conversations/{id}/events[...]`, `WS /sockets/events/{id}` | llm; launch `--env TZ=UTC` | 28 |
 | F07 | [Session WebSocket protocol](F07-session-socket.md) | the resumable session socket: sync, durable and transient frames, seq replay, inbound messages, error and close codes, streaming deltas, backpressure, subscriber cap | `WS /sockets/session/{id}` | llm | 24 |
 | F08 | [Confirmation policy, security analyzer and conversation secrets](F08-confirmation-security-secrets.md) | confirmation policies and accept/reject, the security analyzer, runtime conversation secrets (static, lookup, masking, encryption, no cipher), and what survives a restart | `POST /api/conversations/{id}/confirmation_policy`, `/security_analyzer`, `/secrets`, `/events/respond_to_confirmation` | llm, tmux | 23 |
-| F09 | [Model, profile and ACP switching; runtime plugins](F09-model-switching-plugins.md) | swap the agent LLM, switch to a saved profile, switch an ACP model, load a plugin at runtime; stats, hooks and restart persistence | `POST /api/conversations/{id}/switch_llm`, `/switch_profile`, `/switch_acp_model`, `/load_plugin` | llm, tmux, node, network | 28 |
+| F09 | [Model, profile and ACP switching; runtime plugins](F09-model-switching-plugins.md) | swap the agent LLM, switch to a saved profile, switch an ACP model and discover the models an ACP server offers, load a plugin at runtime; stats, hooks and restart persistence | `POST /api/conversations/{id}/switch_llm`, `/switch_profile`, `/switch_acp_model`, `/load_plugin`, `POST /api/acp/models` | llm, tmux, node, network | 30 |
 | F10 | [Fork, navigate, condense and ask_agent](F10-fork-navigate-condense-ask.md) | fork, navigate between branches, condense with a real summarizer, ask the agent a side question; state after restart | `POST /api/conversations/{id}/fork`, `/navigate`, `/condense`, `/ask_agent` | llm | 25 |
 | F11 | [Goal loop](F11-goals.md) | goal loops: start, LLM-judged completion and caps, stop, resume, supersede, interrupt, failures, busy and capacity limits | `POST /api/conversations/{id}/goal`, `/goal/stop`, `/goal/resume` | llm, tmux; launch `--config-json '{"max_concurrent_runs": 1}'` | 25 |
 | F12 | [Conversation runtime info, sandbox pause and credential bindings](F12-runtime-and-credentials.md) | runtime info and reprovision, prepare-for-sandbox-pause, credential bindings for ACP agents, managed LLM key refresh, the Docker runtime mode's routes and contract | `GET /api/conversations/{id}/runtime`, `POST .../runtime/reprovision`, `POST /api/conversations/prepare-for-sandbox-pause`, `PUT .../credential-bindings/{name}`, Docker mode `DELETE .../runtime`, `POST .../runtime/credentials` | llm, node, network | 30 |
