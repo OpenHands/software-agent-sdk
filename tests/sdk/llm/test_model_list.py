@@ -213,6 +213,10 @@ def test_verified_lists_keep_two_latest_versions_per_line():
             {"anthropic/claude-opus-5", "openai/gpt-6-astra"},
             {"anthropic/claude-opus-4-7"},
         ),
+        "digitalocean": (
+            {"anthropic-claude-opus-5.5", "anthropic-claude-opus-5"},
+            {"anthropic-claude-opus-4.8", "openai-gpt-6-astra"},
+        ),
     }
     assert set(expectations) == set(VERIFIED_MODELS) - {"openhands"}
     for provider, (present, absent) in expectations.items():
