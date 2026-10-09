@@ -156,7 +156,7 @@ def test_load_migrates_legacy_openhands_proxy_profile(
         json.dumps(
             {
                 "schema_version": 1,
-                "model": "litellm_proxy/claude-opus-4-8",
+                "model": "litellm_proxy/claude-opus-5",
                 "base_url": "https://llm-proxy.app.all-hands.dev/",
             }
         )
@@ -164,7 +164,7 @@ def test_load_migrates_legacy_openhands_proxy_profile(
 
     loaded = profile_store.load("legacy")
 
-    assert loaded.model == "openhands/claude-opus-4-8"
+    assert loaded.model == "openhands/claude-opus-5"
     assert loaded.base_url is None
 
 
@@ -176,7 +176,7 @@ def test_list_summaries_migrates_legacy_openhands_proxy_profile(
         json.dumps(
             {
                 "schema_version": 1,
-                "model": "litellm_proxy/claude-opus-4-8",
+                "model": "litellm_proxy/claude-opus-5",
                 "base_url": "https://llm-proxy.app.all-hands.dev/",
             }
         )
@@ -187,7 +187,7 @@ def test_list_summaries_migrates_legacy_openhands_proxy_profile(
     assert summaries == [
         {
             "name": "legacy",
-            "model": "openhands/claude-opus-4-8",
+            "model": "openhands/claude-opus-5",
             "base_url": None,
             "provider_connection_id": None,
             "provider_connection_broken": False,

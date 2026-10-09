@@ -33,7 +33,6 @@ validate_openapi_artifact = _prod.validate_openapi_artifact
 
 
 def _write_client_fixture(root: Path, version: str) -> None:
-    (root / ".github" / "workflows").mkdir(parents=True)
     (root / "package.json").write_text(
         json.dumps(
             {
@@ -46,9 +45,6 @@ def _write_client_fixture(root: Path, version: str) -> None:
             indent=2,
         )
         + "\n"
-    )
-    (root / ".github" / "workflows" / "integration-tests.yml").write_text(
-        f"image: ghcr.io/openhands/agent-server:{version}-python\n"
     )
     (root / "AGENTS.md").write_text(
         f"Pinned to software-agent-sdk v{version} and `v{version}`.\n"
@@ -88,7 +84,6 @@ def test_prepare_bump_updates_all_mirrors_from_exact_artifact(tmp_path: Path):
     assert result.target_version == "1.38.0"
     assert result.changed_files == (
         Path("package.json"),
-        Path(".github/workflows/integration-tests.yml"),
         Path("AGENTS.md"),
         Path("README.md"),
     )

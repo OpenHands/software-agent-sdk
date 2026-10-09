@@ -127,12 +127,8 @@ def clean_outward_text(text: str, *, cipher: Cipher | None = None) -> str:
     if cleanup_llm is None:
         return text
 
-    # Imported lazily: ``agent.utils`` imports from ``openhands.sdk.llm``, so a
-    # module-level import here would create a circular import at package init.
-    from openhands.sdk.agent.utils import make_llm_completion
-
     try:
-        response = make_llm_completion(cleanup_llm, _cleanup_messages(text))
+        response = cleanup_llm.generate(messages=_cleanup_messages(text), store=False)
     except Exception as exc:
         logger.warning("Cleanup profile call failed; sending original text: %s", exc)
         return text
@@ -153,12 +149,10 @@ async def aclean_outward_text(text: str, *, cipher: Cipher | None = None) -> str
     if cleanup_llm is None:
         return text
 
-    # Imported lazily: ``agent.utils`` imports from ``openhands.sdk.llm``, so a
-    # module-level import here would create a circular import at package init.
-    from openhands.sdk.agent.utils import amake_llm_completion
-
     try:
-        response = await amake_llm_completion(cleanup_llm, _cleanup_messages(text))
+        response = await cleanup_llm.agenerate(
+            messages=_cleanup_messages(text), store=False
+        )
     except Exception as exc:
         logger.warning("Cleanup profile call failed; sending original text: %s", exc)
         return text

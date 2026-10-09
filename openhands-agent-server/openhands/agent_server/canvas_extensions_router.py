@@ -7,25 +7,38 @@ concerns: install / list / get / enable-disable / uninstall, plus serving
 an installed extension's entrypoint bundle to the Canvas frontend.
 """
 
+import asyncio
 from typing import Annotated, Final
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from openhands.agent_server.canvas_extensions.backend import (
+    BackendLogs,
+    BackendRevisionRequest,
+    BackendStatus,
+    CanvasExtensionBackendManager,
+)
+from openhands.agent_server.canvas_extensions.bridge import AppBackendSessionStore
 from openhands.agent_server.canvas_extensions.installed import (
     InstalledCanvasExtensionInfo,
     disable_canvas_extension,
     enable_canvas_extension,
     get_canvas_extension_bundle_path,
+    get_canvas_extension_icon_path,
     get_installed_canvas_extension,
     get_installed_canvas_extension_manifest,
     install_canvas_extension,
     list_installed_canvas_extensions,
     uninstall_canvas_extension,
 )
-from openhands.agent_server.canvas_extensions.manifest import CanvasExtensionManifest
+from openhands.agent_server.canvas_extensions.manifest import (
+    MANIFEST_FILENAME,
+    CanvasExtensionManifest,
+)
 from openhands.sdk.extensions.fetch import ExtensionFetchError
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 canvas_extensions_router = APIRouter(
@@ -44,6 +57,23 @@ CanvasExtensionNamePath = Annotated[
         description="Canvas extension name (lowercase alphanumeric, hyphens)",
     ),
 ]
+
+
+def _backend_manager(request: Request) -> CanvasExtensionBackendManager:
+    manager = getattr(request.app.state, "canvas_extension_backend_manager", None)
+    if manager is None:
+        manager = CanvasExtensionBackendManager()
+        request.app.state.canvas_extension_backend_manager = manager
+    return manager
+
+
+async def _revoke_and_stop_backend(
+    request: Request, extension_name: str
+) -> BackendStatus:
+    session_store = getattr(request.app.state, "app_backend_session_store", None)
+    if isinstance(session_store, AppBackendSessionStore):
+        await session_store.revoke_app(extension_name)
+    return await _backend_manager(request).stop(extension_name)
 
 
 class InstallCanvasExtensionRequest(BaseModel):
@@ -78,6 +108,13 @@ class InstalledCanvasExtensionResponse(BaseModel):
         default=False, description="Whether the canvas extension is enabled"
     )
     source: str = Field(description="Original source (e.g., 'github:owner/repo')")
+    requested_ref: str | None = Field(
+        default=None,
+        description=(
+            "Branch, tag, or commit requested at install time. None means no "
+            "ref was requested (tracking the source's default branch)."
+        ),
+    )
     resolved_ref: str | None = Field(
         default=None, description="Resolved git commit SHA"
     )
@@ -107,6 +144,7 @@ class InstalledCanvasExtensionResponse(BaseModel):
             description=info.description,
             enabled=info.enabled,
             source=info.source,
+            requested_ref=info.requested_ref,
             resolved_ref=info.resolved_ref,
             repo_path=info.repo_path,
             installed_at=info.installed_at,
@@ -144,13 +182,14 @@ class UninstallCanvasExtensionResponse(BaseModel):
     "/install",
     response_model=InstalledCanvasExtensionResponse,
     responses={
-        400: {"description": "Failed to fetch canvas extension source"},
+        400: {"description": "Could not read canvas extension source"},
         409: {"description": "Canvas extension already installed (use force=true)"},
         422: {"description": "Invalid canvas extension (bad manifest, etc.)"},
     },
 )
-def install_canvas_extension_endpoint(
+async def install_canvas_extension_endpoint(
     request: InstallCanvasExtensionRequest,
+    http_request: Request,
 ) -> InstalledCanvasExtensionResponse:
     """Install a canvas extension from a git URL, GitHub shorthand, or local
     path.
@@ -158,13 +197,21 @@ def install_canvas_extension_endpoint(
     A fresh install always lands disabled, regardless of the request body --
     there is no ``enabled`` field to smuggle a different state through.
     """
+    manager = _backend_manager(http_request)
+    if request.force and manager.has_running_backends():
+        raise HTTPException(
+            status_code=409,
+            detail="Stop running Canvas App backends before a forced install",
+        )
     try:
-        info = install_canvas_extension(
+        info = await asyncio.to_thread(
+            install_canvas_extension,
             source=request.source,
             ref=request.ref,
             repo_path=request.repo_path,
             force=request.force,
         )
+        manager.invalidate_approval(info.name)
         return InstalledCanvasExtensionResponse.from_info(
             info, get_installed_canvas_extension_manifest(info.name)
         )
@@ -173,12 +220,27 @@ def install_canvas_extension_endpoint(
             status_code=409,
             detail="Canvas extension already installed. Use force=true to overwrite.",
         )
-    except ExtensionFetchError:
+    except ExtensionFetchError as e:
+        # Pass the specific reason through -- which of source/ref/repo_path is
+        # wrong is the whole diagnostic, and a generic message misattributes a
+        # bad repo_path to the source. Redacted in case a URL carried a token.
+        # Deliberately not worded "failed to fetch": the canvas client treats
+        # that phrase as a network outage and hides the reason behind a
+        # "Disconnected, check your network" toast.
         raise HTTPException(
             status_code=400,
             detail=(
-                "Failed to fetch canvas extension source. "
-                "Check that the source is valid."
+                "Could not read canvas extension source: "
+                f"{redact_url_credentials(str(e))}"
+            ),
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No {MANIFEST_FILENAME} found at the resolved location. "
+                "Source plus Path must point at the extension's own "
+                "directory, not the repository root."
             ),
         )
     except (ValidationError, ValueError, OSError):
@@ -231,10 +293,14 @@ def get_installed_canvas_extension_endpoint(
     response_model=UpdateCanvasExtensionStateResponse,
     responses={404: {"description": "Canvas extension not installed"}},
 )
-def set_canvas_extension_enabled_endpoint(
-    extension_name: CanvasExtensionNamePath, request: UpdateCanvasExtensionStateRequest
+async def set_canvas_extension_enabled_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: UpdateCanvasExtensionStateRequest,
+    http_request: Request,
 ) -> UpdateCanvasExtensionStateResponse:
     """Enable or disable an installed canvas extension."""
+    if not request.enabled:
+        await _revoke_and_stop_backend(http_request, extension_name)
     fn = enable_canvas_extension if request.enabled else disable_canvas_extension
     if not fn(name=extension_name):
         raise HTTPException(
@@ -251,10 +317,12 @@ def set_canvas_extension_enabled_endpoint(
     response_model=UninstallCanvasExtensionResponse,
     responses={404: {"description": "Canvas extension not installed"}},
 )
-def uninstall_canvas_extension_endpoint(
+async def uninstall_canvas_extension_endpoint(
     extension_name: CanvasExtensionNamePath,
+    request: Request,
 ) -> UninstallCanvasExtensionResponse:
-    """Uninstall a canvas extension by name."""
+    """Uninstall a canvas extension by name while retaining backend data."""
+    await _revoke_and_stop_backend(request, extension_name)
     if not uninstall_canvas_extension(name=extension_name):
         raise HTTPException(
             status_code=404,
@@ -263,6 +331,95 @@ def uninstall_canvas_extension_endpoint(
     return UninstallCanvasExtensionResponse(
         message=f"Canvas extension '{extension_name}' uninstalled"
     )
+
+
+@canvas_extensions_router.get(
+    "/installed/{extension_name}/backend",
+    response_model=BackendStatus,
+)
+async def get_canvas_extension_backend_status_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: Request,
+) -> BackendStatus:
+    """Probe the optional backend lifecycle state."""
+    return await _backend_manager(request).status(extension_name)
+
+
+@canvas_extensions_router.post(
+    "/installed/{extension_name}/backend/prepare",
+    response_model=BackendStatus,
+    responses={409: {"description": "Revision or checksum approval conflict"}},
+)
+async def prepare_canvas_extension_backend_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    body: BackendRevisionRequest,
+    request: Request,
+) -> BackendStatus:
+    """Verify and prepare the immutable artifact for an exact revision."""
+    try:
+        return await _backend_manager(request).prepare(extension_name, body.revision)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@canvas_extensions_router.post(
+    "/installed/{extension_name}/backend/start",
+    response_model=BackendStatus,
+    responses={409: {"description": "Revision is not prepared or cannot start"}},
+)
+async def start_canvas_extension_backend_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    body: BackendRevisionRequest,
+    request: Request,
+) -> BackendStatus:
+    """Start only a previously prepared exact backend revision."""
+    try:
+        return await _backend_manager(request).start(extension_name, body.revision)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@canvas_extensions_router.post(
+    "/installed/{extension_name}/backend/stop",
+    response_model=BackendStatus,
+)
+async def stop_canvas_extension_backend_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: Request,
+) -> BackendStatus:
+    """Stop the backend's owned process group idempotently."""
+    # Revoke app-scoped sessions too: a stopped backend must not stay reachable
+    # through a cookie that outlives it.
+    return await _revoke_and_stop_backend(request, extension_name)
+
+
+@canvas_extensions_router.get(
+    "/installed/{extension_name}/backend/logs",
+    response_model=BackendLogs,
+)
+async def get_canvas_extension_backend_logs_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: Request,
+    limit_bytes: Annotated[int, Query(ge=1, le=256 * 1024)] = 64 * 1024,
+) -> BackendLogs:
+    """Return bounded combined stdout and stderr from the owned process."""
+    return await _backend_manager(request).logs(extension_name, limit_bytes)
+
+
+@canvas_extensions_router.delete(
+    "/installed/{extension_name}/backend/data",
+    response_model=BackendStatus,
+    responses={409: {"description": "Backend must be stopped first"}},
+)
+async def delete_canvas_extension_backend_data_endpoint(
+    extension_name: CanvasExtensionNamePath,
+    request: Request,
+) -> BackendStatus:
+    """Delete mutable backend data separately from app uninstall."""
+    try:
+        return await _backend_manager(request).delete_data(extension_name)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @canvas_extensions_router.get(
@@ -289,3 +446,42 @@ def get_canvas_extension_bundle_endpoint(
             detail=f"Canvas extension '{extension_name}' bundle not found",
         )
     return FileResponse(bundle_path, headers={"Cache-Control": "no-cache"})
+
+
+@canvas_extensions_router.get(
+    "/installed/{extension_name}/icon",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {
+                "image/svg+xml": {"schema": {"type": "string", "format": "binary"}}
+            }
+        },
+        404: {"description": "Canvas extension or icon not found"},
+    },
+)
+def get_canvas_extension_icon_endpoint(
+    extension_name: CanvasExtensionNamePath,
+) -> FileResponse:
+    """Serve the SVG icon declared by an installed canvas extension's manifest.
+
+    The path comes from the manifest, never the request. The CSP sandbox keeps
+    a directly opened SVG from running scripts on the agent-server origin.
+    """
+    icon_path = get_canvas_extension_icon_path(name=extension_name)
+    if icon_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Canvas extension '{extension_name}' icon not found",
+        )
+    return FileResponse(
+        icon_path,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "no-cache",
+            "Content-Security-Policy": (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

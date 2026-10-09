@@ -10,6 +10,7 @@ from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, Protocol
 
+from openhands.sdk.agent.acp_contracts import ACPRevisionedCredentialBinding
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.credential import (
     CredentialAuthorizationRejected,
@@ -489,8 +490,10 @@ class _CodexAuthLifecycle:
                 self._error = None
 
     def _authorization_revision(self) -> int | None:
-        revision = getattr(self.binding, "authorization_revision", None)
-        return revision if isinstance(revision, int) else None
+        if isinstance(self.binding, ACPRevisionedCredentialBinding):
+            revision = self.binding.authorization_revision
+            return revision if isinstance(revision, int) else None
+        return None
 
     @staticmethod
     def _digest(value: str) -> str:
@@ -515,3 +518,22 @@ _FILE_CREDENTIAL_LIFECYCLES = {
 
 def supports_file_credential_binding(secret_name: str) -> bool:
     return secret_name in _FILE_CREDENTIAL_LIFECYCLES
+
+
+_FILE_CREDENTIAL_VALIDATORS: dict[str, Callable[[str], bool]] = {
+    CODEX_AUTH_SECRET_NAME: is_valid_codex_auth,
+}
+
+
+def file_credential_looks_usable(secret_name: str, text: str) -> bool:
+    """Whether a materialised credential file is plausibly usable.
+
+    Only a *present* file can be checked here, and only for the few secrets the
+    SDK knows the shape of. An unrecognised secret gets the benefit of the
+    doubt: the CLI owns the format, and refusing to believe a credential we
+    cannot parse would warn on every provider we have not special-cased —
+    which is the noise this is meant to avoid. Returning ``True`` for unknown
+    names keeps that judgement with the provider.
+    """
+    validator = _FILE_CREDENTIAL_VALIDATORS.get(secret_name)
+    return True if validator is None else validator(text)

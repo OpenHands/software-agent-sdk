@@ -78,117 +78,15 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/AskOracleTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands"
-  },
-  {
-    "pointer": "/components/schemas/BrowserClickTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserCloseTabTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserGetContentTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserGetStateTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserGetStorageTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserGoBackTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserListTabsTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserNavigateTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserScrollTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/BrowserSetStorageAction/properties/storage_state/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/BrowserSetStorageTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserStartRecordingTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserStopRecordingTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserSwitchTabTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserToolSet/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/BrowserTypeTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/ClientTool/properties/input_schema/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/ClientTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
     "owner": "OpenHands OSS"
   },
   {
@@ -222,36 +120,6 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/EditTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/FileEditorTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/FinishTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/GlobTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/GrepTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/HookExecutionEvent/properties/hook_input/anyOf/0/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
@@ -264,12 +132,6 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/InvokeSkillTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/LLM-Input/properties/litellm_extra_body/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Provider-specific configuration is intentionally extensible.",
@@ -279,12 +141,6 @@
     "pointer": "/components/schemas/LLM-Output/properties/litellm_extra_body/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Provider-specific configuration is intentionally extensible.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/ListDirectoryTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
     "owner": "OpenHands OSS"
   },
   {
@@ -354,27 +210,9 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/MCPToolDefinition/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/PlanningFileEditorTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/ProfileDetailResponse/properties/config/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/ReadFileTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
     "owner": "OpenHands OSS"
   },
   {
@@ -432,42 +270,6 @@
     "owner": "OpenHands OSS"
   },
   {
-    "pointer": "/components/schemas/SwitchLLMTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/TaskTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/TaskToolSet/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/TaskTrackerTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/TerminalTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/ThinkTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
     "pointer": "/components/schemas/Tool-Input/properties/params/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "The value is a caller or provider supplied JSON Schema or tool argument object.",
@@ -477,30 +279,6 @@
     "pointer": "/components/schemas/ToolExecution/additionalProperties",
     "kind": "unrestricted-additional-properties",
     "reason": "Existing extensible or opaque public payload tracked by the weak-type ratchet.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/VisionInspectTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/WorkflowTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/WorkflowToolSet/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
-    "owner": "OpenHands OSS"
-  },
-  {
-    "pointer": "/components/schemas/WriteFileTool/properties/meta/anyOf/0/additionalProperties",
-    "kind": "unrestricted-additional-properties",
-    "reason": "Tool metadata is intentionally extensible across tool providers.",
     "owner": "OpenHands OSS"
   },
   {
