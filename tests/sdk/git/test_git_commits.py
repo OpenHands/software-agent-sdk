@@ -145,6 +145,30 @@ def test_get_commit_changes_reports_the_commits_own_files():
         }
 
 
+def test_get_commit_changes_reports_filenames_with_spaces_and_non_ascii():
+    """A commit's file list keeps spaced and non-ASCII names intact."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        setup_git_repo(temp_dir)
+        commit_file(temp_dir, "my notes.md", "v1", "base")
+
+        (Path(temp_dir) / "my notes.md").write_text("v2")
+        (Path(temp_dir) / "café.txt").write_text("new")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'touch filenames'", temp_dir)
+        sha = run_bash_command("git rev-parse HEAD", temp_dir).stdout.strip()
+
+        # Act
+        changes = get_commit_changes(temp_dir, sha)
+
+        # Assert
+        changes_by_path = {str(change.path): change.status for change in changes}
+        assert changes_by_path == {
+            "my notes.md": GitChangeStatus.UPDATED,
+            "café.txt": GitChangeStatus.ADDED,
+        }
+
+
 def test_get_commit_changes_root_commit_lists_all_files_as_added():
     """A root commit has no parent, so it diffs against the empty tree."""
     with tempfile.TemporaryDirectory() as temp_dir:
