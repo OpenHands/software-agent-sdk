@@ -284,6 +284,69 @@ def test_view_file(editor):
     assert "3\t" not in result.text  # No extra line
 
 
+@pytest.mark.parametrize(
+    ("content", "numbered_lines"),
+    [
+        ("hello", ["     1\thello"]),
+        ("hello\n", ["     1\thello"]),
+        ("hello\n\n", ["     1\thello", "     2\t"]),
+        # `\x0c` (form feed) and `\u2028` are line breaks for str.splitlines() but
+        # ordinary characters for read_file/insert/view_range, so they must not
+        # shift line numbers.
+        ("a\x0cb\nc\n", ["     1\ta\x0cb", "     2\tc"]),
+        (
+            'const s = "a\u2028b";\ngamma\n',
+            ['     1\tconst s = "a\u2028b";', "     2\tgamma"],
+        ),
+    ],
+)
+def test_view_line_numbers_match_file_lines(tmp_path, content, numbered_lines):
+    test_file = tmp_path / "newlines.txt"
+    test_file.write_text(content)
+
+    result = file_editor(command="view", path=str(test_file))
+
+    assert_successful_result(result, str(test_file))
+    assert result.text is not None
+    assert result.text.split("\n")[1:-1] == numbered_lines
+
+
+def test_insert_line_number_matches_view_with_form_feed(tmp_path):
+    """A form feed must not shift the line an insert lands on.
+
+    `view` numbers `int b;` on line 2, so inserting at line 2 must land right
+    after it, not after `int c;`.
+    """
+    path = tmp_path / "formfeed.c"
+    path.write_text("int a;\x0cint b;\nint c;\n")
+
+    view = file_editor(command="view", path=str(path))
+    assert view.text is not None
+    assert view.text.split("\n")[1:-1] == ["     1\tint a;\x0cint b;", "     2\tint c;"]
+
+    result = file_editor(
+        command="insert", path=str(path), insert_line=2, new_str="int NEW;"
+    )
+    assert_successful_result(result, str(path))
+    assert path.read_text() == "int a;\x0cint b;\nint c;\nint NEW;\n"
+
+
+@pytest.mark.parametrize("content", ["a\nb", "a\nb\n", "a\nb\n\n", "a\n\n", "\n"])
+def test_ranged_view_preserves_final_line(tmp_path, content):
+    path = tmp_path / "range.txt"
+    path.write_text(content)
+    line_count = len(content.splitlines())
+    full = file_editor(command="view", path=str(path))
+    ranged = file_editor(command="view", path=str(path), view_range=[1, line_count])
+    last = file_editor(
+        command="view", path=str(path), view_range=[line_count, line_count]
+    )
+    assert full.text is not None
+    assert ranged.text == full.text
+    assert last.text is not None
+    assert last.text.splitlines()[1:] == full.text.splitlines()[-1:]
+
+
 def test_view_directory(editor):
     editor, test_file = editor
     parent_dir = test_file.parent
@@ -341,10 +404,8 @@ def test_create_with_empty_string(editor):
     assert new_file.read_text() == ""
     assert "File created successfully" in result.text
 
-    # Test the view command showing an empty line
     result = editor(command="view", path=str(new_file))
-    assert f"Here's the result of running `cat -n` on {new_file}:" in result.text
-    assert "1\t" in result.text  # Check for empty line
+    assert result.text == (f"Here's the result of running `cat -n` on {new_file}:\n")
 
 
 def test_create_with_none_file_text(editor):
