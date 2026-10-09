@@ -101,7 +101,7 @@ class SecurityAnalyzerBase(DiscriminatedUnionMixin, ABC):
 
         The default implementation wraps :meth:`security_risk` with no detail.
         Analyzers that can explain their verdict (probabilities, confidence, a
-        rationale) should override this instead of ``security_risk``.
+        rationale) should override this.
         """
         return SecurityAnalysis(risk=self.security_risk(action))
 
