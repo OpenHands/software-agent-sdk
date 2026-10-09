@@ -290,6 +290,14 @@ def test_view_file(editor):
         ("hello", ["     1\thello"]),
         ("hello\n", ["     1\thello"]),
         ("hello\n\n", ["     1\thello", "     2\t"]),
+        # `\x0c` (form feed) and `\u2028` are line breaks for str.splitlines() but
+        # ordinary characters for read_file/insert/view_range, so they must not
+        # shift line numbers.
+        ("a\x0cb\nc\n", ["     1\ta\x0cb", "     2\tc"]),
+        (
+            'const s = "a\u2028b";\ngamma\n',
+            ['     1\tconst s = "a\u2028b";', "     2\tgamma"],
+        ),
     ],
 )
 def test_view_line_numbers_match_file_lines(tmp_path, content, numbered_lines):
@@ -300,7 +308,27 @@ def test_view_line_numbers_match_file_lines(tmp_path, content, numbered_lines):
 
     assert_successful_result(result, str(test_file))
     assert result.text is not None
-    assert result.text.splitlines()[1:] == numbered_lines
+    assert result.text.split("\n")[1:-1] == numbered_lines
+
+
+def test_insert_line_number_matches_view_with_form_feed(tmp_path):
+    """A form feed must not shift the line an insert lands on.
+
+    `view` numbers `int b;` on line 2, so inserting at line 2 must land right
+    after it, not after `int c;`.
+    """
+    path = tmp_path / "formfeed.c"
+    path.write_text("int a;\x0cint b;\nint c;\n")
+
+    view = file_editor(command="view", path=str(path))
+    assert view.text is not None
+    assert view.text.split("\n")[1:-1] == ["     1\tint a;\x0cint b;", "     2\tint c;"]
+
+    result = file_editor(
+        command="insert", path=str(path), insert_line=2, new_str="int NEW;"
+    )
+    assert_successful_result(result, str(path))
+    assert path.read_text() == "int a;\x0cint b;\nint c;\nint NEW;\n"
 
 
 @pytest.mark.parametrize("content", ["a\nb", "a\nb\n", "a\nb\n\n", "a\n\n", "\n"])
