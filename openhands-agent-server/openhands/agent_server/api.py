@@ -506,7 +506,10 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
+    app.include_router(
+        openai_router,
+        dependencies=[Depends(check_openai_api_key), Depends(require_initialized)],
+    )
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
@@ -521,7 +524,10 @@ def _add_api_routes(app: FastAPI) -> None:
     app.include_router(api_router)
 
     app.include_router(app_backend_bridge_router)
-    app.include_router(conversation_registry.sockets_router)
+    app.include_router(
+        conversation_registry.sockets_router,
+        dependencies=[Depends(require_initialized)],
+    )
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:
