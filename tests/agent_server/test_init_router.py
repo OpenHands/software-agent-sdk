@@ -405,6 +405,42 @@ class TestInitServiceTransitions:
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
 
+    @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
+    def test_empty_init_secret_never_uses_an_empty_session_key(
+        self, tmp_path, session_api_keys
+    ):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                response = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": "",
+                        "session_api_keys": session_api_keys,
+                    },
+                )
+                assert response.status_code == 422
+                assert "user-session-key" not in response.text
+                assert client.get("/api/init").json()["state"] == "dormant"
+
+                response = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": "",
+                        "session_api_keys": ["user-session-key"],
+                    },
+                )
+                assert response.status_code == 200
+                assert app.state.config.cipher.secret_key == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
+
     def test_dormant_503s_api_routes_until_init(self, tmp_path):
         _reset_conversation_singleton()
         cfg = Config(
