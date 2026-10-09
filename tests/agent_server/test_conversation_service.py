@@ -4078,3 +4078,39 @@ async def test_search_live_conversation_does_not_wait_for_state_lock(tmp_path):
             holder.join(timeout=2)
 
     assert [item.id for item in page.items] == [conversation_info.id]
+
+
+
+@pytest.mark.asyncio
+async def test_fork_conversation_preserves_secrets(tmp_path):
+    """A server-level fork must inherit the source's secrets.
+
+    secrets live only in base_state.json (not meta.json), and the fork resumes
+    solely from its own base_state.json, so fork() must copy the source's
+    secret_registry and persist it under the fork's cipher.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    cipher = Cipher("fork-secret-key")
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        secrets={"MY_TOKEN": StaticSecret(value=SecretStr("s3kr3t-value"))},
+    )
+    async with ConversationService(
+        conversations_dir=conversations_dir, cipher=cipher
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+        fork_info = await service.fork_conversation(info.id)
+        assert fork_info is not None
+        assert fork_info.id != info.id
+
+        fork_event_service = await service.get_event_service(fork_info.id)
+        assert fork_event_service is not None
+        assert fork_event_service._conversation is not None
+        registry = fork_event_service._conversation._state.secret_registry
+        secret = registry.secret_sources.get("MY_TOKEN")
+        assert secret is not None
+        assert secret.get_value() == "s3kr3t-value"

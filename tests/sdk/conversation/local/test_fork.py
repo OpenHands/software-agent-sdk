@@ -15,7 +15,12 @@ from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.security.toolshield_llm_analyzer import (
+    ToolShieldLLMSecurityAnalyzer,
+)
 from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _agent() -> Agent:
@@ -351,3 +356,83 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.agent.llm._call_context.prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def test_fork_copies_secret_registry():
+    """Registry-direct secrets must survive a fork.
+
+    base_state.json is the fork's only source of truth for secrets, so fork()
+    must copy the source's secret_registry into the fork's state; otherwise a
+    token injected via ``Conversation(secrets=...)`` is empty on the fork.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            secrets={"MY_TOKEN": "s3kr3t-value"},
+        )
+
+        fork = src.fork()
+
+        assert fork.state.secret_registry.get_secret_value("MY_TOKEN") == (
+            "s3kr3t-value"
+        )
+
+
+def test_fork_gives_independent_security_analyzer():
+    """The fork must own its analyzer instance, not alias the source's.
+
+    A shared analyzer would let a stateful analyzer's runtime state (e.g.
+    ToolShieldLLMSecurityAnalyzer._action_history) leak between conversations.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src.set_security_analyzer(LLMSecurityAnalyzer())
+
+        fork = src.fork()
+
+        assert fork.state.security_analyzer is not None
+        assert fork.state.security_analyzer is not src.state.security_analyzer
+
+
+def test_fork_preserves_ciphered_security_analyzer_credentials():
+    """A fork persisted with the parent's cipher must keep the analyzer's
+    nested guardrail-LLM api_key instead of redacting it to base_state.json.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cipher = Cipher("stable-conversation-key")
+        src = LocalConversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            cipher=cipher,
+        )
+        src.set_security_analyzer(
+            ToolShieldLLMSecurityAnalyzer(
+                llm=LLM(
+                    model="gpt-4o-mini",
+                    api_key=SecretStr("sk-GUARD-xyz"),
+                    usage_id="guard",
+                )
+            )
+        )
+
+        fork = src.fork()
+
+        # Resume the fork from its base_state.json with the cipher, the same way
+        # the agent-server fork path reloads it.
+        assert fork.state.persistence_dir is not None
+        base = str(Path(fork.state.persistence_dir).parent)
+        resumed = LocalConversation(
+            agent=_agent(),
+            workspace=tmpdir,
+            persistence_dir=base,
+            conversation_id=fork.id,
+            cipher=cipher,
+        )
+
+        resumed_analyzer = resumed.state.security_analyzer
+        assert isinstance(resumed_analyzer, ToolShieldLLMSecurityAnalyzer)
+        assert isinstance(resumed_analyzer.llm.api_key, SecretStr)
+        assert resumed_analyzer.llm.api_key.get_secret_value() == "sk-GUARD-xyz"

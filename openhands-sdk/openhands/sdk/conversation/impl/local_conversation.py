@@ -852,6 +852,7 @@ class LocalConversation(BaseConversation):
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
                 tags=tags,
+                cipher=self._cipher,
             )
 
             # Branch slice copies path_to_root(event) (root-first, re-rootable);
@@ -889,7 +890,34 @@ class LocalConversation(BaseConversation):
             )
             fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
             fork_conv._state.confirmation_policy = self._state.confirmation_policy
-            fork_conv._state.security_analyzer = self._state.security_analyzer
+            # Copy the analyzer so the fork owns its object graph: analyzers may
+            # hold mutable runtime state in PrivateAttrs (e.g.
+            # ToolShieldLLMSecurityAnalyzer._action_history), which a shared
+            # reference would let the fork and source corrupt for each other.
+            # Round-trip via JSON (like the agent above) rather than
+            # model_copy(deep=True): a guardrail LLM may hold a thread lock that
+            # is not deep-copyable, and expose_secrets keeps nested credentials
+            # (e.g. the guardrail LLM api_key) so the fork's cipher can re-encrypt
+            # them into base_state.json below.
+            source_analyzer = self._state.security_analyzer
+            if source_analyzer is not None:
+                analyzer_cls = type(source_analyzer)
+                fork_conv._state.security_analyzer = analyzer_cls.model_validate(
+                    source_analyzer.model_dump(context={"expose_secrets": True}),
+                )
+            else:
+                fork_conv._state.security_analyzer = None
+            # Copy the secret registry so registry-direct secrets (injected via
+            # Conversation(secrets=)/request.secrets) survive the fork. The fork
+            # owns its own secret_sources dict; the fork's cipher encrypts them
+            # when base_state.json is written below. A shallow copy of
+            # secret_sources (not model_copy(deep=True)) mirrors update_secrets:
+            # the registry's RLock private attr is not deep-copyable.
+            fork_conv._state.secret_registry = self._state.secret_registry.model_copy(
+                update={
+                    "secret_sources": dict(self._state.secret_registry.secret_sources)
+                }
+            )
 
             # Copy title via tags if provided
             if title is not None:
