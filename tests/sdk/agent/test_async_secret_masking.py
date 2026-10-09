@@ -3,20 +3,28 @@ import asyncio
 import pytest
 
 from openhands.sdk import Agent, Conversation
-from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.event import ActionEvent, MessageEvent, SecurityAnalysisEvent
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.message import MessageToolCall
 from openhands.sdk.secret import LookupSecret
+from openhands.sdk.security import ConfirmRisky, LLMSecurityAnalyzer
 from openhands.sdk.testing import TestLLM
 
 
 @pytest.mark.asyncio
-async def test_async_response_masks_loopback_lookup_secret_without_blocking(tmp_path):
+@pytest.mark.parametrize("tool_response", [False, True])
+async def test_async_response_masks_loopback_lookup_secret_without_blocking(
+    tmp_path, tool_response: bool
+):
     requested = asyncio.Event()
 
     async def serve_secret(reader, writer):
         await reader.readuntil(b"\r\n\r\n")
         requested.set()
+        await asyncio.to_thread(
+            conversation.update_secrets, {"LATE_TOKEN": "late-secret-value"}
+        )
         body = b"loopback-secret-value"
         writer.write(
             b"HTTP/1.1 200 OK\r\nContent-Length: "
@@ -34,7 +42,20 @@ async def test_async_response_masks_loopback_lookup_secret_without_blocking(tmp_
         [
             Message(
                 role="assistant",
-                content=[TextContent(text="value loopback-secret-value")],
+                content=[]
+                if tool_response
+                else [TextContent(text="value loopback-secret-value")],
+                tool_calls=[
+                    MessageToolCall(
+                        id=f"think-{i}",
+                        origin="completion",
+                        name="think",
+                        arguments='{"thought":"test"}',
+                    )
+                    for i in range(2)
+                ]
+                if tool_response
+                else None,
             )
         ]
     )
@@ -44,10 +65,24 @@ async def test_async_response_masks_loopback_lookup_secret_without_blocking(tmp_
         visualizer=None,
         secrets={"TEST_TOKEN": LookupSecret(url=f"http://127.0.0.1:{port}/secret")},
     )
+    conversation.set_security_analyzer(LLMSecurityAnalyzer())
+    conversation.set_confirmation_policy(ConfirmRisky())
     try:
         conversation.send_message("hello")
         await asyncio.wait_for(conversation.arun(), timeout=5)
         assert requested.is_set()
+        if tool_response:
+            analyses = [
+                event
+                for event in conversation.state.events
+                if isinstance(event, SecurityAnalysisEvent)
+            ]
+            assert len(analyses) == 1
+            assert (
+                conversation.state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
+            return
         messages = [
             event
             for event in conversation.state.events
