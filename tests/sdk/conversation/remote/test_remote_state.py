@@ -13,6 +13,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
 
 @pytest.fixture
@@ -117,6 +118,33 @@ def test_remote_state_confirmation_policy(mock_client, conversation_id, mock_age
     policy = state.confirmation_policy
 
     assert isinstance(policy, AlwaysConfirm)
+
+
+def test_remote_state_repeated_reads_do_not_consume_cached_payloads(
+    mock_client, conversation_id, mock_agent
+):
+    conversation_info = create_mock_conversation_info(
+        conversation_id,
+        mock_agent,
+        confirmation_policy={"kind": "AlwaysConfirm"},
+        security_analyzer={
+            "kind": "LLMSecurityAnalyzer",
+        },
+    )
+    original = {
+        key: value.copy() if isinstance(value, dict) else value
+        for key, value in conversation_info.items()
+    }
+    setup_mock_responses(mock_client, conversation_info)
+
+    state = RemoteState(mock_client, conversation_id)
+
+    for _ in range(2):
+        assert isinstance(state.confirmation_policy, AlwaysConfirm)
+        assert isinstance(state.security_analyzer, LLMSecurityAnalyzer)
+        assert isinstance(state.agent, Agent)
+
+    assert conversation_info == original
 
 
 def test_remote_state_hook_config(mock_client, conversation_id, mock_agent):

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing import ClassVar
 
 import pytest
@@ -225,6 +226,28 @@ def test_model_containing_polymorphic_field():
     }
     loaded = AnimalPack.model_validate(dumped)
     assert loaded == pack
+
+
+def test_model_validate_does_not_mutate_input():
+    payload = {
+        "members": [
+            {
+                "kind": "Wolf",
+                "name": "Larry",
+                "genus": "Canis",
+            }
+        ],
+        "alpha": {
+            "kind": "Wolf",
+            "name": "Larry",
+            "genus": "Canis",
+        },
+    }
+    original = deepcopy(payload)
+
+    AnimalPack.model_validate(payload)
+
+    assert payload == original
 
 
 def test_duplicate_kind():
