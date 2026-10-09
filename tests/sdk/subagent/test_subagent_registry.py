@@ -107,6 +107,40 @@ def test_register_file_agents_skips_programmatic(tmp_path: Path) -> None:
     assert factory.definition.description == "Programmatic version"
 
 
+def test_register_file_agents_skips_missing_skill(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "bad-agent.md").write_text(
+        "---\n"
+        "name: bad-agent\n"
+        "description: Missing skill\n"
+        "skills: missing-skill\n"
+        "---\n\n"
+        "Bad prompt."
+    )
+    (agents_dir / "good-agent.md").write_text(
+        "---\nname: good-agent\ndescription: Valid agent\n---\n\nGood prompt."
+    )
+
+    with (
+        patch(
+            "openhands.sdk.subagent.load.Path.home",
+            return_value=tmp_path / "no_user",
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        registered = register_file_agents(tmp_path)
+
+    assert registered == ["good-agent"]
+    assert get_agent_factory("good-agent").definition.description == "Valid agent"
+    assert "bad-agent.md" in caplog.text
+    assert "missing-skill" in caplog.text
+    with pytest.raises(ValueError, match="Unknown agent 'bad-agent'"):
+        get_agent_factory("bad-agent")
+
+
 def test_register_plugin_agents(tmp_path: Path) -> None:
     """Plugin agents are registered via register_agent_if_absent."""
     plugin_agent = AgentDefinition(
@@ -122,6 +156,31 @@ def test_register_plugin_agents(tmp_path: Path) -> None:
     assert registered == ["plugin-agent"]
     factory = get_agent_factory("plugin-agent")
     assert factory.definition.description == "From plugin"
+
+
+def test_register_plugin_agents_skips_missing_skill(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    plugin_agents = [
+        AgentDefinition(
+            name="bad-plugin-agent",
+            description="Missing skill",
+            skills=["missing-plugin-skill"],
+        ),
+        AgentDefinition(
+            name="good-plugin-agent",
+            description="Valid plugin agent",
+        ),
+    ]
+
+    with caplog.at_level("WARNING"):
+        registered = register_plugin_agents(plugin_agents, work_dir=tmp_path)
+
+    assert registered == ["good-plugin-agent"]
+    assert "bad-plugin-agent" in caplog.text
+    assert "missing-plugin-skill" in caplog.text
+    with pytest.raises(ValueError, match="Unknown agent 'bad-plugin-agent'"):
+        get_agent_factory("bad-plugin-agent")
 
 
 def test_register_plugin_agents_skips_existing(tmp_path: Path) -> None:
