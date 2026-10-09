@@ -163,6 +163,14 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             )
 
         if self.keep_alive:
+            if self.mount_dir:
+                mount_root = Path(self.mount_dir).resolve()
+                state_root = _state_dir().resolve()
+                if state_root == mount_root or mount_root in state_root.parents:
+                    raise ValueError(
+                        "keep_alive host state must be outside mount_dir so the "
+                        "machine cannot change its policy or published port"
+                    )
             # The name encodes the permissions under which this machine was created;
             # an old, more permissive VM must never start under a new policy.
             shape = {
