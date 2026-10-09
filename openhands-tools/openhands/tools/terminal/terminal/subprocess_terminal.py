@@ -501,6 +501,10 @@ class SubprocessTerminal(TerminalInterface):
         """Send SIGINT to the PTY process group (fallback to signal-based interrupt)."""
         if not self._initialized or not self.process:
             return False
+        # A shell that already exited has no process group. killpg would only
+        # log ProcessLookupError.
+        if self.process.poll() is not None:
+            return False
 
         try:
             os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
