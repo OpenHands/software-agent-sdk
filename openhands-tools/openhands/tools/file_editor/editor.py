@@ -818,11 +818,10 @@ class FileEditor:
         snippet_content = "\n".join(
             [
                 f"{i + start_line:6}\t{line}"
-                for i, line in enumerate(snippet_content.split("\n"))
+                for i, line in enumerate(snippet_content.splitlines())
             ]
         )
-        return (
-            f"Here's the result of running `cat -n` on {snippet_description}:\n"
-            + snippet_content
-            + "\n"
-        )
+        output = f"Here's the result of running `cat -n` on {snippet_description}:\n"
+        if snippet_content:
+            output += snippet_content + "\n"
+        return output

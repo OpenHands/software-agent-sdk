@@ -284,6 +284,25 @@ def test_view_file(editor):
     assert "3\t" not in result.text  # No extra line
 
 
+@pytest.mark.parametrize(
+    ("content", "numbered_lines"),
+    [
+        ("hello", ["     1\thello"]),
+        ("hello\n", ["     1\thello"]),
+        ("hello\n\n", ["     1\thello", "     2\t"]),
+    ],
+)
+def test_view_line_numbers_match_file_lines(tmp_path, content, numbered_lines):
+    test_file = tmp_path / "newlines.txt"
+    test_file.write_text(content)
+
+    result = file_editor(command="view", path=str(test_file))
+
+    assert_successful_result(result, str(test_file))
+    assert result.text is not None
+    assert result.text.splitlines()[1:] == numbered_lines
+
+
 def test_view_directory(editor):
     editor, test_file = editor
     parent_dir = test_file.parent
@@ -341,10 +360,8 @@ def test_create_with_empty_string(editor):
     assert new_file.read_text() == ""
     assert "File created successfully" in result.text
 
-    # Test the view command showing an empty line
     result = editor(command="view", path=str(new_file))
-    assert f"Here's the result of running `cat -n` on {new_file}:" in result.text
-    assert "1\t" in result.text  # Check for empty line
+    assert result.text == (f"Here's the result of running `cat -n` on {new_file}:\n")
 
 
 def test_create_with_none_file_text(editor):
