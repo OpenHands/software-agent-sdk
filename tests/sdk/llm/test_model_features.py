@@ -1,3 +1,16 @@
+"""Capability-detection tests.
+
+LiteLLM fetches ``model_prices_and_context_window.json`` from its upstream
+``main`` branch at import time, so pinning litellm in ``uv.lock`` pins its code
+but not its model database — and the SDK sets no override, in tests or in
+production. These tests therefore run against data that changes without us.
+
+Assert what the SDK owns: its override lists, its model-name normalization, and
+that a routing wrapper does not change the answer. A bare capability value with
+no SDK rule behind it is upstream's to change, and pinning one here fails the
+day it does (#4877).
+"""
+
 import pytest
 from litellm.utils import supports_vision
 
@@ -42,7 +55,6 @@ def test_model_matches(name, pattern, expected):
         ("gemini-3-flash-preview", True),
         # GPT-5 family
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("gpt-5.4", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
@@ -54,10 +66,13 @@ def test_model_matches(name, pattern, expected):
         ("moonshot/kimi-k2.5", False),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
-        # OpenRouter docs list these as reasoning models, but LiteLLM capability
-        # metadata does not currently mark them as reasoning-capable.
-        ("openrouter/moonshotai/kimi-k2.5", False),
-        ("openrouter/moonshotai/kimi-k2-thinking", False),
+        # Route-dependent, and both directions are correct: OpenRouter accepts
+        # `reasoning_effort` and translates it, while Moonshot's own API does
+        # not take the parameter at all (see the two rows above). These follow
+        # LiteLLM's per-route `supported_openai_params` rather than an SDK
+        # override, so a value here tracks upstream and may move again (#4877).
+        ("openrouter/moonshotai/kimi-k2.5", True),
+        ("openrouter/moonshotai/kimi-k2-thinking", True),
         # OpenRouter reasoning-capable models per LiteLLM metadata
         ("openrouter/deepseek/deepseek-r1", True),
         ("openrouter/anthropic/claude-opus-4.5", True),
@@ -467,8 +482,14 @@ def test_supports_stop_words_false_models(model):
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("openai/gpt-5-mini", True),
+        # GPT-6 family rejects function tools + reasoning_effort on
+        # /v1/chat/completions; route via /v1/responses (saas-deploy #1144).
+        ("gpt-6-sol", True),
+        ("gpt-6-luna", True),
+        ("gpt-6-astra", True),
+        ("openai/gpt-6-sol", True),
+        ("litellm_proxy/gpt-6-luna", True),
         ("codex-mini-latest", True),
         ("openai/codex-mini-latest", True),
         ("gpt-4o", False),
@@ -483,15 +504,145 @@ def test_responses_api_support(model, expected_responses):
 def test_force_string_serializer_full_model_names():
     """Ensure full model names match substring patterns for string serializer.
 
-    Regression coverage for patterns like deepseek/glm without wildcards; Kimi
-    should only match when provider-prefixed with groq/.
+    Regression coverage for the legacy DeepSeek v3.2 and broad GLM patterns;
+    Kimi should only match when provider-prefixed with groq/.
     """
     assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
+    assert get_features("deepseek-v3.2-reasoner").force_string_serializer is True
     assert get_features("GLM-4.5").force_string_serializer is True
     # Provider-agnostic Kimi should not force string serializer
     assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
     # Groq-prefixed Kimi should force string serializer
     assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openhands/deepseek-v4.1-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-vision-exp",
+        "deepseek-chat",
+    ],
+)
+def test_deepseek_v4_models_use_structured_content(model):
+    """DeepSeek v4/v4.1 ids accept structured (list) content, not strings.
+
+    Only the legacy v3.2 family needs the string serializer; these ids must
+    keep list content so their image parts are preserved (#5360).
+    """
+    assert get_features(model).force_string_serializer is False
+
+
+@pytest.mark.parametrize(
+    "model,expected_key",
+    [
+        # OpenAI models accept the prompt_cache_key param
+        ("gpt-4o", True),
+        ("openai/gpt-5.2", True),
+        # Anthropic/Gemini reject it with UnsupportedParamsError
+        ("claude-opus-4-5-20251101", False),
+        ("claude-sonnet-4-5-20250929", False),
+        ("gemini/gemini-2.5-pro", False),
+        # Unresolved alias -> safe default False (call still succeeds)
+        ("prod/my-unknown-alias", False),
+    ],
+)
+def test_prompt_cache_key_support(model, expected_key):
+    """supports_prompt_cache_key tracks litellm's supported_openai_params.
+
+    Distinct from supports_prompt_cache (Anthropic cache_control breakpoints):
+    Claude models support cache_control but must NOT receive prompt_cache_key.
+    """
+    features = get_features(model)
+    assert features.supports_prompt_cache_key is expected_key
+
+
+def test_prompt_cache_key_override():
+    """Capability override can force prompt_cache_key on/off."""
+    assert (
+        get_features(
+            "prod/my-openai-alias",
+            overrides={"supports_prompt_cache_key": True},
+        ).supports_prompt_cache_key
+        is True
+    )
+    assert (
+        get_features(
+            "gpt-4o", overrides={"supports_prompt_cache_key": False}
+        ).supports_prompt_cache_key
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "model,provider",
+    [
+        # openhands/ aliases: the bare name is unresolvable by LiteLLM, so the
+        # real upstream provider (from the proxy's model_info) must be threaded
+        # into the lookup. These previously regressed to False after #5328.
+        ("deepseek-chat", "deepseek"),
+        ("minimax-m3", "minimax"),
+        ("qwen3.8-max", "dashscope"),
+        ("kimi-k2.7-code", "moonshot"),
+        ("kimi-k3", "moonshot"),
+        ("trinity-large-thinking", "openrouter"),
+    ],
+)
+def test_prompt_cache_key_resolved_via_provider_hint(model, provider):
+    """Proxied/aliased models resolve prompt_cache_key from the real provider.
+
+    Regression test for the #5328 follow-up: ``openhands/`` and
+    ``litellm_proxy/`` aliases strip to a bare name that LiteLLM cannot resolve,
+    so ``get_supported_openai_params`` returns ``None`` and the param was
+    silently dropped even though the upstream provider accepts it.
+    """
+    features = get_features(model, model_info={"litellm_provider": provider})
+    assert features.supports_prompt_cache_key is True
+
+
+def test_prompt_cache_key_passthrough_provider_not_used():
+    """litellm_proxy/openhands hints over-report and must be ignored.
+
+    LiteLLM returns the full OpenAI param set (including prompt_cache_key) for
+    every model under the litellm_proxy provider -- even Claude. Using it as the
+    hint would re-introduce the 400 UnsupportedParamsError fixed in #5325.
+    """
+    features = get_features(
+        "claude-opus-5-5", model_info={"litellm_provider": "litellm_proxy"}
+    )
+    assert features.supports_prompt_cache_key is False
+
+
+def test_prompt_cache_key_no_provider_hint_falls_back():
+    """Without model_info, bare unresolvable names keep the safe False default.
+
+    This preserves the original safe behavior for callers that cannot supply
+    provider metadata (e.g. an unknown alias with no proxy model_info).
+    """
+    assert get_features("deepseek-chat").supports_prompt_cache_key is False
+    assert get_features("claude-opus-5-5").supports_prompt_cache_key is False
+
+
+def test_provider_hint_does_not_leak_into_reasoning_effort():
+    """The provider hint must only move prompt_cache_key, not reasoning_effort.
+
+    Regression test for the #5332 review: the provider-scoped param lookup
+    broadens the whole set (for DeepSeek it also reports ``reasoning_effort``).
+    Threading it into the shared ``supported_params`` flipped
+    ``supports_reasoning_effort`` False -> True for ``deepseek-chat``, which made
+    ``select_chat_options`` emit ``reasoning_effort`` and strip sampling params.
+    Resolving prompt_cache_key separately keeps reasoning_effort on the
+    bare-name set, so only the intended capability moves.
+    """
+    features = get_features(
+        "deepseek-chat", model_info={"litellm_provider": "deepseek"}
+    )
+    # prompt_cache_key is recovered via the provider hint ...
+    assert features.supports_prompt_cache_key is True
+    # ... but reasoning_effort stays on the unhinted bare-name lookup.
+    assert features.supports_reasoning_effort is False
 
 
 @pytest.mark.parametrize(
@@ -502,7 +653,6 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5", True),
         # New GPT-5.2 family should support extended retention
         ("gpt-5.2", True),
-        ("gpt-5.2-codex", True),
         ("openai/gpt-5.2-chat-latest", True),
         ("openai/gpt-5.2-pro", True),
         ("openai/gpt-5-mini", False),

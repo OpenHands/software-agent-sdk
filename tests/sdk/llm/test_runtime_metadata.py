@@ -216,8 +216,13 @@ def test_openrouter_model_id_normalization():
 def test_effective_unchanged_before_resolution():
     llm = _openrouter_llm()
     assert llm.resolved_runtime_metadata is None
-    # Property performs no network I/O.
-    assert llm.effective_max_input_tokens is None
+    # The property performs no network I/O, so the route-aware limit this
+    # provider would report (262144, see PAYLOAD) cannot be in play yet — it
+    # falls through to LiteLLM's static metadata. That fallback is deliberately
+    # not asserted: it is upstream data, and pinning it here made this test
+    # fail the day LiteLLM learned the model (#4877).
+    assert llm.effective_max_input_tokens != 262144
+    assert llm.resolved_runtime_metadata is None
 
 
 def test_explicit_max_input_tokens_wins():

@@ -21,6 +21,7 @@ from openhands.sdk.plugin.installed import (
 )
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.skills.skill import _find_git_repo_root
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = get_logger(__name__)
@@ -30,7 +31,7 @@ logger = get_logger(__name__)
 # name conflict). Mirrors USER_SKILLS_DIRS.
 USER_PLUGINS_DIRS = [
     Path.home() / ".agents" / "plugins",
-    Path.home() / ".openhands" / "plugins",
+    get_user_persistence_dir() / "plugins",
 ]
 
 # Project-level plugin subdirectories scanned under each search root.

@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Sequence
+from typing import Any, ClassVar
 
 import pytest
 from pydantic import Field
@@ -395,6 +396,13 @@ class TestCircularSchemaHandling:
         ({"type": "array", "items": True}, {"type": "array", "items": {}}),
         ({"type": "array", "items": False}, {"type": "array", "items": {"not": {}}}),
         ({"anyOf": [True, {"type": "null"}]}, {}),
+        # ``anyOf: [true, X]`` validates any instance, so it must not narrow to X.
+        ({"anyOf": [True, {"type": "string"}]}, {}),
+        # ``false`` never validates, so the concrete branch wins in any position.
+        ({"anyOf": [{"type": "string"}, False]}, {"type": "string"}),
+        ({"anyOf": [False, {"type": "string"}]}, {"type": "string"}),
+        # With no viable branch left, ``false`` keeps its reject-all meaning.
+        ({"anyOf": [False]}, {"not": {}}),
         (
             {"type": "object", "properties": {"anything": True}},
             {"type": "object", "properties": {"anything": {}}},
@@ -432,3 +440,73 @@ def test_boolean_schema_nodes_are_normalized(node, expected):
 
     assert result == expected
     json.dumps(result)
+
+
+def test_anyof_with_false_does_not_clobber_concrete_type():
+    """A ``false`` member in ``anyOf`` must not become the representative type.
+
+    JSON Schema ``false`` means "reject everything."  When it appears as one
+    branch of an ``anyOf`` alongside a concrete type (common in schemas emitted
+    by TypeScript/MCP servers), the processor must pick the concrete type, not
+    ``false``.  Previously the filter ``not isinstance(t, dict)`` treated
+    ``False`` as a non-null type, so ``_process_schema_node(False)`` returned
+    ``{"not": {}}`` — making the parameter impossible for the LLM to satisfy.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [False, {"type": "string"}],
+            },
+        },
+    }
+    result = _process_schema_node(schema, {})
+    assert result["properties"]["value"] == {"type": "string"}
+
+
+@pytest.mark.parametrize(
+    "member",
+    [5, "str", None, [], 1.5],
+)
+def test_anyof_ignores_non_schema_members(member):
+    """Malformed ``anyOf`` members must be skipped, not crash the conversion.
+
+    ``inputSchema`` from a third-party MCP server is fed to
+    ``_process_schema_node`` verbatim, and the resulting exception escapes
+    ``LLM.get_token_count`` uncaught.  Anything that is not a schema (dict or
+    bool) is ignored rather than raising ``TypeError``/``AttributeError``.
+    """
+    assert _process_schema_node({"anyOf": [member]}, {}) == {}
+    assert _process_schema_node({"anyOf": [member, {"type": "string"}]}, {}) == {
+        "type": "string"
+    }
+
+
+def test_schema_mcp_aliases_use_declared_class_apis():
+    """Schema declares mcp_schema_alias_specs and mcp_schema_alias_required."""
+    assert Schema.mcp_schema_alias_specs == {}
+    assert Schema.mcp_schema_alias_required == set()
+
+    mcp_schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "custom_alias": {"type": "integer"},
+        },
+        "required": ["query", "custom_alias"],
+    }
+    model = Action.from_mcp_schema("GeneratedAction", mcp_schema)
+    assert issubclass(model, Schema)
+    assert model.mcp_schema_alias_specs == {}
+    assert model.mcp_schema_alias_required == set()
+
+    # Dynamic model with alias specs
+    class CustomAliasedAction(Action):
+        mcp_schema_alias_specs: ClassVar[dict[str, dict[str, Any]]] = {
+            "extra_field": {"type": "string"}
+        }
+        mcp_schema_alias_required: ClassVar[set[str]] = {"extra_field"}
+
+    exported = CustomAliasedAction.to_mcp_schema()
+    assert "extra_field" in exported.get("properties", {})
+    assert "extra_field" in exported.get("required", [])

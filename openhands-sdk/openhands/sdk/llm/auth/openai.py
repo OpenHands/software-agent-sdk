@@ -900,7 +900,7 @@ async def subscription_login_async(
 
 def create_subscription_llm_from_config(llm: LLM) -> LLM:
     """Create a runtime subscription LLM from a serialized LLM config."""
-    if getattr(llm, "auth_type", "api_key") != "subscription":
+    if llm.auth_type != "subscription":
         return llm
     # Serialized configs restore the flag but not runtime-only credentials.
     if llm.is_subscription and llm._subscription_credentials is not None:

@@ -32,7 +32,6 @@ from collections.abc import (
     Callable,
     Collection,
     Generator,
-    Iterable,
     Sequence,
 )
 from concurrent.futures import Future
@@ -43,21 +42,34 @@ from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
 from acp.helpers import image_block, text_block
 from acp.schema import (
+    AcpMcpServer,
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    CreateElicitationResponse,
+    CreateTerminalResponse,
+    DeclineElicitationResponse,
+    ElicitationMode,
     EnvVariable,
     HttpHeader,
     HttpMcpServer,
     ImageContentBlock,
+    KillTerminalResponse,
     McpServerStdio,
+    PermissionOption,
     PromptResponse,
+    ReadTextFileResponse,
+    ReleaseTerminalResponse,
     RequestPermissionResponse,
     SseMcpServer,
+    TerminalOutputResponse,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
+    ToolCallUpdate,
     UsageUpdate,
+    WaitForTerminalExitResponse,
+    WriteTextFileResponse,
 )
 from acp.transports import default_environment
 from pydantic import (
@@ -69,6 +81,14 @@ from pydantic import (
     field_validator,
 )
 
+from openhands.sdk.agent.acp_contracts import (
+    extract_session_models,
+    is_model_dumpable,
+    normalize_acp_error,
+    normalize_auth_method,
+    normalize_mcp_capabilities,
+    supports_legacy_model_switch,
+)
 from openhands.sdk.agent.acp_file_credentials import (
     ACPFileCredentialLifecycle,
     ACPFileCredentialNeedsReauthError,
@@ -82,6 +102,7 @@ from openhands.sdk.agent.acp_file_credentials import (
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.acp_tracing import ACPTurnTrace
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.stream_context import StreamContext
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.credential import (
@@ -395,7 +416,9 @@ def _auth_selection_failure_reason(
     # which the runtime does not have. Named so the log says why the method was
     # never a candidate rather than implying a missing credential.
     terminal_ids = sorted(
-        m.id for m in auth_methods if getattr(m, "type", None) == "terminal"
+        m.id
+        for m in (normalize_auth_method(raw) for raw in auth_methods)
+        if m.type == "terminal"
     )
     if terminal_ids:
         reasons.append(
@@ -575,31 +598,6 @@ def _model_config_options(
     return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
-def _model_config_option(response: Any) -> Any | None:
-    """Return the ``model`` ``configOptions`` select off a session response.
-
-    Newer ACP CLIs dropped the UNSTABLE ``models`` capability and expose model
-    selection as a ``configOptions`` entry with ``id == "model"`` (``type ==
-    "select"``), switched via ``session/set_config_option`` instead of
-    ``session/set_model``. Returns that option (carrying ``options`` and
-    ``current_value``) or ``None`` when the server uses neither / the old
-    mechanism. ``getattr`` keeps it tolerant of partial structures.
-
-    The ``agent-client-protocol`` Python lib wraps each entry in a
-    ``SessionConfigOption`` ``RootModel`` on 0.8.x (access via ``.root``) but
-    lists the union members directly on 0.10.x; unwrap ``.root`` so detection
-    works on either.
-    """
-    for raw in getattr(response, "config_options", None) or []:
-        opt = getattr(raw, "root", raw)
-        if (
-            getattr(opt, "type", None) == "select"
-            and getattr(opt, "id", None) == _MODEL_CONFIG_OPTION_ID
-        ):
-            return opt
-    return None
-
-
 async def _apply_acp_model(
     conn: ClientSideConnection,
     session_id: str,
@@ -616,20 +614,21 @@ async def _apply_acp_model(
     Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
     codex-acp exposes reasoning effort as a separate config option, so split it
     only on the config-options mechanism.
+
+    agent-client-protocol 0.12.1 dropped the UNSTABLE ``models`` extension from
+    the ACP schema and removed ``ClientSideConnection.set_session_model``. A live
+    0.12 connection therefore has no legacy RPC to call, so the ``else`` branch
+    only invokes it when the connection actually exposes the method (test
+    doubles do; real 0.12 connections do not) and otherwise no-ops rather than
+    raising ``AttributeError``.
     """
     if via_config_option:
         for config_id, value in _model_config_options(agent_name, model):
             await conn.set_config_option(
                 config_id=config_id, value=value, session_id=session_id
             )
-    else:
-        await conn.set_session_model(model_id=model, session_id=session_id)
-
-
-def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
-    """Drop entries without a usable ``model_id`` — an empty/missing id is an
-    invalid picker option and an unusable model-switch target."""
-    return [info for info in infos if info.model_id]
+    elif supports_legacy_model_switch(conn):
+        await conn.set_session_model(model_id=model, session_id=session_id)  # type: ignore[attr-defined]
 
 
 def _extract_session_models(
@@ -659,36 +658,15 @@ def _extract_session_models(
     configOptions select, ``False`` for the ``models`` capability, and
     ``default_via_config_option`` when the response carries neither (the
     resume-path default for a ``load_session`` that omits the model block).
-
-    ``getattr`` keeps the helper tolerant of agents that emit a partial
-    structure.
     """
-    if response is None:
-        return None, None, default_via_config_option
-    # Prefer configOptions when an adapter advertises both it and the legacy
-    # ``models`` extension. The ``model`` select carries the same state, with
-    # each option's ``value`` as the model id (== the ``set_config_option`` target).
-    opt = _model_config_option(response)
-    if opt is not None:
-        current = getattr(opt, "current_value", None)
-        current = current if isinstance(current, str) and current else None
-        options = getattr(opt, "options", None) or []
-        usable = _usable_models(
-            ACPModelInfo.from_protocol(o, id_attr="value") for o in options
-        )
-        return current, usable, True
-    models = getattr(response, "models", None)
-    if models is not None:
-        current = getattr(models, "current_model_id", None)
-        current = current if isinstance(current, str) and current else None
-        raw = getattr(models, "available_models", None) or []
-        usable = _usable_models(ACPModelInfo.from_protocol(m) for m in raw)
-        return current, usable, False
-    return None, None, default_via_config_option
+    state = extract_session_models(
+        response, default_via_config_option=default_via_config_option
+    )
+    return state.current_model_id, state.available_models, state.via_config_option
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
-_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
+_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio | AcpMcpServer
 
 
 def _remote_mcp_headers(server: MCPServer, name: str) -> list[HttpHeader]:
@@ -745,8 +723,9 @@ def _mcp_config_to_acp_servers(
     to the protocol's ``[{name, value}]`` list form; header-compatible auth
     credentials are also converted to headers.
     """
-    http_ok = bool(getattr(mcp_capabilities, "http", False))
-    sse_ok = bool(getattr(mcp_capabilities, "sse", False))
+    caps = normalize_mcp_capabilities(mcp_capabilities)
+    http_ok = caps.http
+    sse_ok = caps.sse
     result: list[_ACPMcpServer] = []
     for name, server in mcp_config.items():
         if not server.enabled:
@@ -1003,7 +982,7 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     for content_block in content:
         block_dict = (
             content_block.model_dump(mode="json")
-            if hasattr(content_block, "model_dump")
+            if is_model_dumpable(content_block)
             else content_block
         )
         if (
@@ -1113,10 +1092,11 @@ def _stringify_acp_error_data(data: Any) -> str:
 
 def _acp_error_text(exc: BaseException) -> str:
     """Lowercased message + data text used for substring classification."""
+    info = normalize_acp_error(exc)
     if isinstance(exc, ACPRequestError):
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
-        return f"{exc} {data_str}".lower()
-    return str(exc).lower()
+        data_str = _stringify_acp_error_data(info.data)
+        return f"{info.message} {data_str}".lower()
+    return info.message.lower()
 
 
 def _acp_error_indicates_auth(exc: BaseException) -> bool:
@@ -1126,8 +1106,10 @@ def _acp_error_indicates_auth(exc: BaseException) -> bool:
     auth marker is an upstream 401/403 the server collapsed into a generic internal
     error.  Either way the client should offer re-authentication.
     """
-    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
-        return True
+    if isinstance(exc, ACPRequestError):
+        info = normalize_acp_error(exc)
+        if info.code == -32000:
+            return True
     text = _acp_error_text(exc)
     return any(marker in text for marker in _ACP_AUTH_ERROR_MARKERS) or bool(
         _ACP_AUTH_HTTP_CODES_RE.search(text)
@@ -1148,9 +1130,10 @@ def _acp_error_detail(
     secret values) before it leaves, and capped to the 500-char event limit.
     """
     if isinstance(exc, ACPRequestError):
-        code = getattr(exc, "code", None)
-        message = str(exc)
-        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
+        info = normalize_acp_error(exc)
+        code = info.code
+        message = info.message
+        data_str = _stringify_acp_error_data(info.data)
         detail = f"[{code}] {message}" if code is not None else message
         if data_str and data_str != message:
             detail = f"{detail}: {data_str}"
@@ -1578,11 +1561,11 @@ class _OpenHandsACPBridge:
 
     async def request_permission(
         self,
-        options: list[Any],
         session_id: str,  # noqa: ARG002
-        tool_call: Any,
+        tool_call: ToolCallUpdate,
+        options: list[PermissionOption],
         **kwargs: Any,  # noqa: ARG002
-    ) -> Any:
+    ) -> RequestPermissionResponse:
         """Auto-approve all permission requests from the ACP server."""
         # Pick the first option (usually "allow once")
         option_id = options[0].option_id if options else "allow_once"
@@ -1595,52 +1578,74 @@ class _OpenHandsACPBridge:
             outcome=AllowedOutcome(outcome="selected", option_id=option_id),
         )
 
+    async def create_elicitation(
+        self,
+        message: str,  # noqa: ARG002
+        mode: ElicitationMode,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> CreateElicitationResponse:
+        """Decline elicitation requests; the headless bridge has no user to ask.
+
+        Added to the ``Client`` protocol in agent-client-protocol 0.12.x. None
+        of the pinned ACP providers elicit during a headless turn, so this is a
+        defensive default rather than an exercised code path.
+        """
+        return DeclineElicitationResponse(action="decline")
+
+    async def complete_elicitation(
+        self,
+        elicitation_id: str,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        """No-op completion for an elicitation the bridge always declines."""
+        return None
+
     # fs/terminal methods — raise NotImplementedError; ACP server handles its own
     async def write_text_file(
-        self, content: str, path: str, session_id: str, **kwargs: Any
-    ) -> None:
+        self, session_id: str, path: str, content: str, **kwargs: Any
+    ) -> WriteTextFileResponse | None:
         raise NotImplementedError("ACP server handles file operations")
 
     async def read_text_file(
         self,
-        path: str,
         session_id: str,
-        limit: int | None = None,
+        path: str,
         line: int | None = None,
+        limit: int | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> ReadTextFileResponse:
         raise NotImplementedError("ACP server handles file operations")
 
     async def create_terminal(
         self,
-        command: str,
         session_id: str,
+        command: str,
         args: list[str] | None = None,
+        env: list[EnvVariable] | None = None,
         cwd: str | None = None,
-        env: Any = None,
         output_byte_limit: int | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> CreateTerminalResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def terminal_output(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> Any:
+    ) -> TerminalOutputResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def release_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> None:
+    ) -> ReleaseTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def wait_for_terminal_exit(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> Any:
+    ) -> WaitForTerminalExitResponse:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def kill_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
-    ) -> None:
+    ) -> KillTerminalResponse | None:
         raise NotImplementedError("ACP server handles terminal operations")
 
     async def ext_method(
@@ -1926,6 +1931,10 @@ class ACPAgent(AgentBase):
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
     _restart_session_on_next_turn: bool = PrivateAttr(default=False)
+    # Stream identity for the turn in flight; see stream_context.py. Held on
+    # the agent rather than threaded through the finalizers because the ACP
+    # turn already resolves through four of them.
+    _stream: StreamContext | None = PrivateAttr(default=None)
     _resumed_existing_session: bool = PrivateAttr(default=False)
     _file_credential_lifecycles: dict[str, ACPFileCredentialLifecycle] = PrivateAttr(
         default_factory=dict
@@ -1957,7 +1966,7 @@ class ACPAgent(AgentBase):
             self._file_credential_bindings[secret_name] = binding
 
     def restart_for_updated_credentials(self, secret_names: Collection[str]) -> None:
-        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        configured = {spec.secret_name for spec in self._active_file_secrets()}
         with self._file_credential_lock:
             self._replace_file_credentials_on_next_materialisation.update(
                 configured.intersection(secret_names)
@@ -2452,7 +2461,7 @@ class ACPAgent(AgentBase):
         (their values are file blobs, not env vars the subprocess can reference
         by name).
         """
-        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        configured = {spec.secret_name for spec in self._active_file_secrets()}
         if not configured:
             return set()
         return set(state.secret_registry.secret_sources) & configured
@@ -2587,6 +2596,42 @@ class ACPAgent(AgentBase):
             self.acp_server or ""
         ) or detect_acp_provider_by_command(self.acp_command)
 
+    def _active_file_secrets(self) -> list[ACPFileSecretSpec]:
+        """The file-secret specs that apply to the provider this agent runs.
+
+        Drops the specs that are *another registered provider's* reserved
+        credential and keeps everything else, so a harness added upstream cannot
+        change how this provider's conversation treats a secret carrying the new
+        reserved name (see #4923). A name several providers share stays: it is
+        this provider's too.
+
+        Deliberately no provenance test. :attr:`acp_file_secrets` defaults to the
+        union across the registry, but a persisted conversation carries whatever
+        that union was when it was written, so comparing against today's default
+        would read an older list as a caller override and silently stop scoping
+        after an upgrade. Filtering by ownership needs no such distinction, and a
+        spec for a CLI outside the registry is owned by nobody and always applies.
+
+        An unrecognised server keeps every spec, matching
+        :meth:`_strip_conflicting_env`: without an identity we cannot tell whose
+        credential a reserved name belongs to.
+        """
+        provider = self._resolved_provider()
+        if provider is None:
+            return list(self.acp_file_secrets)
+        own = {spec.secret_name for spec in provider.file_secrets}
+        owned_elsewhere = {
+            spec.secret_name
+            for key, info in ACP_PROVIDERS.items()
+            if key != provider.key
+            for spec in info.file_secrets
+        } - own
+        return [
+            spec
+            for spec in self.acp_file_secrets
+            if spec.secret_name not in owned_elsewhere
+        ]
+
     def _strip_conflicting_env(self, env: dict[str, str]) -> None:
         """Remove env vars that would defeat this provider's own credential.
 
@@ -2615,7 +2660,7 @@ class ACPAgent(AgentBase):
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
-        for spec in self.acp_file_secrets:
+        for spec in self._active_file_secrets():
             name = spec.secret_name
             with self._file_credential_lock:
                 replace_existing = (
@@ -3091,7 +3136,7 @@ class ACPAgent(AgentBase):
                         or detect_acp_provider_by_agent_name(agent_name)
                     )
                     configured = _preconfigured_credentials(
-                        auth_provider, self.acp_file_secrets, env
+                        auth_provider, self._active_file_secrets(), env
                     )
                     if configured:
                         logger.info(
@@ -3688,7 +3733,13 @@ class ACPAgent(AgentBase):
         # completed turn for eval/remote consumers, matching #2190.
         finish_action = FinishAction(message=response_text)
         tc_id = str(uuid.uuid4())
+        # An ACP turn's streamed text lands here, not in a MessageEvent, so
+        # this is the event that retires the stream's slot.
+        minted: dict[str, Any] = {}
+        if self._stream is not None and (item_id := self._stream.claim()):
+            minted["id"] = item_id
         action_event = ActionEvent(
+            **minted,
             source="agent",
             thought=[],
             reasoning_content=thought_text or None,
@@ -3704,6 +3755,8 @@ class ACPAgent(AgentBase):
             llm_response_id=str(uuid.uuid4()),
         )
         on_event(action_event)
+        if self._stream is not None and minted:
+            self._stream.commit()
         on_event(
             ObservationEvent(
                 observation=FinishObservation.from_text(text=response_text),
@@ -3865,6 +3918,19 @@ class ACPAgent(AgentBase):
         (``LocalConversation.arun``) goes through :meth:`astep`, which
         avoids the cross-thread state-lock deadlock described in #3348.
         """
+        with StreamContext.open(conversation, on_token) as stream:
+            self._stream = stream
+            try:
+                self._step(conversation, on_event, stream.token_callback)
+            finally:
+                self._stream = None
+
+    def _step(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
         state = conversation.state
 
         if self._restart_session_on_next_turn:
@@ -3933,6 +3999,8 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -3963,6 +4031,8 @@ class ACPAgent(AgentBase):
                         )
                         time.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -4023,6 +4093,22 @@ class ACPAgent(AgentBase):
         supplied by ``LocalConversation.arun`` is responsible for taking
         the state lock around each individual event.
         """
+        with StreamContext.open(conversation, on_token) as stream:
+            self._stream = stream
+            try:
+                await self._astep(
+                    conversation, on_event, stream.token_callback, prompt_message
+                )
+            finally:
+                self._stream = None
+
+    async def _astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
         state = conversation.state
 
         if self._restart_session_on_next_turn:
@@ -4099,6 +4185,8 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -4126,6 +4214,8 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
+                        if self._stream is not None:
+                            self._stream.new_attempt()
                         self._reset_client_for_turn(
                             on_token,
                             on_event,
@@ -4305,7 +4395,7 @@ class ACPAgent(AgentBase):
 
         Args:
             model: Provider-specific model id to switch to (e.g.
-                ``"sonnet"`` or ``"gpt-5.5"``).
+                ``"sonnet"`` or ``"gpt-5.6"``).
 
         Raises:
             ValueError: If ``model`` is empty or whitespace-only, if the
@@ -4467,8 +4557,10 @@ class ACPAgent(AgentBase):
                     logger.debug("Error killing ACP process: %s", kill_error)
             self._process = None
 
-        for task_attr in ("_stdout_filter_task", "_stderr_log_task"):
-            task = getattr(self, task_attr)
+        for task_name, task in (
+            ("stdout filter task", self._stdout_filter_task),
+            ("stderr log task", self._stderr_log_task),
+        ):
             if task is not None:
                 task.cancel()
                 if self._executor is not None:
@@ -4477,8 +4569,9 @@ class ACPAgent(AgentBase):
                             self._await_cancelled_task, task, timeout=5.0
                         )
                     except Exception as e:
-                        logger.debug("Error stopping %s: %s", task_attr, e)
-                setattr(self, task_attr, None)
+                        logger.debug("Error stopping %s: %s", task_name, e)
+        self._stdout_filter_task = None
+        self._stderr_log_task = None
 
         credential_failures = self._release_file_credentials_collect()
         failures.update(credential_failures)

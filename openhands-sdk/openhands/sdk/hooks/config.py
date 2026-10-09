@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
+from openhands.sdk.utils.path import get_user_persistence_dir
 
 
 logger = logging.getLogger(__name__)
@@ -292,7 +293,7 @@ class HookConfig(BaseModel):
             base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
                 base_dir / ".openhands" / "hooks.json",
-                Path.home() / ".openhands" / "hooks.json",
+                get_user_persistence_dir() / "hooks.json",
             ]
             for search_path in search_paths:
                 if search_path.exists():
@@ -326,8 +327,21 @@ class HookConfig(BaseModel):
 
     def _get_matchers_for_event(self, event_type: HookEventType) -> list[HookMatcher]:
         """Get matchers for an event type."""
-        field_name = _pascal_to_snake(event_type.value)
-        return getattr(self, field_name, [])
+        match event_type:
+            case HookEventType.PRE_TOOL_USE:
+                return self.pre_tool_use
+            case HookEventType.POST_TOOL_USE:
+                return self.post_tool_use
+            case HookEventType.USER_PROMPT_SUBMIT:
+                return self.user_prompt_submit
+            case HookEventType.SESSION_START:
+                return self.session_start
+            case HookEventType.SESSION_END:
+                return self.session_end
+            case HookEventType.STOP:
+                return self.stop
+            case _:
+                raise RuntimeError(f"Unhandled hook event type: {event_type}")
 
     def get_hooks_for_event(
         self, event_type: HookEventType, tool_name: str | None = None
@@ -380,13 +394,14 @@ class HookConfig(BaseModel):
         if not configs:
             return None
 
-        # Collect all matchers by event type using the canonical field list
-        collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
-        for config in configs:
-            for field in HOOK_EVENT_FIELDS:
-                collected[field].extend(getattr(config, field))
-
-        merged = cls(**collected)
+        merged = cls(
+            pre_tool_use=[m for c in configs for m in c.pre_tool_use],
+            post_tool_use=[m for c in configs for m in c.post_tool_use],
+            user_prompt_submit=[m for c in configs for m in c.user_prompt_submit],
+            session_start=[m for c in configs for m in c.session_start],
+            session_end=[m for c in configs for m in c.session_end],
+            stop=[m for c in configs for m in c.stop],
+        )
 
         # Return None if the merged config is empty
         if merged.is_empty():

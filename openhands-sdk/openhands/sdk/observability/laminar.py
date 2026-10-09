@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import json
 import sys
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -35,6 +36,109 @@ _OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
 OPERATION_METADATA_KEY: Final[str] = "openhands.operation"
 """Metadata key naming the side-utility operation a span subtree belongs to."""
 
+_OBSERVABILITY_METADATA_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_METADATA"
+_OBSERVABILITY_TAGS_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_TAGS"
+_OBSERVABILITY_SPAN_NAME_ENV: Final[str] = "OPENHANDS_OBSERVABILITY_SPAN_NAME"
+_OBSERVABILITY_PARENT_CONTEXT_ENV: Final[str] = (
+    "OPENHANDS_OBSERVABILITY_PARENT_SPAN_CONTEXT"
+)
+_LAMINAR_PARENT_CONTEXT_ENV: Final[str] = "LMNR_SPAN_CONTEXT"
+
+
+def _is_trace_metadata_value(value: Any) -> bool:
+    if isinstance(value, str | bool | int | float):
+        return True
+    if isinstance(value, list):
+        return (
+            all(isinstance(item, str) for item in value)
+            or all(isinstance(item, bool) for item in value)
+            or all(
+                isinstance(item, int) and not isinstance(item, bool) for item in value
+            )
+            or all(isinstance(item, float) for item in value)
+        )
+    return False
+
+
+def _clean_trace_metadata(value: Any) -> dict[str, TraceMetadataValue]:
+    if not isinstance(value, dict):
+        return {}
+    cleaned: dict[str, TraceMetadataValue] = {}
+    for key, item in value.items():
+        if isinstance(key, str) and key and _is_trace_metadata_value(item):
+            cleaned[key] = item
+    return cleaned
+
+
+def observability_metadata_from_env() -> dict[str, TraceMetadataValue]:
+    """Return generic observability metadata supplied by the process env."""
+    raw_metadata = get_env(_OBSERVABILITY_METADATA_ENV)
+    if not raw_metadata:
+        return {}
+    try:
+        return _clean_trace_metadata(json.loads(raw_metadata))
+    except json.JSONDecodeError:
+        logger.debug("Ignoring invalid %s", _OBSERVABILITY_METADATA_ENV)
+        return {}
+
+
+def merge_observability_metadata(
+    metadata: Mapping[str, TraceMetadataValue] | None,
+) -> dict[str, TraceMetadataValue]:
+    """Merge generic env defaults with caller-supplied metadata."""
+    merged = observability_metadata_from_env()
+    if metadata:
+        merged.update(metadata)
+    return merged
+
+
+def observability_parent_span_context_from_env() -> str | None:
+    """Return serialized parent span context propagated by the host process."""
+    return get_env(_OBSERVABILITY_PARENT_CONTEXT_ENV) or get_env(
+        _LAMINAR_PARENT_CONTEXT_ENV
+    )
+
+
+def default_observability_span_name_from_env() -> str | None:
+    """Return the default conversation child span name from generic env."""
+    return get_env(_OBSERVABILITY_SPAN_NAME_ENV)
+
+
+def observability_tags_from_env() -> list[str]:
+    """Return comma-separated observability tags supplied by generic env."""
+    raw_tags = get_env(_OBSERVABILITY_TAGS_ENV)
+    if not raw_tags:
+        return []
+    return [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
+
+
+def observability_headers_from_env() -> dict[str, str]:
+    """Build generic observability headers for agent-server API calls."""
+    headers: dict[str, str] = {}
+    metadata = observability_metadata_from_env()
+    if metadata:
+        headers["X-OpenHands-Observability-Metadata"] = json.dumps(
+            metadata, separators=(",", ":")
+        )
+    tags = observability_tags_from_env()
+    if tags:
+        headers["X-OpenHands-Observability-Tags"] = ",".join(tags)
+    span_name = default_observability_span_name_from_env()
+    if span_name:
+        headers["X-OpenHands-Observability-Span-Name"] = span_name
+    parent_context = observability_parent_span_context_from_env()
+    if parent_context:
+        headers["X-OpenHands-Observability-Parent-Span-Context"] = parent_context
+    try:
+        from opentelemetry.propagate import inject
+
+        inject(headers)
+    except Exception:
+        logger.debug(
+            "Failed to inject OpenTelemetry propagation headers", exc_info=True
+        )
+    return headers
+
 
 def _get_int_env(key: str) -> int | None:
     """Read an environment variable as an optional int."""
@@ -46,18 +150,6 @@ def _get_int_env(key: str) -> int | None:
             logger.warning("%s must be an integer, got %r", key, val)
             return None
     return None
-
-
-def _get_bool_env(key: str) -> bool:
-    """Read an environment variable as a boolean.
-
-    Returns True if the value is 'true', '1', 'yes', 'on' (case-insensitive).
-    Returns False otherwise.
-    """
-    val = get_env(key)
-    if val is None:
-        return False
-    return val.lower() in ("true", "1", "yes", "on")
 
 
 def maybe_init_laminar():
@@ -101,7 +193,12 @@ def maybe_init_laminar():
         return
 
     base_url = get_env("LMNR_BASE_URL") or None
-    force_http = _get_bool_env("LMNR_FORCE_HTTP")
+    force_http = (get_env("LMNR_FORCE_HTTP") or "").lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    )
     instruments_env = get_env("LMNR_INSTRUMENTS")
     instruments = None
     if instruments_env is not None:
@@ -300,15 +397,24 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
-        attributes: Mapping[str, str] | None = None,
+        attributes: Mapping[str, TraceMetadataValue] | None = None,
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
+        parent_span_context: str | None = None,
     ) -> None:
         from lmnr import Laminar
 
+        parent = None
+        if parent_span_context:
+            with contextlib.suppress(Exception):
+                parent = Laminar.deserialize_span_context(parent_span_context)
+
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
-        self.span = Laminar.start_span(name)
+        if parent is not None:
+            self.span = Laminar.start_span(name, parent_span_context=parent)
+        else:
+            self.span = Laminar.start_span(name)
         if attributes:
             with contextlib.suppress(Exception):
                 for key, value in attributes.items():
@@ -350,9 +456,10 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
-    attributes: Mapping[str, str] | None = None,
+    attributes: Mapping[str, TraceMetadataValue] | None = None,
     metadata: dict[str, TraceMetadataValue] | None = None,
     tags: list[str] | None = None,
+    parent_span_context: str | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
@@ -368,6 +475,7 @@ def start_root_span(
             attributes=attributes,
             metadata=metadata,
             tags=tags,
+            parent_span_context=parent_span_context,
         )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
@@ -402,6 +510,34 @@ def start_child_span(
                     Laminar.set_span_tags(tags)
     except Exception:
         logger.debug("Failed to create observability child span", exc_info=True)
+
+
+@contextlib.contextmanager
+def llm_call_span(name: str) -> Iterator[Any]:
+    """Open a span that stays current for the duration of one LLM call.
+
+    lmnr's LiteLLM instrumentation builds its span with ``Laminar.start_span``
+    (detached from the OTel context) and ends it in a ``finally`` before
+    ``litellm.completion`` returns, so attributes cannot be attached to it
+    afterwards -- OTel silently drops writes to an ended span. This span is
+    *current* while the call runs, so lmnr's span nests underneath it, and it
+    stays open long enough for Telemetry to attach the authoritative cost.
+
+    Yields ``None`` when observability is disabled, so callers stay branch-free.
+    """
+    if not should_enable_observability():
+        yield None
+        return
+    try:
+        from lmnr import Laminar
+
+        cm = Laminar.start_as_current_span(name=name, span_type="LLM")
+    except Exception:
+        logger.debug("Failed to open LLM observability span", exc_info=True)
+        yield None
+        return
+    with cm as span:
+        yield span
 
 
 # Trace-metadata key set by software-agent-sdk#4010 on the parent's `task`

@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from openhands.agent_server.models import (
     BashEventSortOrder,
     BashOutput,
     ExecuteBashRequest,
+    Success,
 )
 from openhands.agent_server.server_details_router import update_last_execution_time
 
@@ -52,13 +54,11 @@ async def search_bash_events(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     bash_event_service: BashEventService = Depends(get_bash_event_service),
 ) -> BashEventPage:
     """Search / List bash event events"""
-    assert limit > 0
-    assert limit <= 100
 
     return await bash_event_service.search_bash_events(
         kind__eq=kind__eq,
@@ -104,6 +104,7 @@ async def start_bash_command(
 ) -> BashCommand:
     """Execute a bash command in the background"""
     update_last_execution_time()
+    _validate_cwd(request, bash_event_service)
     command, _ = await bash_event_service.start_bash_command(request)
     return command
 
@@ -115,6 +116,7 @@ async def execute_bash_command(
 ) -> BashOutput:
     """Execute a bash command and wait for a result"""
     update_last_execution_time()
+    _validate_cwd(request, bash_event_service)
     command, task = await bash_event_service.start_bash_command(request)
     await task
     page = await bash_event_service.search_bash_events(command_id__eq=command.id)
@@ -129,3 +131,35 @@ async def clear_all_bash_events(
     """Clear all bash events from storage"""
     count = await bash_event_service.clear_all_events()
     return {"cleared_count": count}
+
+
+@bash_router.post(
+    "/bash_commands/{command_id}/stop",
+    responses={404: {"description": "Item not found"}},
+)
+async def stop_bash_command(
+    command_id: UUID,
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
+) -> Success:
+    """Stop a running bash command by id without touching the others.
+
+    Idempotent: stopping an already-finished command succeeds, while an
+    unknown command id reports not-found so the caller can treat it as
+    an already-cancelled stop.
+    """
+    update_last_execution_time()
+    if await bash_event_service.stop_bash_command(command_id):
+        return Success()
+    if await bash_event_service.get_bash_event(command_id.hex) is not None:
+        return Success()
+    raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+
+def _validate_cwd(request: ExecuteBashRequest, service: BashEventService) -> None:
+    if service.default_cwd is not None and request.cwd is not None:
+        if (
+            not Path(request.cwd)
+            .resolve()
+            .is_relative_to(Path(service.default_cwd).resolve())
+        ):
+            raise HTTPException(422, "cwd must be inside the conversation workspace")
