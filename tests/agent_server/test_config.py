@@ -67,3 +67,16 @@ def test_conversation_idle_ttl_can_be_disabled_and_overridden(monkeypatch, tmp_p
 def test_conversation_idle_ttl_rejects_non_positive_values():
     with pytest.raises(ValidationError):
         Config(conversation_idle_ttl_seconds=0)
+
+
+def test_load_config_ignores_empty_session_api_key_slots(monkeypatch, tmp_path):
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "")
+
+    assert load_config().session_api_keys == []
+
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "sk-oh-real")
+    monkeypatch.setenv("OH_SESSION_API_KEYS_1", "")
+
+    assert load_config().session_api_keys == ["sk-oh-real"]
