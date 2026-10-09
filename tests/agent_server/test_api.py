@@ -11,6 +11,10 @@ import libtmux
 import pytest
 from fastapi.testclient import TestClient
 
+from openhands.agent_server import (
+    config as config_module,
+    conversation_service as conversation_service_module,
+)
 from openhands.agent_server.api import (
     _cleanup_stale_tmux_sessions,
     _default_server_tmux_tmpdir,
@@ -407,7 +411,7 @@ class TestServiceParallelization:
         # Mock the service getters
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch(
@@ -451,7 +455,7 @@ class TestServiceParallelization:
         # Mock the service getters
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch(
@@ -487,7 +491,7 @@ class TestServiceParallelization:
         # Mock all services as None (disabled)
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
@@ -518,7 +522,7 @@ class TestServiceParallelization:
 
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
@@ -550,7 +554,7 @@ class TestServiceParallelization:
 
         with (
             patch(
-                "openhands.agent_server.api.get_default_conversation_service",
+                "openhands.agent_server.api.ConversationService.get_instance",
                 return_value=mock_conversation_service,
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
@@ -781,3 +785,28 @@ class TestHttpExceptionLogging:
         info_records = [r for r in api_records if r.levelno == logging.INFO]
         assert info_records, "Expected an INFO log line for a 4xx HTTPException"
         assert all(r.exc_info is None for r in info_records)
+
+
+def test_lifespan_conversation_service_uses_app_config_not_env(tmp_path, monkeypatch):
+    """create_app(config) must persist and notify per that config, not OH_* env.
+
+    Inside an OpenHands sandbox these env vars point at the live conversations
+    directory and the app server's webhook endpoint, so a test app that fell
+    back to them would write into, and report to, the real deployment.
+    """
+    monkeypatch.setenv("OH_CONVERSATIONS_PATH", str(tmp_path / "env-conversations"))
+    monkeypatch.setenv("OH_WEBHOOKS_0_BASE_URL", "http://env-webhook.invalid/hooks")
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(conversation_service_module, "_conversation_service", None)
+    config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        conversations_path=tmp_path / "conversations",
+        bash_events_dir=tmp_path / "bash_events",
+    )
+
+    app = create_app(config)
+    with TestClient(app):
+        service = app.state.conversation_service
+        assert service.conversations_dir == tmp_path / "conversations"
+        assert service.webhook_specs == []
