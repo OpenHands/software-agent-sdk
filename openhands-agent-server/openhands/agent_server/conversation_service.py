@@ -1731,10 +1731,11 @@ class ConversationService:
         secrets_data = request_data.pop("secrets", {})
         request_data.pop("secrets_encrypted", None)
         request_data.pop("confirmation_policy", None)
-        request_data.pop("security_analyzer", None)
+        security_analyzer_payload = request_data.pop("security_analyzer", None)
 
         new_agent: AgentBase = request.agent
         new_secrets: dict[str, SecretSource] = request.secrets
+        new_security_analyzer: SecurityAnalyzerBase | None = request.security_analyzer
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
         # cipher-encrypted and need decryption during model validation. Pass the
@@ -1769,6 +1770,12 @@ class ConversationService:
             new_secrets = _secrets_ta.validate_python(
                 secrets_data, context={"cipher": self.cipher}
             )
+            # Decrypt the analyzer's nested credentials (e.g. its guardrail LLM
+            # api_key); like the agent, it no longer rides on `stored`.
+            if request.security_analyzer is not None:
+                new_security_analyzer = type(request.security_analyzer).model_validate(
+                    security_analyzer_payload, context={"cipher": self.cipher}
+                )
         else:
             stored = StoredConversation(
                 id=conversation_id,
@@ -1784,7 +1791,7 @@ class ConversationService:
                 is_new_conversation=True,
                 agent=new_agent,
                 confirmation_policy=request.confirmation_policy,
-                security_analyzer=request.security_analyzer,
+                security_analyzer=new_security_analyzer,
                 secrets=new_secrets,
             )
         initial_message = request.initial_message
