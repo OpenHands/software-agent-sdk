@@ -17,6 +17,7 @@ from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import is_secret_key, redact_text_secrets, sanitize_dict
 
 
 logger = get_logger(__name__)
@@ -188,7 +189,7 @@ class Telemetry(BaseModel):
 
     def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
-        self._req_ctx = telemetry_ctx or {}
+        self._req_ctx = _redact_request_credentials(telemetry_ctx or {})
         self._open_span()
 
     def on_response(
@@ -260,10 +261,12 @@ class Telemetry(BaseModel):
             data = self._req_ctx.copy()
             data["error"] = {
                 "type": type(_err).__name__,
-                "message": str(_err),
-                "repr": repr(_err),
-                "traceback": "".join(
-                    traceback.format_exception(type(_err), _err, _err.__traceback__)
+                "message": redact_text_secrets(str(_err)),
+                "repr": redact_text_secrets(repr(_err)),
+                "traceback": redact_text_secrets(
+                    "".join(
+                        traceback.format_exception(type(_err), _err, _err.__traceback__)
+                    )
                 ),
             }
             data["timestamp"] = time.time()
@@ -464,6 +467,26 @@ class Telemetry(BaseModel):
                     f.write(log_data)
         except Exception as e:
             warnings.warn(f"Telemetry logging failed: {e}")
+
+
+def _redact_request_credentials(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Return ``ctx`` with its logged request credentials copied and redacted.
+
+    The logged ``kwargs`` share their header dicts with the live call, and some
+    LiteLLM providers write ``Authorization`` into them in place. Copying here,
+    before the call, keeps such mutations and caller-supplied credential
+    options and headers out of completion logs.
+    """
+    kwargs = ctx.get("kwargs")
+    if not isinstance(kwargs, dict):
+        return ctx
+    logged_kwargs = kwargs.copy()
+    for key, value in kwargs.items():
+        if key in ("extra_headers", "headers"):
+            logged_kwargs[key] = sanitize_dict(value)
+        elif isinstance(value, str) and is_secret_key(key):
+            logged_kwargs[key] = sanitize_dict({key: value})[key]
+    return {**ctx, "kwargs": logged_kwargs}
 
 
 def _safe_json(obj: Any) -> Any:
