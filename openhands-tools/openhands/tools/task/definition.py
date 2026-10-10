@@ -2,11 +2,11 @@
 
 This module defines the schema and tool classes for sub-agent task
 delegation. It contains:
-- the action/observation models (TaskAction, TaskObservation) for the TaskTool
-- the tool description for the TaskTool
+- the action/observation models for launching, reading, and stopping tasks
+- the tool descriptions for the task lifecycle
 
-Moreover, it registers the two tool classes TaskTool (the individual tool)
-and TaskToolSet (the entry-point that wires up a TaskManager-backed executor).
+TaskToolSet is the entry point that wires the lifecycle tools to one shared
+TaskManager-backed executor. TaskTool remains registered for compatibility.
 """
 
 from collections.abc import Sequence
@@ -61,6 +61,14 @@ class TaskAction(Action):
     resume: str | None = Field(
         default=None,
         description="Task ID of the task to resume from.",
+    )
+    run_in_background: bool = Field(
+        default=False,
+        description=(
+            "Run the task asynchronously and return its task ID immediately. "
+            "Use task_output to inspect progress or retrieve the result, and "
+            "task_stop to request cancellation."
+        ),
     )
     max_turns: SkipJsonSchema[int | None] = Field(
         default=None,
@@ -117,6 +125,40 @@ class TaskObservation(Observation):
         return llm_content
 
 
+class TaskOutputAction(Action):
+    """Schema for reading a background task's status and output."""
+
+    task_id: str = Field(min_length=1, description="Task ID returned by task.")
+    block: bool = Field(
+        default=False,
+        description=(
+            "Wait for a terminal state or stop/manager-close signal instead "
+            "of returning immediately."
+        ),
+    )
+    timeout: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=3600.0,
+        allow_inf_nan=False,
+        description="Maximum seconds to wait when block is true.",
+    )
+
+
+class TaskOutputObservation(TaskObservation):
+    """Status and available output for a background task."""
+
+
+class TaskStopAction(Action):
+    """Schema for cooperatively stopping a background task."""
+
+    task_id: str = Field(min_length=1, description="Task ID returned by task.")
+
+
+class TaskStopObservation(TaskObservation):
+    """Result of a cooperative background-task stop request."""
+
+
 TASK_TOOL_DESCRIPTION: Final[
     str
 ] = """Launch a subagent to handle complex, multi-step tasks autonomously.
@@ -136,6 +178,9 @@ When using the task tool:
 - Write a detailed prompt describing exactly what you need
 - Include specific file paths, class names, or error messages from the issue
 - Tell the agent what to report back (file paths, line numbers, code snippets)
+- Set run_in_background=true only when you can continue useful work before the result
+- Use task_output with the returned task ID to inspect progress or retrieve output
+- Use task_stop when a background result is no longer needed
 - The agent's results are authoritative — verify subagent results only when the task involves judgment or
   interpretation.
   
@@ -177,7 +222,7 @@ Example — Perform a multi-step task involving code editing and shell commands:
 
 
 class TaskTool(ToolDefinition[TaskAction, TaskObservation]):
-    """Tool for launching (blocking) sub-agent tasks."""
+    """Tool for launching blocking or explicitly background sub-agent tasks."""
 
     user_selectable: ClassVar[bool] = False
 
@@ -207,10 +252,68 @@ class TaskTool(ToolDefinition[TaskAction, TaskObservation]):
         ]
 
 
+class TaskOutputTool(ToolDefinition[TaskOutputAction, TaskOutputObservation]):
+    """Tool for reading background task status and output."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        return DeclaredResources(keys=(), declared=True)
+
+    @classmethod
+    def create(cls, executor: "TaskExecutor") -> Sequence["TaskOutputTool"]:
+        return [
+            cls(
+                action_type=TaskOutputAction,
+                observation_type=TaskOutputObservation,
+                description=(
+                    "Read a background task's status and available output. "
+                    "By default this polls immediately; set block=true to wait "
+                    "up to timeout seconds for a terminal result or lifecycle "
+                    "stop/manager-close signal."
+                ),
+                annotations=ToolAnnotations(
+                    title="task_output",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+class TaskStopTool(ToolDefinition[TaskStopAction, TaskStopObservation]):
+    """Tool for cooperatively stopping background tasks."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        return DeclaredResources(keys=(), declared=True)
+
+    @classmethod
+    def create(cls, executor: "TaskExecutor") -> Sequence["TaskStopTool"]:
+        return [
+            cls(
+                action_type=TaskStopAction,
+                observation_type=TaskStopObservation,
+                description=(
+                    "Request cooperative cancellation of a background task. "
+                    "Repeated requests for an already cancelled task are safe."
+                ),
+                annotations=ToolAnnotations(
+                    title="task_stop",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
 class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
     """Task tool set.
 
-    Creates the Task tool backed by a shared TaskManager.
+    Creates task, task_output, and task_stop backed by one shared TaskManager.
 
     Usage:
         from openhands.tools.task import TaskToolSet
@@ -236,7 +339,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
         confirmation_handler: "ConfirmationHandler | None" = None,
         sub_agent_scope: SubAgentScope | dict[str, bool] | None = None,
     ) -> list[ToolDefinition]:
-        """Create the task tool.
+        """Create the three lifecycle tools with a shared executor.
 
         Args:
             conv_state: Conversation state for workspace info.
@@ -248,7 +351,7 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 it offers and starts must stay within.
 
         Returns:
-            List containing a single TaskTool.
+            The task, task_output, and task_stop tools sharing one manager.
         """
         from openhands.tools.task.impl import TaskExecutor, TaskManager
 
@@ -289,6 +392,8 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
                 description=task_description,
             )
         )
+        tools.extend(TaskOutputTool.create(executor=task_executor))
+        tools.extend(TaskStopTool.create(executor=task_executor))
         return tools
 
 
