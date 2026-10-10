@@ -421,9 +421,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "model_family" not in template_kwargs
             or "model_variant" not in template_kwargs
         ):
-            spec = get_model_prompt_spec(
-                self.llm.model, getattr(self.llm, "model_canonical_name", None)
-            )
+            spec = get_model_prompt_spec(self.llm.model, self.llm.model_canonical_name)
             if "model_family" not in template_kwargs and spec.family:
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:

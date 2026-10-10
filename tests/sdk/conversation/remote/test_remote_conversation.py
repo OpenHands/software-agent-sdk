@@ -2145,6 +2145,33 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_cleanup_lifecycle_flags(self, mock_ws_client):
+        """RemoteConversation cleanup updates declared lifecycle flags.
+
+        Verifies that close() updates flags and is idempotent.
+        """
+        conversation_id = uuid.uuid4()
+        self.setup_mock_client(str(conversation_id))
+
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            conversation_id=conversation_id,
+        )
+        assert conversation.cleanup_initiated is False
+        assert conversation.cleanup_complete is False
+
+        conversation.close()
+        assert conversation.cleanup_initiated is True
+        assert conversation.cleanup_complete is True
+
+        # close() is idempotent
+        conversation.close()
+        assert conversation.cleanup_complete is True
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_stuck_detector_not_implemented(self, mock_ws_client):
         """Test that stuck_detector property raises NotImplementedError."""
         # Setup mocks
