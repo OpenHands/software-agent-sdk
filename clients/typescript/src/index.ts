@@ -247,6 +247,16 @@ export type { ToolCatalogEntry, ToolCatalogResponse } from './models/tool-catalo
 
 // Agent profiles client
 export { AgentProfilesClient } from './client/agent-profiles-client';
+export {
+  PROMPT_ENHANCEMENT_CAPABILITY,
+  PromptEnhancementClient,
+  PromptEnhancementUnavailableError,
+} from './client/prompt-enhancement-client';
+export type {
+  PromptEnhancementAvailability,
+  PromptEnhancementClientOptions,
+  PromptEnhancementRequestOptions,
+} from './client/prompt-enhancement-client';
 export type {
   AgentProfilesClientOptions,
   GetAgentProfileOptions,
@@ -322,6 +332,10 @@ export type {
   AgentServerMCPTestResponse,
   AgentServerMCPToolCall,
   AgentServerMCPToolCallResult,
+  AgentServerPromptEnhancementAvailabilityResponse,
+  AgentServerPromptEnhancementErrorCode,
+  AgentServerPromptEnhancementRequest,
+  AgentServerPromptEnhancementResponse,
   AgentServerSettingsPatchRequest,
   AgentServerSettingsPatchResponse,
   AgentServerSettingsResponse,

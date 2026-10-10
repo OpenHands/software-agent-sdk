@@ -61,6 +61,7 @@ def live_server_env(
     monkeypatch: pytest.MonkeyPatch,
     import_modules: str | None = None,
     session_api_keys: list[str] | None = None,
+    preload_tools: bool = True,
 ) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
@@ -104,6 +105,7 @@ def live_server_env(
         "session_api_keys": session_api_keys or [],
         "conversations_path": str(conversations_path),
         "workspace_path": str(workspace_path),
+        "preload_tools": preload_tools,
     }
     cfg_file = tmp_path / "config.json"
     cfg_file.write_text(json.dumps(cfg))
@@ -2231,6 +2233,92 @@ def test_server_info_exposes_usable_tools(server_env):
     payload = response.json()
     assert isinstance(payload.get("usable_tools"), list)
     assert "terminal" in payload["usable_tools"]
+
+
+def test_prompt_enhancement_over_authenticated_live_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
+):
+    from openhands.agent_server import server_details_router as details
+
+    # Browser-use display detection aborts macOS when run on Uvicorn's thread.
+    monkeypatch.setattr(details, "list_usable_tools", lambda: [])
+    api_key = "test-prompt-enhancement-auth-key"
+    with live_server_env(
+        tmp_path, monkeypatch, session_api_keys=[api_key], preload_tools=False
+    ) as authenticated_server_env:
+        authenticated_server_env["api_key"] = api_key
+        host = authenticated_server_env["host"]
+        headers = {"X-Session-API-Key": authenticated_server_env["api_key"]}
+        draft = "Clarify the request for /src/views/Map.vue."
+        secret = "sk-live-test-secret"
+
+        with httpx.Client(base_url=host, timeout=10.0) as client:
+            info = client.get("/server_info")
+            assert info.status_code == 200
+            assert "prompt_enhancement_v1" in info.json()["capabilities"]
+
+            endpoint = "/api/prompt-enhancement/availability/draft-profile"
+            assert client.get(endpoint).status_code == 401
+            missing = client.get(endpoint, headers=headers)
+            assert missing.status_code == 200
+            assert missing.json()["code"] == "profile_not_found"
+
+            saved = client.post(
+                "/api/profiles/draft-profile",
+                headers=headers,
+                json={
+                    "llm": {
+                        "model": "openai/gpt-4.1-mini",
+                        "api_key": secret,
+                        "api_mode": "chat",
+                        "log_completions": True,
+                    },
+                    "include_secrets": True,
+                },
+            )
+            assert saved.status_code == 201
+            available = client.get(endpoint, headers=headers)
+            assert available.status_code == 200
+            assert available.json() == {
+                "available": True,
+                "code": None,
+                "message": None,
+            }
+
+            profile_before = client.get(
+                "/api/profiles/draft-profile", headers=headers
+            ).json()
+            profiles_before = client.get("/api/profiles", headers=headers).json()
+            conversations_before = client.get(
+                "/api/conversations/count", headers=headers
+            ).json()
+            body = {"profile_name": "draft-profile", "text": draft}
+            denied = client.post("/api/prompt-enhancement/enhance", json=body)
+            assert denied.status_code == 401
+            assert not patched_llm
+
+            enhanced = client.post(
+                "/api/prompt-enhancement/enhance", headers=headers, json=body
+            )
+            assert enhanced.status_code == 200, enhanced.text
+            assert enhanced.json() == {"enhanced_text": "Hello from patched LLM"}
+            assert secret not in enhanced.text
+            assert draft not in enhanced.text
+            assert (
+                client.get("/api/profiles", headers=headers).json() == profiles_before
+            )
+            assert (
+                client.get("/api/profiles/draft-profile", headers=headers).json()
+                == profile_before
+            )
+            assert (
+                client.get("/api/conversations/count", headers=headers).json()
+                == conversations_before
+            )
+
+        assert len(patched_llm) == 1
+        assert [message.role for message in patched_llm[0]] == ["system", "user"]
+        assert patched_llm[0][1].content[0].text == draft
 
 
 def test_remote_state_exposes_invoked_skills(
