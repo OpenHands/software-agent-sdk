@@ -1,0 +1,115 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.7, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/yangxiao/git/software-agent-sdk-terminal-fix
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+timeout: 30.0s
+timeout method: signal
+timeout func_only: False
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 32 items / 29 deselected / 3 selected
+
+tests/tools/terminal/test_tmux_pane_pool.py FFF                          [100%]
+
+=================================== FAILURES ===================================
+___________ test_pane_lifecycle_logging_survives_missing_session[20] ___________
+tests/tools/terminal/test_tmux_pane_pool.py:118: in test_pane_lifecycle_logging_survives_missing_session
+    with pool.pane(timeout=0.2) as handle:
+         ^^^^^^^^^^^^^^^^^^^^^^
+/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/contextlib.py:141: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py:305: in pane
+    handle = PaneHandle(self.checkout(timeout=timeout))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py:241: in checkout
+    logger.debug(f"Checked out existing pane: {terminal.pane}")
+                                              ^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/libtmux/pane.py:839: in __repr__
+    return f"{self.__class__.__name__}({self.pane_id} {self.window})"
+                                                       ^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/libtmux/pane.py:166: in window
+    return Window.from_window_id(server=self.server, window_id=self.window_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/libtmux/window.py:162: in from_window_id
+    window = fetch_obj(
+.venv/lib/python3.13/site-packages/libtmux/neo.py:230: in fetch_obj
+    obj_formatters_filtered = fetch_objs(
+.venv/lib/python3.13/site-packages/libtmux/neo.py:209: in fetch_objs
+    raise exc.LibTmuxException(proc.stderr)
+E   libtmux.exc.LibTmuxException: ['no server running on /private/tmp/tmux-501/openhands-92886cf9b41a468b960e259dce716d27']
+---------------------------- Captured stderr setup -----------------------------
+[10/07/26 12:31:44] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:143
+                             session=openhands-pool-None-4                      
+                             6203ffa-bee0-4dc4-bce4-0b0a65                      
+                             86a462, max_panes=3                                
+------------------------------ Captured log setup ------------------------------
+INFO     openhands.tools.terminal.terminal.tmux_pane_pool:tmux_pane_pool.py:143 TmuxPanePool initialized: session=openhands-pool-None-46203ffa-bee0-4dc4-bce4-0b0a6586a462, max_panes=3
+--------------------------- Captured stderr teardown ---------------------------
+[10/07/26 12:31:44] WARNING  Error killing pool session:   tmux_pane_pool.py:167
+                             ['no server running on                             
+                             /private/tmp/tmux-501/openhan                      
+                             ds-92886cf9b41a468b960e259dce                      
+                             716d27']                                           
+---------------------------- Captured log teardown -----------------------------
+WARNING  openhands.tools.terminal.terminal.tmux_pane_pool:tmux_pane_pool.py:167 Error killing pool session: ['no server running on /private/tmp/tmux-501/openhands-92886cf9b41a468b960e259dce716d27']
+___________ test_pane_lifecycle_logging_survives_missing_session[10] ___________
+tests/tools/terminal/test_tmux_pane_pool.py:118: in test_pane_lifecycle_logging_survives_missing_session
+    with pool.pane(timeout=0.2) as handle:
+         ^^^^^^^^^^^^^^^^^^^^^^
+/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/contextlib.py:141: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py:305: in pane
+    handle = PaneHandle(self.checkout(timeout=timeout))
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+openhands-tools/openhands/tools/terminal/terminal/tmux_pane_pool.py:241: in checkout
+    logger.debug(f"Checked out existing pane: {terminal.pane}")
+                                              ^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/libtmux/pane.py:839: in __repr__
+    return f"{self.__class__.__name__}({self.pane_id} {self.window})"
+                                                       ^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/libtmux/pane.py:166: in window
+    return Window.from_window_id(server=self.server, window_id=self.window_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.13/site-packages/libtmux/window.py:162: in from_window_id
+    window = fetch_obj(
+.venv/lib/python3.13/site-packages/libtmux/neo.py:230: in fetch_obj
+    obj_formatters_filtered = fetch_objs(
+.venv/lib/python3.13/site-packages/libtmux/neo.py:209: in fetch_objs
+    raise exc.LibTmuxException(proc.stderr)
+E   libtmux.exc.LibTmuxException: ['no server running on /private/tmp/tmux-501/openhands-fc083e972c284942b405fc456c7551d1']
+---------------------------- Captured stderr setup -----------------------------
+[10/07/26 12:31:45] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:143
+                             session=openhands-pool-None-4                      
+                             4bd87ea-e174-47f9-bdf7-c81c70                      
+                             dce896, max_panes=3                                
+------------------------------ Captured log setup ------------------------------
+INFO     openhands.tools.terminal.terminal.tmux_pane_pool:tmux_pane_pool.py:143 TmuxPanePool initialized: session=openhands-pool-None-44bd87ea-e174-47f9-bdf7-c81c70dce896, max_panes=3
+--------------------------- Captured stderr teardown ---------------------------
+[10/07/26 12:31:45] WARNING  Error killing pool session:   tmux_pane_pool.py:167
+                             ['no server running on                             
+                             /private/tmp/tmux-501/openhan                      
+                             ds-fc083e972c284942b405fc456c                      
+                             7551d1']                                           
+---------------------------- Captured log teardown -----------------------------
+WARNING  openhands.tools.terminal.terminal.tmux_pane_pool:tmux_pane_pool.py:167 Error killing pool session: ['no server running on /private/tmp/tmux-501/openhands-fc083e972c284942b405fc456c7551d1']
+___________ test_checkout_initialization_failure_preserves_capacity ____________
+tests/tools/terminal/test_tmux_pane_pool.py:136: in test_checkout_initialization_failure_preserves_capacity
+    assert len(pool._session.windows) == initial_windows
+E   AssertionError: assert 2 == 1
+E    +  where 2 = len([Window(@2 0:pane-0, Session($0 openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62)), Window(@1 1:pane-0, Session($0 openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62))])
+E    +    where [Window(@2 0:pane-0, Session($0 openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62)), Window(@1 1:pane-0, Session($0 openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62))] = Session($0 openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62).windows
+E    +      where Session($0 openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62) = TmuxPanePool(work_dir='/tmp/tmprpfrfx0a', username=None, env=None, max_panes=3)._session
+---------------------------- Captured stderr setup -----------------------------
+[10/07/26 12:31:46] INFO     TmuxPanePool initialized:     tmux_pane_pool.py:143
+                             session=openhands-pool-None-1                      
+                             661d42d-5edc-4c45-978b-87b8fc                      
+                             992c62, max_panes=3                                
+------------------------------ Captured log setup ------------------------------
+INFO     openhands.tools.terminal.terminal.tmux_pane_pool:tmux_pane_pool.py:143 TmuxPanePool initialized: session=openhands-pool-None-1661d42d-5edc-4c45-978b-87b8fc992c62, max_panes=3
+=========================== short test summary info ============================
+FAILED tests/tools/terminal/test_tmux_pane_pool.py::test_pane_lifecycle_logging_survives_missing_session[20]
+FAILED tests/tools/terminal/test_tmux_pane_pool.py::test_pane_lifecycle_logging_survives_missing_session[10]
+FAILED tests/tools/terminal/test_tmux_pane_pool.py::test_checkout_initialization_failure_preserves_capacity
+======================= 3 failed, 29 deselected in 2.29s =======================

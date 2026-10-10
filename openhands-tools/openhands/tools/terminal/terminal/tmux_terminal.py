@@ -4,8 +4,10 @@ import logging
 import time
 import uuid
 from collections.abc import Mapping
+from typing import ClassVar
 
 import libtmux
+from libtmux.exc import LibTmuxException
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.redact import redact_api_key_literals
@@ -94,6 +96,8 @@ class TmuxTerminal(TerminalInterface):
     This backend uses tmux to provide a persistent terminal session
     with full screen capture and history management capabilities.
     """
+
+    _raise_on_capture_error: ClassVar[bool] = False
 
     PS1: str
     server: libtmux.Server
@@ -234,11 +238,17 @@ class TmuxTerminal(TerminalInterface):
         if not self._initialized or not isinstance(self.pane, libtmux.Pane):
             raise RuntimeError("Tmux terminal is not initialized")
 
+        result = self.pane.cmd("capture-pane", "-J", "-pS", "-")
+        if result.returncode and self._raise_on_capture_error:
+            raise LibTmuxException(
+                "\n".join(result.stderr)
+                or f"capture-pane failed (rc={result.returncode})"
+            )
         content = "\n".join(
             map(
                 # avoid double newlines
                 lambda line: line.rstrip(),
-                self.pane.cmd("capture-pane", "-J", "-pS", "-").stdout,
+                result.stdout,
             )
         )
         return content

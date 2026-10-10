@@ -1,0 +1,83 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.7, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/yangxiao/git/software-agent-sdk-terminal-fix
+configfile: pyproject.toml
+plugins: libtmux-0.53.0, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, asyncio-1.3.0, forked-1.6.0, cov-7.0.0
+timeout: 50.0s
+timeout method: signal
+timeout func_only: False
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+created: 4/4 workers
+4 workers [386 items]
+
+........................................................................ [ 18%]
+........................................................................ [ 37%]
+........................................................................ [ 55%]
+........................................................................ [ 74%]
+..........................................sssssssssssssss............... [ 93%]
+..........................                                               [100%]+----------------------------------------------------------------------+
+|  OpenHands SDK v1.53.0                                               |
+|                                                                      |
+|  Report a bug: github.com/OpenHands/software-agent-sdk/issues        |
+|  Get help: openhands.dev/joinslack                                   |
+|  Scale up: openhands.dev/product/sdk                                 |
+|                                                                      |
+|  Set OPENHANDS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+
+=============================== warnings summary ===============================
+tests/tools/terminal/test_literal_arg_guard.py: 7 warnings
+tests/tools/terminal/test_observation_truncation.py: 5 warnings
+tests/tools/terminal/test_pool_integration.py: 12 warnings
+tests/tools/terminal/test_send_keys.py: 18 warnings
+tests/tools/terminal/test_terminal_session.py: 11 warnings
+tests/tools/terminal/test_tmux_pane_pool.py: 12 warnings
+  /Users/yangxiao/git/software-agent-sdk-terminal-fix/.venv/lib/python3.13/site-packages/py/_process/forkedfunc.py:45: DeprecationWarning: This process (pid=72488) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/tools/terminal/test_escape_filter.py: 23 warnings
+tests/tools/terminal/test_heredoc_chunked_send.py: 1 warning
+tests/tools/terminal/test_pool_integration.py: 2 warnings
+tests/tools/terminal/test_ps1_corruption.py: 13 warnings
+tests/tools/terminal/test_schema.py: 1 warning
+tests/tools/terminal/test_secrets_masking.py: 3 warnings
+tests/tools/terminal/test_terminal_parsing.py: 15 warnings
+tests/tools/terminal/test_terminal_ps1_metadata.py: 10 warnings
+tests/tools/terminal/test_terminal_reset.py: 7 warnings
+tests/tools/terminal/test_terminal_session.py: 26 warnings
+tests/tools/terminal/test_terminal_tool.py: 7 warnings
+tests/tools/terminal/test_terminal_tool_auto_detection.py: 2 warnings
+tests/tools/terminal/test_tmux_pane_pool.py: 10 warnings
+  /Users/yangxiao/git/software-agent-sdk-terminal-fix/.venv/lib/python3.13/site-packages/py/_process/forkedfunc.py:45: DeprecationWarning: This process (pid=72486) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/tools/terminal/test_conversation_cleanup.py: 7 warnings
+tests/tools/terminal/test_escape_filter.py: 17 warnings
+tests/tools/terminal/test_send_keys.py: 5 warnings
+tests/tools/terminal/test_session_factory.py: 7 warnings
+tests/tools/terminal/test_shell_path_configuration.py: 9 warnings
+tests/tools/terminal/test_shutdown_handling.py: 4 warnings
+tests/tools/terminal/test_terminal_exit_code_top_level.py: 6 warnings
+tests/tools/terminal/test_terminal_parsing.py: 15 warnings
+tests/tools/terminal/test_terminal_ps1_metadata.py: 3 warnings
+tests/tools/terminal/test_terminal_session.py: 10 warnings
+tests/tools/terminal/test_terminal_tool_auto_detection.py: 5 warnings
+tests/tools/terminal/test_timeout_policy.py: 4 warnings
+tests/tools/terminal/test_tmux_log_redaction.py: 1 warning
+tests/tools/terminal/test_tmux_pane_pool.py: 18 warnings
+tests/tools/terminal/test_windows_ctrl_c.py: 1 warning
+tests/tools/terminal/test_windows_terminal.py: 14 warnings
+tests/tools/terminal/test_windows_terminal_send_keys.py: 27 warnings
+  /Users/yangxiao/git/software-agent-sdk-terminal-fix/.venv/lib/python3.13/site-packages/py/_process/forkedfunc.py:45: DeprecationWarning: This process (pid=72485) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+tests/tools/terminal/test_heredoc_chunked_send.py: 4 warnings
+tests/tools/terminal/test_large_environment.py: 3 warnings
+tests/tools/terminal/test_literal_arg_guard.py: 17 warnings
+tests/tools/terminal/test_terminal_session.py: 24 warnings
+  /Users/yangxiao/git/software-agent-sdk-terminal-fix/.venv/lib/python3.13/site-packages/py/_process/forkedfunc.py:45: DeprecationWarning: This process (pid=72487) is multi-threaded, use of fork() may lead to deadlocks in the child.
+    pid = os.fork()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========== 371 passed, 15 skipped, 386 warnings in 179.84s (0:02:59) ===========
