@@ -158,6 +158,12 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
+        ("claude-haiku-5-5", True),
+        ("anthropic/claude-haiku-5-5", True),
+        ("litellm_proxy/anthropic/claude-haiku-5-5", True),
+        ("claude-opus-5-5", True),
+        ("anthropic/claude-opus-5-5", True),
+        ("litellm_proxy/anthropic/claude-opus-5-5", True),
         # Claude Opus 5 supports prompt caching across raw, direct-provider,
         # and proxy-prefixed forms.
         ("claude-opus-5", True),

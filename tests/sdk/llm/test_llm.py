@@ -1282,6 +1282,34 @@ def test_llm_caching_support(default_llm):
     assert isinstance(caching_active, bool)
 
 
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-opus-5-5"])
+@pytest.mark.parametrize("prefix", ["", "anthropic/", "litellm_proxy/anthropic/"])
+@pytest.mark.parametrize("caching_prompt", [True, False])
+def test_claude_55_cache_markers_without_metadata(model, prefix, caching_prompt):
+    with patch("openhands.sdk.llm.llm.get_litellm_model_info", return_value=None):
+        llm = LLM(
+            model=f"{prefix}{model}",
+            api_key=SecretStr("test-key"),
+            caching_prompt=caching_prompt,
+        )
+    formatted = llm.format_messages_for_llm(
+        [
+            Message(
+                role="system",
+                content=[TextContent(text="Static instructions")],
+            ),
+            Message(role="user", content=[TextContent(text="Hello")]),
+        ]
+    )
+    content = formatted[0]["content"]
+    markers = (
+        [block["cache_control"] for block in content if "cache_control" in block]
+        if isinstance(content, list)
+        else []
+    )
+    assert markers == ([{"type": "ephemeral"}] if caching_prompt else [])
+
+
 def test_llm_string_representation(default_llm):
     """Test LLM string representation."""
     llm = default_llm
