@@ -33,7 +33,7 @@ llm = LLM(
 # allow_hosts with your LLM provider's API host, since the agent server calls
 # the model from inside the machine.
 with SmolMachinesWorkspace(mount_dir=os.getcwd()) as workspace:
-    result = workspace.execute_command("uname -r && pwd")
+    result = workspace.execute_command("uname -r && pwd", cwd=workspace.working_dir)
     logger.info(f"Machine kernel and working directory: {result.stdout}")
 
     conversation = Conversation(
