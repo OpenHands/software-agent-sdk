@@ -1,5 +1,6 @@
 import threading
 import time
+import re
 from collections.abc import Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING, Literal
@@ -57,6 +58,28 @@ _TMUX_RECOVERABLE_ERROR_MARKERS = (
     "could not find pane_id",
 )
 
+# Drain guard: repeated session probes (echo ok1, ok2, ...) and repeated
+# Ctrl-C interrupts burn one LLM turn per retry without changing the outcome.
+# After the first repeats, return one instructive message instead of
+# executing again: either the session is healthy (stop probing, continue the
+# task) or it is stuck (reset is the only thing that helps).
+_DRAIN_GUARD_LIMIT = 2
+
+_DRAIN_GUARD_MESSAGE = (
+    "Drain guard triggered: this looks like a repeated session probe or a "
+    "repeated interrupt, and further identical calls will not change the "
+    "outcome — each retry burns a full agent turn.\n"
+    "- If the session is healthy: stop probing and proceed with your task.\n"
+    "- If the session is stuck (command retained, no output): call the "
+    "terminal with reset=true once (do NOT keep sending C-c or probes). "
+    "The first command after a reset must reload the machine's local "
+    "environment (host.local.env / literal tool paths)."
+)
+
+_PROBE_RE = re.compile(
+    r'^\s*(?:echo|printf|Write-Output|Write-Host)\s+[\"\']?ok|^\s*(?:pwd|Get-Date)\s*$'
+)
+
 logger = get_logger(__name__)
 
 
@@ -106,6 +129,11 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
         self._pool_recovery_lock = threading.Lock()
+
+        # Drain guard state: consecutive session probes and consecutive
+        # interrupts, reset by any real command (or reset) in between.
+        self._probe_streak = 0
+        self._cancel_streak = 0
 
         use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
 
@@ -545,6 +573,49 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     ) -> TerminalObservation:
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
+
+        # Drain guard: short-circuit repeated session probes and repeated
+        # interrupts with a single instructive message. A real command (or
+        # reset) resets the streaks.
+        if action.reset:
+            self._probe_streak = 0
+            self._cancel_streak = 0
+        elif action.is_input:
+            if action.command.strip() == "C-c":
+                self._cancel_streak += 1
+                self._probe_streak = 0
+                if self._cancel_streak > _DRAIN_GUARD_LIMIT:
+                    logger.warning(
+                        "Terminal drain guard: interrupt repeated %d times; "
+                        "returning instructive message instead of executing.",
+                        self._cancel_streak,
+                    )
+                    return TerminalObservation.from_text(
+                        _DRAIN_GUARD_MESSAGE,
+                        is_error=True,
+                        command="C-c",
+                        exit_code=None,
+                    )
+            else:
+                self._cancel_streak = 0
+        else:
+            self._cancel_streak = 0
+            if _PROBE_RE.match(action.command):
+                self._probe_streak += 1
+                if self._probe_streak > _DRAIN_GUARD_LIMIT:
+                    logger.warning(
+                        "Terminal drain guard: session probe repeated %d times; "
+                        "returning instructive message instead of executing.",
+                        self._probe_streak,
+                    )
+                    return TerminalObservation.from_text(
+                        _DRAIN_GUARD_MESSAGE,
+                        is_error=True,
+                        command=action.command,
+                        exit_code=None,
+                    )
+            else:
+                self._probe_streak = 0
 
         # Short-circuit obvious tool-call malformation: Python/JSON literals
         # passed where the model should have sent a shell command. The shell
