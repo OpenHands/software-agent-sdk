@@ -39,6 +39,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.models import kind_of
@@ -86,6 +87,14 @@ class AgentLaunchAdditions(BaseModel):
         description=(
             "Deployment-controlled text appended to the resolved agent's "
             "system-message suffix."
+        ),
+    )
+    skills_append: list[Skill] = Field(
+        default_factory=list,
+        description=(
+            "Deployment-controlled skills appended to the resolved agent's "
+            "context. Existing skills and the context's disabled-skill list "
+            "remain authoritative."
         ),
     )
 
