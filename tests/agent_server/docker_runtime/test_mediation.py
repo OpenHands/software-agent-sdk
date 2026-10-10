@@ -51,10 +51,31 @@ async def _forward(
 ) -> tuple[dict[str, Any], Any, RuntimeIdentity]:
     registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
     body = request.model_dump(mode="json", context={"expose_secrets": True})
-    payload, launched = await _prepare_forward(body, registry, existing=existing)
+    payload, launched, _ = await _prepare_forward(body, registry, existing=existing)
     provisioning = RuntimeProvisioningStore(runtime_config)
     identity = provisioning.create(uuid4())
     return payload(identity.cipher), launched, identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worktree", [False, True])
+async def test_forward_preserves_worktree_flag(tmp_path, monkeypatch, worktree):
+    runtime_config = config(tmp_path, monkeypatch)
+    registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
+    request = StartConversationRequest(
+        workspace=LocalWorkspace(working_dir="/workspace"),
+        agent=Agent(llm=LLM(model="test", api_key=SecretStr("model-key"))),
+        worktree=worktree,
+    )
+    payload, _, forwarded_worktree = await _prepare_forward(
+        request.model_dump(mode="json", context={"expose_secrets": True}),
+        registry,
+        existing=False,
+    )
+    identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
+    assert forwarded_worktree is worktree
+    assert payload(identity.cipher)["workspace"]["working_dir"] == "/workspace"
+    assert payload(identity.cipher)["worktree"] is worktree
 
 
 def _no_stores() -> LaunchStores:
@@ -146,7 +167,7 @@ async def test_every_encrypted_field_reaches_the_container_decryptable(
     body = request.model_dump(mode="json", context={"cipher": runtime_config.cipher})
     registry = cast(DockerConversationRegistry, SimpleNamespace(config=runtime_config))
 
-    payload, _ = await _prepare_forward(body, registry, existing=False)
+    payload, _, _ = await _prepare_forward(body, registry, existing=False)
     identity = RuntimeProvisioningStore(runtime_config).create(uuid4())
     received = StartConversationRequest.model_validate(
         payload(identity.cipher), context={"cipher": identity.cipher}
