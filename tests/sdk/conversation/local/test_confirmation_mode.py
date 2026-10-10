@@ -4,8 +4,9 @@ Unit tests for confirmation mode functionality.
 Tests the core behavior: pause action execution for user confirmation.
 """
 
+import uuid
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -649,6 +650,67 @@ class TestConfirmationMode:
             self.conversation._state.execution_status
             == ConversationExecutionStatus.PAUSED
         )
+
+    def test_resume_confirmation_preserves_tool_call_message(self, tmp_path):
+        conversation_id = uuid.uuid4()
+        sent_messages: list[list[dict[str, Any]]] = []
+        responses = [
+            self._mock_action_once().return_value,
+            self._mock_message_only("Task completed successfully!").return_value,
+        ]
+
+        def capture_completion(**kwargs):
+            sent_messages.append(kwargs["messages"])
+            return responses.pop(0)
+
+        def build_conversation():
+            conversation = Conversation(
+                agent=self.agent,
+                workspace=tmp_path / "workspace",
+                persistence_dir=tmp_path / "state",
+                conversation_id=conversation_id,
+                visualizer=None,
+                delete_on_close=False,
+            )
+            conversation.set_confirmation_policy(AlwaysConfirm())
+            return conversation
+
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            side_effect=capture_completion,
+        ):
+            conversation = build_conversation()
+            conversation.send_message(
+                Message(role="user", content=[TextContent(text="execute a command")])
+            )
+            conversation.run()
+            assert (
+                conversation.state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
+
+            conversation.close()
+            conversation = build_conversation()
+            assert (
+                conversation.state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
+
+            conversation.run()
+            conversation.close()
+
+        assert len(sent_messages) == 2
+        last_messages = sent_messages[-1]
+        tool_message_index = next(
+            i
+            for i, message in enumerate(last_messages)
+            if message.get("role") == "tool" and message.get("tool_call_id") == "call_1"
+        )
+        preceding_message = last_messages[tool_message_index - 1]
+        tool_calls = preceding_message.get("tool_calls") or []
+
+        assert preceding_message["role"] == "assistant"
+        assert [tool_call["id"] for tool_call in tool_calls] == ["call_1"]
 
     def test_is_confirmation_mode_active_property(self):
         """Test the is_confirmation_mode_active property behavior."""
