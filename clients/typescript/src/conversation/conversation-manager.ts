@@ -17,6 +17,7 @@ import { SkillsClient } from '../client/skills-client';
 import { SubAgentsClient } from '../client/sub-agents-client';
 import { ToolClient } from '../client/tool-client';
 import { VSCodeClient } from '../client/vscode-client';
+import { VoiceClient } from '../client/voice-client';
 import { WorkspacesClient } from '../client/workspaces-client';
 import { RemoteConversation } from './remote-conversation';
 import { RemoteWorkspace } from '../workspace/remote-workspace';
@@ -89,6 +90,7 @@ export class ConversationManager {
   public readonly subAgents: SubAgentsClient;
   public readonly tools: ToolClient;
   public readonly vscode: VSCodeClient;
+  public readonly voice: VoiceClient;
   public readonly files: FileClient;
   public readonly workspaces: WorkspacesClient;
   public readonly shared: SharedClient;
@@ -121,6 +123,7 @@ export class ConversationManager {
     this.subAgents = new SubAgentsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
     this.vscode = new VSCodeClient(clientOptions);
+    this.voice = new VoiceClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
@@ -405,6 +408,7 @@ export class ConversationManager {
     this.subAgents.close();
     this.tools.close();
     this.vscode.close();
+    this.voice.close();
     this.files.close();
     this.workspaces.close();
     this.shared.close();

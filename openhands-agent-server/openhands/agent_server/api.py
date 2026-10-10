@@ -31,6 +31,7 @@ from openhands.agent_server.canvas_extensions_bridge_router import (
     app_backend_bridge_router,
 )
 from openhands.agent_server.canvas_extensions_router import canvas_extensions_router
+from openhands.agent_server.codex_voice import CodexVoiceManager
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -103,11 +104,13 @@ from openhands.agent_server.telemetry.models import (
 from openhands.agent_server.telemetry.sanitizer import normalize_exception
 from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
+from openhands.agent_server.voice_router import voice_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool.registry import seal_tool_catalog, unseal_tool_catalog
+from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
@@ -339,6 +342,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     finally:
         # Outer finally so a startup failure cannot leak the drain task, and
         # after `async with service` so terminal events are still accepted.
+        await api.state.codex_voice.close()
         if secret_resolution is not None:
             secret_resolution.__exit__(None, None, None)
         unseal_tool_catalog()
@@ -485,6 +489,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(conversation_catalog_router)
     conversation_registry.add_execution_routes(api_router)
     api_router.include_router(conversation_router)
+    api_router.include_router(voice_router)
     api_router.include_router(credential_binding_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
@@ -764,6 +769,12 @@ def create_app(config: Config | None = None) -> FastAPI:
     app = _create_fastapi_instance(config)
     app.state.config = config
     app.state.conversation_registry = create_conversation_registry(config)
+    app.state.voice_calls = {}
+    app.state.codex_voice = CodexVoiceManager(
+        config.codex_voice_home
+        or get_user_persistence_dir(config.conversations_path.parent / ".openhands")
+        / "codex-voice"
+    )
     app.state.canvas_extension_backend_manager = CanvasExtensionBackendManager()
     app.state.app_backend_session_store = AppBackendSessionStore()
 

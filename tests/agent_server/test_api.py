@@ -421,7 +421,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
 
             async with api_lifespan(mock_app):
                 pass
@@ -468,6 +468,7 @@ class TestServiceParallelization:
             mock_backend_manager = AsyncMock()
             mock_app.state = SimpleNamespace(
                 config=Config(),
+                codex_voice=AsyncMock(),
                 canvas_extension_backend_manager=mock_backend_manager,
             )
 
@@ -478,6 +479,7 @@ class TestServiceParallelization:
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
             mock_tool_preload_service.stop.assert_called_once()
+            mock_app.state.codex_voice.close.assert_awaited_once()
             mock_backend_manager.shutdown.assert_awaited_once()
 
     async def test_services_handle_none_values(self):
@@ -497,7 +499,7 @@ class TestServiceParallelization:
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
 
             # This should not raise any exceptions
             async with api_lifespan(mock_app):
@@ -529,7 +531,7 @@ class TestServiceParallelization:
         ):
             mock_app = AsyncMock()
             mock_app.state = SimpleNamespace(
-                config=Config(), conversation_registry=registry
+                config=Config(), conversation_registry=registry, codex_voice=AsyncMock()
             )
 
             async with api_lifespan(mock_app):
@@ -559,7 +561,7 @@ class TestServiceParallelization:
             ),
         ):
             mock_app = AsyncMock()
-            mock_app.state = SimpleNamespace(config=Config())
+            mock_app.state = SimpleNamespace(config=Config(), codex_voice=AsyncMock())
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
 

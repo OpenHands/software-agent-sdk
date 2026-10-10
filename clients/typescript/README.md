@@ -187,6 +187,42 @@ const tools = await manager.tools.listTools();
 const acpCount = await manager.acp.countConversations();
 ```
 
+### Voice for a saved Insider controller
+
+The voice broker is available on Agent Servers built with
+[SDK PR #5180](https://github.com/OpenHands/software-agent-sdk/pull/5180).
+It binds each call to a saved Insider controller conversation and keeps provider
+credentials on the server. The client exposes the setup and call-control endpoints:
+
+```typescript
+const availability = await manager.voice.availability(conversationId);
+if (availability.available) {
+  // Supply an SDP offer from your application's WebRTC peer.
+  const answer = await manager.voice.createCall(conversationId, { sdp: offerSdp });
+  await peer.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+
+  if (answer.provider === 'codex' && answer.call_id) {
+    const status = await manager.voice.getCallStatus(conversationId, answer.call_id);
+    console.log(status.status, status.error_code);
+  }
+
+  // When the user ends the call:
+  if (answer.call_id) await manager.voice.endCall(conversationId, answer.call_id);
+}
+```
+
+`getCallStatus` applies to Codex calls; OpenAI call state comes from WebRTC.
+Ending a call stops speech and preserves already accepted controller work.
+All methods accept an optional final `AbortSignal` so the owning UI can cancel
+an outstanding request. These helpers do not obtain microphone access, send
+controller requests, retry calls, or switch providers. The response's
+`delegation` value tells the application whether it must forward requests to the
+controller (`client`) or the server does that (`server`).
+
+Use `VoiceClient` from `@openhands/typescript-client/clients` when a standalone
+endpoint client is needed. Voice response and error-code types are exported from
+the same entrypoint.
+
 ### Updating MCP settings
 
 Persisted MCP servers use their settings-map key as stable identity. Create,
