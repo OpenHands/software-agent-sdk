@@ -32,6 +32,10 @@ class EmptyMCPClient:
     def __init__(self):
         self.tools = []
         self._tools_reconciled_callback: Any = None
+        self.closed = False
+
+    def sync_close(self) -> None:
+        self.closed = True
 
 
 class RecordingMCPToolProvider:
@@ -799,6 +803,9 @@ class TestLocalConversationPlugins:
                 self.tools = [runtime_tool]
                 self._tools_reconciled_callback: Any = None
 
+            def sync_close(self) -> None:
+                pass
+
         marketplace_dir = create_test_marketplace(
             tmp_path / "marketplace",
             plugins=[
@@ -847,6 +854,55 @@ class TestLocalConversationPlugins:
         assert not state_locked
         assert "runtime-server" in created_config
 
+        conversation.close()
+
+    def test_load_plugin_failure_closes_an_empty_mcp_client(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "mcp-plugin",
+                    "mcp_config": {
+                        "mcpServers": {"runtime-server": {"command": "runtime"}}
+                    },
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        client = EmptyMCPClient()
+        conversation = LocalConversation(
+            agent=Agent(
+                llm=mock_llm,
+                tools=[],
+                agent_context=AgentContext(
+                    registered_marketplaces=[
+                        MarketplaceRegistration(
+                            name="manual", source=str(marketplace_dir)
+                        )
+                    ]
+                ),
+            ),
+            workspace=workspace,
+            visualizer=None,
+            mcp_tool_provider=RecordingMCPToolProvider([], client),
+        )
+        conversation._ensure_agent_ready()
+
+        with (
+            patch.object(
+                Agent,
+                "add_runtime_tools",
+                side_effect=RuntimeError("failed to add runtime tools"),
+            ),
+            pytest.raises(RuntimeError, match="failed to add runtime tools"),
+        ):
+            conversation.load_plugin("mcp-plugin")
+
+        assert client.closed
+        assert conversation._mcp_clients == []
         conversation.close()
 
     def test_load_plugin_merges_runtime_hooks_and_restarts_processor(

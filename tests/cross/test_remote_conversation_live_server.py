@@ -581,6 +581,8 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         agent=agent, workspace=workspace
     )  # RemoteConversation
 
+    conv.refresh_mcp_tools()
+
     # Lifecycle inspection/reprovision is available without a Docker backend.
     runtime_url = f"{server_env['host']}/api/conversations/{conv.id}/runtime"
     with httpx.Client() as client:
