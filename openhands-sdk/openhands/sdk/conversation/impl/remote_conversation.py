@@ -908,8 +908,6 @@ class RemoteConversation(BaseConversation):
                 )
             conversation_id = uuid.UUID(cid)
 
-            workspace.register_conversation(str(conversation_id))
-
         assert conversation_id is not None
         # Register the persisted tools before connecting so that events synced
         # during ``_initialize_connection`` can be deserialized. ``_from_info``
@@ -987,7 +985,6 @@ class RemoteConversation(BaseConversation):
             ),
         )
         info = response.json()
-        workspace.register_conversation(info["id"])
         conversation = cls._from_info(workspace, info, callbacks, visualizer)
         conversation._start_observability_span(
             str(conversation.id),
@@ -1072,6 +1069,11 @@ class RemoteConversation(BaseConversation):
         self._run_armed = threading.Event()
 
         self._id = conversation_id
+        # Every route into an existing conversation converges here - the attach
+        # classmethod, the constructor probe, and fork - and the automation
+        # completion callback links a run to the conversation it used, so the
+        # registration belongs to this single point rather than to each caller.
+        self.workspace.register_conversation(str(conversation_id))
         # Register client tool action types locally so WebSocket/persisted
         # events with ClientAction_* action_type can be deserialized by the
         # event loop. This must cover both the specs the caller passed in and
