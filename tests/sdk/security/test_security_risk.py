@@ -130,3 +130,49 @@ def test_max_on_concrete_risks():
     )
     assert max([SecurityRisk.LOW, SecurityRisk.LOW]) == SecurityRisk.LOW
     assert max([SecurityRisk.MEDIUM, SecurityRisk.HIGH]) == SecurityRisk.HIGH
+
+
+def test_get_security_risk_description():
+    """Test get_security_risk_description returns appropriate tiers for
+    CLI/sandbox mode.
+    """
+    from openhands.sdk.security.risk import (
+        CLI_TIERS,
+        DEFAULT_SECURITY_RISK_DESCRIPTION,
+        SANDBOX_TIERS,
+        get_security_risk_description,
+    )
+
+    assert (
+        get_security_risk_description(cli_mode=True)
+        == f"{DEFAULT_SECURITY_RISK_DESCRIPTION}\n\n{CLI_TIERS}"
+    )
+    assert (
+        get_security_risk_description(cli_mode=False)
+        == f"{DEFAULT_SECURITY_RISK_DESCRIPTION}\n\n{SANDBOX_TIERS}"
+    )
+    assert "**LOW**: Safe, read-only actions." in CLI_TIERS
+    assert "**LOW**: Read-only actions inside sandbox" in SANDBOX_TIERS
+    assert DEFAULT_SECURITY_RISK_DESCRIPTION == (
+        "The LLM's assessment of the safety risk of this action."
+    )
+
+
+def test_token_measurements_for_risk_guidance() -> None:
+    """Verify token overhead of the risk guidance strings."""
+    from openhands.sdk.security.risk import (
+        CLI_TIERS,
+        DEFAULT_SECURITY_RISK_DESCRIPTION,
+        SANDBOX_TIERS,
+    )
+
+    default_desc_words = len(DEFAULT_SECURITY_RISK_DESCRIPTION.split())
+    cli_tiers_words = len(CLI_TIERS.split())
+    sandbox_tiers_words = len(SANDBOX_TIERS.split())
+
+    # Default description is short (~8 words, ~13 tokens)
+    assert default_desc_words < 15
+    # CLI tiers is compact (< 80 words, ~85 tokens)
+    assert cli_tiers_words < 80
+    # Sandbox tiers is compact (< 60 words, ~65 tokens)
+    assert sandbox_tiers_words < 60

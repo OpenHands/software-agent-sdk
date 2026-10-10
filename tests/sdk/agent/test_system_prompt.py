@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, TextContent
+from openhands.sdk.security.risk import CLI_TIERS, SANDBOX_TIERS
 
 
 def _make_llm() -> LLM:
@@ -190,3 +191,154 @@ def test_system_prompt_none_survives_json_round_trip() -> None:
     restored = AgentBase.model_validate_json(agent_json)
     assert isinstance(restored, Agent)
     assert restored.system_prompt is None
+
+
+# --- risk guidance under custom vs default prompts (#5444) ---
+
+
+@pytest.mark.parametrize(
+    "cli_mode, expected_tier_snippet, expected_tiers_block",
+    [
+        (True, "**LOW**: Safe, read-only actions.", CLI_TIERS),
+        (False, "**LOW**: Read-only actions inside sandbox", SANDBOX_TIERS),
+    ],
+    ids=["cli_mode", "sandbox_mode"],
+)
+def test_custom_system_prompt_restores_risk_guidance(
+    cli_mode: bool,
+    expected_tier_snippet: str,
+    expected_tiers_block: str,
+) -> None:
+    """When a custom system prompt replaces the static prompt:
+    1. Static message contains only the custom prompt verbatim.
+    2. Dynamic context contains escalation rules in <SECURITY_RISK_ASSESSMENT>.
+    3. security_risk_description contains concise tier definitions.
+    """
+    from openhands.sdk.security.risk import get_security_risk_description
+
+    agent = Agent(
+        llm=_make_llm(),
+        tools=[],
+        system_prompt="You are a custom security-focused coding assistant.",
+        system_prompt_kwargs={"cli_mode": cli_mode},
+    )
+
+    # 1. Static prompt is verbatim custom prompt; no risk assessment block
+    assert agent.static_system_message == (
+        "You are a custom security-focused coding assistant."
+    )
+    assert "<SECURITY_RISK_ASSESSMENT>" not in agent.static_system_message
+
+    # 2. Dynamic context carries the non-overridable escalation rules
+    dynamic = agent.dynamic_context or ""
+    assert "<SECURITY_RISK_ASSESSMENT>" in dynamic
+    assert "**Global Rules**" in dynamic
+    assert "**Repository Context Supply Chain Rules**" in dynamic
+    assert "<UNTRUSTED_CONTENT>" in dynamic
+    # Escalation block does not duplicate tier definitions
+    assert expected_tiers_block not in dynamic
+
+    # 3. security_risk_description has the appropriate tiers
+    expected_desc = get_security_risk_description(cli_mode=cli_mode)
+    assert agent.security_risk_description == expected_desc
+    assert agent.security_risk_description is not None
+    assert expected_tier_snippet in agent.security_risk_description
+
+
+def test_default_prompt_leaves_security_risk_description_none() -> None:
+    """Without a custom system prompt:
+    1. <SECURITY_RISK_ASSESSMENT> is in static_system_message with tiers + rules.
+    2. Dynamic context does not contain <SECURITY_RISK_ASSESSMENT>.
+    3. security_risk_description is None.
+    """
+    from openhands.sdk.security.risk import CLI_TIERS
+
+    agent = Agent(llm=_make_llm(), tools=[])
+
+    # 1. Static prompt has full risk assessment
+    assert "<SECURITY_RISK_ASSESSMENT>" in agent.static_system_message
+    assert CLI_TIERS in agent.static_system_message
+    assert "**Global Rules**" in agent.static_system_message
+
+    # 2. Dynamic context has no security risk section
+    assert "<SECURITY_RISK_ASSESSMENT>" not in (agent.dynamic_context or "")
+
+    # 3. Description is None to avoid duplication
+    assert agent.security_risk_description is None
+
+
+@pytest.mark.parametrize(
+    "has_custom_prompt",
+    [True, False],
+    ids=["custom_prompt", "default_prompt"],
+)
+def test_analyzer_off_disables_security_risk_guidance(
+    has_custom_prompt: bool,
+) -> None:
+    """When llm_security_analyzer is False:
+    1. Neither static nor dynamic prompts have <SECURITY_RISK_ASSESSMENT>.
+    2. security_risk_description is None.
+    """
+    kwargs: dict[str, Any] = {
+        "llm": _make_llm(),
+        "tools": [],
+        "system_prompt_kwargs": {"llm_security_analyzer": False},
+    }
+    if has_custom_prompt:
+        kwargs["system_prompt"] = "Custom prompt."
+
+    agent = Agent(**kwargs)
+
+    assert "<SECURITY_RISK_ASSESSMENT>" not in agent.static_system_message
+    assert "<SECURITY_RISK_ASSESSMENT>" not in (agent.dynamic_context or "")
+    assert agent.security_risk_description is None
+
+
+def test_init_state_emits_dynamic_escalation_rules(tmp_path: Path) -> None:
+    """Integration check: Agent.init_state emits SystemPromptEvent with
+    escalation rules in dynamic_context when custom prompt is set,
+    and events_to_messages compiles them into the system message.
+    """
+    import uuid
+
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+    from openhands.sdk.workspace.local import LocalWorkspace
+
+    agent = Agent(
+        llm=_make_llm(),
+        tools=[],
+        system_prompt="Custom static prompt text.",
+    )
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+
+    emitted: list[SystemPromptEvent] = []
+    agent.init_state(
+        state,
+        on_event=lambda e: (
+            emitted.append(e) if isinstance(e, SystemPromptEvent) else None
+        ),
+    )
+
+    assert len(emitted) == 1
+    system_event = emitted[0]
+    assert system_event.system_prompt.text == "Custom static prompt text."
+    assert system_event.dynamic_context is not None
+    assert "<SECURITY_RISK_ASSESSMENT>" in system_event.dynamic_context.text
+    assert "**Global Rules**" in system_event.dynamic_context.text
+
+    messages = LLMConvertibleEvent.events_to_messages([system_event])
+    assert len(messages) == 1
+    sys_msg = messages[0]
+    assert sys_msg.role == "system"
+    assert len(sys_msg.content) == 2
+    c0 = sys_msg.content[0]
+    assert isinstance(c0, TextContent)
+    assert c0.text == "Custom static prompt text."
+    c1 = sys_msg.content[1]
+    assert isinstance(c1, TextContent)
+    assert "<SECURITY_RISK_ASSESSMENT>" in c1.text

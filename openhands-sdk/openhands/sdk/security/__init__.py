@@ -12,7 +12,13 @@ from openhands.sdk.security.defense_in_depth import (
 from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
 from openhands.sdk.security.grayswan import GraySwanAnalyzer
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.security.risk import (
+    CLI_TIERS,
+    DEFAULT_SECURITY_RISK_DESCRIPTION,
+    SANDBOX_TIERS,
+    SecurityRisk,
+    get_security_risk_description,
+)
 from openhands.sdk.security.toolshield_helpers import (
     auto_detect_safety_experiences,
     default_safety_experiences,
@@ -27,6 +33,10 @@ from openhands.sdk.security.toolshield_llm_analyzer import (
 
 
 __all__ = [
+    "CLI_TIERS",
+    "SANDBOX_TIERS",
+    "DEFAULT_SECURITY_RISK_DESCRIPTION",
+    "get_security_risk_description",
     "SecurityRisk",
     "SecurityAnalysis",
     "SecurityAnalyzerBase",

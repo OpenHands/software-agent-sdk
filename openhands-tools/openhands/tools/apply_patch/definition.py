@@ -160,6 +160,8 @@ class ApplyPatchTool(ToolDefinition[ApplyPatchAction, ApplyPatchObservation]):
         self,
         add_security_risk_prediction: bool = False,  # noqa: ARG002 - signature match
         action_type: type | None = None,  # noqa: ARG002 - signature match
+        *,
+        risk_description: str | None = None,  # noqa: ARG002 - signature match
     ) -> FunctionToolParam:  # type: ignore[override]
         """Serialize to OpenAI Responses function tool spec.
 
