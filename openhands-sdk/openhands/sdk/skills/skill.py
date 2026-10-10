@@ -212,6 +212,17 @@ class Skill(BaseModel):
             "When it is None, it is treated as a programmatically defined skill."
         ),
     )
+    inherited: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill was auto-loaded from a path that an external "
+            "harness also reads (a compatible/vendor skills directory such as "
+            "``.claude/skills``). Callers that hand the catalog to such a harness "
+            "use this to avoid advertising a skill the harness discovers itself. "
+            "False for explicitly supplied and OpenHands-owned skills, so a "
+            "caller's ``source`` path alone never marks a skill as inherited."
+        ),
+    )
     mcp_tools: dict[str, MCPServer] | None = Field(
         default=None,
         description=("MCP servers for the skill (repo skills only)."),
@@ -851,6 +862,8 @@ def load_skills_from_dir(
     recursive: bool = True,
     root: Path | None = None,
     exclude_dirs: set[Path] | None = None,
+    load_regular_md: bool = True,
+    mark_inherited: bool = False,
 ) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -871,6 +884,13 @@ def load_skills_from_dir(
             symlink) are skipped. Plugins pass their root here.
         exclude_dirs: Directories whose regular .md files are not loaded as
             skills (e.g. managed installed packages inside a user skills dir).
+        load_regular_md: If False, only ``SKILL.md`` (AgentSkills) files are
+            loaded and loose ``.md`` notes are ignored. Vendor-native
+            directories pass False so ordinary Markdown there does not become a
+            permanent-context skill.
+        mark_inherited: Mark every loaded skill as
+            :attr:`Skill.inherited` — set for vendor-native directories an
+            external harness also reads.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
@@ -900,8 +920,12 @@ def load_skills_from_dir(
         for d in exclude_dirs or ()
         if (real := d.resolve()).is_relative_to(real_skill_dir)
     }
-    regular_md_files = find_regular_md_files(
-        skill_dir, skill_md_dirs | rebased_exclude_dirs, recursive, root
+    regular_md_files = (
+        find_regular_md_files(
+            skill_dir, skill_md_dirs | rebased_exclude_dirs, recursive, root
+        )
+        if load_regular_md
+        else []
     )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
@@ -916,6 +940,7 @@ def load_skills_from_dir(
                 agent_skills,
                 strict=strict,
                 root=root,
+                inherited=mark_inherited,
             )
         except Exception as e:
             logger.warning(f"Failed to load skill from {skill_md_path}: {e}")
@@ -931,6 +956,7 @@ def load_skills_from_dir(
                 agent_skills,
                 strict=strict,
                 root=root,
+                inherited=mark_inherited,
             )
         except Exception as e:
             logger.warning(f"Failed to load skill from {path}: {e}")
@@ -952,22 +978,44 @@ USER_SKILLS_DIRS = [
     get_user_persistence_dir() / "microagents",  # Legacy support
 ]
 
+# Native skills directories of other agents that speak the same AgentSkills
+# ``SKILL.md`` format. Scanned only when ``load_compatible_skills`` is enabled;
+# additive and lower precedence than the OpenHands / ``.agents`` locations, so
+# a name collision always resolves in favor of ``.agents/skills``.
+COMPATIBLE_SKILLS_SUBDIRS: Final[tuple[tuple[str, str], ...]] = (
+    (".claude", "skills"),
+    (".codex", "skills"),
+    (".gemini", "skills"),
+    (".cursor", "skills"),
+)
 
-def load_user_skills() -> list[Skill]:
-    """Load skills from user's home directory.
 
-    Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
-    ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
-    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
-    names.
+def compatible_user_skills_dirs() -> list[Path]:
+    """Vendor-native user skill directories under ``$HOME``.
 
-    Also loads enabled installed skills from ~/.openhands/skills/installed/
-    (managed via install_skill/uninstall_skill). Installed skills have lower
-    precedence than user skills from the directories above.
+    Lower precedence than :data:`USER_SKILLS_DIRS`; only used when compatible
+    skill loading is enabled.
+    """
+    return [Path.home() / parent / leaf for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS]
 
-    Returns:
-        List of Skill objects loaded from user directories.
-        Returns empty list if no skills found or loading fails.
+
+def compatible_project_skills_dirs(root: Path) -> list[Path]:
+    """Vendor-native project skill directories under ``root``.
+
+    Lower precedence than the OpenHands project skill directories; only used
+    when compatible skill loading is enabled.
+    """
+    return [root / parent / leaf for parent, leaf in COMPATIBLE_SKILLS_SUBDIRS]
+
+
+def _load_user_skills_from_dirs(
+    dirs: list[Path], compatible_dirs: list[Path]
+) -> list[Skill]:
+    """Merge skills from ``dirs`` (first wins), then installed, then vendors.
+
+    Installed OpenHands skills keep precedence over vendor-native skills, so a
+    vendor skill never displaces an installed one. Vendor directories share the
+    same seen-name set and load only ``SKILL.md`` files.
     """
     from openhands.sdk.skills.installed import get_installed_skills_dir
 
@@ -975,7 +1023,7 @@ def load_user_skills() -> list[Skill]:
     seen_names: set[str] = set()
 
     _load_and_merge_from_dirs(
-        USER_SKILLS_DIRS,
+        dirs,
         seen_names,
         all_skills,
         "user skills",
@@ -993,10 +1041,50 @@ def load_user_skills() -> list[Skill]:
     except Exception as e:
         logger.warning(f"Failed to load installed skills: {e}")
 
+    # Vendor-native skills are the lowest-precedence user source.
+    _load_and_merge_from_dirs(
+        compatible_dirs,
+        seen_names,
+        all_skills,
+        "compatible user skills",
+        load_regular_md=False,
+        mark_inherited=True,
+    )
+
     logger.debug(
         f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
     )
     return all_skills
+
+
+def load_user_skills(*, include_compatible: bool = False) -> list[Skill]:
+    """Load skills from user's home directory.
+
+    Searches for skills in ~/.agents/skills/, ~/.openhands/skills/, and
+    ~/.openhands/microagents/ (legacy). Skills from all directories are merged,
+    with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
+    names.
+
+    Also loads enabled installed skills from ~/.openhands/skills/installed/
+    (managed via install_skill/uninstall_skill). Installed skills have lower
+    precedence than user skills from the directories above.
+
+    Args:
+        include_compatible: Also scan the native skills directories of other
+            agents (``~/.claude/skills``, ``~/.codex/skills``,
+            ``~/.gemini/skills``, ``~/.cursor/skills``). They are additive and
+            the lowest-precedence user source — after USER_SKILLS_DIRS *and*
+            installed skills — so ``.agents/skills`` and installed OpenHands
+            skills both win on a name collision. Only ``SKILL.md`` skills are
+            read, so loose Markdown notes there are ignored. Off by default;
+            with it off, discovery is unchanged.
+
+    Returns:
+        List of Skill objects loaded from user directories.
+        Returns empty list if no skills found or loading fails.
+    """
+    compatible_dirs = compatible_user_skills_dirs() if include_compatible else []
+    return _load_user_skills_from_dirs(list(USER_SKILLS_DIRS), compatible_dirs)
 
 
 def _find_git_repo_root(path: Path) -> Path | None:
@@ -1035,6 +1123,8 @@ def _load_and_merge_from_dirs(
     all_skills: list[Skill],
     source_label: str,
     exclude_dirs: set[Path] | None = None,
+    load_regular_md: bool = True,
+    mark_inherited: bool = False,
 ) -> None:
     """Load skills from multiple directories, merging with deduplication.
 
@@ -1048,6 +1138,10 @@ def _load_and_merge_from_dirs(
         all_skills: Accumulator list of skills (mutated in place).
         source_label: Human-readable label for log messages (e.g. "user skills").
         exclude_dirs: Passed through to load_skills_from_dir().
+        load_regular_md: Passed through to load_skills_from_dir(); vendor-native
+            directories pass False to load only ``SKILL.md`` skills.
+        mark_inherited: Passed through to load_skills_from_dir(); set for
+            vendor-native directories an external harness also reads.
     """
     for skills_dir in dirs:
         if not skills_dir.exists():
@@ -1057,7 +1151,10 @@ def _load_and_merge_from_dirs(
         try:
             logger.debug(f"Loading {source_label} from {skills_dir}")
             repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
-                skills_dir, exclude_dirs=exclude_dirs
+                skills_dir,
+                exclude_dirs=exclude_dirs,
+                load_regular_md=load_regular_md,
+                mark_inherited=mark_inherited,
             )
             _merge_loaded_skills(
                 source_dir=skills_dir,
@@ -1069,7 +1166,9 @@ def _load_and_merge_from_dirs(
             logger.warning(f"Failed to load {source_label} from {skills_dir}: {str(e)}")
 
 
-def load_project_skills(work_dir: str | Path) -> list[Skill]:
+def load_project_skills(
+    work_dir: str | Path, *, include_compatible: bool = False
+) -> list[Skill]:
     """Load skills from project-specific directories.
 
     Searches for skills in {work_dir}/.agents/skills/, {work_dir}/.openhands/skills/,
@@ -1093,6 +1192,15 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
     Args:
         work_dir: Path to the project/working directory.
+        include_compatible: Also scan the native project skills directories of
+            other agents (``.claude/skills``, ``.codex/skills``,
+            ``.gemini/skills``, ``.cursor/skills``) under each search root. They
+            are additive and lower precedence than every OpenHands location
+            across all search roots, so ``.agents/skills`` wins on a name
+            collision — including a repo-root ``.agents`` skill over a
+            subdirectory vendor skill. Only ``SKILL.md`` skills are read, so
+            loose Markdown notes there are ignored. Off by default; with it off,
+            discovery is unchanged.
 
     Returns:
         List of Skill objects loaded from project directories.
@@ -1143,18 +1251,31 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         except (SkillError, OSError, UnicodeDecodeError, yaml.YAMLError) as e:
             logger.warning(f"Failed to load nested third-party file {path}: {e}")
 
-    # Load project-specific skills from .agents/skills, .openhands/skills,
-    # and legacy microagents (priority order; first wins for duplicates)
+    # Load project-specific skills. OpenHands locations across all search roots
+    # are loaded first, then vendor-native locations, so OpenHands skills always
+    # win over vendor skills — even a repo-root `.agents` skill against a
+    # subdirectory vendor skill. Within each group the working directory still
+    # precedes the Git repo root.
     for root in search_roots:
-        project_skills_dirs = [
+        openhands_skills_dirs = [
             root / ".agents" / "skills",
             root / ".openhands" / "skills",
             root / ".openhands" / "microagents",  # Legacy support
         ]
-
         _load_and_merge_from_dirs(
-            project_skills_dirs, seen_names, all_skills, "project skills"
+            openhands_skills_dirs, seen_names, all_skills, "project skills"
         )
+
+    if include_compatible:
+        for root in search_roots:
+            _load_and_merge_from_dirs(
+                compatible_project_skills_dirs(root),
+                seen_names,
+                all_skills,
+                "compatible project skills",
+                load_regular_md=False,
+                mark_inherited=True,
+            )
 
     logger.debug(
         f"Loaded {len(all_skills)} project skills: {[s.name for s in all_skills]}"
@@ -1405,6 +1526,7 @@ def load_available_skills(
     include_user: bool = False,
     include_project: bool = False,
     include_public: bool = False,
+    include_compatible: bool = False,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
 ) -> dict[str, Skill]:
     """Load and merge skills from SDK-level sources with consistent precedence.
@@ -1422,6 +1544,14 @@ def load_available_skills(
         include_user: Load user-level skills (~/.agents/skills, etc.).
         include_project: Load project-level skills (requires *work_dir*).
         include_public: Load public skills from the OpenHands extensions repo.
+        include_compatible: Additionally scan the native skills directories of
+            other agents (``.claude/skills``, ``.codex/skills``,
+            ``.gemini/skills``, ``.cursor/skills``) for the user and project
+            scopes that are enabled. Additive and the lowest-precedence source
+            in each scope, so ``.agents/skills`` and installed OpenHands skills
+            win on a name collision. Only ``SKILL.md`` skills are read. Off by
+            default; with it off, discovery is unchanged. Only affects a scope
+            that is otherwise enabled via *include_user* / *include_project*.
         marketplace_path: Relative marketplace JSON path to use for public skills.
             Pass None to load all public skills without marketplace filtering.
 
@@ -1440,14 +1570,16 @@ def load_available_skills(
 
     if include_user:
         try:
-            for s in load_user_skills():
+            for s in load_user_skills(include_compatible=include_compatible):
                 available[s.name] = s
         except Exception as e:
             logger.warning(f"Failed to load user skills: {e}")
 
     if include_project and work_dir:
         try:
-            for s in load_project_skills(work_dir):
+            for s in load_project_skills(
+                work_dir, include_compatible=include_compatible
+            ):
                 available[s.name] = s
         except Exception as e:
             logger.warning(f"Failed to load project skills: {e}")

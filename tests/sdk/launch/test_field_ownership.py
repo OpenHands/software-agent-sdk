@@ -90,6 +90,7 @@ OPENHANDS_CONTEXT = {
         "marketplace plugins are server settings, not yet applied to profiles"
     ),
     "load_project_skills": Fixed(True),
+    "load_compatible_skills": NotOnProfile("no profile field yet"),
     "load_memory": LAUNCH,
     "memory_context": LAUNCH,
     "disabled_skills": PROFILE,
@@ -128,6 +129,7 @@ ACP_CONTEXT = {
     "system_message_suffix": NotOnProfile("the ACP CLI owns its prompt"),
     "disabled_skills": NotOnProfile("the ACP CLI owns its skills"),
     "load_project_skills": Fixed(False),
+    "load_compatible_skills": Fixed(False),
     "current_datetime": Fixed(None),
 }
 

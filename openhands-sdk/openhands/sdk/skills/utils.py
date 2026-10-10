@@ -540,6 +540,7 @@ def load_and_categorize(
     agent_skills: dict[str, Skill],
     strict: bool = True,
     root: Path | None = None,
+    inherited: bool = False,
 ) -> None:
     """Load a skill and categorize it.
 
@@ -554,6 +555,8 @@ def load_and_categorize(
         strict: If True, enforce strict AgentSkills name validation.
         root: If given, a skill-level ``.mcp.json`` that resolves outside it is
             not loaded.
+        inherited: Marks the skill as auto-loaded from an external harness's
+            native directory (see :attr:`Skill.inherited`).
     """
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import Skill
@@ -563,6 +566,8 @@ def load_and_categorize(
         mcp_json = find_mcp_config(path.parent)
         skip_mcp = mcp_json is not None and not resolves_within(mcp_json, root)
     skill = Skill.load(path, skill_base_dir, strict=strict, skip_mcp=skip_mcp)
+    if inherited:
+        skill.inherited = True
 
     # AgentSkills (SKILL.md directories) are a separate category from OpenHands skills.
     # They follow the AgentSkills standard and should be handled differently.

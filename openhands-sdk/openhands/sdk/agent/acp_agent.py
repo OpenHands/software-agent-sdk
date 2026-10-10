@@ -177,6 +177,13 @@ _USAGE_UPDATE_TIMEOUT: float = float(os.environ.get("ACP_USAGE_UPDATE_TIMEOUT", 
 # session state is still valid on the server side.
 _ACP_PROMPT_MAX_RETRIES: int = int(os.environ.get("ACP_PROMPT_MAX_RETRIES", "3"))
 
+# Who supplies an ACP agent's skills (#4019), mirroring the agent-server's
+# ``Config.acp_skill_sourcing``. ``native``: the ACP CLI reads the user's own
+# configuration and the repository, so OpenHands injects none of its managed
+# catalog. ``openhands_managed``: also inject the resolved catalog (a container
+# CLI cannot reach the host's configuration).
+ACPSkillSourcing = Literal["native", "openhands_managed"]
+
 # After a timeout/cancellation, wait briefly for the ACP prompt task to react
 # to session/cancel before rewiring callbacks for the next turn.
 _ACP_CANCEL_DRAIN_TIMEOUT: float = float(
@@ -294,6 +301,61 @@ ACP_SENTINEL_USAGE_ID = "acp-managed"
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
     return LLM(model="acp-managed", usage_id=ACP_SENTINEL_USAGE_ID)
+
+
+def _managed_catalog_is_injected(context: AgentContext) -> bool:
+    """Whether ``context`` would put OpenHands-managed skills in the ACP prompt."""
+    return bool(
+        context.skills
+        or context.load_user_skills
+        or context.load_public_skills
+        or context.load_compatible_skills
+        or context.registered_marketplaces
+    )
+
+
+def _strip_managed_skills(context: AgentContext) -> AgentContext:
+    """Context with every OpenHands-managed skill source cleared (#4019).
+
+    Applied under ``native`` sourcing — the CLI reads its own host configuration
+    and the repository, so injecting our catalog would duplicate it. Flags and
+    marketplace registrations are cleared too because they resolve to skills
+    later (project skills, plugin skills); clearing only ``skills`` would let
+    them back into the prompt. Explicit ``skills`` are managed by definition and
+    are cleared with the rest.
+    """
+    return context.model_copy(
+        update={
+            "skills": [],
+            "load_user_skills": False,
+            "load_public_skills": False,
+            "load_compatible_skills": False,
+            "registered_marketplaces": [],
+        }
+    )
+
+
+def _strip_inherited_skills(context: AgentContext) -> AgentContext:
+    """Context without the compatible skills an external harness auto-loaded.
+
+    Applied when the runtime that launches the CLI is not yet known (a
+    directly-built agent, sourcing ``None``). An ACP agent runs no OpenHands
+    tools — :attr:`ACPAgent.supports_openhands_tools` is ``False`` — so the
+    ``<SKILLS>`` catalog it renders is advisory only: the prompt tells the model
+    to call ``invoke_skill``, which this agent does not expose, and
+    :func:`~openhands.sdk.skills.skill.to_prompt` omits each skill's location.
+    The CLI can therefore read only the skill bodies it discovers natively.
+
+    An inherited skill is either the CLI's own vendor directory (``~/.claude``
+    for Claude Code), which the CLI already reads, or another vendor's
+    (``~/.codex``), which it cannot reach. Advertising either one is redundant
+    or misleading, so every inherited skill is dropped. Explicit, user, public
+    and marketplace skills are never inherited and always stay.
+    """
+    remaining = [s for s in context.skills if not s.inherited]
+    if len(remaining) == len(context.skills):
+        return context
+    return context.model_copy(update={"skills": remaining})
 
 
 # ---------------------------------------------------------------------------
@@ -1882,21 +1944,51 @@ class ACPAgent(AgentBase):
             "enable it; the SDK owns where the root lives."
         ),
     )
+    acp_skill_sourcing: ACPSkillSourcing | None = Field(
+        default=None,
+        description=(
+            "Who supplies this ACP agent's skills (#4019). ``None`` (default): "
+            "the runtime is not yet known — a directly-built agent keeps its "
+            "explicit, user, public and marketplace skills but drops the "
+            "compatible skills it auto-loaded, which its CLI cannot invoke. "
+            "``'native'``: OpenHands injects none of its managed catalog; the "
+            "render drops all of it. ``'openhands_managed'``: also inject the "
+            "resolved catalog, for a container CLI that cannot reach the host's "
+            "configuration. ``finalize`` sets the runtime value from the "
+            "``LaunchRuntime`` for server launches."
+        ),
+    )
 
     @field_validator("agent_context")
     @classmethod
     def _drop_project_skills(cls, value: AgentContext | None) -> AgentContext | None:
-        """Clear ``load_project_skills`` — ACP CLIs read the repo themselves.
+        """Clear the project-scope skill flags — ACP CLIs read the repo themselves.
 
         Claude Code, Codex and Gemini already ingest ``AGENTS.md`` / ``CLAUDE.md``
-        and their own project skills from the session cwd, so loading them here
-        too would put that content in the prompt twice. Normalised rather than
-        rejected: callers legitimately set the flag on a shared context they also
-        use for OpenHands agents (#4019).
+        and their own project skills (including their native
+        ``.claude``/``.codex``/``.gemini``/``.cursor`` skills directories) from the
+        session cwd, so loading them here too would put that content in the prompt
+        twice. Normalised rather than rejected: callers legitimately set the flags
+        on a shared context they also use for OpenHands agents (#4019).
+
+        User-scope sourcing is deliberately *not* decided here. Whether a user's
+        vendor skills (``~/.claude/skills`` etc.) should be injected depends on
+        the runtime that launches the CLI: a host-local CLI reads them itself,
+        while a container CLI cannot reach the host's home directory, so
+        ``finalize`` preserves them under ``openhands_managed`` sourcing. The
+        runtime is unknown at construction time, so filtering here would drop
+        those skills before ``finalize`` can decide — ``skills`` is left intact.
         """
-        if value is None or not value.load_project_skills:
+        if value is None:
             return value
-        return value.model_copy(update={"load_project_skills": False})
+        if not (value.load_project_skills or value.load_compatible_skills):
+            return value
+        return value.model_copy(
+            update={
+                "load_project_skills": False,
+                "load_compatible_skills": False,
+            }
+        )
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
@@ -2492,6 +2584,18 @@ class ACPAgent(AgentBase):
             # clear the agent_context copy to advertise from the registry alone
             # rather than re-merging a redundant second source.
             agent_context = agent_context.model_copy(update={"secrets": {}})
+        # Skill sourcing is per-deployment (#4019). ``native`` — the runtime is
+        # known and the CLI reads its own host configuration and the repository,
+        # so drop every managed skill source. ``None`` — the runtime is not yet
+        # known (a directly-built agent that never ran through ``finalize``), so
+        # drop the compatible skills it auto-loaded while keeping explicit /
+        # user / public / marketplace skills. ``openhands_managed`` — a
+        # container CLI cannot reach the host, so keep the full catalog.
+        if self.acp_skill_sourcing == "native":
+            if _managed_catalog_is_injected(agent_context):
+                agent_context = _strip_managed_skills(agent_context)
+        elif self.acp_skill_sourcing is None:
+            agent_context = _strip_inherited_skills(agent_context)
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:

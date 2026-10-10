@@ -224,6 +224,7 @@ class TestLocalConversationPlugins:
             include_user=False,
             include_project=False,
             include_public=True,
+            include_compatible=False,
             marketplace_path=DEFAULT_MARKETPLACE_PATH,
         )
 
@@ -645,6 +646,7 @@ class TestLocalConversationPlugins:
             include_user=False,
             include_project=False,
             include_public=True,
+            include_compatible=False,
             marketplace_path=DEFAULT_MARKETPLACE_PATH,
         )
 
