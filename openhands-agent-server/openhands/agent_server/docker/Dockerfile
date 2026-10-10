@@ -37,6 +37,71 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
+# pip 26.2.1 (latest) vendors urllib3 2.7.0 and msgpack 1.1.2; swap in fixed releases, re-vendored as pip does.
+RUN python3 <<'PY'
+import hashlib, io, json, pathlib, re, shutil, tarfile, urllib.request, zipfile
+
+vendor = pathlib.Path("/usr/local/lib/python3.13/site-packages/pip/_vendor")
+pkgs = {
+    "urllib3": ("2.7.0", "2.8.0", "https://files.pythonhosted.org/packages/py3/u/urllib3/urllib3-2.8.0-py3-none-any.whl",
+                "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"),
+    "msgpack": ("1.1.2", "1.2.1", "https://files.pythonhosted.org/packages/source/m/msgpack/msgpack-1.2.1.tar.gz",
+                "04c721c2c7448767e9e3f2520a475663d8ee0f09c31890f6d2bd70fd636a9647"),
+}
+
+
+def sub(path, old, new):
+    s = path.read_text()
+    assert old in s, (path, old)
+    path.write_text(s.replace(old, new))
+
+
+for name, (old, new, url, sha256) in pkgs.items():
+    data = urllib.request.urlopen(url, timeout=120).read()
+    assert hashlib.sha256(data).hexdigest() == sha256, url
+    if url.endswith(".whl"):
+        z = zipfile.ZipFile(io.BytesIO(data))
+        files = {n: z.read(n) for n in z.namelist() if n.startswith(f"{name}/")}
+    else:
+        t = tarfile.open(fileobj=io.BytesIO(data))
+        # pip vendors only msgpack's pure-Python fallback.
+        files = {m.name.split("/", 1)[1]: t.extractfile(m).read() for m in t.getmembers()
+                 if m.isfile() and re.fullmatch(rf"[^/]+/{name}/\w+\.py", m.name)}
+    dest = vendor / name
+    keep = {p.name: p.read_bytes() for p in dest.iterdir() if p.name in ("LICENSE.txt", "COPYING")}
+    shutil.rmtree(dest)
+    for rel, blob in [*files.items(), *((f"{name}/{k}", v) for k, v in keep.items())]:
+        (vendor / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vendor / rel).write_bytes(blob)
+    if name == "urllib3":
+        # pip's tools/vendoring patches plus its import rewrites.
+        sub(dest / "contrib/pyopenssl.py", "import urllib3.contrib.pyopenssl\n        urllib3.contrib.pyopenssl.inject",
+            "import urllib3.contrib.pyopenssl as pyopenssl\n        pyopenssl.inject")
+        sub(dest / "contrib/emscripten/__init__.py", "import urllib3.connection\n", "import urllib3.connection as urllib3_connection\n")
+        sub(dest / "contrib/emscripten/__init__.py", "    urllib3.connection.", "    urllib3_connection.")
+        sub(dest / "response.py", "try:\n    try:\n        import brotlicffi as brotli  # type: ignore[import-not-found]\n"
+            "    except ImportError:\n        import brotli  # type: ignore[import-not-found]\n"
+            "except ImportError:\n    brotli = None\n", "brotli = None\n")
+        sub(dest / "util/request.py", "try:\n    try:\n        import brotlicffi as _unused_module_brotli  # type: ignore[import-not-found] # noqa: F401\n"
+            "    except ImportError:\n        import brotli as _unused_module_brotli  # type: ignore[import-not-found] # noqa: F401\n"
+            "except ImportError:\n    pass\nelse:\n    ACCEPT_ENCODING += \",br\"\n", "")
+        for p in dest.rglob("*.py"):
+            s = re.sub(r"^(\s*)import (urllib3|idna)$", r"\1from pip._vendor import \2", p.read_text(), flags=re.M)
+            p.write_text(re.sub(r"^(\s*)import urllib3\.(\S+) as ", r"\1import pip._vendor.urllib3.\2 as ", s, flags=re.M))
+    sub(vendor / "vendor.txt", f"{name}=={old}\n", f"{name}=={new}\n")
+    bom = json.loads((vendor / "bom.cdx.json").read_text().replace(f"pkg:pypi/{name}@{old}", f"pkg:pypi/{name}@{new}"))
+    for c in bom["components"]:
+        if c["name"] == name:
+            c["version"] = new
+    (vendor / "bom.cdx.json").write_text(json.dumps(bom, indent=2))
+PY
+RUN set -eux; \
+    vendor=/usr/local/lib/python3.13/site-packages/pip/_vendor; \
+    find "$vendor/urllib3" "$vendor/msgpack" -name __pycache__ -prune -exec rm -rf {} +; \
+    python3 -m compileall -q "$vendor/urllib3" "$vendor/msgpack"; \
+    python3 -c 'from pip._vendor import msgpack, requests, urllib3; from pip._vendor.cachecontrol import serialize; assert urllib3.__version__ == "2.8.0" and msgpack.version == (1, 2, 1)'; \
+    python3 -m pip --version
+
 FROM node:24.21.0-trixie-slim AS node-runtime
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
