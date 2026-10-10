@@ -250,6 +250,229 @@ async def test_running_idle_runtime_is_retained(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.ERROR,
+        ConversationExecutionStatus.STUCK,
+    ],
+)
+async def test_other_terminal_idle_runtimes_are_stopped(tmp_path, monkeypatch, status):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    runtime._containers[conversation_id] = container(conversation_id)
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, status)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [f"container-{conversation_id}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        ConversationExecutionStatus.IDLE,
+        ConversationExecutionStatus.PAUSED,
+        ConversationExecutionStatus.WAITING_FOR_CONFIRMATION,
+    ],
+)
+async def test_non_terminal_idle_runtime_is_retained(tmp_path, monkeypatch, status):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, status)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+
+
+@pytest.mark.asyncio
+async def test_active_lease_prevents_idle_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    release = runtime.acquire_lease(conversation_id)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    now = 20.0
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: now
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+    release()
+    now = 40.0
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is None
+    assert stopped == [active.container_id]
+
+
+@pytest.mark.asyncio
+async def test_lease_during_status_read_prevents_eviction(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    service = AsyncMock(spec=ConversationService)
+
+    async def get_conversation(_conversation_id):
+        release = runtime.acquire_lease(_conversation_id)
+        release()
+        return SimpleNamespace(execution_status=ConversationExecutionStatus.FINISHED)
+
+    service.get_conversation.side_effect = get_conversation
+    runtime.configure_service(cast(ConversationService, service))
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_eviction_skips_a_deleting_container(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+    runtime._last_access[conversation_id] = 0
+    runtime._deleting.add(conversation_id)
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    stopped = []
+    monkeypatch.setattr(
+        ConversationContainer,
+        "stop",
+        lambda self: stopped.append(self.container_id),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(conversation_id) is active
+    assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_eviction_keeps_a_container_when_stop_fails(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    failed_id = uuid4()
+    stopped_id = uuid4()
+    failed = container(failed_id)
+    runtime._containers[failed_id] = failed
+    runtime._containers[stopped_id] = container(stopped_id)
+    runtime._last_access[failed_id] = 0
+    runtime._last_access[stopped_id] = 0
+    set_execution_status(runtime, ConversationExecutionStatus.FINISHED)
+    monkeypatch.setattr(
+        "openhands.agent_server.docker_runtime.registry.time.monotonic", lambda: 20
+    )
+
+    def stop(self):
+        if self.container_id == failed.container_id:
+            raise RuntimeError("docker stop failed")
+
+    monkeypatch.setattr(ConversationContainer, "stop", stop)
+
+    await runtime._evict_idle_runtimes(10)
+
+    assert runtime.get(failed_id) is failed
+    assert runtime.get(stopped_id) is None
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_reuses_container_after_failed_stop(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    active = container(conversation_id)
+    runtime._containers[conversation_id] = active
+
+    def fail_stop(_self):
+        raise RuntimeError("transient docker stop failure")
+
+    monkeypatch.setattr(ConversationContainer, "stop", fail_stop)
+    monkeypatch.setattr(ConversationContainer, "is_running", lambda _self: True)
+
+    with pytest.raises(RuntimeError, match="transient docker stop failure"):
+        await runtime.stop_if_idle(conversation_id, 0)
+
+    built = False
+
+    def build(conversation_id):
+        nonlocal built
+        built = True
+        return container(conversation_id)
+
+    runtime._build_container = build
+
+    assert await runtime.get_or_create(conversation_id) is active
+    assert not built
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_waits_while_container_is_stopping(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    conversation_id = uuid4()
+    stop_event = asyncio.Event()
+    runtime._stopping[conversation_id] = stop_event
+    resumed = container(conversation_id)
+    resumed.container_id = "rebuilt-after-stop"
+    runtime._build_container = lambda conversation_id: resumed
+
+    task = asyncio.create_task(runtime.get_or_create(conversation_id))
+    await asyncio.sleep(0.01)
+    assert not task.done()
+
+    runtime._stopping.pop(conversation_id, None)
+    stop_event.set()
+
+    result = await task
+    assert result is resumed
+    assert result.container_id == "rebuilt-after-stop"
+
+
+@pytest.mark.asyncio
 async def test_attached_session_prevents_idle_eviction(tmp_path, monkeypatch):
     runtime = registry(tmp_path, monkeypatch)
     conversation_id = uuid4()

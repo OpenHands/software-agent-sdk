@@ -94,9 +94,16 @@ async def _proxy_with_session(
     from being evicted while a client is still reading from it.
     """
     registry.attach_session(conversation_id)
+    release = registry.acquire_lease(conversation_id)
+
+    detached = False
 
     async def detach() -> None:
-        registry.detach_session(conversation_id)
+        nonlocal detached
+        if not detached:
+            detached = True
+            release()
+            registry.detach_session(conversation_id)
 
     try:
         return await proxy_http(
@@ -155,6 +162,7 @@ async def start_conversation(
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+    release = None
     try:
         payload, launched = await _prepare_forward(body, registry, existing=existing)
         identity = registry.provisioning.create(conversation_id, host_workspace)
@@ -162,6 +170,7 @@ async def start_conversation(
             identity = identity.model_copy(update={"launched_agent_profile": launched})
             registry.provisioning.save(identity)
         container = await registry.get_or_create(conversation_id)
+        release = registry.acquire_lease(conversation_id)
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"{container.host}/api/conversations",
@@ -184,6 +193,9 @@ async def start_conversation(
             await registry.stop(conversation_id)
         logger.exception("Could not create conversation container")
         raise HTTPException(502, "Could not create conversation container") from exc
+    finally:
+        if release is not None:
+            release()
 
     content = response.json() if response.content else None
     if response.is_error:
@@ -429,6 +441,7 @@ async def _proxy_socket(
     except HTTPException as exc:
         await websocket.close(code=1008 if exc.status_code == 404 else 1011)
         return
+    release = registry.acquire_lease(conversation_id)
     query = strip_auth_query("?" + websocket.url.query).lstrip("?")
     path = f"/sockets/{socket_name}/{conversation_id}"
     # Hold the attachment for the whole bridge lifetime so the idle-eviction
@@ -441,6 +454,8 @@ async def _proxy_socket(
             upstream_path=f"{path}?{query}" if query else path,
         )
     finally:
+        if release is not None:
+            release()
         registry.detach_session(conversation_id)
         await websocket.app.state.conversation_service.refresh_persisted_conversation(
             conversation_id
