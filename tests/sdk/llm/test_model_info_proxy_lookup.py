@@ -11,10 +11,12 @@ See issue: LiteLLM proxy model_info lookup misses when proxy uses short
 aliases (claude-opus-4-8 vision still off).
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import litellm
+import pytest
 from litellm import model_cost
+from pydantic import SecretStr
 
 from openhands.sdk.llm.utils.model_info import (
     _get_model_info_from_litellm_proxy,
@@ -22,6 +24,7 @@ from openhands.sdk.llm.utils.model_info import (
     _register_proxy_alias_pricing,
     get_litellm_model_info,
 )
+from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_LLM_PROXY_BASE_URL
 
 
 _PROXY_RESPONSE = {
@@ -311,3 +314,97 @@ def test_get_model_info_from_proxy_registers_alias_pricing():
         cost = None
     assert cost is not None and cost[0] > 0
     _pop(alias)
+
+
+# --- managed-proxy keyless skip (issue #4098) ---
+
+_MANAGED_BASE_URLS = [
+    OPENHANDS_LLM_PROXY_BASE_URL,
+    f"{OPENHANDS_LLM_PROXY_BASE_URL}/v1",
+]
+
+
+def _mock_httpx():
+    return MagicMock(return_value=_FakeResponse(_PROXY_RESPONSE))
+
+
+@pytest.mark.parametrize("key", [None, "", SecretStr("")])
+def test_openhands_model_without_key_skips_proxy_http(key):
+    """`openhands/<model>` with no key and no custom base URL performs no
+    model-info HTTP request (falls back to static metadata)."""
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get", _mock_httpx()
+    ) as mock_get:
+        get_litellm_model_info(
+            secret_api_key=key,
+            base_url=None,
+            model="openhands/claude-opus-4-8",
+        )
+    mock_get.assert_not_called()
+
+
+@pytest.mark.parametrize("base_url", _MANAGED_BASE_URLS)
+@pytest.mark.parametrize(
+    "model", ["openhands/claude-opus-4-8", "litellm_proxy/claude-opus-4-8"]
+)
+def test_managed_proxy_url_without_key_skips_proxy_http(base_url, model):
+    """A recognized managed proxy URL without a key skips the request,
+    whichever model form addresses it."""
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get", _mock_httpx()
+    ) as mock_get:
+        get_litellm_model_info(
+            secret_api_key=None,
+            base_url=base_url,
+            model=model,
+        )
+    mock_get.assert_not_called()
+
+
+@pytest.mark.parametrize("key", ["k", SecretStr("k")])
+def test_managed_proxy_with_key_still_queries_with_bearer(key):
+    """Authenticated managed discovery still calls /v1/model/info with its
+    Bearer token and applies returned overrides."""
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get", _mock_httpx()
+    ) as mock_get:
+        info = get_litellm_model_info(
+            secret_api_key=key,
+            base_url=None,
+            model="openhands/claude-opus-4-8",
+        )
+    mock_get.assert_called_once()
+    _, kwargs = mock_get.call_args
+    assert kwargs["headers"] == {"Authorization": "Bearer k"}
+    assert info is not None
+    assert info.get("supports_vision") is True
+
+
+def test_custom_proxy_without_key_still_queries_keyless():
+    """Private proxies may intentionally serve model info without auth:
+    keyless discovery against a custom URL is preserved (no header)."""
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get", _mock_httpx()
+    ) as mock_get:
+        get_litellm_model_info(
+            secret_api_key=None,
+            base_url="https://proxy.example",
+            model="litellm_proxy/claude-opus-4-8",
+        )
+    mock_get.assert_called_once()
+    _, kwargs = mock_get.call_args
+    assert "Authorization" not in kwargs["headers"]
+
+
+def test_openhands_model_with_custom_url_without_key_still_queries():
+    """An `openhands/*` model pointed at a custom proxy URL is not the
+    managed production proxy: the lookup still runs."""
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get", _mock_httpx()
+    ) as mock_get:
+        get_litellm_model_info(
+            secret_api_key=None,
+            base_url="https://proxy.example",
+            model="openhands/claude-opus-4-8",
+        )
+    mock_get.assert_called_once()
