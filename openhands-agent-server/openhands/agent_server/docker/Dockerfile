@@ -123,6 +123,7 @@ RUN set -eux; \
         done; \
     }; \
     fetch npm undici@6.28.1 brace-expansion@5.0.12; \
+    fetch openvscode undici@7.29.1 shell-quote@1.9.0 lodash-es@4.18.0 picomatch@4.0.4; \
     rm -rf /root/.npm
 
 FROM debian:trixie-slim AS python-node-runtime
@@ -531,7 +532,8 @@ ARG RELEASE_ORG="gitpod-io"
 # INSTALL_CAPABILITIES — the case check inside each RUN only decides what
 # lands in THIS image, not what gets built as a dependency. Excluding vscode
 # shrinks the result, not the build time.
-RUN set -eux; \
+RUN --mount=type=bind,from=npm-patches,source=/npm-patches/openvscode,target=/tmp/npm-patches \
+    set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
@@ -557,6 +559,12 @@ RUN set -eux; \
     mv ${RELEASE_TAG}-linux-${arch} ${OPENVSCODE_SERVER_ROOT}; \
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
+    \
+    # The latest release (1.109.5) bundles vulnerable undici, shell-quote, lodash-es and picomatch.
+    for pkg in /tmp/npm-patches/*; do \
+        dst="${OPENVSCODE_SERVER_ROOT}/node_modules/${pkg##*/}"; \
+        test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
+    done; \
     \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
