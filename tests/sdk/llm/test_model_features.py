@@ -196,6 +196,7 @@ def test_prompt_cache_support(model, expected_cache):
         ("gemini-1.5-pro", True),
         ("llama-3.1-70b", True),
         ("unknown-model", True),  # Most models support stop words
+        ("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", True),
         # Models that don't support stop words
         ("o1", False),
         ("o1-2024-12-17", False),
@@ -467,6 +468,11 @@ def test_stop_words_grok_provider_prefixed():
         "o1-2024-12-17",
         "xai/grok-4-0709",
         "xai/grok-code-fast-1",
+        "bedrock/openai.gpt-oss-120b-1:0",
+        "bedrock/us.openai.gpt-5.6-sol",
+        "bedrock/us.openai.gpt-6-sol",
+        "bedrock/global.openai.gpt-6-luna",
+        "bedrock/us.openai.gpt-6-astra",
     ],
 )
 def test_supports_stop_words_false_models(model):
@@ -504,15 +510,35 @@ def test_responses_api_support(model, expected_responses):
 def test_force_string_serializer_full_model_names():
     """Ensure full model names match substring patterns for string serializer.
 
-    Regression coverage for patterns like deepseek/glm without wildcards; Kimi
-    should only match when provider-prefixed with groq/.
+    Regression coverage for the legacy DeepSeek v3.2 and broad GLM patterns;
+    Kimi should only match when provider-prefixed with groq/.
     """
     assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
+    assert get_features("deepseek-v3.2-reasoner").force_string_serializer is True
     assert get_features("GLM-4.5").force_string_serializer is True
     # Provider-agnostic Kimi should not force string serializer
     assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
     # Groq-prefixed Kimi should force string serializer
     assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openhands/deepseek-v4.1-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash-vision-exp",
+        "deepseek-chat",
+    ],
+)
+def test_deepseek_v4_models_use_structured_content(model):
+    """DeepSeek v4/v4.1 ids accept structured (list) content, not strings.
+
+    Only the legacy v3.2 family needs the string serializer; these ids must
+    keep list content so their image parts are preserved (#5360).
+    """
+    assert get_features(model).force_string_serializer is False
 
 
 @pytest.mark.parametrize(

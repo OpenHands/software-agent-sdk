@@ -11,7 +11,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import status
 from fastapi.testclient import TestClient
+from fastapi.websockets import WebSocketDisconnect
 from pydantic import SecretStr
 
 from openhands.agent_server.api import api_lifespan, create_app
@@ -438,6 +440,68 @@ class TestEndToEndOverLifespan:
                 # /api/* now works (200, not 503).
                 resp = client.get("/api/conversations/count")
                 assert resp.status_code == 200
+            finally:
+                _reset_conversation_singleton()
+
+    def test_dormant_refuses_bash_socket_until_init(self, tmp_path):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        marker = tmp_path / "marker"
+        with TestClient(create_app(cfg)) as client:
+            try:
+                with pytest.raises(WebSocketDisconnect) as excinfo:
+                    with client.websocket_connect("/sockets/bash-events") as ws:
+                        ws.send_json({"command": f"touch {marker}"})
+                assert excinfo.value.code == status.WS_1013_TRY_AGAIN_LATER
+                assert not marker.exists()
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                with client.websocket_connect("/sockets/bash-events"):
+                    pass
+            finally:
+                _reset_conversation_singleton()
+
+    def test_dormant_503s_openai_routes_until_init(self, tmp_path, monkeypatch):
+        class EmptyProfileStore:
+            def list_summaries(self) -> list[dict[str, object]]:
+                return []
+
+        monkeypatch.setattr(
+            "openhands.agent_server.openai.service.get_llm_profile_store",
+            EmptyProfileStore,
+        )
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        with TestClient(create_app(cfg)) as client:
+            try:
+                assert client.get("/v1/models").status_code == 503
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                assert client.get("/v1/models").status_code == 200
             finally:
                 _reset_conversation_singleton()
 

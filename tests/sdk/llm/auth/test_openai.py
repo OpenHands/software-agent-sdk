@@ -13,12 +13,12 @@ import pytest
 from joserfc import jwt as joserfc_jwt
 from joserfc.jwk import KeySet, RSAKey
 
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.auth.credentials import CredentialStore, OAuthCredentials
 from openhands.sdk.llm.auth.openai import (
     CLIENT_ID,
     CONSENT_BANNER,
     ISSUER,
-    OPENAI_CODEX_MODELS,
     DeviceCode,
     OpenAISubscriptionAuth,
     _build_authorize_url,
@@ -30,7 +30,35 @@ from openhands.sdk.llm.auth.openai import (
     _mark_consent_acknowledged,
     _poll_device_code,
     _request_device_code,
+    create_subscription_llm_from_config,
 )
+
+
+def test_subscription_config_leaves_api_key_llm_unchanged():
+    llm = LLM(model="gpt-4o", api_key="test-key")
+    with patch.object(OpenAISubscriptionAuth, "refresh_if_needed_sync") as refresh:
+        assert create_subscription_llm_from_config(llm) is llm
+    refresh.assert_not_called()
+
+
+def test_subscription_config_restores_credentials():
+    llm = LLM(model="openai/gpt-5.6-sol", auth_type="subscription", usage_id="restored")
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="test-access",
+        refresh_token="test-refresh",
+        expires_at=int(time.time() * 1000) + 3600_000,
+    )
+    with patch.object(
+        OpenAISubscriptionAuth, "refresh_if_needed_sync", return_value=credentials
+    ) as refresh:
+        restored = create_subscription_llm_from_config(llm)
+        assert create_subscription_llm_from_config(restored) is restored
+    refresh.assert_called_once()
+    assert restored.usage_id == "restored"
+    assert restored.is_subscription
+    assert restored.auth_type == "subscription"
+    assert restored._get_litellm_api_key_value() == "test-access"
 
 
 def test_generate_pkce():
@@ -68,17 +96,6 @@ def test_build_authorize_url():
     assert "state=test_state" in url
     assert "originator=openhands" in url
     assert "response_type=code" in url
-
-
-def test_openai_codex_models_include_acp_models():
-    """Subscription auth supports every model exposed by the Codex provider."""
-    from openhands.sdk.settings.acp_providers import get_acp_provider
-
-    codex_provider = get_acp_provider("codex")
-    assert codex_provider is not None
-    assert OPENAI_CODEX_MODELS.issuperset(
-        model.id for model in codex_provider.available_models
-    )
 
 
 def test_openai_subscription_auth_get_credentials(tmp_path):

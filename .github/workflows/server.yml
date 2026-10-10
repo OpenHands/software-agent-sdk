@@ -288,7 +288,7 @@ jobs:
             - name: Install Node.js (for npx)
               uses: actions/setup-node@v7
               with:
-                  node-version: 22
+                  node-version: '24'
 
 
             - name: Install dependencies
@@ -342,6 +342,8 @@ jobs:
                       custom_tags: python
                       image_flavor: slim
                       acp_provider_flavor: none
+                      install_capabilities: browser,docker
+                      enable_vscode: 'false'
                       target: binary
                       arch: amd64
                       base_image: python-node-runtime
@@ -352,6 +354,8 @@ jobs:
                       custom_tags: python
                       image_flavor: slim
                       acp_provider_flavor: none
+                      install_capabilities: browser,docker
+                      enable_vscode: 'false'
                       target: binary
                       arch: arm64
                       base_image: python-node-runtime
@@ -437,6 +441,7 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: ${{ matrix.target || 'binary' }}
             PLATFORM: ${{ matrix.platform }}
+            ENABLE_VSCODE: ${{ matrix.enable_vscode || 'true' }}
             # Use SDK_SHA/SDK_REF so build.py tags PR images with the head commit and branch.
             # GITHUB_SHA/GITHUB_REF point at the synthetic merge ref on pull_request events.
             SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -501,6 +506,8 @@ jobs:
 
                   if [ "${{ matrix.target }}" = "binary-minimal" ]; then
                       echo "install_capabilities=" >> $GITHUB_OUTPUT
+                  elif [ -n "${{ matrix.install_capabilities }}" ]; then
+                      echo "install_capabilities=${{ matrix.install_capabilities }}" >> $GITHUB_OUTPUT
                   else
                       echo "install_capabilities=$INSTALL_CAPABILITIES" >> $GITHUB_OUTPUT
                   fi
@@ -531,6 +538,7 @@ jobs:
                       OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
                       INSTALL_ACP_PROVIDERS=${{ steps.prep.outputs.install_acp_providers }}
                       INSTALL_CAPABILITIES=${{ steps.prep.outputs.install_capabilities }}
+                      ENABLE_VSCODE=${{ env.ENABLE_VSCODE }}
 
             - name: Cleanup build context
               if: always()

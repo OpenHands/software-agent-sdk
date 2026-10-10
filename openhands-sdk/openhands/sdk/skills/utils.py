@@ -642,15 +642,18 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
-
+    collected: dict[str, list[str]] = {}
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
         if resource_dir.is_dir():
-            files = _list_resource_files(resource_dir, resource_type)
-            setattr(resources, resource_type, files)
+            collected[resource_type] = _list_resource_files(resource_dir, resource_type)
 
-    return resources
+    return SkillResources(
+        skill_root=to_posix_path(skill_dir.resolve()),
+        scripts=collected.get("scripts", []),
+        references=collected.get("references", []),
+        assets=collected.get("assets", []),
+    )
 
 
 def _list_resource_files(

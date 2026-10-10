@@ -39,7 +39,13 @@ from openhands.sdk.settings import (
     VerificationSettings,
     apply_agent_settings_diff,
 )
-from openhands.sdk.settings.model import ACPServerKind, _migrate_agent_settings_payload
+from openhands.sdk.settings.model import (
+    ACPServerKind,
+    _agent_settings_discriminator,
+    _condenser_settings_discriminator,
+    _migrate_agent_settings_payload,
+    export_settings_schema,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -217,6 +223,16 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+
+def test_export_settings_schema_remains_backward_compatible():
+    """export_settings_schema produces identical structured schemas."""
+    schema_openhands = export_settings_schema(OpenHandsAgentSettings)
+    assert any(s.key == "general" for s in schema_openhands.sections)
+    assert any(s.key == "llm" for s in schema_openhands.sections)
+
+    schema_acp = export_settings_schema(ACPAgentSettings)
+    assert any(s.key == "acp" for s in schema_acp.sections)
 
 
 def test_conversation_settings_validates_observability_metadata() -> None:
@@ -409,6 +425,42 @@ def test_default_agent_settings_returns_openhands_variant() -> None:
     s = default_agent_settings()
     assert isinstance(s, OpenHandsAgentSettings)
     assert s.agent_kind == "openhands"
+
+
+def test_condenser_settings_discriminator_declared_on_base():
+    """CondenserSettings base declares condenser_kind.
+
+    The discriminator accesses it directly without getattr.
+    """
+    base = CondenserSettings(enabled=True)
+    assert base.condenser_kind == "llm_summarizing"
+    assert _condenser_settings_discriminator(base) == "llm_summarizing"
+
+    summarizing = LLMSummarizingCondenserSettings(enabled=True)
+    assert summarizing.condenser_kind == "llm_summarizing"
+    assert _condenser_settings_discriminator(summarizing) == "llm_summarizing"
+
+    noop = NoOpCondenserSettings(enabled=True)
+    assert noop.condenser_kind == "no_op"
+    assert _condenser_settings_discriminator(noop) == "no_op"
+
+
+def test_agent_settings_discriminator_declared_on_base():
+    """AgentSettingsBase declares agent_kind.
+
+    The discriminator accesses it directly without getattr.
+    """
+    base = AgentSettingsBase()
+    assert base.agent_kind == "openhands"
+    assert _agent_settings_discriminator(base) == "openhands"
+
+    openhands_settings = OpenHandsAgentSettings()
+    assert openhands_settings.agent_kind == "openhands"
+    assert _agent_settings_discriminator(openhands_settings) == "openhands"
+
+    acp_settings = ACPAgentSettings()
+    assert acp_settings.agent_kind == "acp"
+    assert _agent_settings_discriminator(acp_settings) == "acp"
 
 
 def test_validate_agent_settings_defaults_to_openhands_when_discriminator_missing() -> (
