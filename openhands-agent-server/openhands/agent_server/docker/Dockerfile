@@ -124,6 +124,7 @@ RUN set -eux; \
     }; \
     fetch npm undici@6.28.1 brace-expansion@5.0.12; \
     fetch openvscode undici@7.29.1 shell-quote@1.9.0 lodash-es@4.18.0 picomatch@4.0.4; \
+    fetch openvscode socks@2.8.10 ip-address@10.3.1; \
     rm -rf /root/.npm
 
 FROM debian:trixie-slim AS python-node-runtime
@@ -560,7 +561,7 @@ RUN --mount=type=bind,from=npm-patches,source=/npm-patches/openvscode,target=/tm
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
     \
-    # The latest release (1.109.5) bundles vulnerable undici, shell-quote, lodash-es and picomatch.
+    # The latest release (1.109.5) bundles vulnerable undici, shell-quote, lodash-es, picomatch and ip-address.
     for pkg in /tmp/npm-patches/*; do \
         dst="${OPENVSCODE_SERVER_ROOT}/node_modules/${pkg##*/}"; \
         test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
