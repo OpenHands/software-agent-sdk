@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -521,14 +522,33 @@ class HookExecutor:
                     start_new_session=start_new_session,
                     creationflags=creationflags,
                 )
-                # Write event JSON to stdin safely
-                try:
-                    if process.stdin and process.poll() is None:
-                        process.stdin.write(event_json.encode())
-                        process.stdin.flush()
-                        process.stdin.close()
-                except (BrokenPipeError, OSError) as e:
-                    logger.warning(f"Failed to write to async hook stdin: {e}")
+
+                # Deliver the event JSON on a background thread. The payload
+                # can exceed the OS pipe buffer (a PostToolUse event embeds
+                # the full tool response) and the command may never read
+                # stdin, so an inline write would block this thread until the
+                # child exits — or forever for a long-lived command. True
+                # fire-and-forget: execute() returns immediately and
+                # AsyncProcessManager still owns the child's lifetime.
+                def _deliver_stdin(process: subprocess.Popen, payload: bytes) -> None:
+                    stdin = process.stdin
+                    if stdin is None:
+                        return
+                    try:
+                        stdin.write(payload)
+                        stdin.flush()
+                    except (BrokenPipeError, OSError) as e:
+                        logger.warning(f"Failed to write to async hook stdin: {e}")
+                    finally:
+                        with contextlib.suppress(Exception):
+                            stdin.close()
+
+                threading.Thread(
+                    target=_deliver_stdin,
+                    args=(process, event_json.encode()),
+                    name=f"async-hook-stdin-{process.pid}",
+                    daemon=True,
+                ).start()
 
                 # Track for cleanup
                 self.async_process_manager.add_process(process, hook.timeout)
