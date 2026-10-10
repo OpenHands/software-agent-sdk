@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
-from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
+from openhands.sdk.git.git_changes import (
+    _parse_name_status,
+    get_changes_in_repo,
+    get_git_changes,
+)
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 
 
@@ -770,3 +774,49 @@ def test_get_git_changes_still_excludes_paths_inside_a_nested_repo():
 
         # Reported once, by the nested repository, not by the parent.
         assert len(nested_entries) == 1
+
+
+def test_parse_name_status_z_handles_special_names():
+    """NUL-separated parsing reports a name with a space, a non-ASCII name
+    and a rename between names with spaces under their real names.
+
+    The previous whitespace-split parser rejected the first as malformed
+    and kept git's C-quoted octal form for the second.
+    """
+    output = "M\0my notes.md\0M\0café.txt\0R100\0old name.txt\0new name.txt\0"
+
+    changes = _parse_name_status(output)
+
+    assert changes == [
+        GitChange(status=GitChangeStatus.UPDATED, path=Path("my notes.md")),
+        GitChange(status=GitChangeStatus.UPDATED, path=Path("café.txt")),
+        GitChange(status=GitChangeStatus.DELETED, path=Path("old name.txt")),
+        GitChange(status=GitChangeStatus.ADDED, path=Path("new name.txt")),
+    ]
+
+
+def test_get_changes_in_repo_special_names_kept_verbatim():
+    """Modified, deleted and untracked files whose names contain spaces or
+    non-ASCII characters are all listed under their real names."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "my notes.md").write_text("a\n")
+        (Path(temp_dir) / "café.txt").write_text("b\n")
+        (Path(temp_dir) / "to delete.txt").write_text("c\n")
+        run_bash_command("git add -A && git commit -m 'init'", temp_dir)
+
+        # Modify, delete and add files with special names in one go.
+        (Path(temp_dir) / "my notes.md").write_text("a2\n")
+        (Path(temp_dir) / "café.txt").write_text("b2\n")
+        os.remove(Path(temp_dir) / "to delete.txt")
+        (Path(temp_dir) / "日本.txt").write_text("d\n")
+
+        changes = get_changes_in_repo(temp_dir)
+
+        changes_dict = {str(change.path): change.status for change in changes}
+        assert changes_dict == {
+            "my notes.md": GitChangeStatus.UPDATED,
+            "café.txt": GitChangeStatus.UPDATED,
+            "to delete.txt": GitChangeStatus.DELETED,
+            "日本.txt": GitChangeStatus.ADDED,
+        }
