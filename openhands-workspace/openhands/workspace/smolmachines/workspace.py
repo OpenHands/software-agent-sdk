@@ -341,7 +341,6 @@ class SmolMachinesWorkspace(RemoteWorkspace):
         machine = getattr(self, "_machine", None)
         if machine is None:
             return
-        self._machine = None
         try:
             if self.keep_alive:
                 machine.stop()
@@ -351,3 +350,5 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             logger.warning(
                 "Could not clean up smol machine %s: %s", self.machine_name, e
             )
+        else:
+            self._machine = None

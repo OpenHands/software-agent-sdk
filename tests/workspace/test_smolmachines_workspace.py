@@ -173,6 +173,37 @@ def test_unhealthy_server_does_not_leak_the_machine(fake_smol, monkeypatch):
     assert fake_smol.machines[config.name].events == ["delete"]
 
 
+@pytest.mark.parametrize("keep_alive", [False, True])
+def test_transient_cleanup_failure_retains_machine_for_retry(
+    fake_smol, monkeypatch, keep_alive
+):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    workspace = SmolMachinesWorkspace(
+        host_port=38128,
+        keep_alive=keep_alive,
+        machine_name="cleanup-retry" if keep_alive else None,
+    )
+    machine = fake_smol.machines[workspace.machine_name]
+    operation = "stop" if keep_alive else "delete"
+    original = getattr(machine, operation)
+    attempts = 0
+
+    def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("transient cleanup error")
+        original()
+
+    monkeypatch.setattr(machine, operation, fail_once)
+    workspace.cleanup()
+    assert workspace._machine is machine
+    workspace.cleanup()
+    assert machine.events == [operation]
+    assert workspace._machine is None
+
+
 def test_missing_sdk_explains_how_to_install_it(monkeypatch):
     from openhands.workspace import SmolMachinesWorkspace
 
