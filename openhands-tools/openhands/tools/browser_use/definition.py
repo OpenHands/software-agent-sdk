@@ -807,11 +807,50 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     _shared_executor_lock: ClassVar[threading.Lock] = threading.Lock()
     _shared_executor_creation_lock: ClassVar[threading.Lock] = threading.Lock()
 
+    # Cached result of the MCP-server import probe; None means "not yet
+    # checked", an Exception means import failed, True means it succeeded.
+    _mcp_import_ok: ClassVar[bool | Exception | None] = None
+    _mcp_import_lock: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def _probe_mcp_import(cls) -> bool:
+        """Return True if the browser-use MCP server can be imported and initialized.
+
+        Cached after the first call so subsequent is_usable() calls are cheap.
+        Returning False here (rather than raising) keeps is_usable() a simple
+        predicate consistent with the ToolDefinition contract.
+        """
+        with cls._mcp_import_lock:
+            if cls._mcp_import_ok is None:
+                try:
+                    # In browser-use 0.11.x, module import succeeds but instantiating
+                    # CustomBrowserUseServer triggers _setup_handlers(), which fails
+                    # with AttributeError under mcp 2.x .
+                    from openhands.tools.browser_use.server import (
+                        CustomBrowserUseServer,
+                    )
+
+                    CustomBrowserUseServer()
+                    cls._mcp_import_ok = True
+                except Exception as exc:
+                    _logger.warning(
+                        "Browser tools are unavailable: the browser-use MCP "
+                        "server failed to initialize. "
+                        "This usually means browser-use and mcp are at "
+                        "incompatible versions . Error: %s",
+                        exc,
+                    )
+                    cls._mcp_import_ok = exc
+            return cls._mcp_import_ok is True
+
     @classmethod
     def is_usable(cls) -> bool:
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
-        return BrowserToolExecutor.check_chromium_available() is not None
+        return (
+            BrowserToolExecutor.check_chromium_available() is not None
+            and cls._probe_mcp_import()
+        )
 
     @classmethod
     def _warn_config_ignored(cls, executor_config: dict[str, object]) -> None:
@@ -855,6 +894,13 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
+        # Guard: if the MCP server module cannot be imported (e.g. browser-use
+        # 0.11.x + mcp 2.x — see #5152), bail out immediately with a clear
+        # message instead of letting _get_or_create_shared_executor raise and
+        # be swallowed by the broad except below.
+        if not cls._probe_mcp_import():
+            return []
+
         try:
             executor = cls._get_or_create_shared_executor(conv_state, **executor_config)
         except Exception:
