@@ -70,8 +70,12 @@ export class BashWebSocketClient {
     }
 
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = undefined;
+      socket.onopen = socket.onclose = socket.onmessage = null;
+      // ws emits an error when a CONNECTING socket is closed.
+      socket.onerror = () => {};
+      socket.close();
     }
   }
 
