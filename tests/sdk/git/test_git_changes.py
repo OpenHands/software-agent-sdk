@@ -297,6 +297,14 @@ def test_get_git_changes_in_non_repo_parent():
         ]
 
 
+def test_get_git_changes_non_repo_parent_with_only_broken_git_dir():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "proj" / ".git").mkdir(parents=True)
+
+        with pytest.raises(GitRepositoryError):
+            get_git_changes(temp_dir)
+
+
 def test_git_change_model_properties():
     """Test GitChange model properties and serialization."""
     with tempfile.TemporaryDirectory() as temp_dir:
