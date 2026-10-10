@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -230,6 +231,61 @@ def authenticated_server_env(
     ) as env:
         env["api_key"] = api_key
         yield env
+
+
+def test_validate_repository_uses_authenticated_persisted_credentials(
+    authenticated_server_env, monkeypatch, caplog
+):
+    """Exercise session auth and the real secret store through a live HTTP server."""
+    provider_requests: list[httpx.Request] = []
+    secret = "live-gitlab-oauth-sentinel"
+
+    def provider_response(request: httpx.Request) -> httpx.Response:
+        provider_requests.append(request)
+        authorized = request.headers.get("Authorization") == f"Bearer {secret}"
+        return httpx.Response(200 if authorized else 401)
+
+    monkeypatch.setattr(
+        "openhands.agent_server.git_router.httpx.AsyncClient",
+        partial(httpx.AsyncClient, transport=httpx.MockTransport(provider_response)),
+    )
+    payload = {
+        "provider": "gitlab",
+        "repository": "group/subgroup/project",
+        "ref": "release/1.0",
+        "credential_names": ["gitlab_token"],
+    }
+    headers = {"X-Session-API-Key": authenticated_server_env["api_key"]}
+    with httpx.Client(base_url=authenticated_server_env["host"]) as client:
+        unauthenticated = client.post("/api/git/validate-repository", json=payload)
+        assert unauthenticated.status_code == 401
+        assert not provider_requests
+
+        missing = client.post(
+            "/api/git/validate-repository", json=payload, headers=headers
+        )
+        assert missing.status_code == 200
+        assert missing.json() == {"status": "missing_credentials"}
+        assert not provider_requests
+
+        saved = client.put(
+            "/api/settings/secrets",
+            json={"name": "gitlab_token", "value": secret},
+            headers=headers,
+        )
+        saved.raise_for_status()
+        response = client.post(
+            "/api/git/validate-repository", json=payload, headers=headers
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accessible"}
+    assert len(provider_requests) == 1
+    assert provider_requests[0].url == (
+        "https://gitlab.com/api/v4/projects/group%2Fsubgroup%2Fproject/"
+        "repository/commits/release%2F1.0"
+    )
+    assert secret not in response.text + saved.text + caplog.text
 
 
 @pytest.fixture
