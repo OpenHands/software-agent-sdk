@@ -63,6 +63,11 @@ Raw secret values passed through `env` become session-scoped environment
 variables. Use the SDK secret registry when you need command-scoped secret
 injection behavior.
 
+Every terminal session also defaults `GIT_PAGER` and `PAGER` to `cat`, so
+commands that would otherwise launch an interactive pager (`git log`,
+`git diff`, `man`, ...) don't block the session waiting for keyboard input.
+Pass an explicit value in `env` (as shown above) to override either default.
+
 ## Usage Examples
 
 ### Basic Usage

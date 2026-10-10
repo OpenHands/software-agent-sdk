@@ -30,8 +30,18 @@ def normalize_terminal_env(
 
 
 def build_terminal_env(extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return the sanitized process environment plus client-provided overrides."""
+    """Return the sanitized process environment plus client-provided overrides.
+
+    Disables interactive pagers (``git``, ``man``, ``systemctl``, ...) by
+    default so commands that auto-launch ``less`` on a TTY don't capture the
+    terminal and wedge the session. Applies to every terminal backend
+    (subprocess, tmux, the tmux pane pool, and PowerShell), since they all
+    build their session environment through this function. Callers can
+    override via ``extra_env``.
+    """
     env = sanitized_env()
+    env.setdefault("GIT_PAGER", "cat")
+    env.setdefault("PAGER", "cat")
     normalized = normalize_terminal_env(extra_env)
     if normalized:
         env.update(normalized)
