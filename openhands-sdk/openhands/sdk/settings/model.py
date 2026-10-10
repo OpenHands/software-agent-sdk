@@ -1573,7 +1573,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         llm = create_subscription_llm_from_config(self.llm)
         condenser = self.build_condenser(llm)
-        return Agent(
+        agent = Agent(
             llm=llm,
             tools=tools,
             mcp_config=self.mcp_config,
@@ -1584,6 +1584,10 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,
         )
+        # This list is derived from settings defaults (plus the optional
+        # switch-LLM setting), rather than selected explicitly by the caller.
+        agent._mark_include_default_tools_implicit()
+        return agent
 
     def build_condenser(self, llm: LLM) -> CondenserBase | None:
         """Create a condenser from these settings, or ``None`` if disabled."""
