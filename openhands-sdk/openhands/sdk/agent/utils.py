@@ -24,7 +24,10 @@ from pydantic import BaseModel
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.base import (
+    LLMConvertibleEvent,
+    _can_merge_user_messages,
+)
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, Message
 
@@ -578,6 +581,19 @@ def prepare_llm_messages(
 ) -> list[Message] | Condensation: ...
 
 
+def _append_additional_messages(
+    messages: list[Message],
+    additional_messages: list[Message] | None,
+) -> None:
+    if not additional_messages:
+        return
+    for msg in additional_messages:
+        if messages and _can_merge_user_messages(messages[-1], msg):
+            messages[-1].content = list(messages[-1].content) + list(msg.content)
+        else:
+            messages.append(msg)
+
+
 def prepare_llm_messages(
     view: View,
     condenser: CondenserBase | None = None,
@@ -626,9 +642,7 @@ def prepare_llm_messages(
     # Convert events to messages
     messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
 
-    # Add any additional messages (e.g., user question for ask_agent)
-    if additional_messages:
-        messages.extend(additional_messages)
+    _append_additional_messages(messages, additional_messages)
 
     return messages
 
@@ -662,7 +676,6 @@ async def aprepare_llm_messages(
 
     messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
 
-    if additional_messages:
-        messages.extend(additional_messages)
+    _append_additional_messages(messages, additional_messages)
 
     return messages
