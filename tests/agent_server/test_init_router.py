@@ -149,6 +149,14 @@ class TestBuildInitializedConfig:
         assert merged.secret_key is not None
         assert merged.secret_key.get_secret_value() == "explicit-secret"
 
+    def test_empty_secret_key_is_treated_as_unset(self):
+        base = Config(deferred_init=True)
+        merged = _build_initialized_config(
+            base, InitRequest(session_api_keys=["s1"], secret_key=SecretStr(""))
+        )
+        assert merged.secret_key is not None
+        assert merged.secret_key.get_secret_value() == "s1"
+
 
 class TestRouterMounting:
     """Behavior of the /api/init endpoint outside the lifespan."""
@@ -396,6 +404,42 @@ class TestInitServiceTransitions:
 
 class TestEndToEndOverLifespan:
     """Drive the whole flow through the FastAPI lifespan + TestClient."""
+
+    @pytest.mark.parametrize("session_api_keys", [[""], ["", "user-session-key"]])
+    def test_empty_init_secret_never_uses_an_empty_session_key(
+        self, tmp_path, session_api_keys
+    ):
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                response = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": "",
+                        "session_api_keys": session_api_keys,
+                    },
+                )
+                assert response.status_code == 422
+                assert "user-session-key" not in response.text
+                assert client.get("/api/init").json()["state"] == "dormant"
+
+                response = client.post(
+                    "/api/init",
+                    json={
+                        "secret_key": "",
+                        "session_api_keys": ["user-session-key"],
+                    },
+                )
+                assert response.status_code == 200
+                assert app.state.config.cipher.secret_key == "user-session-key"
+            finally:
+                _reset_conversation_singleton()
 
     def test_dormant_503s_api_routes_until_init(self, tmp_path):
         _reset_conversation_singleton()

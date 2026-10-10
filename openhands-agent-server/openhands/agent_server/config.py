@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
@@ -484,6 +484,15 @@ class Config(BaseModel):
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
+
+    @field_validator("secret_key")
+    @classmethod
+    def _empty_secret_key_is_unset(cls, value: SecretStr | None) -> SecretStr | None:
+        """Treat an empty secret key (e.g. ``OH_SECRET_KEY=``) as unset, so the
+        session-key fallback applies instead of encrypting with an empty key."""
+        if value is not None and not value.get_secret_value():
+            return _default_secret_key()
+        return value
 
     @property
     def cipher(self) -> Cipher | None:

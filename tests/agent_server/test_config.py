@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 from pydantic import ValidationError
@@ -6,6 +7,8 @@ from pydantic import ValidationError
 from openhands.agent_server.config import (
     CONFIG_PATH_ENV,
     DEFAULT_CONVERSATION_IDLE_TTL_SECONDS,
+    V0_SESSION_API_KEY_ENV,
+    V1_SESSION_API_KEY_ENV,
     Config,
     load_config,
 )
@@ -67,3 +70,33 @@ def test_conversation_idle_ttl_can_be_disabled_and_overridden(monkeypatch, tmp_p
 def test_conversation_idle_ttl_rejects_non_positive_values():
     with pytest.raises(ValidationError):
         Config(conversation_idle_ttl_seconds=0)
+
+
+@pytest.fixture
+def no_session_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv(CONFIG_PATH_ENV, str(tmp_path / "missing.json"))
+    monkeypatch.delenv(V0_SESSION_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(V1_SESSION_API_KEY_ENV, raising=False)
+
+
+def test_empty_secret_key_env_is_treated_as_unset(monkeypatch, caplog, no_session_keys):
+    monkeypatch.setenv("OH_SECRET_KEY", "")
+
+    config = load_config()
+
+    assert config.secret_key is None
+    with caplog.at_level(logging.WARNING, logger="openhands.agent_server.config"):
+        assert config.cipher is None
+    assert "OH_SECRET_KEY was not defined" in caplog.text
+
+
+def test_empty_secret_key_env_falls_back_to_session_key(monkeypatch, no_session_keys):
+    monkeypatch.setenv("OH_SECRET_KEY", "")
+    monkeypatch.setenv(V1_SESSION_API_KEY_ENV, "session-key")
+
+    config = load_config()
+
+    assert config.secret_key is not None
+    assert config.secret_key.get_secret_value() == "session-key"
+    assert config.cipher is not None
+    assert config.cipher.secret_key == "session-key"
