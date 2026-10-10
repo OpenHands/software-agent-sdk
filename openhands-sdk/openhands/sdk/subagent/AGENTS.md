@@ -57,6 +57,12 @@ loading must:
 
 (See `load_agents_from_dir` in `load.py`.)
 
+If a parsed definition fails registration (for example, it names an unknown skill),
+registration must:
+
+- log a warning naming the definition source and failure, and
+- continue registering other file-based and plugin-provided definitions.
+
 ## Invariant 2: resolution / precedence (“who wins”)
 
 ### Core rule: first registration wins
