@@ -193,8 +193,14 @@ def test_verified_lists_keep_two_latest_versions_per_line():
     expectations = {
         "openai": ({"gpt-6-astra", "gpt-5.6"}, {"gpt-5.5", "gpt-5.4", "gpt-4o", "o3"}),
         "anthropic": (
-            {"claude-opus-5-5", "claude-opus-5"},
-            {"claude-opus-4-8", "claude-opus-4-7"},
+            {
+                "claude-opus-5-5",
+                "claude-opus-5",
+                "claude-sonnet-5-5",
+                "claude-sonnet-5",
+                "claude-haiku-5-5",
+            },
+            {"claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6"},
         ),
         "mistral": (
             {"devstral-2512", "devstral-medium-2512"},
