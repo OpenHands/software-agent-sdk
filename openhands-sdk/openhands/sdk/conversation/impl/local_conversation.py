@@ -176,6 +176,27 @@ def _copy_event_for_fork(event: Event) -> Event:
     return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
+def _llm_configs_match(left: LLM, right: LLM) -> bool:
+    """Return whether two LLMs carry the same configuration.
+
+    Secrets are compared in plaintext (mirroring
+    ``_condenser_for_switched_llm``) so two masked placeholders are not
+    mistaken for the same key, and ``usage_id`` is excluded because the
+    caller owns it as the registry key.
+    """
+    left_config = left.model_dump(
+        mode="json",
+        context={"expose_secrets": True},
+        exclude={"usage_id"},
+    )
+    right_config = right.model_dump(
+        mode="json",
+        context={"expose_secrets": True},
+        exclude={"usage_id"},
+    )
+    return left_config == right_config
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -1647,19 +1668,37 @@ class LocalConversation(BaseConversation):
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
-        The caller owns ``llm.usage_id``; it is the registry key. If an
-        entry with that key already exists, the cached LLM is reused and
-        the passed ``llm`` is dropped — matching the rest of the
-        registry's "first-write-wins" contract.
+        The caller owns ``llm.usage_id``; it is the registry key. A
+        registered entry carrying the same config is reused, so
+        re-switching an already active profile keeps the cached object.
+        When the registered entry's config differs — e.g. ``usage_id``
+        defaults to ``"default"``, which agent initialization already
+        took — the posted config is authoritative: the entry is replaced
+        and the new LLM takes over the metrics accrued under that
+        ``usage_id``, so ``stats.usage_to_metrics`` keeps tracking the
+        usage without resetting it.
 
         Args:
             llm: LLM to install on the agent.
         """
         try:
-            new_llm = self.llm_registry.get(llm.usage_id)
+            existing = self.llm_registry.get(llm.usage_id)
         except KeyError:
             new_llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(new_llm)
+        else:
+            if _llm_configs_match(existing, llm):
+                new_llm = existing
+            else:
+                new_llm = create_subscription_llm_from_config(llm)
+                self.llm_registry.remove(llm.usage_id)
+                self.llm_registry.add(new_llm)
+                # ConversationStats keeps the first metrics object per
+                # usage_id; adopt it so the replacement continues recording
+                # into the bucket that already holds this usage's metrics.
+                metrics = self._state.stats.usage_to_metrics.get(llm.usage_id)
+                if metrics is not None:
+                    new_llm.restore_metrics(metrics)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
         # this very tool. Re-acquiring _state here would deadlock, so skip it:

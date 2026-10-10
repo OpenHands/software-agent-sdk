@@ -549,6 +549,123 @@ def test_switch_between_two_llms(empty_profile_store):
     assert conv.agent.llm.model == "model-b"
 
 
+def _make_default_llm(model: str) -> LLM:
+    """A plain LLM under the ``default`` usage_id used by real conversations.
+
+    Mirrors the placeholder LLM of the agent-server flow: agent
+    initialization registers it, so a later switch posting ``default``
+    hits an occupied registry entry.
+    """
+    return LLM(
+        model=model,
+        api_key=SecretStr("placeholder"),
+        base_url="http://127.0.0.1:9/v1",
+        num_retries=0,
+        usage_id="default",
+    )
+
+
+def test_switch_llm_replaces_registered_default_entry(tmp_path):
+    """Regression for #5636: on an initialized conversation ``default`` is
+    already registered (the agent's own LLM). Switching with ``usage_id:
+    "default"`` must install the posted LLM — and must do the same when the
+    usage_id is omitted and falls back to ``"default"`` — instead of
+    returning silently with the old LLM kept.
+    """
+    conv = LocalConversation(
+        agent=Agent(llm=_make_default_llm("openai/qa-placeholder"), tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()  # the first message does this; default is taken
+    assert conv.llm_registry.get("default").model == "openai/qa-placeholder"
+
+    conv.switch_llm(_make_default_llm("openai/qa-switched"))
+
+    assert conv.agent.llm.model == "openai/qa-switched"
+    assert conv.state.agent.llm.model == "openai/qa-switched"
+    assert conv.llm_registry.get("default").model == "openai/qa-switched"
+    assert conv.llm_registry.get("default").base_url == "http://127.0.0.1:9/v1"
+
+    # Omitting usage_id defaults to "default" and behaves the same.
+    conv.switch_llm(
+        LLM(model="openai/qa-switched-again", api_key=SecretStr("placeholder"))
+    )
+
+    assert conv.agent.llm.usage_id == "default"
+    assert conv.agent.llm.model == "openai/qa-switched-again"
+    assert conv.state.agent.llm.model == "openai/qa-switched-again"
+    assert conv.llm_registry.get("default").model == "openai/qa-switched-again"
+
+
+def test_switch_llm_reuses_registered_entry_only_for_identical_config(tmp_path):
+    """#5636: a registered entry whose config equals the posted one is still
+    reused (the profile re-switch path), while a different config replaces
+    the entry and becomes the installed LLM.
+    """
+    conv = LocalConversation(
+        agent=Agent(llm=_make_default_llm("openai/qa-placeholder"), tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()
+
+    conv.switch_llm(_make_default_llm("openai/qa-switched"))
+    installed = conv.llm_registry.get("default")
+    assert conv.agent.llm is installed
+
+    # An identical config is reused, not rebuilt.
+    conv.switch_llm(_make_default_llm("openai/qa-switched"))
+
+    assert conv.llm_registry.get("default") is installed
+    assert conv.agent.llm is installed
+
+
+def test_switch_llm_replacement_keeps_usage_metrics(tmp_path):
+    """#5636: replacing a registered usage entry retains the metrics recorded
+    under that usage_id, and later usage keeps recording into the same
+    bucket (``stats.usage_to_metrics``).
+    """
+    conv = LocalConversation(
+        agent=Agent(llm=_make_default_llm("openai/qa-placeholder"), tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()
+    before = conv.state.stats.usage_to_metrics["default"]
+    before.add_token_usage(
+        prompt_tokens=7,
+        completion_tokens=3,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=128,
+        response_id="before-switch",
+    )
+
+    conv.switch_llm(_make_default_llm("openai/qa-switched"))
+
+    # The entry was replaced by the posted LLM...
+    assert conv.agent.llm.model == "openai/qa-switched"
+    assert conv.llm_registry.get("default") is conv.agent.llm
+
+    # ...which took over the metrics recorded under the same usage_id.
+    after = conv.state.stats.usage_to_metrics["default"]
+    assert after is before
+    assert after.accumulated_token_usage is not None
+    assert after.accumulated_token_usage.prompt_tokens == 7
+    assert after.accumulated_token_usage.completion_tokens == 3
+
+    # The installed LLM continues recording into the retained bucket.
+    assert conv.agent.llm.metrics is before
+    conv.agent.llm.metrics.add_token_usage(
+        prompt_tokens=1,
+        completion_tokens=2,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=128,
+        response_id="after-switch",
+    )
+    assert conv.state.stats.usage_to_metrics["default"] is before
+    assert after.accumulated_token_usage.prompt_tokens == 8
+
+
 def test_switch_llm_does_not_consult_store(empty_profile_store, monkeypatch):
     """switch_llm must not hit LLMProfileStore.load — the caller is
     authoritative. Guards against a regression where the inline path

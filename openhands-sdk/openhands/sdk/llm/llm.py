@@ -980,7 +980,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             _serialized_is_subscription.reset(token)
 
     def restore_metrics(self, metrics: Metrics) -> None:
-        # Only used by ConversationStats to seed metrics
+        # Used by ConversationStats to seed metrics, and by switch_llm to
+        # take over the metrics of a registry entry it replaces.
         self._metrics = metrics
         # Keep telemetry in sync so post-resume LLM calls record into
         # the restored metrics object, not the stale one from __init__.
