@@ -4,13 +4,16 @@ This validates RemoteConversation against actual REST + WebSocket endpoints,
 while keeping the LLM deterministic via monkeypatching.
 """
 
+import io
 import json
 import shutil
 import sys
 import textwrap
 import threading
 import time
+import zipfile
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -201,6 +204,17 @@ def test_prepare_for_sandbox_pause_drains_conversations(server_env):
         start.raise_for_status()
         conversation_id = UUID(start.json()["id"])
         assert conversation_id in server_env["conversation_service"]._event_services
+
+        download_path = f"/api/file/download-trajectory/{conversation_id}"
+        downloads = [client.get(download_path) for _ in range(5)]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            downloads.extend(pool.map(lambda _: client.get(download_path), range(24)))
+        for download in downloads:
+            download.raise_for_status()
+            assert zipfile.is_zipfile(io.BytesIO(download.content))
+        assert not list(
+            (server_env["workspace_path"].parent / "conversations").glob("*.zip*")
+        )
 
         response = client.post(
             "/api/conversations/prepare-for-sandbox-pause",

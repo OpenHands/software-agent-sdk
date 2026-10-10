@@ -12,6 +12,7 @@ import time
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
@@ -380,6 +381,11 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
         )
 
     assert not (conversations_path / f"{conversation_id.hex}.zip").exists()
+
+    fail_zip = Mock(side_effect=RuntimeError("zip failed"))
+    monkeypatch.setattr(file_router_module, "_create_zip_from_directory", fail_zip)
+    failed = client.get(f"/api/file/download-trajectory/{conversation_id}")
+    assert failed.status_code == 500 and not list(conversations_path.glob("*.zip"))
 
 
 def test_download_trajectory_omits_acp_credential_dir(client, monkeypatch, tmp_path):
