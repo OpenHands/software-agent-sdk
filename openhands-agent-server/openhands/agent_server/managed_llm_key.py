@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 
 from openhands.sdk.agent import AgentBase
 from openhands.sdk.llm import LLM
@@ -89,12 +90,14 @@ def _llm_is_in_scope(llm: LLM, managed_base_urls: set[str]) -> bool:
     return base_url in managed_base_urls
 
 
-def register_managed_llm_key_refresh(agent: AgentBase) -> int:
-    """Register a refresh-on-401 hook on the agent's managed-proxy LLMs.
+def register_managed_llm_key_refresh_on_llms(llms: Iterable[LLM]) -> int:
+    """Register a refresh-on-401 hook on the given managed-proxy LLMs.
 
-    Iterates the agent's LLMs (``agent.get_all_llms()`` yields the live
-    instances the run loop uses) and, for each in-scope LLM, registers a hook
-    that re-resolves the current managed key from ``OH_LLM_API_KEY_REFRESH_URL``.
+    For each in-scope LLM, registers a hook that re-resolves the current managed
+    key from ``OH_LLM_API_KEY_REFRESH_URL``. Use this for LLMs that are not reached
+    via ``agent.get_all_llms()`` — notably the title-generation LLM loaded from a
+    profile store, which would otherwise never self-heal on a stale/None managed
+    key (OpenHands/software-agent-sdk#5528).
 
     Returns the number of LLMs a hook was registered on (``0`` means the feature
     is off or no LLM matched). Safe to call unconditionally: it does nothing
@@ -133,7 +136,7 @@ def register_managed_llm_key_refresh(agent: AgentBase) -> int:
         return value or None
 
     count = 0
-    for llm in agent.get_all_llms():
+    for llm in llms:
         if _llm_is_in_scope(llm, managed_base_urls):
             llm.set_api_key_refresh_hook(_refresh)
             count += 1
@@ -146,3 +149,13 @@ def register_managed_llm_key_refresh(agent: AgentBase) -> int:
             REFRESH_URL_ENV,
         )
     return count
+
+
+def register_managed_llm_key_refresh(agent: AgentBase) -> int:
+    """Register a refresh-on-401 hook on the agent's managed-proxy LLMs.
+
+    Thin wrapper over :func:`register_managed_llm_key_refresh_on_llms` that passes
+    ``agent.get_all_llms()`` (the live instances the run loop uses). Returns the
+    number of LLMs a hook was registered on.
+    """
+    return register_managed_llm_key_refresh_on_llms(agent.get_all_llms())
