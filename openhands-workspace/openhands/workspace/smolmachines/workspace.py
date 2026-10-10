@@ -189,18 +189,22 @@ class SmolMachinesWorkspace(RemoteWorkspace):
                 json.dumps(shape, sort_keys=True).encode()
             ).hexdigest()[:16]
             object.__setattr__(self, "machine_name", f"{self.machine_name}-{digest}")
-            forwarded = {
-                key: os.environ[key] for key in self.forward_env if key in os.environ
-            }
             self._policy = hashlib.sha256(
-                json.dumps(forwarded, sort_keys=True).encode()
+                json.dumps(self._forwarded_env(), sort_keys=True).encode()
             ).hexdigest()
 
         started = time.time()
         reused = self._reuse()
         self._machine = reused if reused is not None else self._create()
         object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        object.__setattr__(self, "api_key", os.environ.get("SESSION_API_KEY"))
+        forwarded = self._forwarded_env()
+        # The V1 key takes precedence inside the agent server; only use a key
+        # actually forwarded to the VM when forward_env has been customized.
+        object.__setattr__(
+            self,
+            "api_key",
+            forwarded.get("OH_SESSION_API_KEYS_0", forwarded.get("SESSION_API_KEY")),
+        )
         try:
             self._wait_for_health(timeout=self.health_check_timeout)
         except BaseException:
@@ -216,6 +220,9 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             time.time() - started,
         )
         super().model_post_init(context)
+
+    def _forwarded_env(self) -> dict[str, str]:
+        return {key: os.environ[key] for key in self.forward_env if key in os.environ}
 
     def _state_path(self) -> Path:
         assert self.machine_name is not None
@@ -266,7 +273,7 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             raise RuntimeError(f"Port {self.host_port} is not available")
 
         restricted = bool(self.allow_hosts or self.allow_cidrs)
-        env = {key: os.environ[key] for key in self.forward_env if key in os.environ}
+        env = self._forwarded_env()
         mounts = None
         if self.mount_dir:
             mounts = [
