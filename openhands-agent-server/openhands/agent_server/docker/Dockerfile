@@ -103,6 +103,28 @@ RUN set -eux; \
     python3 -m pip --version
 
 FROM node:24.21.0-trixie-slim AS node-runtime
+
+####################################################################################
+# Patched npm packages
+#
+# Fixed releases of packages that npm and the OpenVSCode Server tarball bundle at
+# vulnerable versions. The stages below replace the bundled copies with these.
+####################################################################################
+FROM node-runtime AS npm-patches
+RUN set -eux; \
+    fetch() { \
+        dest="/npm-patches/$1"; shift; \
+        for spec in "$@"; do \
+            name="${spec%@*}"; \
+            tarball="$(npm pack --silent --pack-destination /tmp "$spec")"; \
+            mkdir -p "$dest/$name"; \
+            tar -xzf "/tmp/$tarball" -C "$dest/$name" --strip-components=1; \
+            rm "/tmp/$tarball"; \
+        done; \
+    }; \
+    fetch npm undici@6.28.1 brace-expansion@5.0.12; \
+    rm -rf /root/.npm
+
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
 ARG DEBIAN_SNAPSHOT=20261004T000000Z
@@ -112,6 +134,14 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
+
+# npm 11.19.1 bundles undici 6.28.0 and brace-expansion 5.0.9; no npm release ships fixed ones yet.
+RUN --mount=type=bind,from=npm-patches,source=/npm-patches/npm,target=/tmp/npm-patches \
+    set -eux; \
+    for pkg in /tmp/npm-patches/*; do \
+        dst="/usr/local/lib/node_modules/npm/node_modules/${pkg##*/}"; \
+        test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
+    done
 
 RUN set -eux; \
     ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
@@ -256,7 +286,8 @@ ENV ACP_NODE_DIR=/acp-node
 # fast path `build.py` uses for the `base-image-minimal` target). Adding an
 # npm provider is a catalog edit only; this stage never needs to change.
 COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py /tmp/acp_install_catalog.py
-RUN set -eux; \
+RUN --mount=type=bind,from=npm-patches,source=/npm-patches/npm,target=/tmp/npm-patches \
+    set -eux; \
     ACP_WRAPPER_DIR=/opt/acp-wrappers; \
     mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
     PLAN=$(python3 /tmp/acp_install_catalog.py "$INSTALL_ACP_PROVIDERS") || exit 1; \
@@ -283,6 +314,10 @@ RUN set -eux; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
+    for pkg in /tmp/npm-patches/*; do \
+      dst="$ACP_NODE_DIR/lib/node_modules/npm/node_modules/${pkg##*/}"; \
+      test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
+    done; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
