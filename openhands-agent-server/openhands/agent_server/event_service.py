@@ -551,9 +551,9 @@ class EventService:
         timestamp_lt_str: str | None,
     ) -> bool:
         """Return True if ``event`` matches all of the provided filters."""
-        if (
-            kind is not None
-            and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+        if kind is not None and kind not in (
+            event.kind,
+            f"{event.__class__.__module__}.{event.__class__.__name__}",
         ):
             return False
         if source is not None and event.source != source:
