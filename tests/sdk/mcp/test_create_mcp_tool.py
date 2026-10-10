@@ -32,7 +32,10 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.oauth import MCPOAuth
-from openhands.sdk.mcp.utils import _prepare_mcp_config
+from openhands.sdk.mcp.utils import (
+    MCP_SERVER_INSTRUCTIONS_MAX_CHARS,
+    _prepare_mcp_config,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -266,7 +269,7 @@ def test_create_mcp_tools_skips_disabled_servers():
         create_mcp_tools(native_mcp_config(config))
 
     prepared = mock_client_class.call_args.args[0]
-    assert list(prepared.mcpServers) == ["kept"]
+    assert list(prepared.config.mcpServers) == ["kept"]
 
 
 def test_create_mcp_tools_all_servers_disabled():
@@ -687,6 +690,7 @@ def test_create_mcp_tools_stdio_server():
     tools = create_mcp_tools(native_mcp_config(mcp_config), timeout=10.0)
     assert len(tools) == 1
     assert tools[0].name == "fetch"
+    assert tools[0].prompt_guidance is None
 
     # Get the schema from the OpenAI tool since MCPToolAction now uses dynamic
     # schema
@@ -733,6 +737,63 @@ def test_create_mcp_tools_stdio_server():
     assert "security_risk" not in input_schema["properties"]
 
     assert tools[0].executor is not None
+
+
+def test_create_mcp_tools_attaches_untrusted_server_instructions():
+    repo_root = Path(__file__).resolve().parents[3]
+    config = {
+        "mcpServers": {
+            "alpha": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+                "env": {"MCP_TEST_INSTRUCTIONS": "Use alpha tools in order."},
+            },
+            "beta": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+                "env": {"MCP_TEST_INSTRUCTIONS": "Use beta tools sparingly."},
+            },
+        }
+    }
+
+    with create_mcp_tools(native_mcp_config(config), timeout=10.0) as client:
+        guidance = {tool.name: tool.prompt_guidance for tool in client.tools}
+
+    assert guidance["alpha_fetch"] == (
+        '<UNTRUSTED_CONTENT source="mcp_server" server="alpha">\n'
+        "Use alpha tools in order.\n"
+        "</UNTRUSTED_CONTENT>"
+    )
+    assert guidance["beta_fetch"] == (
+        '<UNTRUSTED_CONTENT source="mcp_server" server="beta">\n'
+        "Use beta tools sparingly.\n"
+        "</UNTRUSTED_CONTENT>"
+    )
+
+
+def test_create_mcp_tools_caps_server_instructions():
+    repo_root = Path(__file__).resolve().parents[3]
+    instructions = "x" * (MCP_SERVER_INSTRUCTIONS_MAX_CHARS + 100)
+    config = {
+        "mcpServers": {
+            "bounded": {
+                "command": sys.executable,
+                "args": ["-m", "tests.sdk.mcp.stdio_test_server"],
+                "cwd": str(repo_root),
+                "env": {"MCP_TEST_INSTRUCTIONS": instructions},
+            }
+        }
+    }
+
+    with create_mcp_tools(native_mcp_config(config), timeout=10.0) as client:
+        [tool] = client.tools
+        guidance = tool.prompt_guidance
+
+    assert guidance is not None
+    assert instructions[:MCP_SERVER_INSTRUCTIONS_MAX_CHARS] in guidance
+    assert instructions not in guidance
 
 
 def test_create_mcp_tools_timeout_error_message():
