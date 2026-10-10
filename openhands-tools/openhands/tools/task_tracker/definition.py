@@ -406,6 +406,7 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
     catalog_description: ClassVar[str] = (
         "Keep a running task list to organise multi-step work."
     )
+    conversation_local: ClassVar[bool] = True
 
     @classmethod
     def create(cls, conv_state: "ConversationState") -> Sequence["TaskTrackerTool"]:
