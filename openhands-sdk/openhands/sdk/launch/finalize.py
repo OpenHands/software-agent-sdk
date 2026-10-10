@@ -15,6 +15,7 @@ from openhands.sdk.launch.errors import AgentLaunchError
 from openhands.sdk.launch.resolve import ResolvedLaunch
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.skills import Skill
 from openhands.sdk.tool.defaults import launch_tool_specs
 from openhands.sdk.tool.spec import Tool
 
@@ -73,7 +74,7 @@ def finalize(
 
     Owns every launch-time field: the tool set (with browser only when the
     runtime can run it), ``current_datetime``, ``load_memory``, ACP skill
-    sourcing, suffix additions, client tools and credentials the runtime
+    sourcing, launch additions, client tools and credentials the runtime
     manages itself.
     """
     if isinstance(source, ResolvedLaunch):
@@ -95,6 +96,8 @@ def finalize(
     for suffix in (appended, *extra_suffixes):
         if suffix.strip():
             agent = _append_system_message_suffix(agent, suffix.strip())
+    if additions and additions.skills:
+        agent = _with_launch_skills(agent, additions.skills)
     if managed_secrets:
         agent = _without_context_secrets(agent, managed_secrets)
     if client_tools:
@@ -189,6 +192,22 @@ def _append_system_message_suffix(agent: AgentBase, addition: str) -> AgentBase:
         update={
             "agent_context": context.model_copy(
                 update={"system_message_suffix": suffix}
+            )
+        }
+    )
+
+
+def _with_launch_skills(agent: AgentBase, skills: Sequence[Skill]) -> AgentBase:
+    """Add launch-supplied skills; the agent's own skills and deny-list win."""
+    context = _context_of(agent)
+    taken = {skill.name for skill in context.skills} | set(context.disabled_skills)
+    added = [skill for skill in skills if skill.name not in taken]
+    if not added:
+        return agent
+    return agent.model_copy(
+        update={
+            "agent_context": context.model_copy(
+                update={"skills": [*context.skills, *added]}
             )
         }
     )

@@ -21,6 +21,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.launch import LaunchRuntime, finalize
 from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.skills import Skill
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.workspace import LocalWorkspace
 from tests.sdk.launch import fakes
@@ -172,3 +173,54 @@ async def test_launch_additions_apply_after_agent_resolution(profile_launch, tmp
     assert [tool.name for tool in restored_agent.tools] == ["canvas_ui_client"]
     restored = StoredConversation.model_validate(stored.model_dump(mode="json"))
     assert restored.client_tools == [_CANVAS_UI]
+
+
+def _skill(name: str, content: str | None = None) -> Skill:
+    return Skill(name=name, content=content or f"# {name}")
+
+
+def _agent_with(skills: list[Skill], disabled: list[str] | None = None) -> Agent:
+    return Agent(
+        llm=LLM(model="gpt-4o", usage_id="llm"),
+        tools=[],
+        agent_context=AgentContext(skills=skills, disabled_skills=disabled or []),
+    )
+
+
+def _launched_skills(agent: Agent, skills: list[Skill]) -> dict[str, str]:
+    launched = finalize(
+        agent, LaunchRuntime(), additions=AgentLaunchAdditions(skills=skills)
+    ).agent
+    assert launched.agent_context is not None
+    return {skill.name: skill.content for skill in launched.agent_context.skills}
+
+
+class TestLaunchSkills:
+    def test_adds_skills_the_resolved_agent_lacks(self):
+        skills = _launched_skills(_agent_with([_skill("github")]), [_skill("docker")])
+        assert sorted(skills) == ["docker", "github"]
+
+    def test_the_resolved_agent_wins_a_name_collision(self):
+        skills = _launched_skills(
+            _agent_with([_skill("github")]), [_skill("github", "# addition")]
+        )
+        assert skills == {"github": "# github"}
+
+    def test_the_profile_deny_list_still_wins(self):
+        skills = _launched_skills(
+            _agent_with([], disabled=["docker"]),
+            [_skill("docker"), _skill("code-review")],
+        )
+        assert sorted(skills) == ["code-review"]
+
+    def test_no_additions_leaves_the_skills_untouched(self):
+        assert sorted(_launched_skills(_agent_with([_skill("github")]), [])) == [
+            "github"
+        ]
+
+    def test_an_agent_without_a_context_still_receives_them(self):
+        agent = Agent(llm=LLM(model="gpt-4o", usage_id="llm"), tools=[])
+        assert sorted(_launched_skills(agent, [_skill("docker")])) == ["docker"]
+
+    def test_the_field_defaults_to_none(self):
+        assert AgentLaunchAdditions().skills is None
