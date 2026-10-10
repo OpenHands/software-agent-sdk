@@ -21,6 +21,7 @@ from openhands.sdk.plugin.format.agent_plugins_mcp import (
     get_plugin_data_dir,
     load_mcp_servers,
 )
+from openhands.sdk.plugin.errors import PluginManifestError, PluginNameError
 from openhands.sdk.plugin.format.base import (
     PluginFormat,
     _load_schema,
@@ -53,6 +54,37 @@ MANIFEST_SCHEMA_URL: Final[str] = (
     "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 )
 _MANIFEST_SCHEMA_FILE: Final[str] = "plugin-1.0.0.schema.json"
+
+
+# Shell-unsafe and path-traversal-unsafe characters that must never appear in
+# a plugin name. Plugin names flow into directory names, log messages, and
+# potentially shell contexts inside the sandbox.
+_UNSAFE_PLUGIN_NAME_CHARS: Final[frozenset[str]] = frozenset(
+    ";|&$`<>*?[]{}\\()!#~\n\r"
+)
+
+# Names that resolve to directories on most filesystems.
+_RESERVED_PLUGIN_NAMES: Final[frozenset[str]] = frozenset(
+    {".", "..", "/", ""}
+)
+
+
+def _validate_plugin_name(name: str) -> str:
+    """Return *name* if safe, otherwise raise :class:`PluginNameError`.
+
+    The rules are deliberately strict: a plugin name is used as a directory
+    inside the plugin cache and may appear in shell contexts inside the
+    sandbox, so anything beyond alphanumerics, hyphens, dots and underscores
+    is rejected.
+    """
+    if not isinstance(name, str) or not name:
+        raise PluginNameError(str(name))
+    if name in _RESERVED_PLUGIN_NAMES:
+        raise PluginNameError(name)
+    bad = set(name) & _UNSAFE_PLUGIN_NAME_CHARS
+    if bad or "/" in name or "\\" in name:
+        raise PluginNameError(name)
+    return name
 
 
 class AgentPluginsFormat(PluginFormat):
@@ -114,28 +146,49 @@ class AgentPluginsFormat(PluginFormat):
         """
         manifest_path = plugin_dir / MANIFEST_FILE
         if not resolves_within(manifest_path, plugin_dir):
-            raise ValueError(
-                f"Manifest {manifest_path} resolves outside the plugin root"
+            raise PluginManifestError(
+                plugin_name=plugin_dir.name,
+                failure_reason="manifest resolves outside the plugin root",
+                remediation="ensure plugin.json is inside the plugin directory",
             )
         try:
             # utf-8-sig: tolerate a leading BOM, which RFC 8259 lets us ignore.
             data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in {manifest_path}: {e}") from e
+            raise PluginManifestError(
+                plugin_name=plugin_dir.name,
+                failure_reason=f"invalid JSON: {e}",
+                remediation="fix the JSON syntax in plugin.json",
+            ) from e
         except (OSError, UnicodeDecodeError) as e:
-            raise ValueError(f"Failed to read manifest {manifest_path}: {e}") from e
+            raise PluginManifestError(
+                plugin_name=plugin_dir.name,
+                failure_reason=f"failed to read manifest: {e}",
+                remediation="ensure plugin.json is readable",
+            ) from e
 
         if not isinstance(data, dict):
-            raise ValueError(
-                f"Manifest {manifest_path} must contain a JSON object, "
-                f"got {type(data).__name__}"
+            raise PluginManifestError(
+                plugin_name=plugin_dir.name,
+                failure_reason=f"manifest must contain a JSON object, got {type(data).__name__}",
+                remediation="ensure plugin.json contains a JSON object at the top level",
             )
 
         schema_url = data.get("$schema")
         if schema_url != MANIFEST_SCHEMA_URL:
-            raise ValueError(
-                f"Unsupported or missing $schema in {manifest_path}: "
-                f"{schema_url!r}. Supported: {MANIFEST_SCHEMA_URL}"
+            # Validate plugin name before using it in error messages
+            plugin_name = data.get("name", plugin_dir.name)
+            _validate_plugin_name(plugin_name)
+            raise PluginManifestError(
+                plugin_name=str(plugin_name),
+                failure_reason=(
+                    f"missing or unsupported $schema (got {schema_url!r})"
+                ),
+                remediation=(
+                    'Add "$schema": '
+                    f'"{MANIFEST_SCHEMA_URL}" to plugin.json, '
+                    "or disable auto-load for this marketplace in Settings > Skills"
+                ),
             )
         schema = _load_schema(_MANIFEST_SCHEMA_FILE)
 
@@ -153,6 +206,14 @@ class AgentPluginsFormat(PluginFormat):
         if "extensions" in data and not isinstance(data["extensions"], dict):
             logger.warning("Ignoring non-object 'extensions' in %s", manifest_path)
             data = {k: v for k, v in data.items() if k != "extensions"}
+
+        # Validate plugin name before schema validation so unsafe names get
+        # PluginNameError instead of a generic JSONSchemaValidationError.
+        # Only validate when name is present and non-empty — let JSON schema
+        # handle missing/empty name with its own error message.
+        plugin_name = data.get("name")
+        if plugin_name:
+            _validate_plugin_name(str(plugin_name))
 
         # Everything else is fatal. Name constraints come from the vendored
         # pattern, not a Python re-implementation.

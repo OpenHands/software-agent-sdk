@@ -269,7 +269,7 @@ class TestLoadManifestFatal:
     def test_missing_schema(self, tmp_path: Path):
         write_manifest(tmp_path, {"name": "no-schema"})
 
-        with pytest.raises(ValueError, match="Unsupported or missing \\$schema"):
+        with pytest.raises(ValueError, match=r"missing or unsupported \$schema"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
     def test_unsupported_schema_version(self, tmp_path: Path):
@@ -281,19 +281,19 @@ class TestLoadManifestFatal:
             },
         )
 
-        with pytest.raises(ValueError, match="Unsupported or missing \\$schema"):
+        with pytest.raises(ValueError, match=r"missing or unsupported \$schema"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
     def test_non_string_schema(self, tmp_path: Path):
         write_manifest(tmp_path, {"$schema": 1, "name": "weird"})
 
-        with pytest.raises(ValueError, match="Unsupported or missing \\$schema"):
+        with pytest.raises(ValueError, match=r"missing or unsupported \$schema"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
     def test_invalid_json(self, tmp_path: Path):
         write_manifest(tmp_path, "{not json")
 
-        with pytest.raises(ValueError, match="Invalid JSON"):
+        with pytest.raises(ValueError, match="invalid JSON"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
     def test_undecodable_bytes(self, tmp_path: Path):
@@ -303,7 +303,7 @@ class TestLoadManifestFatal:
             b'{"$schema": "' + SCHEMA_1_0_0.encode() + b'", "name": "caf\xe9"}'
         )
 
-        with pytest.raises(ValueError, match="Failed to read manifest"):
+        with pytest.raises(ValueError, match="failed to read manifest"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
     @pytest.mark.parametrize("payload", ["[]", '"a string"', "42", "null"])
@@ -378,13 +378,13 @@ class TestLoadManifestFatal:
             AgentPluginsFormat().load_manifest(tmp_path)
 
     def test_missing_manifest_file(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="Failed to read manifest"):
+        with pytest.raises(ValueError, match="failed to read manifest"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
     def test_manifest_is_a_directory(self, tmp_path: Path):
         (tmp_path / "plugin.json").mkdir()
 
-        with pytest.raises(ValueError, match="Failed to read manifest"):
+        with pytest.raises(ValueError, match="failed to read manifest"):
             AgentPluginsFormat().load_manifest(tmp_path)
 
 
