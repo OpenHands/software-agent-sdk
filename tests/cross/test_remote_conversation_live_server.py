@@ -187,6 +187,25 @@ def test_health_endpoints_return_ok_json(server_env):
             assert response.json() == {"status": "ok"}
 
 
+def test_mcp_probe_reports_rejection_reason(server_env, rejecting_mcp_url: str):
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.post(
+            "/api/mcp/test",
+            json={
+                "server": {"transport": "http", "url": rejecting_mcp_url},
+                "timeout": 10.0,
+            },
+            timeout=15.0,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error_kind"] == "unknown"
+    assert "HTTP 403 from MCP server" in body["error"]
+    assert "not enabled" in body["error"]
+
+
 def test_prepare_for_sandbox_pause_drains_conversations(server_env):
     agent = Agent(
         llm=LLM(model="gpt-4o-mini", api_key=SecretStr("test")),

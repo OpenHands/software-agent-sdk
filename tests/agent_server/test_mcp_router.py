@@ -9,6 +9,7 @@ import time
 from collections.abc import Generator
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -19,6 +20,7 @@ from openhands.agent_server.mcp_router import (
     _OAUTH_PROBE_JOB_TTL_SECONDS,
     MCPTestRequest,
     _BrowserCoordinatedOAuth,
+    _http_error_detail,
     _MCPOAuthProbeJob,
     _oauth_probe_jobs,
     _oauth_probe_jobs_lock,
@@ -408,6 +410,77 @@ def test_mcp_test_remote_unreachable(client: TestClient):
     body = response.json()
     assert body["ok"] is False
     assert body["error_kind"] in {"connection", "timeout"}
+
+
+@pytest.mark.parametrize("transport", ["http", "sse"])
+def test_mcp_test_surfaces_http_error_status(
+    client: TestClient, rejecting_mcp_url: str, transport: str
+):
+    """A rejecting server's status and reason should reach the user.
+
+    Regression test for GitLab-style 403s (MCP not enabled server-side):
+    the probe must report the HTTP status plus the response body instead
+    of only the exception type.
+    """
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "forbidden",
+            "server": {
+                "transport": transport,
+                "url": rejecting_mcp_url,
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error_kind"] == "unknown"
+    assert "HTTP 403 from MCP server" in body["error"]
+    assert "not enabled" in body["error"]
+
+
+def test_http_error_detail_prefers_body_when_readable():
+    request = httpx.Request("POST", "http://127.0.0.1/mcp")
+    response = httpx.Response(
+        403, content=b'{"message": "MCP server not enabled"}', request=request
+    )
+    exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+    detail = _http_error_detail(exc)
+    assert detail is not None
+    assert "HTTP 403 from MCP server" in detail
+    assert "not enabled" in detail
+
+
+def test_http_error_detail_falls_back_to_hint_when_body_empty():
+    request = httpx.Request("POST", "http://127.0.0.1/mcp")
+    response = httpx.Response(403, request=request)
+    exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+    assert _http_error_detail(exc) == (
+        "HTTP 403 from MCP server: "
+        "request refused - check the server-side permission settings"
+    )
+
+
+def test_http_error_detail_finds_wrapped_cause():
+    request = httpx.Request("POST", "http://127.0.0.1/mcp")
+    response = httpx.Response(404, content=b"no such session", request=request)
+    http_exc = httpx.HTTPStatusError("missing", request=request, response=response)
+    try:
+        raise http_exc
+    except httpx.HTTPStatusError as e:
+        wrapped = RuntimeError("probe failed")
+        wrapped.__cause__ = e
+    detail = _http_error_detail(wrapped)
+    assert detail is not None
+    assert "HTTP 404 from MCP server" in detail
+
+
+def test_http_error_detail_returns_none_for_non_http():
+    assert _http_error_detail(ValueError("boom")) is None
 
 
 # ---------------------------------------------------------------------------

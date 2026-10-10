@@ -11,7 +11,7 @@ import mcp.types
 from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
-from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
@@ -118,7 +118,35 @@ def _oauth_auth_from_authentication_config(
     )
 
 
-class _PackageRemoteMCPServer(RemoteMCPServer):
+async def _read_http_error_body(response: httpx.Response) -> None:
+    if response.is_error:
+        try:
+            await response.aread()
+        except (httpx.HTTPError, httpx.StreamError):
+            pass
+
+
+def _mcp_http_client_factory(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+    **_: object,
+) -> httpx.AsyncClient:
+    client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+    client.event_hooks["response"].append(_read_http_error_body)
+    return client
+
+
+class _RemoteMCPServer(RemoteMCPServer):
+    """Remote server whose HTTP error responses remain readable."""
+
+    def to_transport(self) -> StreamableHttpTransport | SSETransport:
+        transport = super().to_transport()
+        transport.httpx_client_factory = _mcp_http_client_factory
+        return transport
+
+
+class _PackageRemoteMCPServer(_RemoteMCPServer):
     """A package-declared remote server whose headers stay on its own origin.
 
     Agent Plugins §7.2.1: configured headers must not follow a redirect to a
@@ -127,7 +155,7 @@ class _PackageRemoteMCPServer(RemoteMCPServer):
     that leaves the configured origin.
     """
 
-    def to_transport(self):  # type: ignore[override]
+    def to_transport(self) -> StreamableHttpTransport | SSETransport:
         transport = super().to_transport()
         if isinstance(transport, StreamableHttpTransport) and self.headers:
             transport.httpx_client_factory = _origin_bound_client_factory(
@@ -152,8 +180,8 @@ def _origin_bound_client_factory(url: str, header_names: tuple[str, ...]):
         auth: httpx.Auth | None = None,
         **_: object,
     ) -> httpx.AsyncClient:
-        client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-        client.event_hooks = {"request": [drop_headers_off_origin], "response": []}
+        client = _mcp_http_client_factory(headers=headers, timeout=timeout, auth=auth)
+        client.event_hooks["request"].append(drop_headers_off_origin)
         return client
 
     return factory
@@ -175,8 +203,13 @@ def _prepare_mcp_config(
 
     for server_name, server_spec in mcp_config.items():
         server = prepared.mcpServers.get(server_name)
-        if server_spec.literal_values and isinstance(server, RemoteMCPServer):
-            prepared.mcpServers[server_name] = _PackageRemoteMCPServer.model_validate(
+        if isinstance(server, RemoteMCPServer):
+            server_type = (
+                _PackageRemoteMCPServer
+                if server_spec.literal_values
+                else _RemoteMCPServer
+            )
+            prepared.mcpServers[server_name] = server_type.model_validate(
                 server.model_dump()
             )
 

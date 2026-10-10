@@ -522,6 +522,40 @@ def _run_tool_call(
     return MCPToolCallResult(is_error=bool(result.isError), text=text)
 
 
+def _response_body_snippet(response: httpx.Response, limit: int = 300) -> str:
+    try:
+        return response.text.strip()[:limit]
+    except Exception:
+        return ""
+
+
+def _http_error_detail(exc: BaseException) -> str | None:
+    """Summarize an HTTP failure carried by a probe exception, if any.
+
+    Servers can reject MCP requests with a plain HTTP error (e.g.
+    GitLab's 403 when MCP is not enabled). The exception name alone
+    hides the cause, so surface the status plus the response body when
+    it is still readable, otherwise a short hint.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.HTTPStatusError):
+            status_code = current.response.status_code
+            body = _response_body_snippet(current.response)
+            if body:
+                return f"HTTP {status_code} from MCP server: {body}"
+            hint = {
+                401: "authentication required - check credentials or re-run OAuth",
+                403: "request refused - check the server-side permission settings",
+                404: "endpoint or session not found",
+            }.get(status_code, "request failed")
+            return f"HTTP {status_code} from MCP server: {hint}"
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _probe_mcp_server(
     request: MCPTestRequest,
     cipher: Cipher | None,
@@ -585,15 +619,29 @@ def _probe_mcp_server(
         # raises when the underlying fastmcp client fails to start. Surface
         # the root-cause message (e.g. "sh: 1: mcp-server-github: Permission
         # denied") because the wrapper alone isn't useful.
+        http_detail = _http_error_detail(exc)
         cause = exc.__cause__ or exc.__context__
-        detail = str(cause) if cause else str(exc) or "Failed to connect to MCP server"
+        detail = http_detail or (
+            str(cause) if cause else str(exc) or "Failed to connect to MCP server"
+        )
         logger.info(
             "MCP test connection failed for server %r: %s", request.name, detail
         )
-        return MCPTestFailure(error=detail, error_kind="connection")
+        return MCPTestFailure(
+            error=detail,
+            error_kind="unknown" if http_detail else "connection",
+        )
     except Exception as exc:  # noqa: BLE001 - we want to surface anything else
         # Any other exception is unexpected but should still return a
         # structured response: the UI can't recover from a 500.
+        http_detail = _http_error_detail(exc)
+        if http_detail is not None:
+            logger.info(
+                "MCP test got HTTP error for server %r: %s",
+                request.name,
+                http_detail,
+            )
+            return MCPTestFailure(error=http_detail, error_kind="unknown")
         logger.warning(
             "MCP test failed unexpectedly for server %r",
             request.name,
