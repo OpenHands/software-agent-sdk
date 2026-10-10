@@ -123,7 +123,7 @@ RUN set -eux; \
         done; \
     }; \
     fetch npm undici@6.28.1 brace-expansion@5.0.12; \
-    fetch openvscode undici@7.29.1 shell-quote@1.9.0 lodash-es@4.18.0 picomatch@4.0.4; \
+    fetch openvscode undici@7.29.1 shell-quote@1.11.0 lodash-es@4.18.0 picomatch@4.0.4; \
     fetch openvscode socks@2.8.10 ip-address@10.3.1; \
     rm -rf /root/.npm
 
