@@ -277,6 +277,34 @@ def test_get_git_changes_with_path_argument():
         assert changes[0].status == GitChangeStatus.ADDED
 
 
+def test_get_git_changes_in_non_repo_parent():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo = Path(temp_dir) / "proj"
+        repo.mkdir()
+        setup_git_repo(str(repo))
+        (repo / "README.md").write_text("hello\n")
+        run_bash_command("git add README.md", str(repo))
+        run_bash_command("git commit -m init", str(repo))
+
+        (repo / "README.md").write_text("hello\nedit\n")
+        (repo / "notes.txt").write_text("note\n")
+
+        changes = get_git_changes(temp_dir)
+
+        assert changes == [
+            GitChange(status=GitChangeStatus.UPDATED, path=Path("proj/README.md")),
+            GitChange(status=GitChangeStatus.ADDED, path=Path("proj/notes.txt")),
+        ]
+
+
+def test_get_git_changes_non_repo_parent_with_only_broken_git_dir():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / "proj" / ".git").mkdir(parents=True)
+
+        with pytest.raises(GitRepositoryError):
+            get_git_changes(temp_dir)
+
+
 def test_git_change_model_properties():
     """Test GitChange model properties and serialization."""
     with tempfile.TemporaryDirectory() as temp_dir:
