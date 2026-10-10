@@ -134,6 +134,24 @@ VERIFIED_OPENROUTER_MODELS = [
     "minimax/minimax-m3",
 ]
 
+# DigitalOcean Inference ids (``GET https://inference.do-ai.run/v1/models``).
+# Chat Completions models with tool calling only: the gpt-6 line needs the
+# Responses API for tools, so it is left out.
+VERIFIED_DIGITALOCEAN_MODELS = [
+    "anthropic-claude-opus-5.5",
+    "anthropic-claude-opus-5",
+    "anthropic-claude-sonnet-5.5",
+    "anthropic-claude-5-sonnet",
+    "openai-gpt-5.6-sol",
+    "openai-gpt-5.6-terra",
+    "openai-gpt-5.6-luna",
+    "deepseek-v4-pro",
+    "glm-5.3",
+    "glm-5.2",
+    "kimi-k3",
+    "qwen3.8-max",
+]
+
 # What the ``openhands/`` provider serves. Same rule; every entry must also be in
 # a provider list above, except OpenHands-only models.
 VERIFIED_OPENHANDS_MODELS = [
@@ -200,4 +218,5 @@ VERIFIED_MODELS = {
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
     "openrouter": VERIFIED_OPENROUTER_MODELS,
+    "digitalocean": VERIFIED_DIGITALOCEAN_MODELS,
 }
