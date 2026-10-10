@@ -456,3 +456,98 @@ async def test_run_retention_cleanup_loop_purges_old_events(tmp_path: Path):
     assert len(service._get_event_files_by_pattern("*")) == 0, (
         "Old event file should have been purged by the retention loop"
     )
+
+
+# ---------------------------------------------------------------------------
+# execute_bash_command
+# ---------------------------------------------------------------------------
+
+
+def _emit_script(tmp_path: Path, body: str) -> str:
+    """Return a command that executes *body* with the current interpreter.
+
+    Paths are quoted so the command runs under both POSIX shells and cmd.exe
+    (Windows), unlike the ``yes | head -c`` idiom used in the bug report.
+    """
+    script = tmp_path / "emit.py"
+    script.write_text(body)
+    return f'"{sys.executable}" "{script}"'
+
+
+async def test_execute_bash_command_joins_multi_chunk_output(
+    client: httpx.AsyncClient, bash_service: BashEventService, tmp_path: Path
+):
+    """A multi-slice command returns all of its output, not just the last slice.
+
+    Regression for the 1,100,012-character case from the bug report: the
+    route used to return only the 51,436-character tail of the final slice.
+    """
+    command = _emit_script(
+        tmp_path,
+        "import sys\n"
+        "sys.stderr.buffer.write(b'ERR_MARKER\\n')\n"
+        "sys.stdout.buffer.write(b'a' * 1100000)\n"
+        "sys.stdout.buffer.write(b'QA_F13_TAIL\\n')\n",
+    )
+    resp = await client.post(
+        "/api/bash/execute_bash_command", json={"command": command, "timeout": 60}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The command's output was stored as two 1 MiB slices plus a remainder.
+    items = (
+        await client.get(
+            "/api/bash/bash_events/search",
+            params={"command_id__eq": body["command_id"]},
+        )
+    ).json()["items"]
+    slices = [event for event in items if event["kind"] == "BashOutput"]
+    assert len(slices) == 2
+
+    assert body["exit_code"] == 0
+    assert len(body["stdout"]) == 1100012
+    assert body["stdout"].endswith("QA_F13_TAIL\n")
+    assert body["stderr"] == "ERR_MARKER\n"
+
+
+async def test_execute_bash_command_small_and_empty_output_unchanged(
+    client: httpx.AsyncClient, tmp_path: Path
+):
+    """Single-slice responses keep their existing shape, empty output included."""
+    emit_ok = _emit_script(tmp_path, "import sys\nsys.stdout.write('ok')\n")
+    small = await client.post(
+        "/api/bash/execute_bash_command", json={"command": emit_ok}
+    )
+    assert small.status_code == 200, small.text
+    body = small.json()
+    assert (body["exit_code"], body["stdout"], body["stderr"]) == (0, "ok", None)
+
+    empty = await client.post(
+        "/api/bash/execute_bash_command",
+        json={"command": _emit_script(tmp_path, "pass\n")},
+    )
+    assert empty.status_code == 200, empty.text
+    body = empty.json()
+    assert (body["exit_code"], body["stdout"], body["stderr"]) == (0, None, None)
+
+
+async def test_get_command_output_pages_past_search_limit(tmp_path: Path):
+    """Slices beyond the first search page are joined and keep the exit code."""
+    service = BashEventService(bash_events_dir=tmp_path / "bash_events")
+    command_id = uuid4()
+    total_slices = 101  # one more than the default search page of 100
+    for order in range(total_slices):
+        service._save_event_to_file(
+            BashOutput(command_id=command_id, order=order, stdout=f"[{order}]")
+        )
+    service._save_event_to_file(
+        BashOutput(command_id=command_id, order=total_slices, exit_code=7)
+    )
+
+    output = await service.get_command_output(command_id)
+
+    assert output is not None
+    assert output.exit_code == 7
+    assert output.stdout == "".join(f"[{order}]" for order in range(total_slices))
+    assert output.stderr is None

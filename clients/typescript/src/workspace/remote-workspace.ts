@@ -130,7 +130,9 @@ export class RemoteWorkspace implements IWorkspace {
 
     return {
       command,
-      exit_code: bashOutput.exit_code ?? 0,
+      // A finished command always reports its exit code. A missing one means
+      // the response was incomplete, so report failure rather than success.
+      exit_code: bashOutput.exit_code ?? -1,
       stdout: bashOutput.stdout || '',
       stderr: bashOutput.stderr || '',
       timeout_occurred: false,
