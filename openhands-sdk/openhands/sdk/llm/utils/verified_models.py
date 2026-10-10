@@ -9,15 +9,12 @@ Unversioned "current" aliases (for example ``deepseek-chat``, ``kimi-for-coding`
 stay. When a new version lands, drop the oldest one in the same line.
 """
 
-# GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
+# GPT: gpt-6.1 and gpt-6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
-    "gpt-5.6",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
     "gpt-5.3-codex",
     "gpt-5.2-codex",
 ]
@@ -164,7 +161,6 @@ VERIFIED_OPENHANDS_MODELS = [
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
-    "gpt-5.6",
     "gpt-5.3-codex",
     "gpt-5.2-codex",
     "minimax-m3",

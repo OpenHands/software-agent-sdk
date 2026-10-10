@@ -417,6 +417,9 @@ _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
 # P0-2 model-acceptance probe caught this) and have been removed; only the
 # GPT-5.6 tier's suffixed variants are live.
 _CODEX_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="gpt-6.1-sol", label="GPT-6.1 Sol"),
+    ACPModelOption(id="gpt-6-sol", label="GPT-6 Sol"),
+    ACPModelOption(id="gpt-6-luna", label="GPT-6 Luna"),
     ACPModelOption(id="gpt-6-astra", label="GPT-6 Astra"),
     ACPModelOption(id="gpt-5.6-sol", label="GPT-5.6 Sol"),
     ACPModelOption(id="gpt-5.6-terra", label="GPT-5.6 Terra"),
