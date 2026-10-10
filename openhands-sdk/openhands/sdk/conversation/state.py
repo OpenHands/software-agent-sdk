@@ -231,6 +231,7 @@ class ConversationState(OpenHandsModel):
 
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
+    _owns_fs: bool = PrivateAttr(default=False)
     _events: EventLog = PrivateAttr()  # now the storage for events
     # Cached projection of `_events` for the *active branch*, lazily updated on
     # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
@@ -450,6 +451,32 @@ class ConversationState(OpenHandsModel):
             with self._write_guard():
                 fs.write(BASE_STATE, payload)
 
+    def flush(self) -> None:
+        """Flush deferred durability for events and base-state snapshots.
+
+        Event files, length markers and base-state snapshots share one
+        FileStore, so draining its background durability writer covers all
+        of them. Re-raises the first durability failure, if any, so it
+        propagates to the caller instead of being swallowed.
+        """
+        try:
+            fs = self._fs
+        except AttributeError:
+            # A directly constructed state may not have a store yet.
+            return
+        fs.flush()
+
+    def close(self) -> None:
+        """Drain durability; release only a store created by this state."""
+        try:
+            fs = self._fs
+        except AttributeError:
+            return
+        if self._owns_fs:
+            fs.close()
+        else:
+            fs.flush()
+
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
     def create(
@@ -498,6 +525,8 @@ class ConversationState(OpenHandsModel):
             file_store: Optional FileStore to use for state and EventLog
                 persistence. If provided, this takes precedence over
                 persistence_dir for state and EventLog storage.
+                The caller retains ownership: state.close() flushes it but
+                does not close it. The caller must close it after its last user.
 
         Returns:
             ConversationState ready for use
@@ -506,6 +535,7 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
+        owns_file_store = file_store is None
         if file_store is None:
             if persistence_dir:
                 file_store = LocalFileStore(
@@ -519,78 +549,90 @@ class ConversationState(OpenHandsModel):
                 file_store = InMemoryFileStore()
 
         try:
-            base_text = file_store.read(BASE_STATE)
-        except FileNotFoundError:
-            base_text = None
+            try:
+                base_text = file_store.read(BASE_STATE)
+            except FileNotFoundError:
+                base_text = None
 
-        # ---- Resume path ----
-        if base_text:
-            # Use cipher context for decrypting secrets if provided
-            context = {"cipher": cipher} if cipher else None
-            state = cls.model_validate(json.loads(base_text), context=context)
+            # ---- Resume path ----
+            if base_text:
+                # Use cipher context for decrypting secrets if provided
+                context = {"cipher": cipher} if cipher else None
+                state = cls.model_validate(json.loads(base_text), context=context)
 
-            # Restore the conversation with the same id
-            if state.id != id:
+                # Restore the conversation with the same id
+                if state.id != id:
+                    raise ValueError(
+                        f"Conversation ID mismatch: provided {id}, "
+                        f"but persisted state has {state.id}"
+                    )
+
+                # Attach event log early so we can read history for tool verification
+                state._fs = file_store
+                state._owns_fs = owns_file_store
+                state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+                state._cipher = cipher
+
+                # Cold-load: rebuild the cached view with full property
+                # enforcement — persisted events may come from an older code
+                # version or be corrupted.
+                state.rebuild_view()
+
+                # Commit runtime-provided values (may autosave)
+                state._autosave_enabled = True
+                # Agent: base_state.json is the single source of truth. When the
+                # caller does not supply an agent (``agent is None``), keep the
+                # persisted one untouched — this is what lets a persisted
+                # switch_llm survive an idle-eviction reload. When a caller *does*
+                # supply an agent (legacy behavior), verify tool compatibility and
+                # let it override, so existing callers that reconfigure on resume
+                # keep working.
+                if agent is not None:
+                    agent.verify(state.agent, events=state._events)
+                    state.agent = agent
+                state.workspace = workspace
+                state.max_iterations = max_iterations
+
+                # Note: stats are already deserialized from base_state.json above.
+                # Do NOT reset stats here - this would lose accumulated metrics.
+
+                logger.info("Resumed conversation %s from persistent storage", state.id)
+                return state
+
+            # ---- Fresh path ----
+            if agent is None:
                 raise ValueError(
-                    f"Conversation ID mismatch: provided {id}, "
-                    f"but persisted state has {state.id}"
+                    "agent is required when initializing a new ConversationState"
                 )
 
-            # Attach event log early so we can read history for tool verification
+            state = cls(
+                id=id,
+                agent=agent,
+                workspace=workspace,
+                persistence_dir=persistence_dir,
+                max_iterations=max_iterations,
+                stuck_detection=stuck_detection,
+                tags=tags or {},
+            )
             state._fs = file_store
+            state._owns_fs = owns_file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+            state.stats = ConversationStats()
 
-            # Cold-load: rebuild the cached view with full property
-            # enforcement — persisted events may come from an older code
-            # version or be corrupted.
-            state.rebuild_view()
-
-            # Commit runtime-provided values (may autosave)
+            state._save_base_state(file_store)  # initial snapshot
             state._autosave_enabled = True
-            # Agent: base_state.json is the single source of truth. When the
-            # caller does not supply an agent (``agent is None``), keep the
-            # persisted one untouched — this is what lets a persisted
-            # switch_llm survive an idle-eviction reload. When a caller *does*
-            # supply an agent (legacy behavior), verify tool compatibility and
-            # let it override, so existing callers that reconfigure on resume
-            # keep working.
-            if agent is not None:
-                agent.verify(state.agent, events=state._events)
-                state.agent = agent
-            state.workspace = workspace
-            state.max_iterations = max_iterations
-
-            # Note: stats are already deserialized from base_state.json above.
-            # Do NOT reset stats here - this would lose accumulated metrics.
-
-            logger.info("Resumed conversation %s from persistent storage", state.id)
+            logger.info("Created new conversation %s", state.id)
             return state
-
-        # ---- Fresh path ----
-        if agent is None:
-            raise ValueError(
-                "agent is required when initializing a new ConversationState"
-            )
-
-        state = cls(
-            id=id,
-            agent=agent,
-            workspace=workspace,
-            persistence_dir=persistence_dir,
-            max_iterations=max_iterations,
-            stuck_detection=stuck_detection,
-            tags=tags or {},
-        )
-        state._fs = file_store
-        state._events = EventLog(file_store, dir_path=EVENTS_DIR)
-        state._cipher = cipher
-        state.stats = ConversationStats()
-
-        state._save_base_state(file_store)  # initial snapshot
-        state._autosave_enabled = True
-        logger.info("Created new conversation %s", state.id)
-        return state
+        except BaseException:
+            if owns_file_store:
+                try:
+                    file_store.close()
+                except Exception:
+                    logger.exception(
+                        "Error closing owned store after state creation failed"
+                    )
+            raise
 
     # ===== Auto-persist base on public field changes =====
     def __setattr__(self, name, value):
