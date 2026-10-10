@@ -7,7 +7,7 @@ This document describes the automated release workflows for the OpenHands Softwa
 The release process uses `create-release.yml` as its sole orchestrator:
 
 1. **prepare-release.yml** prepares a release PR with synchronized package versions.
-2. Merging the release PR runs **create-release.yml**, which creates the GitHub release and explicitly dispatches every publisher against its immutable tag.
+2. Merging the release PR runs **create-release.yml**, which first runs the agent-server stress suite against the exact merge commit, then creates the GitHub release and explicitly dispatches every publisher against its immutable tag.
 3. The dispatched workflows publish Python packages, the TypeScript client, agent-server images, and release binaries.
 
 Publisher workflows do not listen for GitHub release events. This avoids relying on events created with `GITHUB_TOKEN`, which GitHub does not use to trigger downstream workflows.
@@ -44,13 +44,14 @@ The created PR will include a checklist. Complete the following:
 
 Merging the release PR runs **create-release.yml**, which:
 
-- creates tag and GitHub release `vX.Y.Z` at the merge commit;
+- runs the complete credential-free agent-server stress suite at the merge commit;
+- creates tag and GitHub release `vX.Y.Z` at that same commit only after the stress gate passes;
 - explicitly dispatches PyPI publication with version `X.Y.Z`;
 - explicitly dispatches TypeScript publication to npm and GitHub Packages with version `X.Y.Z`;
 - explicitly dispatches versioned agent-server image builds against tag `vX.Y.Z`;
 - explicitly dispatches release binaries against tag `vX.Y.Z`.
 
-Each publisher validates that its checked-out package version matches the requested version before publishing. Monitor the dispatched workflows in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions).
+A failing stress gate prevents tag and release creation and all publisher dispatches. Each publisher validates that its checked-out package version matches the requested version before publishing. Monitor the dispatched workflows in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions).
 
 ### Step 4: Release Binaries + Docker Smoke Test (Automated)
 
