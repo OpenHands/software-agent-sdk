@@ -147,6 +147,20 @@ async def start_conversation(
     body["workspace"] = {"kind": "LocalWorkspace", "working_dir": "/workspace"}
 
     registry = get_registry(request)
+    async with registry.provisioning.start_lock(conversation_id):
+        return await _start_conversation(
+            request, body, registry, conversation_id, host_workspace, include_skills
+        )
+
+
+async def _start_conversation(
+    request: Request,
+    body: dict[str, Any],
+    registry: DockerConversationRegistry,
+    conversation_id: UUID,
+    host_workspace: Path | None,
+    include_skills: bool,
+) -> JSONResponse:
     # Only a conversation the container already created is left alone on
     # failure; a manifest from a failed earlier start is retried like a new one.
     try:
@@ -161,6 +175,29 @@ async def start_conversation(
         if launched is not None and identity.launched_agent_profile is None:
             identity = identity.model_copy(update={"launched_agent_profile": launched})
             registry.provisioning.save(identity)
+        preparation = asyncio.create_task(
+            asyncio.to_thread(
+                registry.provisioning.prepare_title_profile,
+                identity,
+                body.get("title_llm_profile"),
+            )
+        )
+        # Cancelling a to_thread task does not stop its filesystem write.
+        # Wait without forwarding any cancellation until the worker finishes.
+        cancellation: asyncio.CancelledError | None = None
+        while not preparation.done():
+            try:
+                await asyncio.wait({preparation})
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        try:
+            preparation.result()
+        except Exception as exc:
+            if cancellation is not None:
+                raise cancellation from exc
+            raise
+        if cancellation is not None:
+            raise cancellation
         container = await registry.get_or_create(conversation_id)
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
@@ -293,6 +330,13 @@ async def reprovision_runtime(
 @docker_conversation_router.delete("/{conversation_id}")
 async def delete_conversation(conversation_id: UUID, request: Request) -> Response:
     registry = get_registry(request)
+    async with registry.provisioning.start_lock(conversation_id):
+        return await _delete_conversation(conversation_id, request, registry)
+
+
+async def _delete_conversation(
+    conversation_id: UUID, request: Request, registry: DockerConversationRegistry
+) -> Response:
     if not registry.provisioning.manifest_path(conversation_id).is_file():
         raise HTTPException(404, "Conversation not found")
 

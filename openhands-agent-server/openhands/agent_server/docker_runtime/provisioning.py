@@ -9,14 +9,22 @@ from pathlib import Path
 from stat import S_ISREG
 from uuid import UUID
 
-from filelock import FileLock
+from filelock import AsyncFileLock, BaseAsyncFileLock, FileLock
 from pydantic import BaseModel, ConfigDict, SecretStr, field_serializer, field_validator
 
 from openhands.agent_server.config import Config
-from openhands.agent_server.persistence.store import _get_persistence_dir
+from openhands.agent_server.persistence.store import (
+    _get_persistence_dir,
+    get_llm_profile_store,
+)
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import LaunchedAgentProfile
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+
+
+logger = get_logger(__name__)
 
 
 class RuntimeIdentity(BaseModel):
@@ -162,6 +170,53 @@ class RuntimeProvisioningStore:
             )
             self._save(identity)
             return identity
+
+    def start_lock(self, conversation_id: UUID) -> BaseAsyncFileLock:
+        """Serialize profile preparation through the inner creation response."""
+        return AsyncFileLock(
+            str(self.manifest_path(conversation_id)) + ".start.lock",
+            run_in_executor=False,
+        )
+
+    def prepare_title_profile(
+        self, identity: RuntimeIdentity, profile_name: str | None
+    ) -> None:
+        """Snapshot the selected host profile in this runtime's private store."""
+        with FileLock(str(self.manifest_path(identity.conversation_id)) + ".lock"):
+            conversation_dir = self.direct_child(
+                self.config.conversations_path, identity.conversation_id.hex
+            )
+            if any(
+                (conversation_dir / marker).exists()
+                for marker in ("meta.json", "base_state.json")
+            ):
+                return
+            persistence_dir = self.direct_child(
+                self.runtime_dir(identity.conversation_id), "persistence"
+            )
+            profiles = LLMProfileStore(
+                base_dir=self.direct_child(persistence_dir, "profiles")
+            )
+            # An unsuccessful start may have staged a different selection.
+            for name in profiles.list():
+                profiles.delete(name)
+            if not profile_name:
+                return
+            try:
+                llm = get_llm_profile_store().load(profile_name, cipher=self.cipher)
+            except (OSError, ValueError):
+                logger.warning(
+                    "Could not load title LLM profile %r for Docker runtime; "
+                    "leaving the existing title fallback in place",
+                    profile_name,
+                )
+                return
+            profiles.save(
+                profile_name,
+                llm.model_copy(update={"provider_connection_id": None}),
+                include_secrets=True,
+                cipher=identity.cipher,
+            )
 
     def save(self, identity: RuntimeIdentity) -> None:
         with FileLock(str(self.manifest_path(identity.conversation_id)) + ".lock"):
