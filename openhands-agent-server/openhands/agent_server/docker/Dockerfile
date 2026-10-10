@@ -37,16 +37,113 @@ ARG INSTALL_CAPABILITIES=vscode,browser,docker
 # newly published Debian packages have a three-day observation period.
 ####################################################################################
 FROM python:3.13.15-slim-trixie AS python-runtime
+# pip 26.2.1 (latest) vendors urllib3 2.7.0 and msgpack 1.1.2; swap in fixed releases, re-vendored as pip does.
+RUN python3 <<'PY'
+import hashlib, io, json, pathlib, re, shutil, tarfile, urllib.request, zipfile
+
+vendor = pathlib.Path("/usr/local/lib/python3.13/site-packages/pip/_vendor")
+pkgs = {
+    "urllib3": ("2.7.0", "2.8.0", "https://files.pythonhosted.org/packages/py3/u/urllib3/urllib3-2.8.0-py3-none-any.whl",
+                "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"),
+    "msgpack": ("1.1.2", "1.2.1", "https://files.pythonhosted.org/packages/source/m/msgpack/msgpack-1.2.1.tar.gz",
+                "04c721c2c7448767e9e3f2520a475663d8ee0f09c31890f6d2bd70fd636a9647"),
+}
+
+
+def sub(path, old, new):
+    s = path.read_text()
+    assert old in s, (path, old)
+    path.write_text(s.replace(old, new))
+
+
+for name, (old, new, url, sha256) in pkgs.items():
+    data = urllib.request.urlopen(url, timeout=120).read()
+    assert hashlib.sha256(data).hexdigest() == sha256, url
+    if url.endswith(".whl"):
+        z = zipfile.ZipFile(io.BytesIO(data))
+        files = {n: z.read(n) for n in z.namelist() if n.startswith(f"{name}/")}
+    else:
+        t = tarfile.open(fileobj=io.BytesIO(data))
+        # pip vendors only msgpack's pure-Python fallback.
+        files = {m.name.split("/", 1)[1]: t.extractfile(m).read() for m in t.getmembers()
+                 if m.isfile() and re.fullmatch(rf"[^/]+/{name}/\w+\.py", m.name)}
+    dest = vendor / name
+    keep = {p.name: p.read_bytes() for p in dest.iterdir() if p.name in ("LICENSE.txt", "COPYING")}
+    shutil.rmtree(dest)
+    for rel, blob in [*files.items(), *((f"{name}/{k}", v) for k, v in keep.items())]:
+        (vendor / rel).parent.mkdir(parents=True, exist_ok=True)
+        (vendor / rel).write_bytes(blob)
+    if name == "urllib3":
+        # pip's tools/vendoring patches plus its import rewrites.
+        sub(dest / "contrib/pyopenssl.py", "import urllib3.contrib.pyopenssl\n        urllib3.contrib.pyopenssl.inject",
+            "import urllib3.contrib.pyopenssl as pyopenssl\n        pyopenssl.inject")
+        sub(dest / "contrib/emscripten/__init__.py", "import urllib3.connection\n", "import urllib3.connection as urllib3_connection\n")
+        sub(dest / "contrib/emscripten/__init__.py", "    urllib3.connection.", "    urllib3_connection.")
+        sub(dest / "response.py", "try:\n    try:\n        import brotlicffi as brotli  # type: ignore[import-not-found]\n"
+            "    except ImportError:\n        import brotli  # type: ignore[import-not-found]\n"
+            "except ImportError:\n    brotli = None\n", "brotli = None\n")
+        sub(dest / "util/request.py", "try:\n    try:\n        import brotlicffi as _unused_module_brotli  # type: ignore[import-not-found] # noqa: F401\n"
+            "    except ImportError:\n        import brotli as _unused_module_brotli  # type: ignore[import-not-found] # noqa: F401\n"
+            "except ImportError:\n    pass\nelse:\n    ACCEPT_ENCODING += \",br\"\n", "")
+        for p in dest.rglob("*.py"):
+            s = re.sub(r"^(\s*)import (urllib3|idna)$", r"\1from pip._vendor import \2", p.read_text(), flags=re.M)
+            p.write_text(re.sub(r"^(\s*)import urllib3\.(\S+) as ", r"\1import pip._vendor.urllib3.\2 as ", s, flags=re.M))
+    sub(vendor / "vendor.txt", f"{name}=={old}\n", f"{name}=={new}\n")
+    bom = json.loads((vendor / "bom.cdx.json").read_text().replace(f"pkg:pypi/{name}@{old}", f"pkg:pypi/{name}@{new}"))
+    for c in bom["components"]:
+        if c["name"] == name:
+            c["version"] = new
+    (vendor / "bom.cdx.json").write_text(json.dumps(bom, indent=2))
+PY
+RUN set -eux; \
+    vendor=/usr/local/lib/python3.13/site-packages/pip/_vendor; \
+    find "$vendor/urllib3" "$vendor/msgpack" -name __pycache__ -prune -exec rm -rf {} +; \
+    python3 -m compileall -q "$vendor/urllib3" "$vendor/msgpack"; \
+    python3 -c 'from pip._vendor import msgpack, requests, urllib3; from pip._vendor.cachecontrol import serialize; assert urllib3.__version__ == "2.8.0" and msgpack.version == (1, 2, 1)'; \
+    python3 -m pip --version
+
 FROM node:24.21.0-trixie-slim AS node-runtime
+
+####################################################################################
+# Patched npm packages
+#
+# Fixed releases of packages that npm and the OpenVSCode Server tarball bundle at
+# vulnerable versions. The stages below replace the bundled copies with these.
+####################################################################################
+FROM node-runtime AS npm-patches
+RUN set -eux; \
+    fetch() { \
+        dest="/npm-patches/$1"; shift; \
+        for spec in "$@"; do \
+            name="${spec%@*}"; \
+            tarball="$(npm pack --silent --pack-destination /tmp "$spec")"; \
+            mkdir -p "$dest/$name"; \
+            tar -xzf "/tmp/$tarball" -C "$dest/$name" --strip-components=1; \
+            rm "/tmp/$tarball"; \
+        done; \
+    }; \
+    fetch npm undici@6.28.1 brace-expansion@5.0.12; \
+    fetch openvscode undici@7.29.1 shell-quote@1.11.0 lodash-es@4.18.0 picomatch@4.0.4; \
+    fetch openvscode socks@2.8.10 ip-address@10.3.1; \
+    rm -rf /root/.npm
+
 FROM debian:trixie-slim AS python-node-runtime
 ARG NPM_VERSION
-ARG DEBIAN_SNAPSHOT=20260920T000000Z
+ARG DEBIAN_SNAPSHOT=20261004T000000Z
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --global "npm@${NPM_VERSION}"
+
+# npm 11.19.1 bundles undici 6.28.0 and brace-expansion 5.0.9; no npm release ships fixed ones yet.
+RUN --mount=type=bind,from=npm-patches,source=/npm-patches/npm,target=/tmp/npm-patches \
+    set -eux; \
+    for pkg in /tmp/npm-patches/*; do \
+        dst="/usr/local/lib/node_modules/npm/node_modules/${pkg##*/}"; \
+        test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
+    done
 
 RUN set -eux; \
     ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm; \
@@ -191,7 +288,8 @@ ENV ACP_NODE_DIR=/acp-node
 # fast path `build.py` uses for the `base-image-minimal` target). Adding an
 # npm provider is a catalog edit only; this stage never needs to change.
 COPY openhands-sdk/openhands/sdk/settings/acp_install_catalog.py /tmp/acp_install_catalog.py
-RUN set -eux; \
+RUN --mount=type=bind,from=npm-patches,source=/npm-patches/npm,target=/tmp/npm-patches \
+    set -eux; \
     ACP_WRAPPER_DIR=/opt/acp-wrappers; \
     mkdir -p "$ACP_NODE_DIR" "$ACP_WRAPPER_DIR"; \
     PLAN=$(python3 /tmp/acp_install_catalog.py "$INSTALL_ACP_PROVIDERS") || exit 1; \
@@ -218,6 +316,10 @@ RUN set -eux; \
     rm -f "$NODE_TARBALL"; \
     "$ACP_NODE_DIR/bin/node" --version; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global "npm@${NPM_VERSION}"; \
+    for pkg in /tmp/npm-patches/*; do \
+      dst="$ACP_NODE_DIR/lib/node_modules/npm/node_modules/${pkg##*/}"; \
+      test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
+    done; \
     PATH="$ACP_NODE_DIR/bin:$PATH" "$ACP_NODE_DIR/bin/npm" install --global $PACKAGES; \
     for bin in $WRAPPER_BINS; do \
       # Fail the build rather than ship a wrapper that execs a missing target:
@@ -431,7 +533,8 @@ ARG RELEASE_ORG="gitpod-io"
 # INSTALL_CAPABILITIES — the case check inside each RUN only decides what
 # lands in THIS image, not what gets built as a dependency. Excluding vscode
 # shrinks the result, not the build time.
-RUN set -eux; \
+RUN --mount=type=bind,from=npm-patches,source=/npm-patches/openvscode,target=/tmp/npm-patches \
+    set -eux; \
     case ",$INSTALL_CAPABILITIES," in \
       *,vscode,*) ;; \
       *) echo "INSTALL_CAPABILITIES excludes vscode; skipping OpenVSCode Server"; exit 0;; \
@@ -457,6 +560,12 @@ RUN set -eux; \
     mv ${RELEASE_TAG}-linux-${arch} ${OPENVSCODE_SERVER_ROOT}; \
     cp ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/openvscode-server ${OPENVSCODE_SERVER_ROOT}/bin/remote-cli/code; \
     rm -f ${RELEASE_TAG}-linux-${arch}.tar.gz; \
+    \
+    # The latest release (1.109.5) bundles vulnerable undici, shell-quote, lodash-es, picomatch and ip-address.
+    for pkg in /tmp/npm-patches/*; do \
+        dst="${OPENVSCODE_SERVER_ROOT}/node_modules/${pkg##*/}"; \
+        test -d "$dst"; rm -rf "$dst"; cp -R "$pkg" "$dst"; \
+    done; \
     \
     # Set proper ownership
     chown -R ${USERNAME}:${USERNAME} ${OPENVSCODE_SERVER_ROOT}
