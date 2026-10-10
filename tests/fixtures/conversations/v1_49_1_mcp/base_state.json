@@ -1,0 +1,90 @@
+{
+  "id": "5db134a6-233f-4ff9-b88f-c4f3e1e07c66",
+  "agent": {
+    "llm": {
+      "model": "test-model",
+      "auth_type": "api_key",
+      "openrouter_site_url": "https://docs.all-hands.dev/",
+      "openrouter_app_name": "OpenHands",
+      "num_retries": 5,
+      "retry_multiplier": 8.0,
+      "retry_min_wait": 8,
+      "retry_max_wait": 64,
+      "timeout": 300,
+      "max_message_chars": 30000,
+      "api_mode": "auto",
+      "capability_overrides": {},
+      "stream": false,
+      "drop_params": true,
+      "disable_stop_word": false,
+      "caching_prompt": true,
+      "log_completions": false,
+      "log_completions_folder": "logs/completions",
+      "native_tool_calling": true,
+      "reasoning_effort": "high",
+      "enable_encrypted_reasoning": true,
+      "prompt_cache_retention": "24h",
+      "extended_thinking_budget": 200000,
+      "usage_id": "test-llm",
+      "litellm_extra_body": {},
+      "is_subscription": false
+    },
+    "tools": [
+      {
+        "name": "terminal",
+        "params": {}
+      },
+      {
+        "name": "file_editor",
+        "params": {}
+      }
+    ],
+    "mcp_config": {
+      "files": {
+        "command": "/fixture/venv/bin/python",
+        "args": [
+          "/fixture/mcp_server.py"
+        ],
+        "enabled": true
+      }
+    },
+    "include_default_tools": [
+      "FinishTool",
+      "ThinkTool"
+    ],
+    "system_prompt_filename": "system_prompt.j2",
+    "security_policy_filename": "security_policy.j2",
+    "system_prompt_kwargs": {
+      "llm_security_analyzer": true
+    },
+    "tool_concurrency_limit": 1,
+    "kind": "Agent"
+  },
+  "workspace": {
+    "working_dir": "/fixture/workspace",
+    "kind": "LocalWorkspace"
+  },
+  "persistence_dir": "/fixture/conversations/5db134a6233f4ff9b88fc4f3e1e07c66",
+  "max_iterations": 500,
+  "stuck_detection": true,
+  "execution_status": "finished",
+  "confirmation_policy": {
+    "kind": "NeverConfirm"
+  },
+  "activated_knowledge_skills": [],
+  "activated_path_rules": [],
+  "invoked_skills": [],
+  "blocked_actions": {},
+  "blocked_messages": {},
+  "last_user_message_id": "fb58d9b8-09d5-48fb-a7f1-c3a45a2e9374",
+  "leaf_event_id": "a4ea33ce-75d1-452a-92fb-44586b8e8475",
+  "head_is_empty": false,
+  "stats": {
+    "usage_to_metrics": {}
+  },
+  "secret_registry": {
+    "secret_sources": {}
+  },
+  "tags": {},
+  "agent_state": {}
+}

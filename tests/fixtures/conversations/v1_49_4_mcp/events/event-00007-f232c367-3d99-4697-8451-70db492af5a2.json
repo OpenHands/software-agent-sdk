@@ -1,0 +1,28 @@
+{
+  "id": "f232c367-3d99-4697-8451-70db492af5a2",
+  "timestamp": "2026-09-23T09:42:20.024415",
+  "source": "environment",
+  "parent_id": "6e0bc446-902c-42ba-b227-8d4ab8d0b72b",
+  "tool_name": "read_file",
+  "tool_call_id": "call_read_file",
+  "observation": {
+    "content": [
+      {
+        "cache_prompt": false,
+        "type": "text",
+        "text": "[Tool 'read_file' executed.]"
+      },
+      {
+        "cache_prompt": false,
+        "type": "text",
+        "text": ""
+      }
+    ],
+    "is_error": false,
+    "tool_name": "read_file",
+    "kind": "MCPToolObservation"
+  },
+  "action_id": "6e0bc446-902c-42ba-b227-8d4ab8d0b72b",
+  "extended_content": [],
+  "kind": "ObservationEvent"
+}
