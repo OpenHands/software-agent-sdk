@@ -16,10 +16,24 @@ from openhands.sdk.agent.acp_tracing import (
     AGENT_KIND_METADATA_KEY,
     TURN_SPAN_NAME,
     ACPTurnTrace,
+    ACPTurnUsage,
 )
 
 
 METADATA_PREFIX = "lmnr.association.properties.metadata."
+
+# Spelled out rather than imported: these are a wire contract with Laminar, so a
+# rename in the SDK must fail here rather than silently follow along.
+INPUT_TOKENS = "gen_ai.usage.input_tokens"
+OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+CACHE_READ_TOKENS = "gen_ai.usage.cache_read_input_tokens"
+CACHE_WRITE_TOKENS = "gen_ai.usage.cache_creation_input_tokens"
+REASONING_TOKENS = "gen_ai.usage.reasoning_tokens"
+TOTAL_TOKENS = "llm.usage.total_tokens"
+COST = "gen_ai.usage.cost"
+REQUEST_MODEL = "gen_ai.request.model"
+RESPONSE_MODEL = "gen_ai.response.model"
+PROVIDER = "gen_ai.system"
 
 
 @pytest.fixture
@@ -104,6 +118,10 @@ def _by_type(spans, span_type: str):
 
 def _meta(span, key: str):
     return (span.attributes or {}).get(METADATA_PREFIX + key)
+
+
+def _attrs(span) -> dict:
+    return dict(span.attributes or {})
 
 
 def _tool_text(span) -> str:
@@ -230,12 +248,12 @@ def test_tracing_is_inert_when_observability_is_disabled(monkeypatch, exported):
         "openhands.sdk.agent.acp_tracing.should_enable_observability",
         lambda: False,
     )
-    trace = ACPTurnTrace(acp_server="codex", model_id=None)
+    trace = ACPTurnTrace(acp_server="codex", model_id="gpt-5.5")
     trace.start_turn("go")
     entry = _tool_entry("call_1")
     trace.tool_started(entry)
     trace.tool_finished(entry)
-    trace.finish_turn("done", "", [entry])
+    trace.finish_turn("done", "", [entry], usage=ACPTurnUsage(100, 50, cost=0.05))
 
     assert exported() == ()
 
@@ -405,3 +423,158 @@ def test_the_prompt_is_dropped_rather_than_recorded_raw_if_masking_fails(exporte
 
     (llm,) = _by_type(exported(), "LLM")
     assert "ghp_secret" not in str((llm.attributes or {}).get("lmnr.span.input"))
+
+
+def _finished_turn(exported, usage: ACPTurnUsage | None, **kwargs):
+    """Run one bare turn and return the exported LLM span's attributes."""
+    trace = ACPTurnTrace(acp_server=kwargs.pop("acp_server", "claude-code"), **kwargs)
+    trace.start_turn("go")
+    trace.finish_turn("done", "", [], usage=usage)
+    (llm,) = _by_type(exported(), "LLM")
+    return _attrs(llm)
+
+
+def test_turn_span_carries_the_token_counts_the_acp_server_reported(exported):
+    attrs = _finished_turn(
+        exported,
+        ACPTurnUsage(input_tokens=100, output_tokens=50),
+        model_id="claude-opus-5",
+    )
+
+    assert attrs[INPUT_TOKENS] == 100
+    assert attrs[OUTPUT_TOKENS] == 50
+
+
+def test_turn_span_counts_cache_tokens_outside_the_input_count(exported):
+    """ACP reports cache reads outside ``input_tokens``, where litellm counts
+    them inside it — so the total is a sum of all four, not input+output. A
+    claude-code turn is mostly cache reads, so getting this wrong understates
+    the billed work by orders of magnitude."""
+    attrs = _finished_turn(
+        exported,
+        ACPTurnUsage(
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=50_000,
+            cache_write_tokens=2_000,
+        ),
+        model_id="claude-opus-5",
+    )
+
+    assert attrs[CACHE_READ_TOKENS] == 50_000
+    assert attrs[CACHE_WRITE_TOKENS] == 2_000
+    assert attrs[TOTAL_TOKENS] == 52_150
+
+
+def test_turn_span_omits_reasoning_tokens_from_the_total_it_reports(exported):
+    """Providers bill thinking as output, so reasoning is already counted."""
+    attrs = _finished_turn(
+        exported,
+        ACPTurnUsage(input_tokens=100, output_tokens=50, reasoning_tokens=20),
+        model_id="claude-opus-5",
+    )
+
+    assert attrs[REASONING_TOKENS] == 20
+    assert attrs[TOTAL_TOKENS] == 150
+
+
+def test_turn_span_omits_token_attributes_when_the_server_reported_none(exported):
+    """gemini-cli reports no usage today. A present ``0`` would assert the turn
+    was free, hiding that the number is simply unknown."""
+    attrs = _finished_turn(exported, ACPTurnUsage(), model_id="auto")
+
+    for key in (INPUT_TOKENS, OUTPUT_TOKENS, TOTAL_TOKENS, REASONING_TOKENS):
+        assert key not in attrs
+
+
+def test_turn_span_carries_the_cost_the_agent_recorded_for_the_turn(exported):
+    attrs = _finished_turn(
+        exported,
+        ACPTurnUsage(input_tokens=100, output_tokens=50, cost=0.07),
+        model_id="claude-opus-5",
+    )
+
+    assert attrs[COST] == pytest.approx(0.07)
+
+
+def test_turn_span_omits_cost_when_the_cli_reports_none(exported):
+    """Absent means unknown, not free — and leaves the backend free to price it."""
+    attrs = _finished_turn(
+        exported,
+        ACPTurnUsage(input_tokens=100, output_tokens=50),
+        model_id="claude-opus-5",
+    )
+
+    assert COST not in attrs
+
+
+def test_turn_span_names_the_model_before_the_turn_produces_any_usage(exported):
+    """Model identity is stamped at turn start, so a turn that times out and is
+    abandoned still says which model it ran on."""
+    trace = ACPTurnTrace(acp_server="claude-code", model_id="opus[1m]")
+    trace.start_turn("go")
+    trace.abandon()
+
+    (llm,) = _by_type(exported(), "LLM")
+    assert _attrs(llm)[REQUEST_MODEL] == "opus[1m]"
+    assert _attrs(llm)[RESPONSE_MODEL] == "opus[1m]"
+
+
+@pytest.mark.parametrize(
+    "acp_server,provider",
+    [("claude-code", "anthropic"), ("codex", "openai"), ("gemini-cli", "gemini")],
+)
+def test_turn_span_names_the_provider_the_acp_cli_fronts(
+    exported, acp_server, provider
+):
+    """These exact strings are what lmnr's LiteLLM instrumentation infers for the
+    native path, so ACP spans aggregate with native ones."""
+    attrs = _finished_turn(exported, None, acp_server=acp_server, model_id=None)
+
+    assert attrs[PROVIDER] == provider
+
+
+def test_a_custom_acp_server_leaves_the_provider_unset(exported):
+    """A guessed provider would send a consumer to the wrong price table."""
+    attrs = _finished_turn(exported, None, acp_server="custom", model_id=None)
+
+    assert PROVIDER not in attrs
+
+
+def test_the_turn_span_records_no_response_id(exported):
+    """The only per-turn id ACP offers is the session id, which is effectively a
+    bearer token. Completing lmnr's 'minimum LLM attribute set' with it would
+    ship a credential to the tracing backend."""
+    attrs = _finished_turn(
+        exported, ACPTurnUsage(input_tokens=1, output_tokens=1), model_id="sonnet"
+    )
+
+    assert "gen_ai.response.id" not in attrs
+
+
+def test_usage_attributes_the_span_rejects_never_break_the_turn(exported):
+    trace = ACPTurnTrace(acp_server="codex", model_id="gpt-5.5")
+    trace.start_turn("go")
+    span = trace._turn_span
+    with patch.object(
+        type(span),
+        "set_attributes",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("rejected")),
+    ):
+        trace.finish_turn("done", "", [], usage=ACPTurnUsage(100, 50, cost=0.05))
+
+    # The turn still lands: output set, span ended and therefore exported.
+    (llm,) = _by_type(exported(), "LLM")
+    assert json.loads(_attrs(llm)["lmnr.span.output"])[0]["content"] == "done"
+    assert INPUT_TOKENS not in _attrs(llm), "the patch did not take effect"
+
+
+def test_usage_reported_for_a_turn_that_never_started_is_dropped(exported):
+    """``finish_turn`` after an abandoned turn must not resurrect a span."""
+    trace = ACPTurnTrace(acp_server="codex", model_id="gpt-5.5")
+    trace.start_turn("go")
+    trace.abandon()
+    trace.finish_turn("done", "", [], usage=ACPTurnUsage(100, 50, cost=0.05))
+
+    (llm,) = _by_type(exported(), "LLM")
+    assert INPUT_TOKENS not in _attrs(llm)
