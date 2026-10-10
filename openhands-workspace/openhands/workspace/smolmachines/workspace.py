@@ -9,6 +9,7 @@ daemon is needed.
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import time
@@ -71,7 +72,8 @@ class SmolMachinesWorkspace(RemoteWorkspace):
     The machine is a microVM with its own Linux kernel: commands the agent
     runs, packages it installs and processes it starts stay inside it, and
     only ``mount_dir`` is shared with the host. Egress can be limited to a
-    list of hosts or CIDR ranges.
+    list of hosts or CIDR ranges. An inherited ``SMOLVM_PUBLISH_ADDR=0.0.0.0``
+    requires a forwarded session API key before publishing the agent server.
 
     Example:
         with SmolMachinesWorkspace(
@@ -193,6 +195,7 @@ class SmolMachinesWorkspace(RemoteWorkspace):
                 json.dumps(self._forwarded_env(), sort_keys=True).encode()
             ).hexdigest()
 
+        self._check_publish_address()
         started = time.time()
         reused = self._reuse()
         self._machine = reused if reused is not None else self._create()
@@ -220,6 +223,35 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             time.time() - started,
         )
         super().model_post_init(context)
+
+    def _check_publish_address(self) -> None:
+        """The HTTP client needs loopback, and public binding needs auth."""
+        value = os.environ.get("SMOLVM_PUBLISH_ADDR")
+        if not value:
+            return
+        try:
+            address = ipaddress.IPv4Address(value)
+        except ipaddress.AddressValueError:
+            return  # SmolVM also falls back to 127.0.0.1 for invalid values.
+        if address == ipaddress.IPv4Address("127.0.0.1"):
+            return
+        if address == ipaddress.IPv4Address("0.0.0.0"):
+            forwarded = self._forwarded_env()
+            key = forwarded.get(
+                "OH_SESSION_API_KEYS_0", forwarded.get("SESSION_API_KEY")
+            )
+            if key:
+                return
+            raise ValueError(
+                "SMOLVM_PUBLISH_ADDR=0.0.0.0 exposes the agent server; forward "
+                "SESSION_API_KEY or OH_SESSION_API_KEYS_0, or unset "
+                "SMOLVM_PUBLISH_ADDR to use loopback"
+            )
+        raise ValueError(
+            "SmolMachinesWorkspace connects to 127.0.0.1, so "
+            "SMOLVM_PUBLISH_ADDR must be 127.0.0.1 or 0.0.0.0 with a "
+            "forwarded session API key"
+        )
 
     def _forwarded_env(self) -> dict[str, str]:
         return {key: os.environ[key] for key in self.forward_env if key in os.environ}

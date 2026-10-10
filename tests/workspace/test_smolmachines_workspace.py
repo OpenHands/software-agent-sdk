@@ -56,6 +56,7 @@ def fake_smol(monkeypatch, tmp_path):
     from openhands.workspace import SmolMachinesWorkspace
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("SMOLVM_PUBLISH_ADDR", raising=False)
     machines: dict[str, _FakeMachine] = {}
     connected: list[str] = []
     created: list[_Spec] = []
@@ -155,6 +156,41 @@ def test_session_key_matches_agent_server_precedence(fake_smol, monkeypatch):
     assert legacy_only.api_key == "legacy-key"
     assert fake_smol.created[-1].env == {"SESSION_API_KEY": "legacy-key"}
     legacy_only.cleanup()
+
+
+def test_public_host_binding_requires_forwarded_auth_before_start(
+    fake_smol, monkeypatch
+):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    monkeypatch.setenv("SMOLVM_PUBLISH_ADDR", "0.0.0.0")
+    monkeypatch.delenv("OH_SESSION_API_KEYS_0", raising=False)
+    monkeypatch.delenv("SESSION_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="exposes the agent server"):
+        SmolMachinesWorkspace(host_port=38137)
+    assert not fake_smol.created
+
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "protected-key")
+    protected = SmolMachinesWorkspace(host_port=38137)
+    assert protected.api_key == "protected-key"
+    protected.cleanup()
+
+    # Auth in the host is insufficient when it is excluded from forward_env.
+    with pytest.raises(ValueError, match="forward"):
+        SmolMachinesWorkspace(host_port=38138, forward_env=[])
+    assert len(fake_smol.created) == 1
+
+
+def test_non_loopback_specific_binding_cannot_work_with_loopback_client(
+    fake_smol, monkeypatch
+):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    monkeypatch.setenv("SMOLVM_PUBLISH_ADDR", "192.0.2.1")
+    monkeypatch.setenv("SESSION_API_KEY", "protected-key")
+    with pytest.raises(ValueError, match="connects to 127.0.0.1"):
+        SmolMachinesWorkspace(host_port=38139)
+    assert not fake_smol.created
 
 
 def test_keep_alive_reuses_the_machine_on_its_recorded_port(fake_smol):
