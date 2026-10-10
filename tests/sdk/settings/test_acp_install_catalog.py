@@ -18,7 +18,9 @@ from openhands.sdk.settings.acp_install_catalog import (
     PI_CODING_AGENT_VERSION,
     ACPInstallSpec,
     ACPPackagePin,
+    ACPPreinstalledBinaryInstallSpec,
     _main,
+    is_npm_install_spec,
     render_docker_install_plan,
 )
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
@@ -131,7 +133,7 @@ class TestACPInstallCatalogMatchesACPProviders:
 
     def test_default_commands_are_derived_from_catalog(self):
         for key, info in ACP_PROVIDERS.items():
-            assert info.default_command == ACP_INSTALL_CATALOG[key].npx_command()
+            assert info.default_command == ACP_INSTALL_CATALOG[key].launch_command()
 
     def test_binary_names_are_derived_from_catalog(self):
         for key, info in ACP_PROVIDERS.items():
@@ -141,6 +143,13 @@ class TestACPInstallCatalogMatchesACPProviders:
         assert CLAUDE_AGENT_ACP_VERSION == "0.63.0"
         assert CODEX_ACP_VERSION == "1.10.0"
         assert GEMINI_CLI_VERSION == "0.46.0"
+
+    def test_cursor_is_a_preinstalled_binary(self):
+        spec = ACP_INSTALL_CATALOG["cursor"]
+        assert isinstance(spec, ACPPreinstalledBinaryInstallSpec)
+        assert not is_npm_install_spec(spec)
+        assert spec.launch_command() == ("agent", "acp")
+        assert spec.binary_name == "agent"
 
 
 class TestDefaultPreinstalledACPProviders:
@@ -183,6 +192,10 @@ class TestRenderDockerInstallPlan:
         assert "claude-code" in message
         assert "codex" in message
         assert "gemini-cli" in message
+
+    def test_preinstalled_binary_cannot_join_image_plan(self):
+        with pytest.raises(ValueError, match="preinstalled binary"):
+            render_docker_install_plan(["cursor"])
 
     def test_dedupes_shared_packages_preserving_first_seen_order(self):
         shared = ACPPackagePin("@acme/shared-engine", "9.9.9")
