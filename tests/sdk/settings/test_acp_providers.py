@@ -43,7 +43,11 @@ class TestACPProviderInfo:
 
     def test_default_commands_prefer_offline_cache(self):
         for info in ACP_PROVIDERS.values():
-            assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
+            # npm-delivered providers launch via `npx --prefer-offline` so the
+            # agent-server image's preinstalled copy wins. Providers shipped as
+            # standalone binaries (devin's `devin acp`) have no npx form.
+            if info.default_command[0] == "npx":
+                assert info.default_command[:3] == ("npx", "-y", "--prefer-offline")
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -91,6 +95,29 @@ class TestACPProviderInfo:
         assert any(m.id == "gpt-5.5" for m in info.available_models)
         assert info.binary_name == "codex-acp"
         assert info.data_dir_env_var == "CODEX_HOME"
+
+    def test_devin_metadata(self):
+        info = ACP_PROVIDERS["devin"]
+        assert info.key == "devin"
+        assert info.display_name == "Devin"
+        # Devin CLI is a standalone binary, not an npm package.
+        assert info.default_command == ("devin", "acp")
+        assert info.api_key_env_var == "WINDSURF_API_KEY"
+        assert info.base_url_env_var is None
+        # accept-edits is the server's own default; permission requests are
+        # auto-approved by the client bridge either way.
+        assert info.default_session_mode is None
+        # ``devin acp`` reports agentInfo.name "affogato".
+        assert "affogato" in info.agent_name_patterns
+        assert "devin" in info.agent_name_patterns
+        assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
+        assert info.session_meta_key is None
+        # Uncurated: the model select is served live at session/new.
+        assert info.available_models == ()
+        assert info.default_model is None
+        assert info.binary_name is None
+        assert info.data_dir_env_var is None
 
     def test_gemini_cli_metadata(self):
         info = ACP_PROVIDERS["gemini-cli"]
@@ -258,6 +285,15 @@ class TestDetectACPProviderByAgentName:
         assert info is not None
         assert info.key == "codex"
 
+    def test_detects_devin_by_agent_name(self):
+        # ``devin acp`` reports agentInfo.name "affogato".
+        info = detect_acp_provider_by_agent_name("affogato")
+        assert info is not None
+        assert info.key == "devin"
+        info = detect_acp_provider_by_agent_name("Devin Agent")
+        assert info is not None
+        assert info.key == "devin"
+
     def test_detects_gemini_cli_by_agent_name(self):
         info = detect_acp_provider_by_agent_name("gemini-cli 0.38.0")
         assert info is not None
@@ -415,6 +451,11 @@ _UNCURATED_MODEL_PROVIDERS = {
     # offers whatever alias the user named. A static list would be wrong, not
     # merely incomplete, for anyone not on an account login.
     "kimi-code",
+    # ``devin acp`` serves its whole model catalogue (100+ entries, including
+    # fusion combos) as the live ``model`` configOption at session/new; the
+    # list is account-dependent and large, so clients should render the
+    # runtime select rather than a snapshot.
+    "devin",
 }
 
 
