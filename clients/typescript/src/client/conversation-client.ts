@@ -122,7 +122,7 @@ export class ConversationClient {
   }
 
   async countConversations(
-    options: { status?: ConversationExecutionStatus } = {}
+    options: { status?: ConversationExecutionStatus; archived?: boolean } = {}
   ): Promise<number> {
     const response = await this.client.get<number>('/api/conversations/count', {
       params: options as Record<string, unknown>,
@@ -156,6 +156,22 @@ export class ConversationClient {
   async reprovisionRuntime(conversationId: string): Promise<ConversationRuntimeInfo> {
     const response = await this.client.post<ConversationRuntimeInfo>(
       `/api/conversations/${conversationId}/runtime/reprovision`,
+      {}
+    );
+    return response.data;
+  }
+
+  async archiveConversation(conversationId: string): Promise<ConversationInfo> {
+    const response = await this.client.post<ConversationInfo>(
+      `/api/conversations/${conversationId}/archive`,
+      {}
+    );
+    return response.data;
+  }
+
+  async unarchiveConversation(conversationId: string): Promise<ConversationInfo> {
+    const response = await this.client.post<ConversationInfo>(
+      `/api/conversations/${conversationId}/unarchive`,
       {}
     );
     return response.data;

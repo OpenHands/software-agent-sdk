@@ -402,6 +402,31 @@ async def test_direct_start_strips_reserved_conversation_secret(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_local_codex_binding_is_restored_before_cold_admission(tmp_path) -> None:
+    store = FileSecretsStore(tmp_path / "settings")
+    store.set_secret("CODEX_AUTH_JSON", "canonical")
+    conversations_dir = tmp_path / "conversations"
+    request = StartConversationRequest(
+        agent=ACPAgent(acp_command=["codex-acp"], acp_server="codex"),
+        workspace=LocalWorkspace(working_dir=tmp_path / "workspace"),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        secrets_store=store,
+    ) as service:
+        info, _ = await service.start_conversation(request)
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        secrets_store=store,
+    ) as restarted:
+        event_service = await restarted.get_event_service(info.id)
+        assert event_service is not None
+        assert "CODEX_AUTH_JSON" in event_service.credential_bindings
+
+
+@pytest.mark.asyncio
 async def test_callback_binding_blocks_cold_hydration_until_reactivation(
     tmp_path,
 ) -> None:
