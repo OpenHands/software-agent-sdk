@@ -373,11 +373,11 @@ async def events_socket(
                     await websocket.send_json(dumped)
                     # Log after - if send event raises an error logging is handled
                     # in the except block
-                    logger.exception("error_in_subscription", stack_info=True)
+                    logger.exception("error_in_subscription")
                 except Exception:
                     # Sending the error event failed - likely a closed socket
                     logger.info("Event websocket disconnected")
-                    logger.debug("error_sending_error", exc_info=True, stack_info=True)
+                    logger.debug("error_sending_error")
                     await _safe_close_websocket(websocket)
                     return
     finally:
