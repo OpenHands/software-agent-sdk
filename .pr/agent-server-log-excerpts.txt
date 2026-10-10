@@ -1,0 +1,30 @@
+# /api/mcp/test via Agent Canvas 1.23.0 + local agent-server (OH_AGENT_SERVER_LOCAL_PATH=<sdk-repo>)
+# Times are UTC. Only the MCP probe lines are kept; <sdk-repo> replaces the local checkout path.
+# Before: 28e8ed273 (GitLab SHTTP) and a350dc73e (the rest), both unmodified main.
+# After:  a350dc73e + this PR's changes.
+
+## GitLab SHTTP, OAuth, account not in any MCP-enabled group
+before 21:51:28 [agent-server] WARNING  MCP test failed unexpectedly for server 'test-server'  mcp_router.py:593
+after  18:26:37 [agent-server] WARNING  MCP test failed for server 'test-server': HTTP 403 Forbidden from https://gitlab.com/api/v4/mcp: 403 Forbidden - MCP server not enabled for any of your groups  mcp_router.py:650
+
+## GitLab SHTTP, OAuth, account in an MCP-enabled group (success path unchanged)
+after  18:31:43 [agent-server] INFO     Created 42 MCP tools  utils.py:471
+
+## GitLab SSE, OAuth, account not in any MCP-enabled group
+before 15:13:52 [agent-server] WARNING  MCP test failed unexpectedly for server 'test-server'  mcp_router.py:597
+after  19:40:16 [agent-server] WARNING  MCP test failed for server 'test-server': HTTP 403 Forbidden from https://gitlab.com/api/v4/mcp: 403 Forbidden - MCP server not enabled for any of your groups  mcp_router.py:650
+
+## GitLab SSE, OAuth, account in an MCP-enabled group (GitLab does not serve SSE)
+before 15:21:22 [agent-server] WARNING  MCP test failed unexpectedly for server 'test-server'  mcp_router.py:597
+after  19:43:43 [agent-server] WARNING  MCP test failed for server 'test-server': HTTP 405 Method Not Allowed from https://gitlab.com/api/v4/mcp: 405  mcp_router.py:650
+
+## Asana SSE (https://mcp.asana.com/sse), Bearer token = invalid-token-for-test (reason only in the JSON body)
+before 15:38:33 [agent-server] WARNING  MCP test failed unexpectedly for server 'test-server'  mcp_router.py:597
+after  19:48:05 [agent-server] WARNING  MCP test failed for server 'test-server': HTTP 401 Unauthorized from https://mcp.asana.com/sse: Invalid token format  mcp_router.py:650
+
+## Asana V2 SHTTP (https://mcp.asana.com/v2/mcp), no auth (reason in WWW-Authenticate error_description)
+before 15:44:25 [agent-server] WARNING  MCP test failed unexpectedly for server 'test-server'  mcp_router.py:597
+after  19:52:30 [agent-server] WARNING  MCP test failed for server 'test-server': HTTP 401 Unauthorized from https://mcp.asana.com/v2/mcp: Authorization header is required for MCP V2 access  mcp_router.py:650
+
+## Asana SSE, OAuth with a real account (SSE success path unchanged)
+after  20:01:15 [agent-server] INFO     Created 46 MCP tools  utils.py:471
