@@ -62,6 +62,27 @@ class MCPClient(AsyncMCPClient):
         except RuntimeError as exc:
             raise MCPError("MCP Connection Failure") from exc
 
+    async def reconnect(self) -> None:
+        """Force a fresh MCP connection, discarding any stale session.
+
+        fastmcp reference-counts the session via ``__aenter__``. When a remote
+        SSE transport drops mid-conversation (e.g. the desktop bridge app
+        restarts) the client can be left with a dead session while its nesting
+        counter is still > 0; in that state a plain ``connect()`` refuses to
+        start a new session ("nesting counter should be 0"), so the tools stay
+        broken for the rest of the conversation. Tear the session down first
+        (resets the nesting counter) and only then connect again.
+        """
+        try:
+            await self._disconnect(force=True)
+        except Exception:
+            # Best-effort teardown; the fresh connect below is authoritative.
+            pass
+        try:
+            await self.__aenter__()
+        except RuntimeError as exc:
+            raise MCPError("MCP Connection Failure") from exc
+
     def call_async_from_sync(
         self,
         awaitable_or_fn: Callable[..., Any] | Any,
