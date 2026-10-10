@@ -15,6 +15,7 @@ from openhands.sdk.subagent.registry import (
     register_agent,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.cipher import Cipher
 from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task.manager import (
     Task,
@@ -34,6 +35,7 @@ def _make_llm() -> LLM:
 def _make_parent_conversation(
     tmp_path: Path,
     persistence_dir: str | Path | None = None,
+    cipher: Cipher | None = None,
 ) -> LocalConversation:
     """Create a real (minimal) parent conversation for the manager."""
     llm = _make_llm()
@@ -44,6 +46,7 @@ def _make_parent_conversation(
         visualizer=None,
         delete_on_close=False,
         persistence_dir=persistence_dir,
+        cipher=cipher,
     )
 
 
@@ -190,6 +193,22 @@ class TestTaskManager:
         task = manager._create_task(subagent_type="general-purpose", description=None)
         assert task.id in manager._tasks
         assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
+
+    def test_create_and_resume_inherit_parent_cipher(self, tmp_path):
+        cipher = Cipher("test-secret")
+        parent = _make_parent_conversation(tmp_path, cipher=cipher)
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+        register_builtins_agents()
+
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        assert task.conversation is not None
+        assert task.conversation._cipher is cipher
+
+        manager._evict_task(task)
+        resumed = manager._resume_task(resume=task.id, subagent_type="general-purpose")
+        assert resumed.conversation is not None
+        assert resumed.conversation._cipher is cipher
 
     def test_create_task_uses_parent_max_iteration_when_factory_is_none(self, tmp_path):
         """Fallback to parent's max_iteration_per_run when factory has none."""

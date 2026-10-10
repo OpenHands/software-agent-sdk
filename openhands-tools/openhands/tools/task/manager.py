@@ -226,6 +226,7 @@ class TaskManager:
                         self.parent_conversation.get_llm_call_context()
                     ),
                     delete_on_close=True,
+                    cipher=self.parent_conversation._cipher,
                     observability_metadata=self._delegate_observability_metadata(
                         task_id=resume, subagent_type=subagent_type, link=link
                     ),
@@ -329,6 +330,7 @@ class TaskManager:
                 hook_config=hook_config,
                 _parent_llm_call_context=parent.get_llm_call_context(),
                 delete_on_close=True,
+                cipher=parent._cipher,
                 prompt_cache_key=str(parent.state.id),
                 observability_metadata=self._delegate_observability_metadata(
                     task_id=task_id, subagent_type=subagent_type, link=link

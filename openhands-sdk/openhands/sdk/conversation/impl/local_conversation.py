@@ -420,6 +420,8 @@ class LocalConversation(BaseConversation):
             if recovered_specs:
                 register_client_tools(recovered_specs)
         self.agent = agent
+        self._cipher = cipher
+        self._bind_fallback_cipher(self.agent.llm)
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -513,8 +515,6 @@ class LocalConversation(BaseConversation):
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore(profile_store_dir)
-        self._cipher = cipher
-
         # Seed agent_context.secrets into the registry for every agent (regular
         # and ACP), covering callers that skip create_request() — canvas /
         # TypeScript, or the server-side agent_settings -> create_agent fold.
@@ -872,6 +872,7 @@ class LocalConversation(BaseConversation):
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
+                cipher=self._cipher,
                 tags=tags,
                 _parent_llm_call_context=self._llm_call_context,
             )
@@ -1249,6 +1250,7 @@ class LocalConversation(BaseConversation):
             register_plugin_agents(
                 agents=all_plugin_agents,
                 work_dir=self.workspace.working_dir,
+                cipher=self._cipher,
             )
 
         # Combine explicit hook_config with plugin hooks
@@ -1492,6 +1494,7 @@ class LocalConversation(BaseConversation):
                 register_plugin_agents(
                     agents=plugin.agents,
                     work_dir=self.workspace.working_dir,
+                    cipher=self._cipher,
                 )
             if plugin.hooks and not plugin.hooks.is_empty():
                 self._merge_runtime_plugin_hooks(plugin.hooks)
@@ -1530,7 +1533,7 @@ class LocalConversation(BaseConversation):
                 then `~/.openhands/agents/*.md`)
         """
         # register project-level and then user-level file-based agents
-        register_file_agents(self.workspace.working_dir)
+        register_file_agents(self.workspace.working_dir, cipher=self._cipher)
 
     def _ensure_agent_ready(self) -> None:
         """Ensure the agent is fully initialized with plugins and agents loaded.
@@ -1594,6 +1597,7 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
+                self._bind_fallback_cipher(llm)
 
             self._agent_ready = True
 
@@ -1615,6 +1619,11 @@ class LocalConversation(BaseConversation):
         own ID.  ``session_id`` is always the conversation's ID.
         """
         return self._llm_call_context
+
+    def _bind_fallback_cipher(self, llm: LLM) -> None:
+        """Bind the conversation cipher for lazy fallback profile loading."""
+        if llm.fallback_strategy is not None:
+            llm.fallback_strategy._bind_cipher(self._cipher)
 
     def _condenser_for_switched_llm(
         self,
@@ -1678,6 +1687,7 @@ class LocalConversation(BaseConversation):
             )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
+            self._bind_fallback_cipher(new_llm)
             # Invalidate the cached ask-agent LLM so it re-clones.
             self.llm_registry.remove(ASK_AGENT_LLM_USAGE_ID)
 
@@ -1718,6 +1728,7 @@ class LocalConversation(BaseConversation):
             llm = loaded.model_copy(update={"usage_id": usage_id})
             llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(llm)
+            self._bind_fallback_cipher(llm)
             return llm
 
     def switch_acp_model(self, model: str) -> None:
