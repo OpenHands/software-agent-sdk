@@ -190,6 +190,37 @@ def test_register_proxy_alias_makes_alias_priceable():
     _pop(alias)
 
 
+def test_proxy_lookup_prices_provider_prefixed_underlying_from_local_registry():
+    alias = "prod/claude-sonnet-4-5-local-lookup-z"
+    _pop(alias)
+    payload = {
+        "data": [
+            {
+                "model_name": alias,
+                "litellm_params": {"model": "anthropic/claude-sonnet-4-5-20250929"},
+                "model_info": {"supports_vision": True},
+            }
+        ]
+    }
+    with patch(
+        "openhands.sdk.llm.utils.model_info.httpx.get",
+        return_value=_FakeResponse(payload),
+    ):
+        info = _get_model_info_from_litellm_proxy(
+            secret_api_key="k",
+            base_url="https://proxy.example",
+            model=f"litellm_proxy/{alias}",
+            cache_key=44,
+        )
+    assert info == {"supports_vision": True}
+    prompt_cost, completion_cost = litellm.cost_per_token(
+        model=alias, prompt_tokens=100, completion_tokens=50
+    )
+    assert prompt_cost > 0
+    assert completion_cost > 0
+    _pop(alias)
+
+
 def test_register_proxy_alias_skips_already_priceable_models():
     """A provider-prefixed real model is priceable natively; do not clobber."""
     alias = "anthropic/claude-sonnet-4-5-20250929"
