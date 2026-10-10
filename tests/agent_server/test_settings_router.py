@@ -1144,6 +1144,62 @@ def test_mcp_server_crud_endpoints_normalize_key_paths(client_with_settings):
     assert set(mcp_config) == {"github"}
 
 
+def test_mcp_server_create_rejects_config_without_command_or_url(
+    client_with_settings,
+):
+    """POST /api/settings/mcp/{key} rejects a server with neither field.
+
+    Accepting ``{}`` stored ``{"enabled": true}``; that entry made every later
+    conversation drop the tools of all configured MCP servers (#5643).
+    """
+    rejected = client_with_settings.post("/api/settings/mcp/qa-empty", json={})
+    assert rejected.status_code == 422, rejected.text
+
+    # Non-connection fields alone do not identify a server either.
+    incomplete = client_with_settings.post(
+        "/api/settings/mcp/qa-meta",
+        json={"description": "no command, no url"},
+    )
+    assert incomplete.status_code == 422, incomplete.text
+
+    # The rejected servers must not be persisted.
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert mcp_config == {}
+
+    # A server identified by command or url (transport unset) still validates.
+    command_only = client_with_settings.post(
+        "/api/settings/mcp/good",
+        json={"command": "uvx", "args": ["mcp-server-fetch"]},
+    )
+    assert command_only.status_code == 201, command_only.text
+    assert (
+        command_only.json()["agent_settings"]["mcp_config"]["good"]["command"] == "uvx"
+    )
+
+
+def test_mcp_server_patch_cannot_strip_command_and_url(client_with_settings):
+    """PATCH must not leave a server with neither command nor url (#5643)."""
+    created = client_with_settings.post(
+        "/api/settings/mcp/stdio-only",
+        json={"command": "uvx", "args": ["mcp-server-fetch"]},
+    )
+    assert created.status_code == 201, created.text
+
+    stripped = client_with_settings.patch(
+        "/api/settings/mcp/stdio-only",
+        json={"command": None},
+    )
+    assert stripped.status_code == 422, stripped.text
+
+    # The stored server is unchanged.
+    mcp_config = client_with_settings.get("/api/settings").json()["agent_settings"][
+        "mcp_config"
+    ]
+    assert mcp_config["stdio-only"]["command"] == "uvx"
+
+
 def test_patch_settings_empty_payload_returns_400(client_with_settings):
     """PATCH /api/settings with empty payload returns 400."""
     response = client_with_settings.patch("/api/settings", json={})

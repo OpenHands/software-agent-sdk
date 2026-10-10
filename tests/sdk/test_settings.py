@@ -807,6 +807,26 @@ def test_validate_agent_settings_migrates_mcp_type_to_transport() -> None:
     }
 
 
+def test_mcp_server_requires_command_or_url() -> None:
+    """A server with neither field cannot connect; reject it at validation.
+
+    ``{}`` used to validate and round-trip as ``{"enabled": true}``, which then
+    failed FastMCP validation at conversation start and silently dropped every
+    configured MCP server's tools (#5643).
+    """
+    with pytest.raises(ValidationError, match="require 'command' or 'url'"):
+        MCPServer.model_validate({})
+    with pytest.raises(ValidationError, match="require 'command' or 'url'"):
+        MCPServer.model_validate({"description": "no command, no url"})
+
+    # Either field alone (transport unset) still identifies a server.
+    assert MCPServer.model_validate({"command": "uvx"}).command == "uvx"
+    assert (
+        MCPServer.model_validate({"url": "https://mcp.example.com/mcp"}).url
+        == "https://mcp.example.com/mcp"
+    )
+
+
 def test_openhands_mcp_config_reject_unknown_server_fields() -> None:
     with pytest.raises(ValidationError):
         OpenHandsAgentSettings.model_validate(

@@ -547,6 +547,11 @@ class MCPServer(_MCPBaseModel):
             raise ValueError("stdio MCP servers require 'command'")
         if declared_transport in {"http", "streamable-http", "sse"} and not self.url:
             raise ValueError("remote MCP servers require 'url'")
+        # A server with neither field (for example ``{}``, or transport unset)
+        # cannot be connected at all: reject it instead of persisting an entry
+        # that makes every later conversation drop its MCP tools.
+        if not self.command and not self.url:
+            raise ValueError("MCP servers require 'command' or 'url'")
         if self.auth is not None and self.headers is not None:
             has_authorization_header = any(
                 key.lower() == "authorization" for key in self.headers
