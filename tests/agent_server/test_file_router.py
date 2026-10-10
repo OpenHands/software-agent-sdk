@@ -13,13 +13,17 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote, unquote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
-from openhands.agent_server import file_router as file_router_module
+from openhands.agent_server import (
+    bash_service as bash_mod,
+    conversation_service as cs_mod,
+    file_router as file_router_module,
+)
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.file_router import ARCHIVE_MANIFEST_NAME, _upload_file
@@ -344,6 +348,18 @@ def test_upload_file_with_special_characters_in_path(client, tmp_path):
     assert target_path.read_bytes() == file_content
 
 
+def _use_conversations_path(client, conversations_path: Path) -> None:
+    """Point the app's request-time config at ``conversations_path``.
+
+    Trajectory downloads resolve the conversations directory from
+    ``request.app.state.config`` — the same config ``POST /api/init``
+    replaces on a deferred-init server.
+    """
+    client.app.state.config = Config(
+        session_api_keys=[], conversations_path=conversations_path
+    )
+
+
 def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
     """Trajectory downloads should not depend on an OS-level zip command."""
     conversations_path = tmp_path / "conversations"
@@ -354,10 +370,7 @@ def test_download_trajectory_uses_python_zipfile(client, monkeypatch, tmp_path):
     (conversation_dir / "meta.json").write_text("{}")
     (nested_dir / "event.json").write_text('{"id": "event-1"}')
 
-    monkeypatch.setattr(
-        "openhands.agent_server.file_router.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
-    )
+    _use_conversations_path(client, conversations_path)
 
     async def fail_if_shell_zip_is_used(*_args, **_kwargs):
         raise AssertionError("download_trajectory must not shell out to zip")
@@ -392,10 +405,7 @@ def test_download_trajectory_omits_acp_credential_dir(client, monkeypatch, tmp_p
     (conversation_dir / "acp_notes.json").write_text("{}")
     (acp_dir / "auth.json").write_text('{"refresh_token": "rt-secret-123"}')
 
-    monkeypatch.setattr(
-        "openhands.agent_server.file_router.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
-    )
+    _use_conversations_path(client, conversations_path)
 
     response = client.get(f"/api/file/download-trajectory/{conversation_id}")
     assert response.status_code == 200
@@ -470,10 +480,7 @@ def test_download_trajectory_redacts_llm_and_condenser_secrets(
     }
     (events_dir / "event-00000.json").write_text(json.dumps(event))
 
-    monkeypatch.setattr(
-        "openhands.agent_server.file_router.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
-    )
+    _use_conversations_path(client, conversations_path)
 
     response = client.get(f"/api/file/download-trajectory/{conversation_id}")
     assert response.status_code == 200
@@ -499,7 +506,7 @@ def test_download_trajectory_redacts_llm_and_condenser_secrets(
     assert meta_out["agent"]["llm"]["model"] == "gpt-4o"
 
 
-def _trajectory_dir(monkeypatch, tmp_path):
+def _trajectory_dir(client, tmp_path):
     """Create a conversation directory served by download-trajectory."""
     conversations_path = tmp_path / "conversations"
     conversation_id = uuid4()
@@ -507,10 +514,7 @@ def _trajectory_dir(monkeypatch, tmp_path):
     (conversation_dir / "events").mkdir(parents=True)
     (conversation_dir / "base_state.json").write_text('{"v": 1}')
     (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
-    monkeypatch.setattr(
-        "openhands.agent_server.file_router.get_default_config",
-        lambda: Config(session_api_keys=[], conversations_path=conversations_path),
-    )
+    _use_conversations_path(client, conversations_path)
     return conversation_id, conversation_dir
 
 
@@ -538,7 +542,7 @@ def test_download_trajectory_redacts_json_and_jsonl_files_only(
 
     Other files are archived byte for byte, even when they hold JSON.
     """
-    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
     line = json.dumps({"llm": {"api_key": "sk-plaintext-main-0123456789"}})
     jsonl_names = ("events.jsonl", "MORE.JSONL")
     for name in jsonl_names:
@@ -570,7 +574,7 @@ def test_download_trajectory_survives_state_save_during_zip(
     client, monkeypatch, tmp_path
 ):
     """An atomic base-state save that lands mid-zip must not cause a 500."""
-    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
     temp_file = conversation_dir / ".base_state.json.4867ztqe.tmp"
     temp_file.write_text('{"v": 2}')
 
@@ -594,7 +598,7 @@ def test_download_trajectory_skips_entries_removed_while_zipping(
     client, monkeypatch, tmp_path
 ):
     """Files and directories removed after listing are left out, not a 500."""
-    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
     (conversation_dir / "gone.txt").write_text("gone")
     (conversation_dir / "gone_dir").mkdir()
     (conversation_dir / "gone_dir" / "inner.json").write_text("{}")
@@ -623,7 +627,7 @@ def test_download_trajectory_omits_tmp_files(client, monkeypatch, tmp_path):
     ``owner_lease.tmp``. They may be half-written, and their names do not end
     in ``.json``, so they would also bypass secret redaction.
     """
-    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
     secret = "sk-in-progress-save-0123456789"
     (conversation_dir / ".base_state.json.4867ztqe.tmp").write_text(
         '{"agent": {"llm": {"api_key": "' + secret + '"'
@@ -652,7 +656,7 @@ def test_download_trajectory_keeps_dotfiles_that_are_not_tmp_files(
     client, monkeypatch, tmp_path
 ):
     """Only ``*.tmp`` files are left out; other dotfiles are archived."""
-    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
     kept = [".env.template", ".cache.metadata", "events/.eventlog-len-1.marker"]
     for name in kept:
         (conversation_dir / name).write_text(name)
@@ -674,7 +678,7 @@ def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
     afterwards by a version holding a Fernet token. The archive must contain
     the content that was read, not the newer file.
     """
-    conversation_id, conversation_dir = _trajectory_dir(monkeypatch, tmp_path)
+    conversation_id, conversation_dir = _trajectory_dir(client, tmp_path)
     base_state = conversation_dir / "base_state.json"
     first_save = b'{"secret_registry": {"secret_sources": {}}}'
     base_state.write_bytes(first_save)
@@ -710,6 +714,125 @@ def test_download_trajectory_archives_the_json_bytes_it_checked_for_secrets(
         blob = b"\n".join(archive.read(name) for name in archive.namelist())
     assert archived == first_save
     assert token.encode() not in blob
+
+
+def test_download_trajectory_resolves_dir_from_request_config(
+    client, monkeypatch, tmp_path
+):
+    """The served directory comes from ``request.app.state.config``.
+
+    ``POST /api/init`` on a deferred-init server only replaces that config;
+    the launch-time config lookup must not decide where the route looks.
+    """
+    request_path = tmp_path / "request-conversations"
+    conversation_id = uuid4()
+    conversation_dir = request_path / conversation_id.hex
+    (conversation_dir / "events").mkdir(parents=True)
+    (conversation_dir / "meta.json").write_text("{}")
+    (conversation_dir / "events" / "event-00000.json").write_text('{"id": "e0"}')
+
+    monkeypatch.setattr(
+        "openhands.agent_server.config.get_default_config",
+        lambda: Config(session_api_keys=[], conversations_path=tmp_path / "elsewhere"),
+    )
+    _use_conversations_path(client, request_path)
+
+    response = client.get(f"/api/file/download-trajectory/{conversation_id}")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.read(f"{conversation_id.hex}/meta.json") == b"{}"
+
+
+def test_deferred_init_trajectory_downloads_follow_init_conversations_path(tmp_path):
+    """Both trajectory routes work after ``/api/init`` moves storage.
+
+    Regression test for a deferred-init (warm-pool) server: ``/api/init``
+    installs the per-user ``conversations_path`` on ``app.state.config``, so
+    both the flat and the conversation-scoped download route must serve the
+    conversation from that directory instead of the launch-time default.
+    """
+    cs_mod._conversation_service = None
+    bash_mod._bash_event_service = None
+    boot_conversations = tmp_path / "boot-conversations"
+    user_conversations = tmp_path / "user" / "conversations"
+    app = create_app(
+        Config(
+            deferred_init=True,
+            conversations_path=boot_conversations,
+            bash_events_dir=tmp_path / "boot-bash-events",
+        )
+    )
+    headers = {"X-Session-API-Key": "init-key"}
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/init",
+                json={
+                    "session_api_keys": ["init-key"],
+                    "conversations_path": str(user_conversations),
+                    "bash_events_dir": str(tmp_path / "user" / "bash_events"),
+                },
+            )
+            assert response.status_code == 200, response.text
+
+            response = client.post(
+                "/api/conversations",
+                headers=headers,
+                json={
+                    "workspace": {"working_dir": str(tmp_path / "workspace")},
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": {"model": "openai/test", "usage_id": "test"},
+                    },
+                },
+            )
+            assert response.status_code == 201, response.text
+            conversation_id = UUID(response.json()["id"])
+            assert (user_conversations / conversation_id.hex).is_dir()
+            assert not (boot_conversations / conversation_id.hex).exists()
+
+            flat = client.get(
+                f"/api/file/download-trajectory/{conversation_id}", headers=headers
+            )
+            scoped = client.get(
+                f"/api/conversations/{conversation_id}/file/download-trajectory/"
+                f"{conversation_id}",
+                headers=headers,
+            )
+
+            assert flat.status_code == 200, flat.text
+            assert scoped.status_code == 200, scoped.text
+
+            root = conversation_id.hex
+            with zipfile.ZipFile(io.BytesIO(flat.content)) as archive:
+                flat_names = set(archive.namelist())
+            with zipfile.ZipFile(io.BytesIO(scoped.content)) as archive:
+                scoped_names = set(archive.namelist())
+            assert flat_names == scoped_names
+            assert f"{root}/meta.json" in flat_names
+            assert f"{root}/base_state.json" in flat_names
+
+            # No conversation directory under the resolved config → 404 on
+            # both routes. Rebinding the config stands in for a conversation
+            # whose storage moved away from the initialized path.
+            app.state.config = app.state.config.model_copy(
+                update={"conversations_path": tmp_path / "elsewhere"}
+            )
+            for url in (
+                f"/api/file/download-trajectory/{conversation_id}",
+                f"/api/conversations/{conversation_id}/file/download-trajectory/"
+                f"{conversation_id}",
+            ):
+                missing = client.get(url, headers=headers)
+                assert missing.status_code == 404, missing.text
+                assert missing.json()["detail"] == "Conversation not found"
+
+            # Repeated downloads leave no zip residue behind.
+            assert list(user_conversations.glob("*.zip")) == []
+    finally:
+        cs_mod._conversation_service = None
+        bash_mod._bash_event_service = None
 
 
 def test_download_file_with_special_characters_in_path(client, tmp_path):
