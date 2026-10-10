@@ -2413,8 +2413,14 @@ _GENERAL_SECTION_METADATA = SettingsSectionMetadata(
 )
 
 
-def _facts_for_property(prop: Mapping[str, Any], fallback: Any) -> dict[str, Any]:
-    return structural_facts(prop, fallback_default=_normalize_default(fallback))
+def _facts_for_property(
+    prop: Mapping[str, Any], fallback: Any, annotation: Any
+) -> dict[str, Any]:
+    return structural_facts(
+        prop,
+        fallback_default=_normalize_default(fallback),
+        closed_choices=str not in _annotation_options(annotation),
+    )
 
 
 def _nested_default(section_default: Any, nested_key: str) -> Any:
@@ -2538,7 +2544,9 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                     if prop is None:
                         continue
                     facts = _facts_for_property(
-                        prop, _nested_default(section_default, nested_key)
+                        prop,
+                        _nested_default(section_default, nested_key),
+                        nested_field.annotation,
                     )
                     existing_field = seen_nested_fields.get(nested_key)
                     if existing_field is not None:
@@ -2593,7 +2601,7 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                 description=field.description,
                 section=section,
                 metadata=metadata,
-                facts=_facts_for_property(prop, default_value),
+                facts=_facts_for_property(prop, default_value, field.annotation),
                 depends_on=list(metadata.depends_on),
                 applies_to=[],
                 variant_selector=False,

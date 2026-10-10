@@ -103,3 +103,10 @@ def test_secret_and_choices_follow_json_schema() -> None:
         "finish_and_message",
         "all_actions",
     ]
+
+
+def test_open_literal_union_stays_free_text() -> None:
+    reasoning_effort = _fields(OpenHandsAgentSettings)["llm.reasoning_effort"]
+    assert reasoning_effort.choices == []
+    assert reasoning_effort.value_type == "string"
+    assert reasoning_effort.default == "high"

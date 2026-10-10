@@ -43,15 +43,20 @@ def structural_facts(
     prop: Mapping[str, Any],
     *,
     fallback_default: Any,
+    closed_choices: bool = True,
 ) -> dict[str, Any]:
     """Read type, default, choices, secret-ness, and numeric bounds.
 
     ``default`` comes from the JSON Schema property when Pydantic emitted one.
     ``default_factory`` values are omitted from JSON Schema, so callers pass
     the already JSON-normalized factory result as ``fallback_default``.
+
+    Pass ``closed_choices=False`` when the annotation accepts values outside
+    its ``enum`` (for example ``Literal[...] | SkipJsonSchema[str]``); JSON
+    Schema erases that open branch, so it cannot be detected here.
     """
     branches = _non_null_branches(prop)
-    choice_values = _choice_values(prop, branches)
+    choice_values = _choice_values(prop, branches) if closed_choices else []
     return {
         "value_type": _value_type(branches, choice_values),
         "default": prop["default"] if "default" in prop else fallback_default,
