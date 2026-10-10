@@ -81,6 +81,7 @@ from .acp_providers import (
     default_acp_file_secrets,
     get_acp_provider,
 )
+from .canonical_schema import schema_properties, structural_facts, union_variant
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -134,6 +135,26 @@ class SettingsFieldSchema(BaseModel):
             "variant (``'openhands'`` or ``'acp'``). The GUI filters fields by the "
             "user's current variant; fields with ``variant=None`` are shown "
             "regardless."
+        ),
+    )
+    minimum: int | float | None = None
+    exclusive_minimum: int | float | None = None
+    maximum: int | float | None = None
+    exclusive_maximum: int | float | None = None
+    min_length: int | None = None
+    max_length: int | None = None
+    applies_to: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Union variant ids this field belongs to. Empty when the field "
+            "is not part of a variant union."
+        ),
+    )
+    variant_selector: bool = Field(
+        default=False,
+        description=(
+            "True when this field is the supported user-facing selector for "
+            "a settings union, such as condenser_kind."
         ),
     )
 
@@ -2290,13 +2311,94 @@ _GENERAL_SECTION_METADATA = SettingsSectionMetadata(
 )
 
 
+def _facts_for_property(
+    prop: Mapping[str, Any], fallback: Any, annotation: Any
+) -> dict[str, Any]:
+    return structural_facts(
+        prop,
+        fallback_default=_normalize_default(fallback),
+        closed_choices=str not in _annotation_options(annotation),
+    )
+
+
+def _nested_default(section_default: Any, nested_key: str) -> Any:
+    if (
+        isinstance(section_default, BaseModel)
+        and nested_key in type(section_default).model_fields
+    ):
+        return dict(section_default).get(nested_key)
+    return None
+
+
+def _choice_models(facts: Mapping[str, Any]) -> list[SettingsChoice]:
+    return [
+        SettingsChoice(value=value, label=label) for value, label in facts["choices"]
+    ]
+
+
+def _settings_field_schema(
+    *,
+    key: str,
+    label: str,
+    description: str | None,
+    section: SettingsSectionSchema,
+    metadata: SettingsFieldMetadata,
+    facts: Mapping[str, Any],
+    depends_on: list[str],
+    applies_to: list[str],
+    variant_selector: bool,
+) -> SettingsFieldSchema:
+    return SettingsFieldSchema(
+        key=key,
+        label=label,
+        description=description,
+        section=section.key,
+        section_label=section.label,
+        value_type=facts["value_type"],
+        default=facts["default"],
+        prominence=metadata.prominence,
+        depends_on=depends_on,
+        secret=facts["secret"],
+        choices=_choice_models(facts),
+        variant=metadata.variant or section.variant,
+        minimum=facts["minimum"],
+        exclusive_minimum=facts["exclusive_minimum"],
+        maximum=facts["maximum"],
+        exclusive_maximum=facts["exclusive_maximum"],
+        min_length=facts["min_length"],
+        max_length=facts["max_length"],
+        applies_to=applies_to,
+        variant_selector=variant_selector,
+    )
+
+
+def _merge_variant_field(
+    existing: SettingsFieldSchema,
+    facts: Mapping[str, Any],
+    *,
+    variant_id: str | None,
+    selector: bool,
+) -> None:
+    existing_choice_values = {choice.value for choice in existing.choices}
+    for choice in _choice_models(facts):
+        if choice.value not in existing_choice_values:
+            existing.choices.append(choice)
+            existing_choice_values.add(choice.value)
+    if variant_id is not None and variant_id not in existing.applies_to:
+        existing.applies_to.append(variant_id)
+    if selector:
+        existing.variant_selector = True
+
+
 def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     """Export a structured settings schema for a Pydantic settings model.
 
-    The returned schema groups nested models into sections and describes each
-    exported field with its label, type, default, dependencies, choices, and
-    whether the value should be treated as secret input.
+    The returned schema groups nested models into sections. Presentation
+    (label, prominence, dependencies, variant) comes from field annotations.
+    Type, default, choices, secret-ness, and numeric constraints come from
+    the model's canonical JSON Schema.
     """
+    properties = schema_properties(model)
     sections: list[SettingsSectionSchema] = []
     sections_by_key: dict[str, SettingsSectionSchema] = {}
 
@@ -2324,30 +2426,36 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
             section_default = field.get_default(call_default_factory=True)
             section = ensure_section(explicit_section_metadata)
             seen_nested_fields: dict[str, SettingsFieldSchema] = {}
+            track_variants = len(nested_models) > 1
             for nested_model in nested_models:
+                variant = union_variant(nested_model) if track_variants else None
+                variant_id = variant[1] if variant is not None else None
+                selector_name = variant[0] if variant is not None else None
+                nested_properties = schema_properties(nested_model)
                 for nested_key, nested_field in nested_model.model_fields.items():
                     if nested_field.exclude:
                         continue
                     metadata = settings_metadata(nested_field)
                     if metadata is None:
                         continue
+                    prop = nested_properties.get(nested_key)
+                    if prop is None:
+                        continue
+                    facts = _facts_for_property(
+                        prop,
+                        _nested_default(section_default, nested_key),
+                        nested_field.annotation,
+                    )
                     existing_field = seen_nested_fields.get(nested_key)
                     if existing_field is not None:
-                        existing_choice_values = {
-                            choice.value for choice in existing_field.choices
-                        }
-                        for choice in _extract_choices(nested_field.annotation):
-                            if choice.value not in existing_choice_values:
-                                existing_field.choices.append(choice)
-                                existing_choice_values.add(choice.value)
+                        _merge_variant_field(
+                            existing_field,
+                            facts,
+                            variant_id=variant_id,
+                            selector=selector_name == nested_key,
+                        )
                         continue
-                    default_value = None
-                    if (
-                        isinstance(section_default, BaseModel)
-                        and nested_key in type(section_default).model_fields
-                    ):
-                        default_value = dict(section_default).get(nested_key)
-                    field_schema = SettingsFieldSchema(
+                    field_schema = _settings_field_schema(
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
@@ -2355,21 +2463,17 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                             else _humanize_name(nested_key)
                         ),
                         description=nested_field.description,
-                        section=section.key,
-                        section_label=section.label,
-                        value_type=_infer_value_type(nested_field.annotation),
-                        default=_normalize_default(default_value),
-                        prominence=metadata.prominence,
+                        section=section,
+                        metadata=metadata,
+                        facts=facts,
                         depends_on=[
                             f"{explicit_section_metadata.key}.{dependency}"
                             for dependency in metadata.depends_on
                         ],
-                        secret=_contains_secret(nested_field.annotation),
-                        choices=_extract_choices(nested_field.annotation),
-                        # Field-level variant falls back to the enclosing
-                        # section's variant — nested fields inherit their
-                        # parent section's variant by default.
-                        variant=metadata.variant or section.variant,
+                        applies_to=[variant_id] if variant_id is not None else [],
+                        variant_selector=(
+                            selector_name == nested_key and variant_id is not None
+                        ),
                     )
                     seen_nested_fields[nested_key] = field_schema
                     section.fields.append(field_schema)
@@ -2379,10 +2483,13 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
         if metadata is None:
             continue
 
+        prop = properties.get(field_name)
+        if prop is None:
+            continue
         default_value = field.get_default(call_default_factory=True)
         section = ensure_section(section_metadata)
         section.fields.append(
-            SettingsFieldSchema(
+            _settings_field_schema(
                 key=field_name,
                 label=(
                     metadata.label
@@ -2390,17 +2497,12 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                     else _humanize_name(field_name)
                 ),
                 description=field.description,
-                section=section.key,
-                section_label=section.label,
-                value_type=_infer_value_type(field.annotation),
-                default=_normalize_default(default_value),
-                prominence=metadata.prominence,
+                section=section,
+                metadata=metadata,
+                facts=_facts_for_property(prop, default_value, field.annotation),
                 depends_on=list(metadata.depends_on),
-                secret=_contains_secret(field.annotation),
-                choices=_extract_choices(field.annotation),
-                # Top-level field: use its own variant if set, otherwise
-                # fall back to the enclosing section's variant.
-                variant=metadata.variant or section.variant,
+                applies_to=[],
+                variant_selector=False,
             )
         )
 
@@ -2442,106 +2544,6 @@ def _annotation_options(annotation: Any) -> tuple[Any, ...]:
             continue
         options.extend(_annotation_options(arg))
     return tuple(options) or (annotation,)
-
-
-def _contains_secret(annotation: Any) -> bool:
-    return any(option is SecretStr for option in _annotation_options(annotation))
-
-
-def _infer_value_type(annotation: Any) -> SettingsValueType:
-    choices = _choice_values(annotation)
-    if choices:
-        return _value_type_for_values(choices)
-
-    options = _annotation_options(annotation)
-    if all(_is_stringish(option) for option in options):
-        return "string"
-    if all(option is bool for option in options):
-        return "boolean"
-    if all(option is int for option in options):
-        return "integer"
-    if all(option in (int, float) for option in options):
-        return "number"
-    if all(_is_array_annotation(option) for option in options):
-        return "array"
-    if all(_is_object_annotation(option) for option in options):
-        return "object"
-    return "string"
-
-
-def _is_stringish(annotation: Any) -> bool:
-    return annotation in (str, SecretStr, Path)
-
-
-def _is_array_annotation(annotation: Any) -> bool:
-    return get_origin(annotation) in (list, tuple, set, frozenset)
-
-
-def _is_object_annotation(annotation: Any) -> bool:
-    origin = get_origin(annotation)
-    if origin is dict:
-        return True
-    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
-
-
-def _choice_values(annotation: Any) -> list[SettingsChoiceValue]:
-    inner = _annotation_options(annotation)
-    if len(inner) != 1:
-        return []
-
-    candidate = inner[0]
-    origin = get_origin(candidate)
-    if origin is Literal:
-        return [
-            value
-            for value in get_args(candidate)
-            if isinstance(value, (bool, int, float, str))
-        ]
-    if isinstance(candidate, type) and issubclass(candidate, Enum):
-        return [
-            member.value
-            for member in candidate
-            if isinstance(member.value, (bool, int, float, str))
-        ]
-    return []
-
-
-def _value_type_for_values(values: list[SettingsChoiceValue]) -> SettingsValueType:
-    if all(isinstance(value, bool) for value in values):
-        return "boolean"
-    if all(isinstance(value, int) and not isinstance(value, bool) for value in values):
-        return "integer"
-    if all(
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-        for value in values
-    ):
-        return "number"
-    return "string"
-
-
-def _extract_choices(annotation: Any) -> list[SettingsChoice]:
-    inner = _annotation_options(annotation)
-    if len(inner) != 1:
-        return []
-
-    candidate = inner[0]
-    origin = get_origin(candidate)
-    if origin is Literal:
-        return [
-            SettingsChoice(value=value, label=str(value))
-            for value in get_args(candidate)
-            if isinstance(value, (bool, int, float, str))
-        ]
-    if isinstance(candidate, type) and issubclass(candidate, Enum):
-        return [
-            SettingsChoice(
-                value=member.value,
-                label=_humanize_name(member.name),
-            )
-            for member in candidate
-            if isinstance(member.value, (bool, int, float, str))
-        ]
-    return []
 
 
 def _normalize_default(value: Any) -> Any:
