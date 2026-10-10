@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 import time
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -101,6 +102,7 @@ def test_websocket_client_stop_timeout():
     # Mock thread that simulates delay
     mock_thread = MagicMock()
     mock_thread.join.side_effect = lambda timeout: time.sleep(0.1)
+    mock_thread.is_alive.return_value = False
     client._thread = mock_thread
 
     start_time = time.time()
@@ -110,6 +112,23 @@ def test_websocket_client_stop_timeout():
     mock_thread.join.assert_called_with(timeout=5)
     assert end_time - start_time < 1.0
     assert client._thread is None
+
+
+def test_websocket_client_stop_timeout_preserves_thread_reference():
+    """Keep the thread reference when the worker outlives the join timeout."""
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=lambda event: None,
+    )
+    mock_thread = MagicMock()
+    mock_thread.is_alive.return_value = True
+    client._thread = mock_thread
+
+    client.stop()
+
+    mock_thread.join.assert_called_once_with(timeout=5)
+    assert client._thread is mock_thread
 
 
 def test_websocket_client_callback_invocation(mock_event):
@@ -381,3 +400,62 @@ def test_websocket_client_calls_on_reconnect_after_subscription_restored():
     assert connect_calls == 2
     assert [event.id for event in callback_events] == ["state-1", "state-2"]
     reconnect.assert_called_once_with()
+
+
+def test_websocket_client_stops_silent_connection():
+    """Stop closes a connected WebSocket even when no message is received."""
+    server_ready = threading.Event()
+    client_connected = threading.Event()
+    server_disconnected = threading.Event()
+    server_stop = threading.Event()
+    server_state = {}
+
+    async def handler(websocket):
+        client_connected.set()
+        try:
+            await websocket.wait_closed()
+        finally:
+            server_disconnected.set()
+
+    async def serve():
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            server_state["port"] = next(iter(server.sockets)).getsockname()[1]
+            server_ready.set()
+            await asyncio.to_thread(server_stop.wait)
+
+    server_thread = threading.Thread(
+        target=lambda: asyncio.run(serve()),
+        daemon=True,
+    )
+    server_thread.start()
+    assert server_ready.wait(5)
+
+    client = WebSocketCallbackClient(
+        host=f"http://127.0.0.1:{server_state['port']}",
+        conversation_id="silent-shutdown",
+        callback=lambda event: None,
+    )
+
+    try:
+        for _ in range(3):
+            client_connected.clear()
+            server_disconnected.clear()
+            client.start()
+            assert client_connected.wait(5)
+            worker_thread = client._thread
+            assert worker_thread is not None
+
+            started = time.monotonic()
+            client.stop()
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1
+            assert not worker_thread.is_alive()
+            assert client._thread is None
+            assert server_disconnected.wait(1)
+    finally:
+        client.stop()
+        server_stop.set()
+        server_thread.join(5)
+
+    assert not server_thread.is_alive()
