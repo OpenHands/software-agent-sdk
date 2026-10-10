@@ -60,12 +60,14 @@ def fake_smol(monkeypatch, tmp_path):
     connected: list[str] = []
     created: list[_Spec] = []
 
-    def create(config: _Spec) -> _FakeMachine:
+    def create(config: _Spec, conn: _Spec) -> _FakeMachine:
+        assert conn.target == "local"
         created.append(config)
         machines[config.name] = _FakeMachine(config.name)
         return machines[config.name]
 
-    def connect(name: str) -> _FakeMachine:
+    def connect(name: str, conn: _Spec) -> _FakeMachine:
+        assert conn.target == "local"
         connected.append(name)
         if name not in machines:
             raise _NotFound(name)
@@ -75,7 +77,13 @@ def fake_smol(monkeypatch, tmp_path):
 
     module = types.ModuleType("smol")
     setattr(module, "Machine", types.SimpleNamespace(create=create, connect=connect))
-    for spec in ("MachineConfig", "MountSpec", "PortSpec", "ResourceSpec"):
+    for spec in (
+        "ConnectOptions",
+        "MachineConfig",
+        "MountSpec",
+        "PortSpec",
+        "ResourceSpec",
+    ):
         setattr(module, spec, lambda **kwargs: _Spec(kwargs))
     monkeypatch.setitem(sys.modules, "smol", module)
     monkeypatch.setattr(
@@ -170,6 +178,28 @@ def test_keep_alive_reuses_the_machine_on_its_recorded_port(fake_smol):
         SmolMachinesWorkspace(
             keep_alive=True, machine_name="oh-keep", host_port=port + 1
         )
+
+
+def test_cloud_token_cannot_redirect_local_creation_or_reuse(
+    fake_smol, monkeypatch, tmp_path
+):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    monkeypatch.setenv("SMOL_CLOUD_TOKEN", "existing-cloud-token")
+    mount_dir = tmp_path / "project"
+    mount_dir.mkdir()
+    first = SmolMachinesWorkspace(
+        mount_dir=str(mount_dir), keep_alive=True, machine_name="oh-local-token"
+    )
+    name = first.machine_name
+    first.cleanup()
+
+    second = SmolMachinesWorkspace(
+        mount_dir=str(mount_dir), keep_alive=True, machine_name="oh-local-token"
+    )
+    assert second.machine_name == name
+    assert fake_smol.connected == [name]
+    second.cleanup()
 
 
 def test_keep_alive_requires_a_machine_name(fake_smol):

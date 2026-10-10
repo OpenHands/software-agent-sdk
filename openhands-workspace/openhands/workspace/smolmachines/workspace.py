@@ -255,7 +255,9 @@ class SmolMachinesWorkspace(RemoteWorkspace):
         smol = _smol()
         assert self.machine_name is not None
         try:
-            machine = smol.Machine.connect(self.machine_name)
+            machine = smol.Machine.connect(
+                self.machine_name, conn=smol.ConnectOptions(target="local")
+            )
         except Exception as e:
             if getattr(e, "code", None) == "NOT_FOUND":
                 state_file.unlink(missing_ok=True)
@@ -302,7 +304,8 @@ class SmolMachinesWorkspace(RemoteWorkspace):
                 wait_for_ports=False,
                 ready_timeout_seconds=self.health_check_timeout,
                 persistent=self.keep_alive,
-            )
+            ),
+            conn=smol.ConnectOptions(target="local"),
         )
         if self.keep_alive:
             state_file = self._state_path()
