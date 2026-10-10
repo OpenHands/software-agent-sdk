@@ -13,7 +13,7 @@ from pydantic import (
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message
-from openhands.sdk.llm.streaming import TokenCallbackType
+from openhands.sdk.llm.streaming import AnyTokenCallbackType, TokenCallbackType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolDefinition
 
@@ -78,14 +78,7 @@ class RouterLLM(LLM):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        # Select appropriate LLM
-        selected_model = self.select_llm(messages)
-        self.active_llm = self.llms_for_routing[selected_model]
-
-        logger.info(f"RouterLLM routing to {selected_model}...")
-
-        # Delegate to selected LLM.
-        return self.active_llm.completion(
+        return self._select_llm_for_request(messages).completion(
             messages=messages,
             tools=tools,
             add_security_risk_prediction=add_security_risk_prediction,
@@ -93,6 +86,47 @@ class RouterLLM(LLM):
             call_context=call_context,
             **kwargs,
         )
+
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of :meth:`completion`, routed identically."""
+        return await self._select_llm_for_request(messages).acompletion(
+            messages=messages,
+            tools=tools,
+            add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
+            call_context=call_context,
+            **kwargs,
+        )
+
+    def _select_llm_for_request(self, messages: list[Message]) -> LLM:
+        """Resolve the child LLM serving one request.
+
+        The selection is returned to the caller instead of being read back from
+        ``active_llm``, so concurrent calls choosing different children cannot
+        dispatch to each other's model.
+        """
+        selected_model = self.select_llm(messages)
+        if selected_model not in self.llms_for_routing:
+            raise ValueError(
+                f"{type(self).__name__}.select_llm() returned "
+                f"{selected_model!r}, which is not a key in llms_for_routing "
+                f"({sorted(self.llms_for_routing)})"
+            )
+        selected_llm = self.llms_for_routing[selected_model]
+
+        logger.info(f"RouterLLM routing to {selected_model}...")
+
+        # Kept in sync for backwards compatibility only; dispatch never reads it.
+        self.active_llm = selected_llm
+        return selected_llm
 
     @abstractmethod
     def select_llm(self, messages: list[Message]) -> str:
