@@ -345,6 +345,51 @@ class TerminalSession(TerminalSessionBase):
             exit_code=metadata.exit_code,
         )
 
+    def _handle_shell_exited(
+        self,
+        command: str,
+        terminal_content: str,
+        ps1_matches: list[re.Match],
+        exit_code: int,
+    ) -> TerminalObservation:
+        """Shell process is already dead, so no new PS1 will appear.
+
+        Commands that end with `exit` used to sit in the no-change timeout
+        for 30 seconds. Return the output already on screen instead.
+        """
+        if ps1_matches:
+            raw_command_output = self._combine_outputs_between_matches(
+                terminal_content,
+                ps1_matches,
+                get_content_before_last_match=False,
+            )
+        else:
+            raw_command_output = terminal_content
+
+        metadata = CmdOutputMetadata(exit_code=exit_code, working_dir=self._cwd)
+        metadata.suffix = f"\n[The command completed with exit code {exit_code}.]"
+        command_output = self._get_command_output(
+            command,
+            raw_command_output,
+            metadata,
+            is_final=True,
+        )
+        command_output = maybe_truncate(
+            command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+        )
+
+        # No _ready_for_next_command(): the shell is dead, so writing to its
+        # PTY only fails. The caller must start a new session.
+        self.prev_status = TerminalCommandStatus.COMPLETED
+        self.prev_output = ""
+        self._query_filter.reset()
+        return TerminalObservation.from_text(
+            command=command,
+            text=command_output,
+            metadata=metadata,
+            exit_code=exit_code,
+        )
+
     def _handle_nochange_timeout_command(
         self,
         command: str,
@@ -716,6 +761,21 @@ class TerminalSession(TerminalSessionBase):
                     boundary_exit_code=boundary_exit_code,
                 )
                 return obs
+
+            # `exit` kills the shell, so no new PS1 will ever arrive.
+            # Do not wait NO_CHANGE_TIMEOUT_SECONDS for a prompt.
+            shell_code = self.terminal.shell_exit_code()
+            if sent_command and shell_code is not None:
+                cur_terminal_output = self.terminal.read_screen()
+                ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+                    cur_terminal_output
+                )
+                return self._handle_shell_exited(
+                    command,
+                    terminal_content=cur_terminal_output,
+                    ps1_matches=ps1_matches,
+                    exit_code=shell_code,
+                )
 
             # Timeout checks should only trigger if a new prompt hasn't appeared yet.
 

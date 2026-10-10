@@ -263,13 +263,13 @@ class SubprocessTerminal(TerminalInterface):
 
         try:
             while True:
-                # Exit early if process died
-                if self.process and self.process.poll() is not None:
-                    break
-
-                # Use select to avoid busy spin
-                r, _, _ = select.select([fd], [], [], 0.1)
+                # Drain bytes that are already queued before treating a dead
+                # shell as finished. `exit` kills bash with no new PS1.
+                dead = self.process is not None and self.process.poll() is not None
+                r, _, _ = select.select([fd], [], [], 0.0 if dead else 0.1)
                 if not r:
+                    if dead:
+                        break
                     continue
 
                 try:
@@ -283,6 +283,8 @@ class SubprocessTerminal(TerminalInterface):
                         self._add_text_to_buffer(text)
                 except OSError:
                     # Would-block or FD closed
+                    if dead:
+                        break
                     continue
                 except Exception as e:
                     logger.debug(f"Error reading PTY output: {e}")
@@ -499,6 +501,10 @@ class SubprocessTerminal(TerminalInterface):
         """Send SIGINT to the PTY process group (fallback to signal-based interrupt)."""
         if not self._initialized or not self.process:
             return False
+        # A shell that already exited has no process group. killpg would only
+        # log ProcessLookupError.
+        if self.process.poll() is not None:
+            return False
 
         try:
             os.killpg(os.getpgid(self.process.pid), signal.SIGINT)
@@ -507,6 +513,23 @@ class SubprocessTerminal(TerminalInterface):
         except Exception as e:
             logger.error(f"Failed to interrupt subprocess: {e}", exc_info=True)
             return False
+
+    def shell_exit_code(self) -> int | None:
+        if self.process is None:
+            return None
+        code = self.process.poll()
+        if code is None:
+            return None
+        # The reader thread drains queued PTY bytes, then exits. Join it so
+        # the final output is in the buffer before the caller reads it.
+        reader = self.reader_thread
+        if (
+            reader is not None
+            and reader.is_alive()
+            and reader is not threading.current_thread()
+        ):
+            reader.join(timeout=1.0)
+        return code
 
     def is_running(self) -> bool:
         """Heuristic: command running if not at PS1 prompt and process alive."""
