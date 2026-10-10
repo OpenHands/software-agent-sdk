@@ -8,10 +8,13 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 
+from openhands.agent_server.agent_profiles_router import active_agent_profile
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.launch import launch_http_exception
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionChoice,
     OpenAIChatCompletionChunk,
@@ -38,9 +41,9 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
-from openhands.sdk import LLM, Message
-from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk import Message
 from openhands.sdk.conversation.request import (
+    AgentLaunchAdditions,
     SendMessageRequest,
     StartConversationRequest,
 )
@@ -48,8 +51,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
+from openhands.sdk.profiles import OpenHandsAgentProfile
+from openhands.sdk.profiles.resolver import ProfileNotFound
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -89,9 +94,9 @@ def _profile_name_from_model(model: str) -> str:
     )
 
 
-def _load_profile_llm(profile_name: str, config: Config) -> LLM:
+def _require_llm_profile(profile_name: str, config: Config) -> None:
     try:
-        return get_llm_profile_store().load(profile_name, cipher=config.cipher)
+        get_llm_profile_store().load(profile_name, cipher=config.cipher)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -104,47 +109,6 @@ def _load_profile_llm(profile_name: str, config: Config) -> LLM:
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-def _append_system_suffix(existing: str | None, system_text: str) -> str:
-    return "\n\n".join(
-        text for text in ((existing or "").strip(), system_text.strip()) if text
-    )
-
-
-def _with_profile_llm_and_system_text(
-    agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
-    llm: LLM,
-    system_text: str,
-) -> OpenHandsAgentSettings | ACPAgentSettings:
-    updated = (
-        agent_settings.model_copy(update={"llm": llm})
-        if isinstance(agent_settings, OpenHandsAgentSettings)
-        else agent_settings
-    )
-    if not system_text:
-        return updated
-
-    if isinstance(updated, OpenHandsAgentSettings):
-        context = updated.agent_context
-        suffix = _append_system_suffix(context.system_message_suffix, system_text)
-        return updated.model_copy(
-            update={
-                "agent_context": context.model_copy(
-                    update={"system_message_suffix": suffix}
-                )
-            }
-        )
-
-    context = updated.agent_context or AgentContext()
-    suffix = _append_system_suffix(context.system_message_suffix, system_text)
-    return updated.model_copy(
-        update={
-            "agent_context": context.model_copy(
-                update={"system_message_suffix": suffix}
-            )
-        }
-    )
 
 
 def _content_to_sdk_parts(
@@ -299,19 +263,32 @@ def _create_conversation_request(
     config: Config,
     conversation_id: UUID | None,
 ) -> StartConversationRequest:
-    profile_name = _profile_name_from_model(model)
-    llm = _load_profile_llm(profile_name, config)
+    llm_profile = _profile_name_from_model(model)
+    _require_llm_profile(llm_profile, config)
+    profile = active_agent_profile(config, config.cipher)
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active agent profile. Activate one to use this endpoint.",
+        )
+    try:
+        additions = AgentLaunchAdditions(
+            # An ACP server runs its own model.
+            llm_profile_ref=(
+                llm_profile if isinstance(profile, OpenHandsAgentProfile) else None
+            ),
+            system_message_suffix_append=system_text or None,
+        )
+    except ValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System instructions are too long",
+        ) from None
     settings = get_settings_store(config).load() or PersistedSettings()
-    agent_settings = _with_profile_llm_and_system_text(
-        settings.agent_settings,
-        llm,
-        system_text,
-    )
     return settings.conversation_settings.create_request(
         StartConversationRequest,
-        agent_settings=agent_settings.model_dump(
-            mode="json", context={"expose_secrets": True}
-        ),
+        agent_profile_id=profile.id,
+        agent_launch_additions=additions,
         workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,
         initial_message=SendMessageRequest(
@@ -578,9 +555,12 @@ async def _run_agent(
     started_new_conversation = event_service is None
 
     if event_service is None:
-        conversation_info, _ = await conversation_service.start_conversation(
-            start_request
-        )
+        try:
+            conversation_info, _ = await conversation_service.start_conversation(
+                start_request
+            )
+        except (ProfileNotFound, AgentLaunchError, LaunchStoreError) as exc:
+            raise launch_http_exception(exc) from exc
         conversation_id = conversation_info.id
         event_service = await conversation_service.get_event_service(
             conversation_info.id
