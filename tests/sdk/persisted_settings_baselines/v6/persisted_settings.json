@@ -1,0 +1,17 @@
+{
+  "__expected__": {
+    "schema_version": 6,
+    "agent_settings.schema_version": 9,
+    "agent_settings.agent_kind": "acp",
+    "agent_settings.agent_context.current_datetime": null
+  },
+  "schema_version": 6,
+  "agent_settings": {
+    "schema_version": 9,
+    "agent_kind": "acp",
+    "acp_server": "codex",
+    "agent_context": {
+      "current_datetime": null
+    }
+  }
+}

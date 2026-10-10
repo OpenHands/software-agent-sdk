@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from openhands.sdk import Agent, Conversation
+from openhands.sdk import Agent, AgentContext, Conversation
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
@@ -103,6 +103,37 @@ def test_conversation_state_basic_serialization():
     # Verify agent properties
     assert deserialized.agent.llm.model == agent.llm.model
     assert deserialized.agent.__class__ == agent.__class__
+
+
+def test_conversation_state_persistence_preserves_acp_no_datetime():
+    """An explicit ACP no-timestamp value survives the base-state round trip."""
+    file_store = InMemoryFileStore()
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789099")
+    workspace = LocalWorkspace(working_dir="/tmp")
+    agent = Agent(
+        llm=LLM(model="gpt-4o-mini", usage_id="test-llm"),
+        tools=[],
+        agent_context=AgentContext(current_datetime=None),
+    )
+
+    state = ConversationState.create(
+        agent=agent,
+        id=conv_id,
+        workspace=workspace,
+        file_store=file_store,
+    )
+    payload = json.loads(file_store.read("base_state.json"))
+    restored = ConversationState.create(
+        agent=None,
+        id=conv_id,
+        workspace=workspace,
+        file_store=file_store,
+    )
+
+    assert payload["agent"]["agent_context"]["current_datetime"] is None
+    assert state.agent.agent_context is not None
+    assert restored.agent.agent_context is not None
+    assert restored.agent.agent_context.current_datetime is None
 
 
 def test_conversation_state_persistence_save_load():
