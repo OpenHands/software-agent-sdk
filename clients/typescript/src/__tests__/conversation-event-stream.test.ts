@@ -24,6 +24,15 @@ class Socket {
     this.readyState = 3;
     this.onclose?.({ code, reason: '' } as CloseEvent);
   }
+  failHandshake() {
+    this.readyState = 3;
+    this.onerror?.(new Event('error'));
+  }
+  failHandshakeThenClose() {
+    this.readyState = 2;
+    this.onerror?.(new Event('error'));
+    this.finish(1006);
+  }
 }
 
 describe('ConversationEventStream', () => {
@@ -91,6 +100,56 @@ describe('ConversationEventStream', () => {
     stream.reconnect();
     Socket.instances[3].open();
     expect(states.at(-1)?.attemptCount).toBe(0);
+  });
+
+  it('retries when the server is down at start and error fires without close', () => {
+    stream = new ConversationEventStream(options());
+    stream.start();
+    Socket.instances[0].failHandshake();
+
+    vi.advanceTimersByTime(1000);
+    expect(Socket.instances).toHaveLength(2);
+    Socket.instances[1].open();
+
+    expect(states.at(-1)?.isConnected).toBe(true);
+    expect(states.at(-1)?.attemptCount).toBe(0);
+  });
+
+  it('keeps backing off when a reconnect handshake errors without close', () => {
+    stream = new ConversationEventStream({
+      ...options(),
+      reconnect: { enabled: true, maxAttempts: 3 },
+    });
+    stream.start();
+    Socket.instances[0].open();
+    Socket.instances[0].finish(1012);
+
+    vi.advanceTimersByTime(1000);
+    expect(Socket.instances).toHaveLength(2);
+    Socket.instances[1].failHandshake();
+
+    vi.advanceTimersByTime(2000);
+    expect(Socket.instances).toHaveLength(3);
+    Socket.instances[2].open();
+
+    expect(states.at(-1)?.isConnected).toBe(true);
+    expect(states.at(-1)?.attemptCount).toBe(0);
+  });
+
+  it('reports close once when a handshake error is followed by close', () => {
+    const onClose = vi.fn();
+    stream = new ConversationEventStream({
+      ...options(),
+      reconnect: { enabled: true, maxAttempts: 1 },
+      onClose,
+    });
+    stream.start();
+    Socket.instances[0].failHandshakeThenClose();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(Socket.instances).toHaveLength(2);
+    stream.stop();
   });
 
   it('cancels pending reconnects and handshakes on stop', () => {
