@@ -42,6 +42,8 @@ export function buildConversationEventStreamUrl(host: string, conversationId: st
  */
 export class ConversationEventStream {
   private socket: WebSocket | null = null;
+  private finishedSockets = new WeakSet<WebSocket>();
+  private closedSockets = new WeakSet<WebSocket>();
   private active = false;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private handshakeTimer?: ReturnType<typeof setTimeout>;
@@ -115,7 +117,8 @@ export class ConversationEventStream {
     errorEvent: Event | null,
     closeEvent: CloseEvent | null
   ): void {
-    if (this.socket !== socket) return;
+    if (this.socket !== socket || this.finishedSockets.has(socket)) return;
+    this.finishedSockets.add(socket);
     clearTimeout(this.handshakeTimer);
     this.handshakeTimer = undefined;
     this.socket = null;
@@ -124,7 +127,10 @@ export class ConversationEventStream {
       ...(error ? { error } : {}),
     });
     if (errorEvent) this.options.onError?.(errorEvent);
-    if (closeEvent) this.options.onClose?.(closeEvent);
+    if (closeEvent) {
+      this.closedSockets.add(socket);
+      this.options.onClose?.(closeEvent);
+    }
     this.scheduleReconnect();
   }
 
@@ -179,6 +185,13 @@ export class ConversationEventStream {
         this.options.onError?.(event);
       };
       socket.onclose = (event) => {
+        if (this.finishedSockets.has(socket)) {
+          if (!this.closedSockets.has(socket)) {
+            this.closedSockets.add(socket);
+            this.options.onClose?.(event);
+          }
+          return;
+        }
         if (this.socket !== socket) {
           if (!this.active && this.socket === null) this.options.onClose?.(event);
           return;

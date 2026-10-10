@@ -21,3 +21,6 @@ same stream to reconnect:
 {"isConnected":false,"isReconnecting":true,"attemptCount":6,"error":"WebSocket connection failed before opening"}
 {"isConnected":true,"isReconnecting":false,"attemptCount":0,"error":null}
 ```
+
+A fake transport that emits `error` followed by `close` now reports one
+`onClose` callback and schedules only one retry.

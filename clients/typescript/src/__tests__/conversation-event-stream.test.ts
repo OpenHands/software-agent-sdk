@@ -28,6 +28,11 @@ class Socket {
     this.readyState = 3;
     this.onerror?.(new Event('error'));
   }
+  failHandshakeThenClose() {
+    this.readyState = 2;
+    this.onerror?.(new Event('error'));
+    this.finish(1006);
+  }
 }
 
 describe('ConversationEventStream', () => {
@@ -129,6 +134,22 @@ describe('ConversationEventStream', () => {
 
     expect(states.at(-1)?.isConnected).toBe(true);
     expect(states.at(-1)?.attemptCount).toBe(0);
+  });
+
+  it('reports close once when a handshake error is followed by close', () => {
+    const onClose = vi.fn();
+    stream = new ConversationEventStream({
+      ...options(),
+      reconnect: { enabled: true, maxAttempts: 1 },
+      onClose,
+    });
+    stream.start();
+    Socket.instances[0].failHandshakeThenClose();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(Socket.instances).toHaveLength(2);
+    stream.stop();
   });
 
   it('cancels pending reconnects and handshakes on stop', () => {
