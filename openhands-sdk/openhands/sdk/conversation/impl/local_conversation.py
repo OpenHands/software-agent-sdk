@@ -512,6 +512,10 @@ class LocalConversation(BaseConversation):
         # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
+        # Subscribe before an LLM can be switched in. switch_llm() and
+        # switch_profile() register LLMs before the first message/run, and those
+        # registrations must reach ConversationStats as they happen.
+        self.llm_registry.subscribe(self._state.stats.register_llm)
         self._profile_store = LLMProfileStore(profile_store_dir)
         self._cipher = cipher
 
@@ -1588,7 +1592,6 @@ class LocalConversation(BaseConversation):
             # within the same batch are silently skipped (first-write-wins),
             # preventing a ValueError when e.g. agent and condenser LLMs were
             # both serialised with usage_id="default".
-            self.llm_registry.subscribe(self._state.stats.register_llm)
             registered = set(self.llm_registry.list_usage_ids())
             for llm in list(self.agent.get_all_llms()):
                 if llm.usage_id not in registered:
