@@ -9,8 +9,9 @@ Unversioned "current" aliases (for example ``deepseek-chat``, ``kimi-for-coding`
 stay. When a new version lands, drop the oldest one in the same line.
 """
 
-# GPT: gpt-6 and gpt-5.6. Codex: gpt-5.3-codex and gpt-5.2-codex.
+# GPT: gpt-6.1 and gpt-6. Codex: gpt-5.3-codex and gpt-5.2-codex.
 VERIFIED_OPENAI_MODELS = [
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -22,12 +23,12 @@ VERIFIED_OPENAI_MODELS = [
     "gpt-5.2-codex",
 ]
 
-# Opus: 5.5 and 5. Sonnet: 5 and 4.6. Haiku: 4.5. Fable: 5.1 and 5.
+# Opus: 5.5 and 5. Sonnet: 5.5 and 5. Haiku: 4.5. Fable: 5.1 and 5.
 VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
-    "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
     "claude-fable-5-1",
     "claude-fable-5",
@@ -49,7 +50,7 @@ VERIFIED_GEMINI_MODELS = [
     "gemini-3.1-flash-lite",
 ]
 
-# V4 and V3.2; ``deepseek-chat`` is the current alias.
+# V4.1 and V4; ``deepseek-chat`` is the current alias.
 VERIFIED_DEEPSEEK_MODELS = [
     "deepseek-chat",
     "deepseek-v4-pro",
@@ -76,7 +77,9 @@ VERIFIED_MINIMAX_MODELS = [
 # GLM 5.3 and 5.2.
 VERIFIED_GLM_MODELS = [
     "glm-5.3",
+    "glm-5.3-prime",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
 ]
 
@@ -94,8 +97,10 @@ VERIFIED_QWEN_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
     "qwen3.8-max",
+    "qwen3.8-max-prime",
     "qwen3.7-max",
     "qwen3.8-flash",
+    "qwen3.8-omni-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
@@ -157,10 +162,11 @@ VERIFIED_DIGITALOCEAN_MODELS = [
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-5-5",
     "claude-opus-5",
+    "claude-sonnet-5-5",
     "claude-sonnet-5",
-    "claude-sonnet-4-6",
     "claude-fable-5-1",
     "claude-fable-5",
+    "gpt-6.1-sol",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
@@ -185,7 +191,9 @@ VERIFIED_OPENHANDS_MODELS = [
     "devstral-2512",
     "devstral-medium-2512",
     "glm-5.3",
+    "glm-5.3-prime",
     "glm-5.3-flash",
+    "glm-5.3-flashx",
     "glm-5.2",
     "nemotron-3.5-lightning-30b-a3b",
     "nemotron-3-nano",
@@ -194,8 +202,10 @@ VERIFIED_OPENHANDS_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
     "qwen3.8-max",
+    "qwen3.8-max-prime",
     "qwen3.7-max",
     "qwen3.8-flash",
+    "qwen3.8-omni-flash",
     "qwen3.7-flash",
     "qwen3-coder-480b",
     "qwen3-coder-next",
