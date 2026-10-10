@@ -6,13 +6,14 @@ default install dir is redirected), so nothing touches the real ~/.openhands.
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.plugins_router import plugins_router
-from openhands.sdk.plugin import Plugin
+from openhands.sdk.plugin import Plugin, PluginFetchError
 
 
 def _make_installable_plugin(plugin_dir: Path, name: str) -> Path:
@@ -85,6 +86,22 @@ def test_install_existing_without_force_returns_409(client: TestClient, tmp_path
 
     conflict = client.post("/plugins/install", json={"source": str(src)})
     assert conflict.status_code == 409
+
+
+def test_install_fetch_error_returns_400(client: TestClient):
+    with patch(
+        "openhands.agent_server.plugins_router.service_install_plugin",
+        side_effect=PluginFetchError("unknown ref"),
+    ):
+        response = client.post(
+            "/plugins/install",
+            json={"source": "github:owner/repo", "ref": "missing-ref"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Failed to fetch plugin source. Check that the source is valid."
+    )
 
 
 def test_missing_plugin_returns_404(client: TestClient):

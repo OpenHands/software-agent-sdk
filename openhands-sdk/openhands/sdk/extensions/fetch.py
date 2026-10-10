@@ -263,6 +263,7 @@ def _fetch_remote_source_with_resolution(
         ref=ref,
         update=update,
         git_helper=git_helper,
+        require_requested_ref=bool(ref),
     )
 
     if result is None:

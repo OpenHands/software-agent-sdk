@@ -7,7 +7,7 @@ from typing import Literal
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.utils.redact import (
-    redact_url_credentials,
+    redact_url_credentials as redact_url_credentials,
     redact_url_credentials_in_text,
     redact_url_params,
 )
@@ -87,7 +87,7 @@ def run_git_command(
     Raises:
         GitCommandError: If the git command fails
     """
-    redacted_args = [redact_url_credentials(a) for a in args]
+    redacted_args = [redact_url_credentials_in_text(a) for a in args]
     cmd_str = shlex.join(redacted_args)
 
     try:
