@@ -1,0 +1,145 @@
+{
+  "variant": "candidate",
+  "case": "2",
+  "provenance": {
+    "source_file": "pr-case2.raw.json",
+    "source_sha256": "ce6371e03db5543ea9c6ad39f049e5329231676dc1c0ec6f20b69696d9e8fdab",
+    "record_label": "pr-rerun",
+    "source_revision": "Not recorded by the raw recorder; supplied for the local candidate."
+  },
+  "versions": {
+    "python": "3.13.12",
+    "openhands_sdk": "1.49.6",
+    "openhands_tools": "1.49.6",
+    "litellm": "1.93.0",
+    "pydantic": "2.12.5"
+  },
+  "scripted_first_response": {
+    "reasoning_content": "(120 chars, see live_deepseek.py)",
+    "tool_calls": [
+      {
+        "id": "call_00_Hq4nT6yUe2",
+        "name": "file_editor",
+        "arguments": "{\"command\": \"view\", \"path\": <workspace>/notes.txt"
+      },
+      {
+        "id": "call_01_Pz8sD1kFa5",
+        "name": "task_tracker",
+        "arguments": "{\"command\": \"plan\", \"task_list\": [{\"title\": \"Summarize notes\", \"notes\": \"\", \"status\": \"todo\"}]}"
+      }
+    ]
+  },
+  "second_request": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "params": {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "max_completion_tokens": 512,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "reasoning": {
+        "enabled": true,
+        "effort": "low"
+      },
+      "provider": {
+        "order": [
+          "DeepSeek"
+        ],
+        "allow_fallbacks": false
+      }
+    },
+    "tools_sha256": "9e96b6380a3be918d02c4aee548ef1f5152184623b0a213c8e03552bf7dae89f",
+    "messages": [
+      {
+        "content": "<SDK system prompt: 15228 chars, sha256 ec7656c1a1975904653d8cba87e41ae5d493d110ce1607b6d8b5476e254b6d3a>",
+        "role": "system"
+      },
+      {
+        "content": "Look at <workspace>/notes.txt and set up a task list for summarizing it. Then reply with a one-line summary.",
+        "role": "user"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "call_00_Hq4nT6yUe2",
+            "type": "function",
+            "function": {
+              "name": "file_editor",
+              "arguments": "{\"_openhands_malformed_tool_call\": true, \"error\": \"Error validating tool 'file_editor': Expecting value: line 1 column 29 (char 28). Arguments: unparseable JSON\"}"
+            }
+          },
+          {
+            "id": "call_01_Pz8sD1kFa5",
+            "type": "function",
+            "function": {
+              "name": "task_tracker",
+              "arguments": "{\"command\": \"plan\", \"task_list\": [{\"title\": \"Summarize notes\", \"notes\": \"\", \"status\": \"todo\"}]}"
+            }
+          }
+        ],
+        "reasoning_content": "The user wants the notes file inspected and a task list set up. I will call both tools in parallel in a single response."
+      },
+      {
+        "content": "Error validating tool 'file_editor': Expecting value: line 1 column 29 (char 28). Arguments: unparseable JSON",
+        "role": "tool",
+        "tool_call_id": "call_00_Hq4nT6yUe2",
+        "name": "file_editor"
+      },
+      {
+        "content": "Task list has been updated with 1 item(s).",
+        "role": "tool",
+        "tool_call_id": "call_01_Pz8sD1kFa5",
+        "name": "task_tracker"
+      }
+    ]
+  },
+  "response": {
+    "status": 200,
+    "provider_name": "DeepSeek",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "tool_calls": [
+          {
+            "type": "function",
+            "index": 0,
+            "id": "call_00_1riyH2uYtBLqwdjlqkof5240",
+            "function": {
+              "name": "file_editor",
+              "arguments": "{\"command\": \"view\", \"path\": \"<workspace>/notes.txt\", \"security_risk\": \"LOW\", \"summary\": \"View notes.txt contents\"}"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "sdk_events": [
+    "SystemPromptEvent:",
+    "MessageEvent:",
+    "ActionEvent:call_00_Hq4nT6yUe2",
+    "AgentErrorEvent:call_00_Hq4nT6yUe2",
+    "ActionEvent:call_01_Pz8sD1kFa5",
+    "ObservationEvent:call_01_Pz8sD1kFa5",
+    "ActionEvent:call_00_1riyH2uYtBLqwdjlqkof5240",
+    "ObservationEvent:call_00_1riyH2uYtBLqwdjlqkof5240",
+    "ConversationErrorEvent:"
+  ],
+  "real_api_calls": 1,
+  "run_outcome": {
+    "llm_calls_total": 2,
+    "run_result": "returned",
+    "execution_status": "ConversationExecutionStatus.ERROR",
+    "error_event_payload_recorded": false
+  },
+  "baseline_comparison": {
+    "request_parameters_match": true,
+    "system_prompt_hash_matches": true,
+    "normalized_tools_hash_matches": true,
+    "normalized_user_message_matches": true,
+    "tool_call_objects_match": true,
+    "tool_result_contents_and_order_match": true,
+    "messages_match_after_combining_baseline_calls": true,
+    "validation_error_event_precedes_last_action": true
+  }
+}
