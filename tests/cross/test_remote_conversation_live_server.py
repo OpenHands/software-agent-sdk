@@ -725,6 +725,35 @@ def test_remote_conversation_created_from_agent_settings(server_env):
     conversation.close()
 
 
+def test_conversation_budget_round_trips_over_real_server(server_env):
+    """A budget set at creation survives the REST round-trip.
+
+    Creates via ``POST /api/conversations`` with ``max_budget_per_run`` and
+    reads it back from ``GET /api/conversations/{id}``, proving the response
+    schema exposes the bound a watchdog would enforce against.
+    """
+    host = server_env["host"]
+    with httpx.Client(base_url=host, timeout=10.0) as client:
+        create_resp = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": "test"},
+                    "tools": [],
+                },
+                "workspace": {"working_dir": "/tmp/workspace/project"},
+                "max_budget_per_run": 3.5,
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        assert create_resp.json()["max_budget_per_run"] == 3.5
+        conv_id = create_resp.json()["id"]
+
+        get_resp = client.get(f"/api/conversations/{conv_id}")
+        assert get_resp.status_code == 200, get_resp.text
+        assert get_resp.json()["max_budget_per_run"] == 3.5
+
+
 def test_openai_chat_completions_gateway_over_real_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
 ):

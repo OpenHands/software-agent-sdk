@@ -17,6 +17,7 @@ from litellm.exceptions import (
 )
 
 from .types import (
+    LLMBudgetExceededError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
     LLMRateLimitError,
@@ -142,7 +143,7 @@ def is_prompt_cache_too_small(exception: Exception) -> bool:
 
 def is_budget_exceeded_error(exception: BaseException) -> bool:
     """Recognize explicit budget denials before or after SDK error mapping."""
-    if isinstance(exception, BudgetExceededError):
+    if isinstance(exception, (BudgetExceededError, LLMBudgetExceededError)):
         return True
     if not isinstance(exception, (RateLimitError, LLMRateLimitError)):
         return False
