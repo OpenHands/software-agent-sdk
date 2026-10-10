@@ -16,7 +16,14 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from openhands.agent_server._secrets_exposure import (
     get_cipher,
@@ -35,6 +42,7 @@ from openhands.sdk.llm.provider_connection_store import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 
 
 logger = get_logger(__name__)
@@ -64,6 +72,22 @@ class ProviderConnectionUpdateRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=2048)
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("api_key", mode="after")
+    @classmethod
+    def _reject_blank_or_redacted_api_key(cls, v: SecretStr | None) -> SecretStr | None:
+        # A blank key would wipe the shared credential, and the masked
+        # placeholder ("**********") is what GET-style redaction returns — a
+        # client echoing it back must not overwrite the stored key with it.
+        # Explicit null is left to the handler, which keeps its dedicated 422.
+        if v is None:
+            return v
+        if not v.get_secret_value().strip() or is_redacted_secret(v):
+            raise ValueError(
+                "api_key must not be blank or the redacted placeholder; "
+                "provide a new key to rotate it"
+            )
+        return v
 
     @model_validator(mode="after")
     def _reject_null_required_fields(self) -> ProviderConnectionUpdateRequest:
