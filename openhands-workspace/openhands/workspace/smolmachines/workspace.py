@@ -197,13 +197,17 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             ).hexdigest()
 
         started = time.time()
-        self._machine = self._reuse() or self._create()
+        reused = self._reuse()
+        self._machine = reused if reused is not None else self._create()
         object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
         object.__setattr__(self, "api_key", os.environ.get("SESSION_API_KEY"))
         try:
             self._wait_for_health(timeout=self.health_check_timeout)
         except BaseException:
-            self.cleanup()
+            if self.keep_alive and reused is None:
+                self._discard_failed_start()
+            else:
+                self.cleanup()
             raise
         logger.info(
             "smol machine %s is serving the agent at %s (%.0fs)",
@@ -308,6 +312,23 @@ class SmolMachinesWorkspace(RemoteWorkspace):
             finally:
                 temp.unlink(missing_ok=True)
         return machine
+
+    def _discard_failed_start(self) -> None:
+        """A newly created VM with no healthy server must not be reused."""
+        try:
+            self._machine.delete()
+        except Exception as e:
+            logger.warning(
+                "Could not delete unhealthy smol machine %s: %s", self.machine_name, e
+            )
+            return
+        self._machine = None
+        try:
+            self._state_path().unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(
+                "Could not clear smol machine state %s: %s", self.machine_name, e
+            )
 
     def _wait_for_health(self, *, timeout: float) -> None:
         deadline = time.time() + timeout

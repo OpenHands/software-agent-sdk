@@ -173,6 +173,31 @@ def test_unhealthy_server_does_not_leak_the_machine(fake_smol, monkeypatch):
     assert fake_smol.machines[config.name].events == ["delete"]
 
 
+def test_unhealthy_new_kept_machine_is_not_reused(fake_smol, monkeypatch, tmp_path):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    def never_healthy(self, timeout):
+        raise RuntimeError("did not become healthy")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SmolMachinesWorkspace, "_wait_for_health", never_healthy)
+        with pytest.raises(RuntimeError, match="healthy"):
+            SmolMachinesWorkspace(
+                keep_alive=True, machine_name="oh-unhealthy", host_port=38134
+            )
+
+    (config,) = fake_smol.created
+    assert fake_smol.machines[config.name].events == ["delete"]
+    assert not list((tmp_path / "state" / "openhands" / "smolmachines").glob("*.json"))
+
+    recovered = SmolMachinesWorkspace(
+        keep_alive=True, machine_name="oh-unhealthy", host_port=38134
+    )
+    assert len(fake_smol.created) == 2
+    assert fake_smol.connected == []
+    recovered.cleanup()
+
+
 @pytest.mark.parametrize("keep_alive", [False, True])
 def test_transient_cleanup_failure_retains_machine_for_retry(
     fake_smol, monkeypatch, keep_alive
