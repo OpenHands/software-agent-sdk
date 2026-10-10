@@ -129,6 +129,26 @@ def test_only_listed_host_variables_reach_the_server(fake_smol, monkeypatch):
     workspace.cleanup()
 
 
+def test_session_key_matches_agent_server_precedence(fake_smol, monkeypatch):
+    from openhands.workspace import SmolMachinesWorkspace
+
+    monkeypatch.setenv("SESSION_API_KEY", "legacy-key")
+    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "current-key")
+
+    workspace = SmolMachinesWorkspace(host_port=38135)
+    assert workspace.api_key == "current-key"
+    assert fake_smol.created[-1].env["OH_SESSION_API_KEYS_0"] == "current-key"
+    workspace.cleanup()
+
+    # A customized forwarding list must not select a key the VM never sees.
+    legacy_only = SmolMachinesWorkspace(
+        host_port=38136, forward_env=["SESSION_API_KEY"]
+    )
+    assert legacy_only.api_key == "legacy-key"
+    assert fake_smol.created[-1].env == {"SESSION_API_KEY": "legacy-key"}
+    legacy_only.cleanup()
+
+
 def test_keep_alive_reuses_the_machine_on_its_recorded_port(fake_smol):
     from openhands.workspace import SmolMachinesWorkspace
 
