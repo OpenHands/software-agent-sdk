@@ -13,7 +13,7 @@ dependencies = [
   "openhands-tools",
   "openai>=2.33.0,<3",
   "pydantic>=2.13.5",
-  "sqlalchemy>=2",
+  "sqlalchemy>=2.1.1",
   "uvicorn>=0.54.0",
   "websockets>=12",
   "wsproto>=1.2.0",
