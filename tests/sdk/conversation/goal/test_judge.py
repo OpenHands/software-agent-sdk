@@ -5,7 +5,12 @@ from typing import cast
 import pytest
 from pydantic import PrivateAttr
 
-from openhands.sdk.conversation.goal import GoalVerdict, judge_goal
+from openhands.sdk.conversation.goal import (
+    GoalContinue,
+    GoalController,
+    GoalVerdict,
+    judge_goal,
+)
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.testing import TestLLM
 
@@ -67,10 +72,24 @@ class _StreamGuardLLM(TestLLM):
         ),
         # unparseable -> conservative (keeps the caller working)
         ("I cannot decide.", 0.0, False, "Judge verdict could not be parsed."),
+        # complete sent as a string must not read as True
+        (
+            '{"score": 0.2, "complete": "false", "missing": "tests not run"}',
+            0.2,
+            False,
+            "tests not run",
+        ),
         # out-of-range score is clamped into [0, 1]
         ('{"score": 1.5, "complete": true, "missing": ""}', 1.0, True, ""),
     ],
-    ids=["complete", "incomplete", "json-in-fence", "unparseable", "clamped-score"],
+    ids=[
+        "complete",
+        "incomplete",
+        "json-in-fence",
+        "unparseable",
+        "string-false",
+        "clamped-score",
+    ],
 )
 def test_judge_goal_parses_verdict(response, score, complete, missing):
     verdict = judge_goal(_judge(response), "build it", [])
@@ -78,6 +97,22 @@ def test_judge_goal_parses_verdict(response, score, complete, missing):
     assert verdict.score == score
     assert verdict.complete is complete
     assert verdict.missing == missing
+
+
+def test_goal_controller_continues_on_string_false_verdict():
+    """A non-boolean false verdict must not stop the goal loop as complete."""
+    controller = GoalController(
+        "run tests",
+        _judge('{"score": 0.2, "complete": "false", "missing": "tests not run"}'),
+        max_iterations=2,
+    )
+
+    step = controller.on_run_finished([])
+
+    assert isinstance(step, GoalContinue)
+    assert step.verdict.score == 0.2
+    assert step.verdict.complete is False
+    assert step.verdict.missing == "tests not run"
 
 
 def test_judge_goal_disables_streaming_on_judge_llm():
