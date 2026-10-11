@@ -1,5 +1,6 @@
 """Test PodmanWorkspace import, launch command, and startup rollback."""
 
+import gc
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,7 @@ def fake_podman():
         healthy=True,
         running="true",
         logs="",
+        rm_results=[],
     )
 
     def execute(cmd, **kwargs):
@@ -36,6 +38,8 @@ def fake_podman():
             return subprocess.CompletedProcess(cmd, 0, f"{fake.running}\n", "")
         if cmd[1] == "logs":
             return subprocess.CompletedProcess(cmd, 0, fake.logs, "")
+        if cmd[1] == "rm" and fake.rm_results:
+            return fake.rm_results.pop(0)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def run(cmd, **kwargs):
@@ -158,3 +162,61 @@ def test_podman_workspace_requires_podman(fake_podman):
         PodmanWorkspace(host_port=8000)
 
     assert fake_podman.calls == []
+
+
+def _rm_calls(fake) -> list[list[str]]:
+    return [cmd for cmd in fake.calls if cmd[1] == "rm"]
+
+
+def test_podman_workspace_cleanup_retries_failed_removal(fake_podman):
+    """A failed 'podman rm' keeps the container tracked for the next cleanup."""
+    workspace = PodmanWorkspace(host_port=8000, detach_logs=False)
+    fake_podman.rm_results = [
+        subprocess.CompletedProcess([], 125, "", "Error: container is busy")
+    ]
+
+    with pytest.raises(RuntimeError, match="container is busy"):
+        workspace.cleanup()
+    workspace.cleanup()
+    workspace.cleanup()
+
+    name = _container_name(fake_podman)
+    assert _rm_calls(fake_podman) == [["podman", "rm", "--force", "--ignore", name]] * 2
+
+
+def test_podman_workspace_startup_error_survives_failed_removal(fake_podman):
+    """A failed rollback is reported as a note on the startup error."""
+    fake_podman.healthy = False
+    fake_podman.running = "false"
+    fake_podman.logs = "error: unrecognized arguments\n"
+    fake_podman.rm_results = [
+        subprocess.CompletedProcess([], 125, "", "Error: container is busy")
+    ]
+
+    with pytest.raises(RuntimeError, match="stopped unexpectedly") as excinfo:
+        PodmanWorkspace(host_port=8000, detach_logs=False)
+
+    assert any("container is busy" in note for note in excinfo.value.__notes__)
+
+    # Releasing the exception frees the workspace by reference counting alone,
+    # so __del__ retries the removal while this test's fake podman is active.
+    gc.disable()
+    try:
+        del excinfo
+    finally:
+        gc.enable()
+    name = _container_name(fake_podman)
+    assert _rm_calls(fake_podman) == [["podman", "rm", "--force", "--ignore", name]] * 2
+
+
+def test_podman_workspace_exit_keeps_body_error(fake_podman):
+    """Leaving the context with an error keeps that error if removal fails."""
+    fake_podman.rm_results = [
+        subprocess.CompletedProcess([], 125, "", "Error: container is busy")
+    ]
+
+    with pytest.raises(ValueError, match="from the body") as excinfo:
+        with PodmanWorkspace(host_port=8000, detach_logs=False):
+            raise ValueError("from the body")
+
+    assert any("container is busy" in note for note in excinfo.value.__notes__)

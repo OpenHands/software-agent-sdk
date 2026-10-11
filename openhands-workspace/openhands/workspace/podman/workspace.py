@@ -128,8 +128,8 @@ class PodmanWorkspace(RemoteWorkspace):
         try:
             self._start_container()
             self._wait_for_health(timeout=self.health_check_timeout)
-        except BaseException:
-            self.cleanup()
+        except BaseException as exc:
+            self._cleanup_after(exc)
             raise
         logger.info("Podman workspace is ready at %s", self.host)
 
@@ -246,7 +246,10 @@ class PodmanWorkspace(RemoteWorkspace):
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
         """Context manager exit - removes the container."""
-        self.cleanup()
+        if exc_val is None:
+            self.cleanup()
+        else:
+            self._cleanup_after(exc_val)
 
     def __del__(self) -> None:
         """Remove the container when the workspace is destroyed."""
@@ -254,23 +257,39 @@ class PodmanWorkspace(RemoteWorkspace):
             object.__getattribute__(self, "__pydantic_private__")
         except AttributeError:
             return
-        self.cleanup()
+        try:
+            self.cleanup()
+        except Exception as e:
+            logger.warning("%s", e)
+
+    def _cleanup_after(self, exc: BaseException) -> None:
+        """Run cleanup() and attach any failure to ``exc`` as a note."""
+        try:
+            self.cleanup()
+        except Exception as cleanup_error:
+            exc.add_note(f"Cleanup also failed: {cleanup_error}")
 
     def cleanup(self) -> None:
-        """Stop and remove the container, then stop log streaming."""
+        """Stop and remove the container, then stop log streaming.
+
+        Raises:
+            RuntimeError: If ``podman rm`` fails. The container stays tracked,
+                so a later call retries the removal.
+        """
+        error: str | None = None
         if self._container_name is not None:
             logger.info("Removing container: %s", self._container_name)
             result = execute_command(
                 ["podman", "rm", "--force", "--ignore", self._container_name],
                 print_output=False,
             )
-            if result.returncode != 0:
-                logger.warning(
-                    "Failed to remove container %s: %s",
-                    self._container_name,
-                    result.stderr,
+            if result.returncode == 0:
+                self._container_name = None
+            else:
+                error = (
+                    f"Failed to remove container {self._container_name}: "
+                    f"{result.stderr}"
                 )
-            self._container_name = None
 
         if self._logs_process is not None:
             self._logs_process.terminate()
@@ -279,3 +298,5 @@ class PodmanWorkspace(RemoteWorkspace):
         if self._logs_thread is not None:
             self._logs_thread.join(timeout=2)
             self._logs_thread = None
+        if error is not None:
+            raise RuntimeError(error)
