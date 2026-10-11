@@ -2361,6 +2361,110 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('FileClient creates directories with an authenticated, encoded query and no body', async () => {
+    global.fetch = vi.fn().mockResolvedValue(Response.json({ success: true }));
+    const client = new FileClient({ host: 'http://example.com', apiKey: 'test-key' });
+
+    await expect(client.createDirectory("/workspace/O'Brien & notes")).resolves.toEqual({
+      success: true,
+    });
+
+    expect(global.fetch).toHaveBeenCalledExactlyOnceWith(
+      'http://example.com/api/file/create_directory?path=%2Fworkspace%2FO%27Brien+%26+notes',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ 'X-Session-API-Key': 'test-key' }),
+      })
+    );
+    expect((global.fetch as Mock).mock.calls[0][1].body).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'FileClient creates directories with runtime routing support=%s',
+    async (scoped) => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({ capabilities: scoped ? ['conversation_runtime_routes_v1'] : [] })
+        )
+        .mockResolvedValueOnce(Response.json({ success: true }));
+      const client = new FileClient({ host: 'http://example.com', conversationId: 'selected' });
+
+      await expect(client.createDirectory('/workspace/new')).resolves.toEqual({ success: true });
+
+      expect(global.fetch).toHaveBeenLastCalledWith(
+        scoped
+          ? 'http://example.com/api/conversations/selected/file/create_directory?path=%2Fworkspace%2Fnew'
+          : 'http://example.com/api/file/create_directory?path=%2Fworkspace%2Fnew&cid=selected',
+        expect.objectContaining({ method: 'POST' })
+      );
+    }
+  );
+
+  it.each([
+    [400, 'Path exists and is not a directory'],
+    [403, 'Permission denied'],
+  ])('FileClient preserves directory creation HTTP %s errors', async (status, detail) => {
+    global.fetch = vi.fn().mockResolvedValue(Response.json({ detail }, { status }));
+    const client = new FileClient({ host: 'http://example.com' });
+
+    await expect(client.createDirectory('/workspace/new')).rejects.toMatchObject({
+      name: 'HttpError',
+      status,
+      response: { detail },
+    });
+  });
+
+  it('FileClient forwards directory creation cancellation to the fetch request', async () => {
+    const controller = new AbortController();
+    let requestSignal: AbortSignal | null | undefined;
+    global.fetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      requestSignal = init.signal;
+      const signal = init.signal;
+      if (!signal) throw new Error('Directory creation must forward the abort signal');
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const client = new FileClient({ host: 'http://example.com' });
+    const request = client.createDirectory('/workspace/new', { signal: controller.signal });
+
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it('FileClient cancels directory searches while preserving query parameters and authentication', async () => {
+    const controller = new AbortController();
+    let requestSignal: AbortSignal | null | undefined;
+    global.fetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      requestSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const client = new FileClient({ host: 'http://example.com', apiKey: 'test-key' });
+    const request = client.searchSubdirectories("/workspace/O'Brien & notes", {
+      pageId: 'page 2',
+      limit: 10,
+      includeHidden: true,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    expect(requestSignal?.aborted).toBe(true);
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(global.fetch).toHaveBeenCalledExactlyOnceWith(
+      'http://example.com/api/file/search_subdirs?path=%2Fworkspace%2FO%27Brien+%26+notes&page_id=page+2&limit=10&include_hidden=true',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ 'X-Session-API-Key': 'test-key' }),
+      })
+    );
+  });
+
   it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {
     global.fetch = vi
       .fn()

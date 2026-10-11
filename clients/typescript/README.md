@@ -343,6 +343,22 @@ Handles remote command execution and file operations.
 - `gitDiff(path)` - Get git diff for a path
 - `close()` - Clean up resources
 
+### FileClient
+
+Import `FileClient` from `@openhands/typescript-client/clients` for typed file operations.
+`createDirectory(path, { signal? })` creates an absolute directory path, including missing
+parents, and returns `{ success: true }`. Existing directories succeed without changing
+their contents. Pass `conversationId` in the client options to target that conversation's
+workspace; omit it for host-level directory creation.
+
+```typescript
+import { FileClient } from '@openhands/typescript-client/clients';
+
+const files = new FileClient({ host: 'http://localhost:8000', apiKey: 'session-key' });
+const controller = new AbortController();
+await files.createDirectory('/workspace/new project', { signal: controller.signal });
+```
+
 ### RemoteState
 
 Manages conversation state and provides access to events.
