@@ -871,6 +871,7 @@ Preconditions:
   deltas are transient frames, while the reply itself is stored as a
   `MessageEvent` (or `finish` action).
 - **Token callbacks on a remote conversation (`F33.conversation-token-callbacks`), known bug.**
+  Requires: `F33.conversation-streaming`
   The `Conversation(...)` factory forwards `token_callbacks` to
   `RemoteConversation`, whose constructor swallows it in `**_`, so the
   callbacks are never called although the server streamed the same tokens
@@ -883,6 +884,7 @@ Preconditions:
   The event callback got the deltas (control); today the token callback got
   `0` calls.
 - **Deltas kept out of `state.events` (`F33.conversation-streaming-state`), known bug.**
+  Requires: `F33.conversation-streaming`
   `RemoteConversation`'s default callback adds every socket frame to
   `state.events`, so the transient deltas become part of the client's
   history although the server never stores them. The correct behavior
@@ -1045,6 +1047,7 @@ Preconditions:
   socket sent on connect (never persisted), the 110 messages in order, and
   the first read of each state field equals the server's GET.
 - **Read the state twice (`F33.conversation-state-reread`), known bug.**
+  Requires: `F33.conversation-attach-large`
   `RemoteState` validates its cached conversation info on every read, and
   the discriminated-union validator pops `kind` from the dict it is given
   (`openhands/sdk/utils/models.py`), so the first read of a polymorphic
@@ -1880,6 +1883,7 @@ Preconditions:
   warning while the agent does not use its tool: that conversation runs
   normally and the server's registry never lists `qa_f33_ghost`.
 - **An agent tool the server cannot import (`F33.custom-tool-module-unimportable`), known bug.**
+  Requires: `F33.custom-tool-module`
   The agent now names `qa_f33_ghost`. The create only logs the import
   warning and answers 201 (`conversation_service.py`: "The agent will fail
   gracefully if it tries to use unregistered tools"); the agent is built on

@@ -145,6 +145,16 @@ Then exactly four H2 sections, in this order:
    expected values and partial commands can stay inline. A `sh` block under
    `Preconditions:` is executed first.
 
+   A recipe that consumes another bullet's variables or files declares them
+   immediately below its bold label: `Requires:` followed by the earlier
+   sub-feature IDs in backticks. For example, a dependency on
+   `F33.conversation-streaming` makes `--only F33.conversation-token-callbacks`
+   run streaming first. Selection
+   includes these prerequisites transitively in family order. `map check` rejects
+   dependencies that do not name earlier recipes; `map run` rejects unknown
+   selected IDs before starting a server. Keep dependencies on ordinary recipes
+   that successfully produce their fixtures.
+
    Two label markers keep the map honest without turning it red forever:
    a bullet whose bold label says **known bug** (for example
    `**Stale secrets after update (`F08.secrets-visible`), known bug #1234.**`)
@@ -153,7 +163,9 @@ Then exactly four H2 sections, in this order:
    fails so the marker gets removed. The command that fails because of the
    bug ends its line with `# bug`; `map run` counts the bullet as reproduced
    only when that command is the one that fails, and reports `fail` when an
-   arrange step breaks first (`map check` requires the marker). Write a
+   arrange step breaks first (`map check` requires the marker). A timeout or an
+   early exit without a confirmed assertion location is a failure, never a
+   reproduced bug. Write a
    negative bug assertion on one line, as `if cmd; then false; fi  # bug`.
    A bullet whose label says **blocked**
    names its prerequisite in prose, is reported as `blocked`, and is not

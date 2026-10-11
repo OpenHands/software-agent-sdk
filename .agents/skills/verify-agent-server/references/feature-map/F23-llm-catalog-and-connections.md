@@ -12,8 +12,10 @@ server mints the id, never returns the key (only `api_key_set`), encrypts it
 at rest with the server's cipher, refuses to read a file it cannot decrypt
 rather than dropping keys, caps the store at 64 connections, and refuses to
 delete a connection that a profile or the active settings still reference.
+ACP model discovery is a separate pre-conversation request: a local launch
+failure returns a structured error and creates no conversation.
 
-Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`
+Source: `openhands-agent-server/openhands/agent_server/llm_router.py`, `openhands-agent-server/openhands/agent_server/provider_connections_router.py`, `openhands-agent-server/openhands/agent_server/acp_router.py`, `openhands-sdk/openhands/sdk/agent/acp_model_discovery.py`, `openhands-sdk/openhands/sdk/llm/provider_connection_store.py`, `openhands-sdk/openhands/sdk/llm/utils/unverified_models.py`, `openhands-sdk/openhands/sdk/llm/utils/verified_models.py`, `clients/typescript/src/client/llm-client.ts`, `clients/typescript/src/client/acp-client.ts`
 
 Needs: `llm`, `node`, `network`
 
@@ -21,10 +23,11 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
 `GET /api/llm/models/verified`, `GET /api/llm/provider-connections`,
 `POST /api/llm/provider-connections`,
 `PATCH /api/llm/provider-connections/{connection_id}`,
-`DELETE /api/llm/provider-connections/{connection_id}`
+`DELETE /api/llm/provider-connections/{connection_id}`, `POST /api/acp/models`
 
 ## Sub-features
 
+- `F23.acp-discovery-errors`: `POST /api/acp/models` requires a session key, validates `agent_settings`, and reports a missing local executable as HTTP 200 with `error.code: ACPSpawnError`, no models and no new conversation; `refresh: true` reports the same failure.
 - `F23.auth-required`: all seven routes answer 401 `{"detail": "Unauthorized"}` without a valid `X-Session-API-Key`, and nothing is created.
 - `F23.providers`: `GET /api/llm/providers` returns LiteLLM's provider names, sorted and unique, including `deepseek`, `openai` and `anthropic`.
 - `F23.models`: `GET /api/llm/models` returns every LiteLLM model, sorted and unique, with no `bedrock`-prefixed id, including `deepseek/deepseek-flash`.
@@ -58,6 +61,11 @@ Routes: `GET /api/llm/providers`, `GET /api/llm/models`,
   optional `provider` query parameter, `GET /api/llm/models/verified`. No
   body; answers come from the installed `litellm` package and
   `VERIFIED_MODELS`, without network access.
+- REST (ACP): `POST /api/acp/models` with `agent_settings`, optional `secrets`
+  and `refresh`. `available_models` and `current_model_id` come from a
+  throwaway ACP session; startup failures use the response's `error` field.
+  This recipe covers authentication, validation and local spawn failure.
+  Successful discovery requires the selected ACP provider and credentials.
 - REST (connections): `GET /api/llm/provider-connections` (a JSON array),
   `POST /api/llm/provider-connections`
   (`{"display_name": "...", "provider": "deepseek", "api_key": "...", "base_url": null}`,
@@ -105,9 +113,10 @@ Preconditions:
 - A baseline run is live and exported (`launch --new`, default flags: a
   session key and an `OH_SECRET_KEY` cipher), `doctor` is ok, and no
   provider connection exists yet.
-- `$DEEPSEEK_API_KEY` is set; the block below saves the DeepSeek preset
-  (`deepseek-flash` active, used to move settings off a connection), creates
-  the fixture directory `F23` and writes `ts_catalog.mjs`, the TypeScript
+- Model-backed and real-key connection bullets need `$DEEPSEEK_API_KEY`;
+  `F23.linked-run` saves the DeepSeek preset used to move settings off a
+  connection later. The block below creates the fixture directory `F23`
+  and writes `ts_catalog.mjs`, the TypeScript
   client program. `node` runs it from the built client
   (`clients/typescript/dist`, built by the bullet when missing); `jq`,
   `curl`, `flock` and `sha256sum` are on `PATH`. Outbound HTTPS (`network`)
@@ -122,7 +131,6 @@ Preconditions:
   seconds) and release it before they end.
 
   ```sh
-  control-agent-server llm preset deepseek
   F23="$AGENT_SERVER_VERIFY_RUN/fixtures/qa-f23"
   mkdir -p "$F23"
   CF="$AGENT_SERVER_VERIFY_RUN/home/.openhands/provider-connections/provider_connections.json"
@@ -352,7 +360,10 @@ Preconditions:
 - **Linked profile runs on the connection (`F23.linked-run`).** Save a
   profile linked to `CONN` with a stray inline key, activate it, and run a
   tiny conversation from the resulting settings.
+
+  Requires: `F23.conn-create`
   ```sh
+  control-agent-server llm preset deepseek
   control-agent-server api POST /api/profiles/qa-f23-linked --expect 201 \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"provider_connection_id\": \"$CONN\", \"api_key\": \"sk-qa-f23-inline\"}}"
   control-agent-server state cat home/.openhands/profiles/qa-f23-linked.json --not-contains sk-qa-f23-inline \
@@ -682,6 +693,23 @@ Preconditions:
   ```
   The 65th create is 409 and nothing is added; after one delete the same
   create is 201; the cleanup leaves the store empty.
+
+- **ACP discovery errors (`F23.acp-discovery-errors`).** Request discovery
+  with a missing run-owned executable, without launching a provider or making
+  a model call.
+  ```sh
+  ACP_COUNT=$(control-agent-server api GET /api/conversations/count --field .)
+  ACP_MISSING="{\"agent_settings\":{\"agent_kind\":\"acp\",\"acp_server\":\"custom\",\"acp_command\":[\"$AGENT_SERVER_VERIFY_RUN/qa-missing-acp\"]}}"
+  control-agent-server api POST /api/acp/models --auth none --json '{}' --expect 401 --save F23.acp-discovery-errors/auth
+  control-agent-server api POST /api/acp/models --json '{}' --expect 422 --save F23.acp-discovery-errors/validation
+  control-agent-server api POST /api/acp/models --json "$ACP_MISSING" --expect 200 \
+    --check error.code eq ACPSpawnError --check available_models len-eq 0 --check current_model_id missing --save F23.acp-discovery-errors/spawn
+  control-agent-server api POST /api/acp/models --json "${ACP_MISSING%?},\"refresh\":true}" --expect 200 \
+    --check error.code eq ACPSpawnError --save F23.acp-discovery-errors/refresh
+  control-agent-server api GET /api/conversations/count --check . eq "$ACP_COUNT"
+  ```
+  The response records a launch error rather than a 500, and no conversation
+  is persisted. A working-provider discovery remains a separate prerequisite.
 
 ## Gotchas
 

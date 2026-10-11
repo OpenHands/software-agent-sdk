@@ -109,15 +109,17 @@ Routes: `POST /api/skills`, `POST /api/skills/sync`, `POST /api/skills/install`,
 
 Preconditions:
 
-- A run is live and exported, `doctor` is ok, `$DEEPSEEK_API_KEY` is set and
-  `git` and `node` are installed. No launch flags are needed. Outbound HTTPS
+- A run is live and exported, `doctor` is ok, and `git` is installed.
+  The conversation bullets need `$DEEPSEEK_API_KEY` and activate the DeepSeek
+  preset themselves; the TypeScript bullet needs `node`.
+  No launch flags are needed. Outbound HTTPS
   to github.com is needed by `F25.public-repo` and `F25.install-github`, which
   arrange the network state for the two known-bug bullets after them
   (`F25.marketplace-public`, `F25.install-documented-sources`); every other
   bullet runs offline (apart from the DeepSeek calls). `F25.ts-client` builds
   `clients/typescript/dist` with `npm ci && npm run build` only when it is
   missing (that build needs the npm registry).
-- The block below activates `deepseek-flash`, creates the run-owned fixtures
+- The block below creates the run-owned fixtures
   (the `qa-f25-proj` project with an invalid extra skill, the `qa-f25-skill`
   skill, the `qa-f25-src` git source, the `qa-f25-mk` marketplace, two user
   skills in the run's `HOME`, broken skill directories for the error cases,
@@ -125,7 +127,6 @@ Preconditions:
   repository), and turns on `load_user_skills` in the saved settings so that
   conversations started from them load installed skills.
   ```sh
-  control-agent-server llm preset deepseek
   export GIT_AUTHOR_NAME=QA
   export GIT_AUTHOR_EMAIL=qa@example.invalid
   export GIT_COMMITTER_NAME=QA
@@ -356,6 +357,8 @@ Preconditions:
 - **SDK consumer (`F25.sdk-load-skills`).** `RemoteWorkspace` with
   `working_dir` set to the fixture project loads skills through the server,
   as cloud conversations do, through `exec`.
+
+  Requires: `F25.install-local`, `F25.install-git`
   ```sh
   cat > "$F/qa_f25_sdk_skills.py" <<'PY'
   import json
@@ -426,6 +429,8 @@ Preconditions:
   client's generated schema.
 - **Refresh from the source (`F25.refresh`).** Commit to the git source and
   edit the local source, then refresh both.
+
+  Requires: `F25.install-local`, `F25.install-git`
   ```sh
   control-agent-server fixture git-source --name qa-f25-src
   H2=$(git -C "$G" rev-parse HEAD)
@@ -467,6 +472,8 @@ Preconditions:
 - **Unknown ref (`F25.install-unknown-ref`), known bug.** Ask for a ref that
   neither git source has: first for a source never cloned, then for the
   cached `qa-f25-src` source.
+
+  Requires: `F25.install-git`
   ```sh
   G2=$(control-agent-server fixture git-source --name qa-f25-ref --print-path)
   control-agent-server api POST /api/skills/install --json '{"source": "file://'"$G2"'", "repo_path": "skills/qa-f25-ref-skill", "ref": "qa-f25-no-such-ref"}' \
@@ -481,7 +488,8 @@ Preconditions:
   The first clone fails (`git clone --branch qa-f25-no-such-ref`), so the
   install is `400` and nothing is installed (the positive control). The
   `qa-f25-src` clone is in the extensions cache, and that cached source should
-  fail the same way. Today it answers `200` and reinstalls the cached HEAD (`H2`)
+  fail the same way. Today it answers `200` and reinstalls the cached HEAD
+  (`H2` after the refresh bullet)
   with `requested_ref: "qa-f25-no-such-ref"` in `.installed.json`:
   `_try_checkout_and_reset` only logs `Failed to checkout ... Using cached
   version.` and `fetch_with_resolution` resolves whatever is checked out.
@@ -600,7 +608,10 @@ Preconditions:
 - **Installed skill in a conversation (`F25.conversation-activation`).** Start
   a DeepSeek conversation from the saved settings whose first message carries
   the installed skill's trigger word.
+
+  Requires: `F25.install-local`
   ```sh
+  control-agent-server llm preset deepseek
   CID=$(control-agent-server conversation start --tools none --no-autotitle \
     --prompt 'qa-f25-skill: reply with one short sentence.' --wait --until finished,idle --timeout 300 --print-id)
   control-agent-server api GET "/api/conversations/$CID" --expect 200 \
@@ -621,6 +632,7 @@ Preconditions:
   AgentSkill without triggers, then ask a DeepSeek conversation to invoke it
   by name; uninstall it afterwards.
   ```sh
+  control-agent-server llm preset deepseek
   mkdir -p "$F/qa-f25-invoke"
   printf -- '---\nname: qa-f25-invoke\ndescription: QA skill without triggers\n---\nQA_INVOKE_BODY\n' > "$F/qa-f25-invoke/SKILL.md"
   control-agent-server api POST /api/skills/install --json '{"source": "'"$F/qa-f25-invoke"'"}' --expect 200 --check name eq qa-f25-invoke

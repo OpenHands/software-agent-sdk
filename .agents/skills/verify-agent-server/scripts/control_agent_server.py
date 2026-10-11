@@ -51,6 +51,7 @@ FEATURE_MAP_DIR = SKILL_DIR / "references" / "feature-map"
 CLI = "control-agent-server"
 RUN_ENV = "AGENT_SERVER_VERIFY_RUN"
 HOME_ENV = "AGENT_SERVER_VERIFY_HOME"
+CHECKOUT_ENV = "AGENT_SERVER_VERIFY_CHECKOUT"
 SESSION_HEADER = "X-Session-API-Key"
 FAMILY_FILE_RE = re.compile(r"^F(\d{2})-[a-z0-9-]+\.md$")
 SUB_FEATURE_RE = re.compile(r"^- `(F\d{2}\.[a-z0-9][a-z0-9-]*)`: \S")
@@ -633,7 +634,7 @@ def cmd_launch(args: argparse.Namespace) -> dict[str, Any]:
                 "run": str(run.dir),
                 "url": run.url,
             }
-    checkout = Path(args.checkout).resolve() if args.checkout else REPO_ROOT
+    checkout = Path(args.checkout or os.environ.get(CHECKOUT_ENV, REPO_ROOT)).resolve()
     if not (checkout / "openhands-agent-server").is_dir():
         usage_error(f"{checkout} is not an agent-sdk checkout")
     available = psutil.virtual_memory().available
@@ -735,17 +736,26 @@ def cmd_attach(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def stop_process_group(pgid: int, grace: float = 15.0) -> str:
+    with contextlib.suppress(ChildProcessError):
+        os.waitpid(pgid, os.WNOHANG)
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return "already-exited"
     deadline = time.monotonic() + grace
     while time.monotonic() < deadline:
+        # Reap an owned leader before probing; macOS rejects zombie-only groups.
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pgid, os.WNOHANG)
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
             return "terminated"
+        except PermissionError:
+            pass
         time.sleep(0.2)
+    with contextlib.suppress(ChildProcessError):
+        os.waitpid(pgid, os.WNOHANG)
     with contextlib.suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
     return "killed"
@@ -1213,6 +1223,8 @@ def evaluate_check(body: Any, spec: Sequence[str]) -> dict[str, Any]:
 
 
 def cmd_api(args: argparse.Namespace) -> dict[str, Any]:
+    if args.unsafe_unredacted and args.field is None and args.print_header is None:
+        usage_error("--unsafe-unredacted requires --field or --print-header")
     run = resolve_run(args.run)
     if not args.path.startswith("/"):
         usage_error(
@@ -1352,13 +1364,14 @@ def cmd_api(args: argparse.Namespace) -> dict[str, Any]:
         if header is None or not ok:
             emit(result)
             raise SystemExit(1)
-        print(header)
+        print(header if args.unsafe_unredacted else REDACT.text(header))
         raise SystemExit(0)
     if args.field is not None:
         value = dig(decoded, args.field)
         if value is None or not ok:
             emit(result)
             raise SystemExit(1)
+        value = value if args.unsafe_unredacted else REDACT.obj(value)
         print(value if isinstance(value, str) else json.dumps(value))
         raise SystemExit(0)
     return result
@@ -1477,6 +1490,7 @@ def ws_session(
     frames = 0
     kinds: dict[str, int] = {}
     close: dict[str, Any] | None = None
+    opened = False
     reason = "duration"
     deadline = time.monotonic() + duration
     try:
@@ -1487,6 +1501,8 @@ def ws_session(
             additional_headers=headers,
             max_size=None,
         ) as ws:
+            opened = True
+            sink({"direction": "opened", "at": now_iso()})
             if auth == "first-frame" and (key or explicit_key is not None):
                 ws.send(json.dumps({"type": "auth", "session_api_key": key}))
             elif auth == "bad":
@@ -1536,7 +1552,13 @@ def ws_session(
         if isinstance(exc, InvalidStatus):
             close["http_status"] = exc.response.status_code
         reason = "error"
-    return {"frames": frames, "kinds": kinds, "stopped": reason, "close": close}
+    return {
+        "opened": opened,
+        "frames": frames,
+        "kinds": kinds,
+        "stopped": reason,
+        "close": close,
+    }
 
 
 def cmd_ws_listen(args: argparse.Namespace) -> dict[str, Any]:
@@ -1586,7 +1608,10 @@ def cmd_ws_listen(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit(0) from None
     if out_file:
         out_file.close()
-    result: dict[str, Any] = {"ok": True, "path": args.path, **summary}
+    transport_ok = summary["opened"] and summary["stopped"] != "error"
+    if args.expect_reject is not None:
+        transport_ok = (summary["close"] or {}).get("http_status") == args.expect_reject
+    result: dict[str, Any] = {"ok": transport_ok, "path": args.path, **summary}
     if args.until_kind and not summary["stopped"].startswith("until"):
         result["ok"] = False
         result["hint"] = f"no {args.until_kind} frame within {args.duration}s"
@@ -1713,7 +1738,7 @@ def summarize_capture(
     show: int,
 ) -> dict[str, Any]:
     received = [e for e in entries if e.get("direction") == "received"]
-    closed = [e for e in entries if e.get("direction") == "closed"]
+    ended = [e for e in entries if e.get("direction") in {"closed", "ended", "stopped"}]
     kinds: dict[str, int] = {}
     for e in received:
         kinds[str(e.get("kind"))] = kinds.get(str(e.get("kind")), 0) + 1
@@ -1726,9 +1751,13 @@ def summarize_capture(
             e for e in selected if contains in json.dumps(e.get("frame"), default=str)
         ]
     return {
+        "opened": any(
+            e.get("direction") in {"opened", "received", "closed"} for e in entries
+        ),
+        "stopped": ended[-1].get("stopped", "stopped") if ended else None,
         "frames": len(received),
         "kinds": kinds,
-        "close": closed[-1].get("close") if closed else None,
+        "close": ended[-1].get("close") if ended else None,
         "matching": len(selected),
         "matching_kinds": sorted({str(e.get("kind")) for e in selected}),
         "frames_shown": [
@@ -1739,22 +1768,24 @@ def summarize_capture(
 
 
 def capture_verdict(args: argparse.Namespace, summary: dict[str, Any]) -> bool:
-    ok = True
+    close = summary.get("close")
+    ok = summary["opened"] and not (close or {}).get("error")
+    if args.expect_reject is not None:
+        ok = (close or {}).get("http_status") == args.expect_reject
     filtered = bool(args.kinds or args.contains)
     if args.expect_kind:
         pool = summary["matching_kinds"] if filtered else summary["kinds"]
-        ok = args.expect_kind in pool
+        ok = ok and args.expect_kind in pool
     if args.expect_none:
         ok = ok and summary["matching"] == 0
     elif args.expect_min is not None:
         ok = ok and summary["matching"] >= args.expect_min
     elif filtered and args.expect_kind is None:
         ok = ok and summary["matching"] > 0
-    close = summary.get("close")
     if args.expect_close is not None:
         ok = ok and (close or {}).get("code") == args.expect_close
     if args.expect_open:
-        ok = ok and close is None
+        ok = ok and summary["opened"] and close is None
     return ok
 
 
@@ -3112,6 +3143,7 @@ def cmd_fixture(args: argparse.Namespace) -> dict[str, Any]:
 
 def cmd_exec(args: argparse.Namespace) -> dict[str, Any]:
     run = resolve_run(args.run)
+    cwd = args.cwd or Path(run.data.get("checkout", REPO_ROOT))
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
@@ -3138,7 +3170,7 @@ def cmd_exec(args: argparse.Namespace) -> dict[str, Any]:
     try:
         completed = subprocess.run(
             command,
-            cwd=args.cwd or REPO_ROOT,
+            cwd=cwd,
             env=env,
             capture_output=True,
             text=True,
@@ -3160,7 +3192,7 @@ def cmd_exec(args: argparse.Namespace) -> dict[str, Any]:
     elapsed = int((time.monotonic() - started) * 1000)
     transcript = {
         "command": command,
-        "cwd": str(args.cwd or REPO_ROOT),
+        "cwd": str(cwd),
         "exit_code": code,
         "elapsed_ms": elapsed,
         "stdout": stdout,
@@ -3232,10 +3264,12 @@ def cmd_evidence_add(args: argparse.Namespace) -> dict[str, Any]:
     return {"ok": True, "ledger": str(ledger_path(run)), "row": row}
 
 
-def latest_rows(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
+def latest_rows(
+    rows: Iterable[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
-        latest[row["feature"]] = row
+        latest[(row["run"], row["feature"])] = row
     return latest
 
 
@@ -3249,25 +3283,31 @@ def cmd_evidence_report(args: argparse.Namespace) -> dict[str, Any]:
     latest = latest_rows(rows)
     order = {"fail": 0, "xpass": 1, "blocked": 2, "not-run": 3, "xfail": 4, "pass": 5}
     ordered = sorted(
-        latest.values(), key=lambda r: (order.get(r["result"], 9), r["feature"])
+        latest.values(),
+        key=lambda r: (order.get(r["result"], 9), r["feature"], r["run"]),
     )
     counts: dict[str, int] = {}
     for row in ordered:
         counts[row["result"]] = counts.get(row["result"], 0) + 1
     all_ids = [row["id"] for row in collect_ids()]
-    missing = [i for i in all_ids if i not in latest]
+    features = {r["feature"] for r in ordered}
+    missing = [i for i in all_ids if i not in features]
     lines = [
-        "| Feature | Result | Entry point | Expected | Actual | Evidence |",
-        "|---|---|---|---|---|---|",
+        "| Feature | Run | Checkout | Result | Entry point | Expected | Actual | Evidence |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for row in ordered:
         cells = [
             row["feature"],
+            row["run"],
+            row.get("checkout_sha") or "unknown",
             row["result"],
             row.get("entry") or "",
             row.get("expected") or "",
             row.get("actual") or "",
-            ", ".join(row.get("artifacts") or []),
+            ", ".join(
+                str(Path(row["run_dir"]) / a) for a in row.get("artifacts") or []
+            ),
         ]
         lines.append(
             "| "
@@ -3280,7 +3320,8 @@ def cmd_evidence_report(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "ok": True,
         "counts": counts,
-        "features_with_evidence": len(latest),
+        "features_with_evidence": len(features),
+        "attempts_with_evidence": len(ordered),
         "map_ids_without_evidence": len(missing),
         "missing_sample": missing[:50],
         "markdown": markdown if args.print_markdown else None,
@@ -3619,7 +3660,12 @@ def check_family(path: Path, routes: Sequence[dict[str, Any]] | None) -> list[st
                 f"line {number}: bold bullet label is not closed on its own line; "
                 "map run would merge this bullet into the previous one"
             )
-    for bullet in driving_bullets(path):
+    bullets = driving_bullets(path)
+    try:
+        select_bullets(bullets, None)
+    except CliError as exc:
+        problems.append(str(exc))
+    for bullet in bullets:
         blocked = "blocked" in bullet.label.lower()
         if (
             bullet.label != "Preconditions"
@@ -3796,7 +3842,7 @@ def cmd_map_coverage(args: argparse.Namespace) -> dict[str, Any]:
         if not any(f"{r['method']} {r['path']}" == e for r in routes)
     ]
     return {
-        "ok": not unowned and not multi and not stale,
+        "ok": not unowned and not undriven and not multi and not stale,
         "routes": len(routes),
         "owned": len([r for r in routes if (r["method"], r["path"]) in owners]),
         "driven": len(driven),
@@ -3830,6 +3876,7 @@ class Bullet:
     ids: list[str]
     script: str
     line: int
+    requires: list[str] = field(default_factory=list)
 
 
 def bug_ranges(script: str) -> list[tuple[int, int]]:
@@ -3892,9 +3939,67 @@ def driving_bullets(path: Path) -> list[Bullet]:
             current = Bullet(
                 label, re.findall(r"F\d{2}\.[a-z0-9-]+", label), "", number
             )
+        elif line.strip().startswith("Requires:"):
+            current.requires += re.findall(r"F\d{2}\.[a-z0-9-]+", line)
     if current.script or current.label != "Preconditions":
         bullets.append(current)
     return bullets
+
+
+def select_bullets(bullets: list[Bullet], only: str | None) -> list[Bullet]:
+    available: set[str] = set()
+    for bullet in bullets:
+        missing = set(bullet.requires) - available
+        if missing:
+            usage_error(
+                f"{bullet.label}: Requires must name earlier recipes: {', '.join(sorted(missing))}"
+            )
+        available.update(bullet.ids)
+    if only is None:
+        return bullets
+    wanted = {feature.strip() for feature in only.split(",")}
+    missing = wanted - available
+    if missing:
+        usage_error(
+            f"--only IDs have no recipe in this family: {', '.join(sorted(missing))}"
+        )
+    selected = []
+    for bullet in reversed(bullets):
+        if wanted.intersection(bullet.ids) or bullet.label == "Preconditions":
+            selected.append(bullet)
+            wanted.update(bullet.requires)
+    return list(reversed(selected))
+
+
+def execute_recipe(
+    path: Path, env: dict[str, str], timeout: float
+) -> tuple[int, str, str, bool]:
+    def interrupt(_signum: int, _frame: Any) -> NoReturn:
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGTERM, interrupt)
+    try:
+        with subprocess.Popen(
+            ["bash", str(path)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        ) as process:
+            timed_out = False
+            try:
+                process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+            finally:
+                stop_process_group(process.pid, grace=0.5)
+                out, err = process.communicate()
+            if timed_out:
+                return 124, out, f"{err}\ntimed out after {timeout}s", True
+            return process.returncode, out, err, False
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 NEEDS = (
@@ -4015,6 +4120,8 @@ def self_command(*argv: str) -> dict[str, Any]:
 
 def cmd_map_run(args: argparse.Namespace) -> dict[str, Any]:
     if args.all:
+        if args.only is not None:
+            usage_error("--only needs --file; it cannot be combined with --all")
         if not args.fresh:
             usage_error(
                 "--all needs --fresh (one fresh run per family)",
@@ -4068,6 +4175,7 @@ def cmd_map_run(args: argparse.Namespace) -> dict[str, Any]:
             "map run needs exactly one --file", example=f"{CLI} map run --file F01"
         )
     path = files[0]
+    select_bullets(driving_bullets(path), args.only)
     if not args.fresh:
         return replay_family(resolve_run(args.run), path, args)
     flags = launch_flags(path)
@@ -4108,18 +4216,15 @@ def cmd_map_run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def replay_family(run: Run, path: Path, args: argparse.Namespace) -> dict[str, Any]:
-    bullets = driving_bullets(path)
-    if args.only:
-        wanted = set(args.only.split(","))
-        bullets = [
-            b for b in bullets if wanted & set(b.ids) or b.label == "Preconditions"
-        ]
+    bullets = select_bullets(driving_bullets(path), args.only)
+    checkout = Path(run.data.get("checkout", REPO_ROOT))
     state = run.dir / "map-run" / f"{path.stem}.state.sh"
     state.parent.mkdir(exist_ok=True)
     state.write_text("")
     env = {
         **os.environ,
         RUN_ENV: str(run.dir),
+        CHECKOUT_ENV: str(checkout),
         "PATH": f"{SCRIPT_DIR}{os.pathsep}{os.environ.get('PATH', '')}",
     }
     results = []
@@ -4165,7 +4270,7 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -> dict[str, A
         preamble = [
             "set -eo pipefail",
             f"source {shlex_quote(str(state))}",
-            f"cd {shlex_quote(str(REPO_ROOT))}",
+            f"cd {shlex_quote(str(checkout))}",
             'trap \'printf "%s\\t%s\\n" "$LINENO" "$BASH_COMMAND" > '
             + shlex_quote(str(failure))
             + "' ERR",
@@ -4177,17 +4282,9 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -> dict[str, A
             )
             continue
         started = time.monotonic()
-        try:
-            completed = subprocess.run(
-                ["bash", "-c", script],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=args.timeout,
-            )
-            code, out, err = completed.returncode, completed.stdout, completed.stderr
-        except subprocess.TimeoutExpired:
-            code, out, err = 124, "", f"timed out after {args.timeout}s"
+        recipe_path = run.private / f"{path.stem}.recipe.sh"
+        recipe_path.write_text(script)
+        code, out, err, timed_out = execute_recipe(recipe_path, env, args.timeout)
         elapsed = int((time.monotonic() - started) * 1000)
         failed_line: int | None = None
         failed_command: str | None = None
@@ -4217,18 +4314,16 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -> dict[str, A
         )
         known_bug = "known bug" in marker
         ranges = bug_ranges(bullet.script)
-        outside = (
-            code != 0
+        assertion_failed = (
+            not timed_out
             and failed_line is not None
-            and bool(ranges)
-            and not any(first <= failed_line <= last for first, last in ranges)
+            and any(first <= failed_line <= last for first, last in ranges)
         )
-        if known_bug and outside:
-            status = "fail"
-            failed = True
-        elif known_bug:
-            status = "xfail" if code != 0 else "xpass"
-            xpassed = xpassed or code == 0
+        if known_bug and code == 0:
+            status = "xpass"
+            xpassed = True
+        elif known_bug and code != 0 and assertion_failed:
+            status = "xfail"
         else:
             status = "pass" if code == 0 else "fail"
             failed = failed or code != 0
@@ -4246,10 +4341,10 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -> dict[str, A
             row["failed_command"] = failed_command
             row["stdout_tail"] = REDACT.text(out[-1200:])
             row["stderr_tail"] = REDACT.text(err[-1200:])
-        if outside:
+        if known_bug and status == "fail":
             row["hint"] = (
-                "a known-bug bullet failed outside its `# bug` assertion: "
-                "the arrange steps broke, so the bug was not reproduced"
+                "no failure was confirmed at the `# bug` assertion; "
+                "the bug was not reproduced"
             )
         if status == "xpass":
             row["hint"] = "the known bug no longer reproduces: update the map"
@@ -4741,9 +4836,16 @@ under <run>/evidence/FEATURE/NAME.json.""",
         metavar="SECONDS",
         help="repeat the request every 0.5 s until --expect/--check hold (or time runs out)",
     )
-    p.add_argument("--field", help="print only this dotted field of the JSON body")
+    p.add_argument("--field", help="print only this dotted field (secrets redacted)")
     p.add_argument(
-        "--print-header", metavar="NAME", help="print only this response header"
+        "--print-header",
+        metavar="NAME",
+        help="print only this response header (secrets redacted)",
+    )
+    p.add_argument(
+        "--unsafe-unredacted",
+        action="store_true",
+        help="with --field/--print-header: print raw secrets for a round trip; output is unsafe to publish",
     )
     p.add_argument(
         "--sse",
@@ -4936,6 +5038,12 @@ under <run>/evidence/FEATURE/NAME.json.""",
             default=0,
             metavar="SECONDS",
             help="poll up to SECONDS until the expectations hold",
+        )
+        wr.add_argument(
+            "--expect-reject",
+            type=int,
+            metavar="STATUS",
+            help="expect a handshake rejection with this HTTP status",
         )
         wr.add_argument("--show", type=int, default=5)
         wr.add_argument("--save", metavar="FEATURE/NAME")
@@ -5442,7 +5550,7 @@ of running them.""",
   {CLI} map run --all --fresh --record         # the whole map, one fresh run per family
   {CLI} map run --file F08 --only F08.x --fresh --repeat 2 --checkout ../base   # baseline of a fix
 
-Each bullet's ```sh blocks run in `bash -c` with `set -eo pipefail`, from the
+Each bullet's ```sh blocks run in Bash with `set -eo pipefail`, from the
 repository root, with this run exported. Shell variables assigned in one
 bullet (CID=..., export X=...) are carried into later bullets. A bullet fails
 when any command exits non-zero, so recipes encode their expectations with
@@ -5469,7 +5577,10 @@ reported and not executed. Transcripts are saved under <run>/evidence/map-run/."
         default=1,
         help="with --fresh: replay N times, each on its own fresh run",
     )
-    mrun.add_argument("--only", help="comma-separated sub-feature IDs")
+    mrun.add_argument(
+        "--only",
+        help="comma-separated sub-feature IDs, with their declared Requires recipes",
+    )
     mrun.add_argument(
         "--keep-going", action="store_true", help="run later bullets after a failure"
     )

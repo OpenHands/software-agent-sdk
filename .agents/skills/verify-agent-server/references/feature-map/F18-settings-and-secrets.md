@@ -326,7 +326,7 @@ Preconditions:
 - **Post back what GET returned (`F18.roundtrip`).** The encrypted token, then
   the redacted placeholder.
   ```sh
-  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings.llm.api_key)
+  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings.llm.api_key --unsafe-unredacted)
   control-agent-server api PATCH /api/settings --json "{\"agent_settings_diff\": {\"llm\": {\"api_key\": \"$TOKEN\"}}}" \
     --expect 200 --check llm_api_key_is_set eq true --save F18.roundtrip/encrypted-back
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --check agent_settings.llm.api_key eq "$QA_F18_LLM_KEY"

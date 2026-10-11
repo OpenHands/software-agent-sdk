@@ -19,6 +19,9 @@ Generate the table with `control-agent-server evidence report --out report.md
 --print-markdown` (merge several runs with `--runs A B`). Rows are ordered
 fail, blocked, not-run, pass; each row has the sub-feature ID, entry point,
 expected and actual result and the evidence paths.
+Each run retains its own row for a feature, with the run ID and checkout SHA;
+merging baseline and fix runs preserves every attempt and its evidence paths.
+Within one run, a newer result replaces its earlier row.
 
 Below the table:
 

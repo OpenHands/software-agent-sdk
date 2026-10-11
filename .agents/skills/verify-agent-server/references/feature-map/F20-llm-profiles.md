@@ -293,7 +293,7 @@ Preconditions:
 - **Encrypted round trip (`F20.save-encrypted-roundtrip`).** Save a copy whose
   key is the token from an `encrypted` read, as Agent Canvas does.
   ```sh
-  ENC=$(control-agent-server api GET /api/profiles/qa-flash --header 'X-Expose-Secrets: encrypted' --field config.api_key)
+  ENC=$(control-agent-server api GET /api/profiles/qa-flash --header 'X-Expose-Secrets: encrypted' --field config.api_key --unsafe-unredacted)
   control-agent-server api POST /api/profiles/qa-flash-copy \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"api_key\": \"$ENC\"}}" --expect 201 --save F20.save-encrypted-roundtrip/save
   control-agent-server api GET /api/profiles/qa-flash-copy --header 'X-Expose-Secrets: plaintext' --expect 200 \
@@ -477,7 +477,7 @@ Preconditions:
   printf '{"llm": {"model": "deepseek/deepseek-flash", "api_key": "%s", "num_retries": 0}}' "$DEEPSEEK_API_KEY" \
     | control-agent-server api POST /api/profiles/qa-draft/validate --stdin --timeout 120 --expect 200 \
       --check valid eq true --check error missing --save F20.validate-live/plaintext-key
-  ENC=$(control-agent-server api GET /api/profiles/qa-flash --header 'X-Expose-Secrets: encrypted' --field config.api_key)
+  ENC=$(control-agent-server api GET /api/profiles/qa-flash --header 'X-Expose-Secrets: encrypted' --field config.api_key --unsafe-unredacted)
   control-agent-server api POST /api/profiles/qa-draft/validate --timeout 120 --expect 200 \
     --json "{\"llm\": {\"model\": \"deepseek/deepseek-flash\", \"api_key\": \"$ENC\", \"num_retries\": 0}}" \
     --check valid eq true --save F20.validate-live/encrypted-key

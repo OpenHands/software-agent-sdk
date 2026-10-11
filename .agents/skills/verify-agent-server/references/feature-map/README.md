@@ -10,7 +10,7 @@ recipe.
 
 Maintenance baseline: `8ba966d1d3af49f08e04349c055009e1614b48d6` (first pass, 2026-10-07).
 
-The map has **930 sub-features**.
+The map has **931 sub-features**.
 
 ## Baseline preconditions
 
@@ -83,7 +83,7 @@ them honest: [../maintenance.md](../maintenance.md).
 | F20 | [LLM profiles](F20-llm-profiles.md) | LLM profiles: save, read, validate against real and stubbed providers, activate, rename, delete, name rules, limits, store contention, restart | `/api/profiles[/{name}]`, `/validate`, `/activate`, `/rename` | llm, node | 35 |
 | F21 | [Agent profiles](F21-agent-profiles.md) | agent profiles (OpenHands and ACP kinds): CRUD, default seed, activation, rename, delete, materialize, conversations started from a profile, store contention | `/api/agent-profiles[/{name}]`, `/rename`, `/{id}/activate`, `/materialize` | llm | 32 |
 | F22 | [Meta-profiles (model router)](F22-meta-profiles.md) | meta-profiles (model router): save, read, activate, delete, settings reflection, routing in a conversation | `/api/meta-profiles[/{name}]`, `/activate` | llm, node | 24 |
-| F23 | [LLM catalog and provider connections](F23-llm-catalog-and-connections.md) | provider and model catalogs, verified models, provider connections (create, rotate, delete, references from profiles) | `GET /api/llm/providers`, `/api/llm/models[/verified]`, `/api/llm/provider-connections[/{id}]` | llm, node, network | 26 |
+| F23 | [LLM catalog and provider connections](F23-llm-catalog-and-connections.md) | provider and model catalogs, verified models, provider connections (create, rotate, delete, references from profiles), ACP discovery errors | `GET /api/llm/providers`, `/api/llm/models[/verified]`, `/api/llm/provider-connections[/{id}]`, `POST /api/acp/models` | llm, node, network | 27 |
 | F24 | [OpenAI ChatGPT subscription device flow](F24-openai-subscription.md) | the ChatGPT subscription device flow: models, status, device start and poll, logout, upstream failures | `/api/llm/subscription/openai/*` | node, network | 20 |
 | F25 | [Skills catalog, install and marketplace](F25-skills.md) | the merged skill catalog, public-repo sync, installed skills (install, enable, refresh, uninstall), marketplace, trigger-word activation in a conversation | `POST /api/skills`, `/api/skills/sync`, `/api/skills/install`, `/api/skills/installed[/{name}]`, `/api/skills/marketplace` | llm, git, network, node | 33 |
 | F26 | [Plugins catalog, install and marketplace](F26-plugins.md) | plugin catalog, install from a path or git source, enable, refresh, uninstall, marketplace, loading a plugin into a conversation | `POST /api/plugins`, `/api/plugins/install`, `/api/plugins/installed[/{name}]`, `/api/plugins/marketplace` | llm, git, node, network | 25 |

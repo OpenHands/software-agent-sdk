@@ -89,6 +89,8 @@ control-agent-server stop                       # stops only this run; evidence 
   `POST /api/init`), `--webhook-sink` (a recording webhook receiver wired into
   the config), `--config-json '{...}'` (any other config field), `--vscode`,
   `--preload-tools`, and `--checkout PATH` (another worktree, for a baseline).
+  Nested launches in a map recipe inherit the selected checkout; an explicit
+  `--checkout` overrides it.
   `attach --url ... --key-env VAR` drives a server you did not launch (a Docker
   image, the PyInstaller binary, a remote sandbox); `stop` never kills it.
   Launch refuses to start with less than about 1 GB free: a run with a model
@@ -138,7 +140,10 @@ control-agent-server stop                       # stops only this run; evidence 
   is saved as `<name>-2.json`, so cite the path the command prints;
   `evidence report` renders [the report contract](references/report.md). The
   CLI redacts the run's keys, `$DEEPSEEK_API_KEY` and cipher-encrypted values
-  from all output and evidence; keys, logs and state stay in `<run>/private/`.
+  from output and evidence, including `--field` and `--print-header`. Only
+  `api --unsafe-unredacted` with either flag returns raw secret values for a
+  round trip; capture those directly in variables and keep them out of reports.
+  Evidence remains redacted. Keys, logs and state stay in `<run>/private/`.
   Evidence is not automatically public: read it before publishing it.
 - **Cleanup** with `control-agent-server stop` (add `--purge-private` to delete
   keys, state and fixtures once the evidence is checked). It signals only the
@@ -172,7 +177,8 @@ missing prerequisite; never substitute a mock and call it a pass.
   must report the bullet `xfail` in both attempts, and the same command
   without `--checkout` (the fix) `xpass` in both. Then drop the marker in the
   same PR. Baseline not reproducing twice means "inconclusive", never
-  "fixed".
+  "fixed". `--only` rejects unknown IDs and also runs each selected recipe's
+  transitive `Requires:` prerequisites in family order.
 - **Create or extend the map**: follow [references/mapping.md](references/mapping.md).
   `control-agent-server map coverage` measures which routes no family owns or
   drives.
@@ -203,6 +209,8 @@ missing prerequisite; never substitute a mock and call it a pass.
   and the route you attempted. Unreachable is never a pass.
   `control-agent-server capabilities` says what this machine can drive and
   which families' `Needs:` are unmet.
+  `Needs:` is a family-wide bound for `--all`; use `--file --only` for a
+  subset that does not need every capability. Its Preconditions still run.
 
 ## How this fits with the tests
 
