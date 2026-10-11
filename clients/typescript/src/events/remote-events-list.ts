@@ -35,6 +35,14 @@ export interface EventSearchOptions {
 
 export type RemoteEventsListOptions = HttpClientOptions;
 
+export interface GetEventsOptions {
+  start?: number;
+  end?: number;
+  /** Maximum size of the fetched/merged prefix, before applying start/end. */
+  maxEvents?: number;
+  signal?: AbortSignal;
+}
+
 export class RemoteEventsList {
   private client: HttpClient;
   private conversationId: string;
@@ -156,35 +164,51 @@ export class RemoteEventsList {
 
   /**
    * Fetch all events from the server, merged with any locally cached
-   * events received via WebSocket.
+   * events received via WebSocket. A maxEvents budget bounds that prefix before
+   * applying start/end slicing. Without a budget, fetches the entire history.
    */
-  async getEvents(start?: number, end?: number): Promise<Event[]> {
+  async getEvents(options?: GetEventsOptions): Promise<Event[]>;
+  async getEvents(start?: number, end?: number): Promise<Event[]>;
+  async getEvents(startOrOptions?: number | GetEventsOptions, end?: number): Promise<Event[]> {
+    const options =
+      typeof startOrOptions === 'object' ? startOrOptions : { start: startOrOptions, end };
+    const { start, maxEvents, signal } = options;
+    if (maxEvents !== undefined && (!Number.isSafeInteger(maxEvents) || maxEvents < 0)) {
+      throw new RangeError('maxEvents must be a non-negative safe integer');
+    }
+    signal?.throwIfAborted();
+    if (maxEvents === 0) return [];
+
+    const budget = maxEvents ?? Infinity;
     const remote: Event[] = [];
     let pageId: string | undefined;
 
-    for (;;) {
-      const params: Record<string, unknown> = { limit: 100 };
+    while (remote.length < budget) {
+      signal?.throwIfAborted();
+      const limit = Math.min(100, budget - remote.length);
+      const params: Record<string, unknown> = { limit };
       if (pageId) params.page_id = pageId;
 
       const response = await this.client.get<EventPage>(
         `/api/conversations/${this.conversationId}/events/search`,
-        { params }
+        { params, signal }
       );
 
+      signal?.throwIfAborted();
       const data = response.data;
-      remote.push(...data.items);
+      remote.push(...data.items.slice(0, limit));
 
       if (!data.next_page_id) break;
       pageId = data.next_page_id;
     }
 
     const remoteIds = new Set(remote.map((event) => event.id));
-    const merged = [...remote, ...this.cachedEvents.filter((event) => !remoteIds.has(event.id))];
-
-    if (start === undefined && end === undefined) {
-      return merged;
+    const merged = [...remote];
+    for (const event of this.cachedEvents) {
+      if (merged.length >= budget) break;
+      if (!remoteIds.has(event.id)) merged.push(event);
     }
-    return merged.slice(start, end);
+    return merged.slice(start, options.end);
   }
 
   async *[Symbol.asyncIterator](): AsyncIterableIterator<Event> {

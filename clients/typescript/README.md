@@ -372,7 +372,22 @@ Manages conversation events with caching and synchronization.
 - `addEvent(event)` - Add an event to the cache
 - `length()` - Get number of cached events
 - `getEvent(index)` - Get event by index
-- `getEvents(start?, end?)` - Get events slice
+- `getEvents(start?, end?)` - Fetch the full history, merge cached events, then slice
+- `getEvents({ start?, end?, maxEvents?, signal? })` - Optionally bound and cancel history fetching
+
+`maxEvents` is a non-negative safe integer that limits the fetched and merged
+prefix **before** applying `start`/`end`. It defaults to unlimited; `0` returns an
+empty list without an HTTP request. The WebSocket cache is preserved. Cancellation
+rejects the operation rather than returning a partial history. The server supports
+cursor pagination, not array offsets, so slicing remains local.
+
+```typescript
+const controller = new AbortController();
+const events = await conversation.state.events.getEvents({
+  maxEvents: 500,
+  signal: controller.signal,
+});
+```
 - `createDefaultCallback()` - Create a default event callback
 
 ### WebSocketCallbackClient
