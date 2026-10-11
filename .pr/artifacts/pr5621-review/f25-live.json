@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "file": "F25-skills.md",
+  "launch_flags": [],
+  "attempts": [
+    {
+      "run": "/tmp/pr5621-live/20261011-044627-06eb-map-f25",
+      "ok": true,
+      "summary": {
+        "pass": 2,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "statuses": {
+        "Preconditions": "pass",
+        "Install from a git source (`F25.install-git`).": "pass",
+        "Unknown ref (`F25.install-unknown-ref`), known bug.": "xfail"
+      }
+    },
+    {
+      "run": "/tmp/pr5621-live/20261011-044634-3a37-map-f25",
+      "ok": true,
+      "summary": {
+        "pass": 2,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "statuses": {
+        "Preconditions": "pass",
+        "Install from a git source (`F25.install-git`).": "pass",
+        "Unknown ref (`F25.install-unknown-ref`), known bug.": "xfail"
+      }
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "file": "F98-nested.md",
+  "summary": {
+    "pass": 1,
+    "fail": 0,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "no-commands": 0
+  },
+  "bullets": [
+    {
+      "bullet": "Nested launch (`F98.nested`).",
+      "ids": [
+        "F98.nested"
+      ],
+      "line": 19,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 4537,
+      "transcript": "/tmp/pr5621-nested-after-runs/20261011-045352-c577-map-f98/evidence/map-run/F98-nested-00-nested-launch-f98-nested.json"
+    }
+  ],
+  "run": "/tmp/pr5621-nested-after-runs/20261011-045352-c577-map-f98",
+  "launch_flags": [
+    "--checkout",
+    "/Users/enyst/.codex/worktrees/pr5621-baseline/agent-sdk"
+  ],
+  "probe_context": {
+    "harness": "/Users/enyst/repos/agent-sdk",
+    "target": "/Users/enyst/.codex/worktrees/pr5621-baseline/agent-sdk",
+    "expected_sha": "cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4",
+    "expected_sdk": "1.53.0"
+  }
+}
