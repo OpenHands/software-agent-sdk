@@ -1,6 +1,7 @@
 """Utility functions for MCP integration."""
 
 import asyncio
+import html
 import inspect
 import logging
 from collections.abc import Callable, Mapping, Sequence
@@ -12,6 +13,7 @@ from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.messages import MessageHandler
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.client.transports.config import MCPConfigTransport
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig, RemoteMCPServer
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.shared._httpx_utils import create_mcp_http_client
@@ -32,6 +34,7 @@ from openhands.sdk.mcp.tool import MCPToolDefinition
 
 logger = get_logger(__name__)
 LOGGING_LEVEL_MAP = logging.getLevelNamesMapping()
+MCP_SERVER_INSTRUCTIONS_MAX_CHARS = 4000
 
 MCPOAuthFactory = Callable[
     [str, MCPServer, MCPOAuthAuthCredential, AsyncKeyValue | None],
@@ -40,6 +43,61 @@ MCPOAuthFactory = Callable[
 
 # Backward-compatible callback that reports only newly added tools.
 ToolsChangedCallback = Callable[[Sequence[MCPToolDefinition]], None]
+
+
+class _InstructionAwareMCPConfigTransport(MCPConfigTransport):
+    """MCP config transport that retains each mounted server's instructions."""
+
+    def __init__(self, config: FastMCPConfig):
+        super().__init__(config)
+        self.server_instructions: dict[str, str] = {}
+
+    async def _create_proxy(self, name, config, timeout, stack):  # type: ignore[override]
+        transport, client, proxy = await super()._create_proxy(
+            name, config, timeout, stack
+        )
+        instructions = getattr(client.initialize_result, "instructions", None)
+        if instructions:
+            self.server_instructions[name] = instructions
+        return transport, client, proxy
+
+
+def _server_prompt_guidance(server_name: str, instructions: str) -> str:
+    """Wrap bounded, server-provided MCP instructions as untrusted guidance."""
+    bounded = instructions[:MCP_SERVER_INSTRUCTIONS_MAX_CHARS]
+    escaped_name = html.escape(server_name, quote=True)
+    return (
+        f'<UNTRUSTED_CONTENT source="mcp_server" server="{escaped_name}">\n'
+        f"{bounded}\n"
+        "</UNTRUSTED_CONTENT>"
+    )
+
+
+def _startup_guidance_by_tool(
+    client: MCPClient,
+    transport: _InstructionAwareMCPConfigTransport,
+    tool_names: Sequence[str],
+) -> dict[str, str]:
+    """Map initially listed tool names to their server-level guidance."""
+    server_names = list(transport.config.mcpServers)
+    if len(server_names) == 1:
+        instructions = getattr(client.initialize_result, "instructions", None)
+        if not instructions:
+            return {}
+        guidance = _server_prompt_guidance(server_names[0], instructions)
+        return dict.fromkeys(tool_names, guidance)
+
+    guidance_by_tool: dict[str, str] = {}
+    for server_name in sorted(transport.server_instructions, key=len, reverse=True):
+        instructions = transport.server_instructions[server_name]
+        prefix = f"{server_name}_"
+        guidance = _server_prompt_guidance(server_name, instructions)
+        guidance_by_tool.update(
+            (tool_name, guidance)
+            for tool_name in tool_names
+            if tool_name.startswith(prefix)
+        )
+    return guidance_by_tool
 
 
 class MCPToolProvider(Protocol):
@@ -248,13 +306,15 @@ async def log_handler(message: LogMessage):
 async def _connect_and_list_tools(client: MCPClient) -> None:
     """Connect to MCP server and populate client._tools."""
     await client.connect()
-    await _refresh_tools(client)
+    await _refresh_tools(client, include_startup_guidance=True)
 
 
 async def _refresh_tools(
     client: MCPClient,
     on_tools_changed: ToolsChangedCallback | None = None,
     on_tools_reconciled: ToolsReconciledCallback | None = None,
+    *,
+    include_startup_guidance: bool = False,
 ) -> None:
     """Re-list tools from the server and reconcile ``client._tools``.
 
@@ -268,6 +328,17 @@ async def _refresh_tools(
     existing_by_name = {tool.name: tool for tool in client._tools}
     server_names = {mcp_tool.name for mcp_tool in mcp_type_tools}
 
+    startup_guidance: dict[str, str] = {}
+    if include_startup_guidance and isinstance(
+        client.transport, _InstructionAwareMCPConfigTransport
+    ):
+        # Populate after listing below, once the initial tool names are known.
+        startup_guidance = _startup_guidance_by_tool(
+            client,
+            client.transport,
+            [tool.name for tool in mcp_type_tools],
+        )
+
     reconciled: list[MCPToolDefinition] = []
     added: list[MCPToolDefinition] = []
     updated: list[MCPToolDefinition] = []
@@ -276,7 +347,11 @@ async def _refresh_tools(
         if prior is not None and prior.mcp_tool == mcp_tool:
             reconciled.append(prior)
             continue
-        tool_sequence = MCPToolDefinition.create(mcp_tool=mcp_tool, mcp_client=client)
+        tool_sequence = MCPToolDefinition.create(
+            mcp_tool=mcp_tool,
+            mcp_client=client,
+            prompt_guidance=startup_guidance.get(mcp_tool.name),
+        )
         reconciled.extend(tool_sequence)
         if prior is None:
             added.extend(tool_sequence)
@@ -394,6 +469,11 @@ def create_mcp_tools(
     ``on_tools_reconciled`` is provided, it receives the client and complete
     current tool snapshot after additions, updates, or removals. Callbacks run
     on the client's background event-loop thread and must be thread-safe.
+
+    Server-level ``instructions`` are attached as prompt guidance only to tools
+    present in the initial listing. Tools announced later through
+    ``notifications/tools/list_changed`` cannot change the conversation's
+    already-initialized system prompt and therefore receive no such guidance.
     """
     mcp_config = _require_native_mcp_config(mcp_config)
     requested = mcp_config
@@ -413,7 +493,8 @@ def create_mcp_tools(
         client=None,  # type: ignore[arg-type]
         on_tools_changed=on_tools_changed,
     )
-    client = MCPClient(config, log_handler=log_handler, message_handler=handler)
+    transport = _InstructionAwareMCPConfigTransport(config)
+    client = MCPClient(transport, log_handler=log_handler, message_handler=handler)
     handler._client = client
     client._tools_reconciled_callback = on_tools_reconciled
 
