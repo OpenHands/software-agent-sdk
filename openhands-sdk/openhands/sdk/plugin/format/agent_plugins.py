@@ -8,7 +8,6 @@ See the ``openhands.sdk.plugin.format`` package docstring for the design.
 """
 
 import json
-from functools import cache
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
@@ -18,9 +17,20 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import MCPServer
-from openhands.sdk.plugin.format.base import PluginFormat
+from openhands.sdk.plugin.format.agent_plugins_mcp import (
+    get_plugin_data_dir,
+    load_mcp_servers,
+)
+from openhands.sdk.plugin.format.base import (
+    PluginFormat,
+    _load_schema,
+    _read_command_definitions,
+    _read_hooks_config,
+)
 from openhands.sdk.plugin.types import CommandDefinition, PluginManifest
+from openhands.sdk.subagent.load import load_agents_from_dir
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import resolves_within
 
 
 logger = get_logger(__name__)
@@ -28,7 +38,12 @@ logger = get_logger(__name__)
 # At the plugin root, not nested as in the Claude Code layout.
 MANIFEST_FILE: Final[str] = "plugin.json"
 
-_SCHEMAS_DIR: Final[Path] = Path(__file__).parent / "schemas"
+#: OpenHands' client-extension namespace (spec §8). Reverse-domain form of
+#: openhands.dev, which we control. It names both the ``extensions`` member in
+#: the manifest and the top-level extension *directory* holding our file-based
+#: components (§8.2).
+EXTENSION_NAMESPACE: Final[str] = "dev.openhands"
+
 
 #: The only manifest ``$schema`` we support, and its vendored file. Agent
 #: Plugins also publishes an ``mcp.schema.json``, but that one belongs to the
@@ -40,12 +55,6 @@ MANIFEST_SCHEMA_URL: Final[str] = (
 _MANIFEST_SCHEMA_FILE: Final[str] = "plugin-1.0.0.schema.json"
 
 
-@cache
-def _load_schema(filename: str) -> dict[str, Any]:
-    """Read a vendored schema. Cached; never fetched over the network."""
-    return json.loads((_SCHEMAS_DIR / filename).read_text(encoding="utf-8"))
-
-
 class AgentPluginsFormat(PluginFormat):
     """The Agent Plugins v1.0.0 portable package layout.
 
@@ -54,25 +63,30 @@ class AgentPluginsFormat(PluginFormat):
     ├── plugin.json              # required manifest (root-level, closed schema)
     ├── skills/                  # Agent Skills (optional)
     ├── mcp.json                 # MCP servers, no leading dot (optional)
-    └── com.example.client/      # reverse-domain client extensions (optional)
+    └── dev.openhands/           # our client extension directory (optional)
+        ├── commands/
+        ├── agents/
+        └── hooks/hooks.json
     ```
 
-    Only the manifest and skills are read today (skills via the shared
-    :meth:`PluginFormat.load_skills`). ``mcp.json`` and OpenHands' client
-    extension are follow-ups under #4405, so their loaders return empty --
-    spec-correct, since a client must ignore extensions it does not implement.
+    Hooks, commands, agents and ``entry_command`` are not portable core, so they
+    live in our client extension (§8): file-based components under the top-level
+    ``dev.openhands/`` directory, and ``entry_command`` under
+    ``extensions["dev.openhands"]`` in the manifest. Their on-disk layout inside
+    that directory is unchanged from the Claude Code format, so a plugin ports by
+    moving those directories rather than rewriting them. Namespaces other than
+    ours are ignored without validating their contents.
 
-    Hooks, commands, agents and ``entry_command`` are not portable core. The
-    standard's place for them is a client extension: a reverse-domain namespace
-    carrying manifest data under ``extensions.<ns>``, a top-level ``<ns>/``
-    directory, or both, whose contents the namespace owner defines. Which
-    namespace we claim and what goes where are still open in #4405, and nothing
-    here reads one yet.
-
-    Not registered in ``_FORMATS`` yet; see the package docstring.
+    Args:
+        plugin_data_root: Parent of the per-plugin ``PLUGIN_DATA`` directories.
+            Defaults to the user's plugin data directory; injectable for tests
+            and for callers that keep plugin state somewhere else.
     """
 
     name: ClassVar[str] = "agent-plugins"
+
+    def __init__(self, *, plugin_data_root: Path | None = None) -> None:
+        self._plugin_data_root = plugin_data_root
 
     @classmethod
     def detect(cls, plugin_dir: Path) -> bool:
@@ -91,12 +105,18 @@ class AgentPluginsFormat(PluginFormat):
 
         Fields with no ``PluginManifest`` column (``$schema``, ``homepage``,
         ``repository``, ``license``, ``keywords``, ``extensions``) survive via
-        ``extra="allow"``.
+        ``extra="allow"``. Our own extension data is additionally projected onto
+        the matching ``PluginManifest`` fields, so downstream code reads
+        ``manifest.entry_command`` regardless of the format it came from.
 
         Raises:
             ValueError: On any fatal manifest violation.
         """
         manifest_path = plugin_dir / MANIFEST_FILE
+        if not resolves_within(manifest_path, plugin_dir):
+            raise ValueError(
+                f"Manifest {manifest_path} resolves outside the plugin root"
+            )
         try:
             # utf-8-sig: tolerate a leading BOM, which RFC 8259 lets us ignore.
             data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -143,20 +163,68 @@ class AgentPluginsFormat(PluginFormat):
                 f"Invalid Agent Plugins manifest {manifest_path}: {e.message}"
             ) from e
 
-        return PluginManifest.model_validate(data)
+        return PluginManifest.model_validate(
+            data | _extension_manifest_fields(data, manifest_path)
+        )
 
-    def load_mcp_config(self, plugin_dir: Path) -> dict[str, MCPServer]:  # noqa: ARG002
-        """Not read yet: root ``mcp.json`` is a follow-up."""
+    def load_mcp_config(self, plugin_dir: Path) -> dict[str, MCPServer]:
+        """Load MCP servers from the root ``mcp.json`` (no leading dot).
+
+        Unlike the Claude Code format, expansion is complete here: Agent Plugins
+        defines exactly two placeholders and forbids every other kind, so there
+        is nothing left to expand once per-conversation secrets arrive.
+        """
+        plugin_root = plugin_dir.resolve()
+        return load_mcp_servers(
+            plugin_dir,
+            plugin_root=plugin_root,
+            plugin_data=get_plugin_data_dir(
+                plugin_root, data_root=self._plugin_data_root
+            ),
+        )
+
+    def load_hooks(self, plugin_dir: Path) -> HookConfig | None:
+        """Load hooks from ``dev.openhands/hooks/hooks.json``."""
+        return _read_hooks_config(plugin_dir / EXTENSION_NAMESPACE, plugin_dir)
+
+    def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:
+        """Load agent definitions from ``dev.openhands/agents/``."""
+        return load_agents_from_dir(
+            plugin_dir / EXTENSION_NAMESPACE / "agents", root=plugin_dir
+        )
+
+    def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:
+        """Load command definitions from ``dev.openhands/commands/``."""
+        return _read_command_definitions(plugin_dir / EXTENSION_NAMESPACE, plugin_dir)
+
+
+def _extension_manifest_fields(
+    data: dict[str, Any], manifest_path: Path
+) -> dict[str, Any]:
+    """Map our namespace's manifest data onto ``PluginManifest`` fields.
+
+    Only ``extensions["dev.openhands"]`` is read. Other namespaces are ignored
+    without inspecting their contents, as §8.1 requires -- a foreign namespace
+    carrying an ``entry_command`` of the wrong type is none of our business.
+
+    Within our own namespace we own the validation, and apply the same narrow
+    failure boundary as elsewhere: an unusable value is reported and ignored
+    rather than rejecting the plugin.
+    """
+    # The manifest has passed validation, so ``extensions`` -- if still present
+    # -- is an object whose values are objects.
+    extension = data.get("extensions", {}).get(EXTENSION_NAMESPACE)
+    if not extension:
         return {}
 
-    def load_hooks(self, plugin_dir: Path) -> HookConfig | None:  # noqa: ARG002
-        """Always None: hooks are not part of the Agent Plugins portable core."""
-        return None
+    entry_command = extension.get("entry_command")
+    if entry_command is not None and not isinstance(entry_command, str):
+        logger.warning(
+            "Ignoring non-string '%s' entry_command in %s: %r",
+            EXTENSION_NAMESPACE,
+            manifest_path,
+            entry_command,
+        )
+        entry_command = None
 
-    def load_agents(self, plugin_dir: Path) -> list[AgentDefinition]:  # noqa: ARG002
-        """Always empty: agents are not part of the Agent Plugins portable core."""
-        return []
-
-    def load_commands(self, plugin_dir: Path) -> list[CommandDefinition]:  # noqa: ARG002
-        """Always empty: commands are not part of the Agent Plugins portable core."""
-        return []
+    return {"entry_command": entry_command} if entry_command else {}

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import LOCK_FILE_NAME, EventLog
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
     EVENT_NAME_RE,
@@ -14,6 +14,7 @@ from openhands.sdk.conversation.persistence_const import (
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.utils.path import posix_path_name
 
 
 def create_test_event(event_id: str, content: str = "Test content") -> MessageEvent:
@@ -424,7 +425,8 @@ def test_event_log_concurrent_writes_serialized():
         assert log1._length == 1
         assert log2._length == 2
 
-        files = [f for f in fs.list("events") if not f.endswith(".lock")]
+        # Sidecars (lock file, event-count marker) are dotfiles, not events.
+        files = [f for f in fs.list("events") if not posix_path_name(f).startswith(".")]
         assert len(files) == 2
 
 
@@ -555,3 +557,80 @@ def test_event_log_cold_reload_past_100k_events():
     # Appending after reload keeps length accounting consistent.
     log.append(create_test_event("after-reload", "after"))
     assert len(log) == n + 1
+
+
+def test_append_does_not_scan_the_directory_as_the_log_grows():
+    """Append cost must not grow with conversation length (issue #4676).
+
+    The multi-writer sync used to count every file in the events directory on
+    every append, so appending event N cost O(N) directory work while holding
+    the lock. Listing calls are the proxy for that cost.
+    """
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    listings: list[str] = []
+    original_list = fs.list
+
+    def counting_list(path: str) -> list[str]:
+        listings.append(path)
+        return original_list(path)
+
+    fs.list = counting_list  # type: ignore[method-assign]
+
+    for i in range(50):
+        log.append(create_test_event(f"{i:08x}-0000-0000-0000-000000000000"))
+
+    # The first append has no marker to go on and pays for one listing; every
+    # later append is answered by the marker alone.
+    assert len(listings) <= 1, f"append listed the events dir {len(listings)} times"
+    assert len(log) == 50
+
+
+def test_append_still_syncs_when_another_writer_appended():
+    """A second writer's events are still picked up, marker or not."""
+    fs = InMemoryFileStore()
+    log1 = EventLog(fs)
+    log2 = EventLog(fs)
+
+    log1.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+    log1.append(create_test_event("00000000-0000-0000-0000-000000000002"))
+
+    # log2 opened at length 0 and never saw those appends; the marker no longer
+    # names its length, so it falls back to counting and lands after them.
+    log2.append(create_test_event("00000000-0000-0000-0000-000000000003"))
+
+    assert log2._length == 3
+    assert log2.get_index("00000000-0000-0000-0000-000000000003") == 2
+
+
+def test_append_syncs_when_marker_is_missing():
+    """A log written before the marker existed keeps the exact-count path."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+
+    # Simulate a legacy on-disk log: events present, no marker.
+    for path in list(fs.files.keys()):
+        if posix_path_name(path).startswith("."):
+            del fs.files[path]
+
+    reopened = EventLog(fs)
+    reopened.append(create_test_event("00000000-0000-0000-0000-000000000002"))
+    assert len(reopened) == 2
+
+    # And the marker is re-established for the appends that follow.
+    assert fs.exists(reopened._marker_path(2))
+
+
+def test_scan_does_not_warn_about_sidecar_files(caplog):
+    """The lock file and count marker are ours; they are not malformed events."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+    log.append(create_test_event("00000000-0000-0000-0000-000000000001"))
+    fs.write(f"{EVENTS_DIR}/{LOCK_FILE_NAME}", "")
+
+    with caplog.at_level("WARNING"):
+        EventLog(fs)
+
+    assert "Unrecognized event file name" not in caplog.text

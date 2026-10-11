@@ -15,10 +15,10 @@ from unittest.mock import patch
 import pytest
 
 from openhands.agent_server.config import ACPSkillSourcing, Config
-from openhands.agent_server.conversation_service import _apply_acp_skill_sourcing
 from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.agent import ACPAgent, AgentBase
 from openhands.sdk.context import AgentContext
+from openhands.sdk.launch import LaunchRuntime, finalize
 from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.settings.model import validate_agent_settings
 from openhands.sdk.skills import Skill
@@ -61,6 +61,12 @@ def _workspace(root: Path) -> Path:
         "---\nname: project-skill\ndescription: local\n---\n\nbody\n"
     )
     return project
+
+
+def _apply_acp_skill_sourcing(
+    agent: AgentBase, sourcing: ACPSkillSourcing
+) -> AgentBase:
+    return finalize(agent, LaunchRuntime(acp_skill_sourcing=sourcing)).agent
 
 
 def _installed_suffix(agent: AgentBase, project: Path) -> str:
@@ -159,9 +165,11 @@ def test_native_sourcing_leaves_a_non_acp_agent_alone() -> None:
         tools=[],
         agent_context=AgentContext(skills=[_managed_skill()]),
     )
-    assert _apply_acp_skill_sourcing(agent, "native") is agent
+    sourced = _apply_acp_skill_sourcing(agent, "native")
+    assert sourced.agent_context is not None
+    assert [s.name for s in sourced.agent_context.skills] == [MANAGED_SKILL]
 
 
 def test_native_sourcing_is_a_no_op_without_skills() -> None:
-    agent = _acp_agent()
+    agent = _acp_agent(current_datetime=None)
     assert _apply_acp_skill_sourcing(agent, "native") is agent

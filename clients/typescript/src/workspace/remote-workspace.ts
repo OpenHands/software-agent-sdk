@@ -6,7 +6,8 @@
  */
 
 import { BashClient } from '../client/bash-client';
-import { HttpClient } from '../client/http-client';
+import type { HttpClient } from '../client/http-client';
+import { createRuntimeHttpClients } from '../client/runtime-transport';
 import {
   CommandResult,
   FileOperationResult,
@@ -23,6 +24,8 @@ import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 export interface RemoteWorkspaceOptions extends BaseWorkspaceOptions {
   /** The remote host URL for the workspace (e.g., 'http://localhost:8000') */
   host: string;
+  /** Owning conversation. Omit for standalone use before a conversation exists. */
+  conversationId?: string;
   /** API key for authenticating with the remote host (optional) */
   apiKey?: string;
 }
@@ -39,21 +42,23 @@ export class RemoteWorkspace implements IWorkspace {
   public readonly workingDir: string;
   public readonly apiKey?: string;
   public readonly client: HttpClient;
+  public readonly conversationId?: string;
+  private readonly serverClient: HttpClient;
   public readonly bash: BashClient;
 
   constructor(options: RemoteWorkspaceOptions) {
     this.host = options.host.replace(/\/$/, '');
     this.workingDir = options.workingDir;
     this.apiKey = options.apiKey;
+    this.conversationId = options.conversationId;
 
-    this.client = new HttpClient({
-      baseUrl: this.host,
-      apiKey: this.apiKey,
-      timeout: 60000,
-    });
+    const { serverClient, runtimeClient } = createRuntimeHttpClients(options);
+    this.serverClient = serverClient;
+    this.client = runtimeClient;
 
     this.bash = new BashClient({
       host: this.host,
+      conversationId: this.conversationId,
       ...(this.apiKey ? { apiKey: this.apiKey } : {}),
     });
   }
@@ -87,14 +92,17 @@ export class RemoteWorkspace implements IWorkspace {
    *          suitable for joining a relative path onto.
    */
   async startWorkspaceSession(conversationId: ConversationID): Promise<string> {
-    await this.client.post('/api/auth/workspace-session', undefined, {
+    if (this.conversationId !== undefined && this.conversationId !== conversationId) {
+      throw new Error('Workspace session must belong to the selected runtime');
+    }
+    await this.serverClient.post('/api/auth/workspace-session', undefined, {
       credentials: 'include',
     });
-    return `${this.host}/api/conversations/${conversationId}/workspace/`;
+    return `${this.host}/api/conversations/${encodeURIComponent(conversationId)}/workspace/`;
   }
 
   async deleteWorkspaceSession(): Promise<void> {
-    await this.client.delete('/api/auth/workspace-session', {
+    await this.serverClient.delete('/api/auth/workspace-session', {
       credentials: 'include',
       acceptableStatusCodes: new Set([204]),
     });
@@ -295,8 +303,16 @@ export class RemoteWorkspace implements IWorkspace {
 
   /**
    * Convenience method to trigger a browser download of a file
+   * @throws Error in non-browser environments; use downloadAsBlob() or downloadAsText() instead.
    */
   async downloadAndSave(sourcePath: string, saveAsFileName?: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      throw new Error(
+        'downloadAndSave() is only available in browser environments. ' +
+          'Use downloadAsBlob() or downloadAsText() in Node.js.'
+      );
+    }
+
     const blob = await this.downloadAsBlob(sourcePath);
 
     const url = URL.createObjectURL(blob);

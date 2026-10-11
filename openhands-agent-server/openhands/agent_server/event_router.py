@@ -27,7 +27,10 @@ from openhands.sdk import Message
 from openhands.sdk.event import Event
 
 
-event_router = APIRouter(
+event_read_router = APIRouter(
+    prefix="/conversations/{conversation_id}/events", tags=["Events"]
+)
+event_write_router = APIRouter(
     prefix="/conversations/{conversation_id}/events", tags=["Events"]
 )
 logger = logging.getLogger(__name__)
@@ -62,7 +65,9 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
         return dt
 
 
-@event_router.get("/search", responses={404: {"description": "Conversation not found"}})
+@event_read_router.get(
+    "/search", responses={404: {"description": "Conversation not found"}}
+)
 async def search_conversation_events(
     page_id: Annotated[
         str | None,
@@ -70,7 +75,7 @@ async def search_conversation_events(
     ] = None,
     limit: Annotated[
         int,
-        Query(title="The max number of results in the page", gt=0, lte=100),
+        Query(title="The max number of results in the page", gt=0, le=100),
     ] = 100,
     kind: Annotated[
         str | None,
@@ -101,8 +106,6 @@ async def search_conversation_events(
     event_service: EventService = Depends(get_event_service),
 ) -> JSONResponse:
     """Search / List local events"""
-    assert limit > 0
-    assert limit <= 100
 
     # Normalize timezone-aware datetimes to server timezone
     normalized_gte = (
@@ -136,7 +139,9 @@ async def search_conversation_events(
     )
 
 
-@event_router.get("/count", responses={404: {"description": "Conversation not found"}})
+@event_read_router.get(
+    "/count", responses={404: {"description": "Conversation not found"}}
+)
 async def count_conversation_events(
     kind: Annotated[
         str | None,
@@ -180,7 +185,9 @@ async def count_conversation_events(
     return count
 
 
-@event_router.get("/{event_id}", responses={404: {"description": "Item not found"}})
+@event_read_router.get(
+    "/{event_id}", responses={404: {"description": "Item not found"}}
+)
 async def get_conversation_event(
     event_id: str,
     event_service: EventService = Depends(get_event_service),
@@ -192,7 +199,7 @@ async def get_conversation_event(
     return event
 
 
-@event_router.get("")
+@event_read_router.get("")
 async def batch_get_conversation_events(
     event_ids: list[str],
     event_service: EventService = Depends(get_event_service),
@@ -203,19 +210,30 @@ async def batch_get_conversation_events(
     return events
 
 
-@event_router.post("")
+@event_write_router.post(
+    "",
+    responses={429: {"description": "Message saved but server run capacity is full"}},
+)
 async def send_message(
     request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
 ) -> Success:
-    """Send a message to a conversation"""
+    """Send a message to a conversation.
+
+    If starting the run returns 429, the message is already saved. Retry the
+    conversation's /run endpoint instead of resending the message.
+    """
     message = Message(role=request.role, content=request.content)
     await event_service.send_message(message, request.run)
     return Success()
 
 
-@event_router.post(
-    "/respond_to_confirmation", responses={404: {"description": "Item not found"}}
+@event_write_router.post(
+    "/respond_to_confirmation",
+    responses={
+        404: {"description": "Item not found"},
+        429: {"description": "Server conversation run capacity is full"},
+    },
 )
 async def respond_to_confirmation(
     request: ConfirmationResponseRequest,
@@ -224,3 +242,8 @@ async def respond_to_confirmation(
     """Accept or reject a pending action in confirmation mode."""
     await event_service.respond_to_confirmation(request)
     return Success()
+
+
+event_router = APIRouter()
+event_router.include_router(event_read_router)
+event_router.include_router(event_write_router)

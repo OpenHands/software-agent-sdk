@@ -99,8 +99,10 @@ def _set_workspace_cookie(
         _append_partitioned_to_last_set_cookie(response)
 
 
-def _append_partitioned_to_last_set_cookie(response: Response) -> None:
-    """Append ``; Partitioned`` to the most recent Set-Cookie header.
+def _append_partitioned_to_last_set_cookie(
+    response: Response, cookie_name: str = WORKSPACE_SESSION_COOKIE_NAME
+) -> None:
+    """Append ``; Partitioned`` to the named Set-Cookie header.
 
     ``MutableHeaders`` doesn't expose an "edit by name" helper for
     duplicate-allowed headers, and we need to be careful not to clobber
@@ -110,7 +112,7 @@ def _append_partitioned_to_last_set_cookie(response: Response) -> None:
     for idx in range(len(raw) - 1, -1, -1):
         name, value = raw[idx]
         if name.lower() == b"set-cookie" and value.startswith(
-            WORKSPACE_SESSION_COOKIE_NAME.encode("latin-1") + b"="
+            cookie_name.encode("latin-1") + b"="
         ):
             if b"partitioned" not in value.lower():
                 raw[idx] = (name, value + b"; Partitioned")

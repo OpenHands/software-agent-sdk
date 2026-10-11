@@ -5,6 +5,7 @@ from fastapi.security import APIKeyCookie, APIKeyHeader
 
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 
@@ -70,7 +71,15 @@ def get_conversation_service(request: Request) -> ConversationService:
     return service
 
 
-def get_bash_event_service(request: Request) -> BashEventService:
+async def get_bash_event_service(request: Request) -> BashEventService:
+    if "runtime_conversation_id" in request.path_params:
+        event_service: EventService = request.state.runtime_event_service
+        if event_service.bash_event_service is None:
+            event_service.bash_event_service = BashEventService(
+                bash_events_dir=event_service.conversation_dir / "bash_events",
+                default_cwd=event_service.get_conversation().workspace.working_dir,
+            )
+        return event_service.bash_event_service
     service = getattr(request.app.state, "bash_event_service", None)
     if service is None:
         raise HTTPException(
@@ -82,9 +91,19 @@ def get_bash_event_service(request: Request) -> BashEventService:
 
 async def get_event_service(
     conversation_id: UUID,
+    request: Request,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> EventService:
-    event_service = await conversation_service.get_event_service(conversation_id)
+    registry = getattr(request.app.state, "conversation_registry", None)
+    if (
+        isinstance(registry, ConversationRegistry)
+        and registry.serves_persisted_event_reads
+    ):
+        event_service = await conversation_service.get_persisted_event_service(
+            conversation_id
+        )
+    else:
+        event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

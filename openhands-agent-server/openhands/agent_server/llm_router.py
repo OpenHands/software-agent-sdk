@@ -141,7 +141,16 @@ async def list_models(
         verified_provider_models = set(VERIFIED_MODELS.get(provider, ()))
         for model in all_models:
             model_provider, _, _ = _extract_model_and_provider(model)
-            if model_provider == provider or model in verified_provider_models:
+            if model_provider == provider or (
+                model in verified_provider_models
+                # A namespaced verified entry (an OpenRouter id with the
+                # ``openrouter/`` prefix stripped, e.g. ``deepseek/deepseek-chat``)
+                # can collide with another provider's real catalog model of the
+                # same name. When it does, the model extracts to that other
+                # provider, so only honor the verified-list match when the model
+                # does not resolve to a different provider.
+                and not ("/" in model and model_provider and model_provider != provider)
+            ):
                 filtered_models.append(model)
         models = sorted(set(filtered_models))
 

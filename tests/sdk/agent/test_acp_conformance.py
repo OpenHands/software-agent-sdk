@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import shutil
 import socket
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -75,6 +76,47 @@ _BOGUS_KEY = "sk-acp-conformance-probe-0000000000000000000000000000"
 _MODEL_CALL_TIMEOUT = 15.0
 
 
+def _node_version() -> tuple[int, ...] | None:
+    """The running ``node``'s version as a comparable tuple, or None."""
+    node = shutil.which("node")
+    if node is None:
+        return None
+    try:
+        raw = subprocess.run(
+            [node, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        return tuple(int(part) for part in raw.lstrip("v").split(".")[:3])
+    except ValueError:
+        return None
+
+
+def _skip_if_node_below_floor(provider_key: str) -> None:
+    """Skip rather than fail when the host Node is below what this provider's
+    packages declare.
+
+    Not a soft-pedal: the CLI's own dependencies break in ways that surface as
+    an unrelated-looking protocol error several calls later (pi's engine dies
+    on `webidl.util.markAsUncloneable`, and the adapter then reports
+    "Cannot call write after a stream was destroyed" from `session/new`), so a
+    plain failure here would read as a conformance regression rather than an
+    unmet prerequisite. The image's own floor is asserted separately, against
+    the Dockerfile pin, in tests/cross/test_agent_server_build_metadata.py.
+    """
+    floor = ACP_INSTALL_CATALOG[provider_key].min_node_version
+    if floor is None:
+        return
+    running = _node_version()
+    required = tuple(int(part) for part in floor.split("."))
+    if running is not None and running < required:
+        pytest.skip(
+            f"provider {provider_key!r} declares node >={floor}; this host runs "
+            f"v{'.'.join(map(str, running))}"
+        )
+
+
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Give the probe its own HOME and bogus keys so it never touches host
     credentials (subscription logins, real API keys) or a real proxy."""
@@ -86,8 +128,23 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "OPENAI_API_KEY",
         "CODEX_API_KEY",
         "GEMINI_API_KEY",
+        # kimi-code's own KIMI_API_KEY is read only from inside
+        # $KIMI_CODE_HOME/config.toml, never from the environment, so it
+        # cannot clear the auth gate. KIMI_MODEL_NAME is the trigger for the
+        # CLI's env-only provider synthesis, and KIMI_MODEL_API_KEY is the
+        # key it pairs with — together they let session/new succeed with a
+        # bogus credential, which is what this suite needs. Setting the name
+        # without the key makes the CLI exit, so both must be set.
+        "KIMI_MODEL_API_KEY",
+        # opencode gates its *catalogue* on this, not just auth-method
+        # selection: unauthenticated, ``session/new`` advertises only the free
+        # tier and the live set_config_option call rejects the rest of
+        # available_models. A syntactically-present key is enough to be offered
+        # what a key-holding user sees (verified: 7 model options -> 90).
+        "OPENCODE_API_KEY",
     ):
         monkeypatch.setenv(var, _BOGUS_KEY)
+    monkeypatch.setenv("KIMI_MODEL_NAME", "kimi-k2.7-code")
     for var in (
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
@@ -96,6 +153,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "GOOGLE_APPLICATION_CREDENTIALS",
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",
+        "KIMI_API_KEY",
+        "KIMI_BASE_URL",
+        "KIMI_CODE_HOME",
+        "KIMI_MODEL_BASE_URL",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT",
+        # Carries an entire opencode auth store by value, so an ambient one
+        # would smuggle host credentials into a credential-free probe.
+        "OPENCODE_AUTH_CONTENT",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -136,6 +203,7 @@ def test_acp_conformance_probe(
     provider_key: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = ACP_PROVIDERS[provider_key]
+    _skip_if_node_below_floor(provider_key)
     _isolate_env(monkeypatch, tmp_path)
 
     init_captured = _spy(monkeypatch, ClientSideConnection, "initialize")

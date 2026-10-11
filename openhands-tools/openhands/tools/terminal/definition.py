@@ -3,7 +3,7 @@
 import os
 import platform
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import Field
 
@@ -267,6 +267,10 @@ class TerminalObservation(Observation):
 
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
     """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
+
+    catalog_description: ClassVar[str] = (
+        "Run shell commands in a persistent terminal session."
+    )
 
     def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
         # When using the tmux backend, TmuxPanePool handles concurrency

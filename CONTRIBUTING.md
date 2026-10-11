@@ -56,6 +56,17 @@ You may find that occasionally we are opinionated about several things:
 - **Compatibility is part of the API**: if something could break downstream clients, call it
   out explicitly and consider a migration path. We have a deprecation mechanism you may want to use.
 
+### New AI providers
+
+Adding a new AI provider is generally out of scope for the SDK unless it is broadly popular and
+commonly used by OpenHands users. The SDK should provide reusable interfaces and extension points,
+not maintain a long tail of provider-specific integrations.
+
+Feature requests and pull requests for providers that do not meet that bar should be marked as
+out of scope and closed politely. Contributors can still use the existing generic provider
+interfaces or maintain integrations externally. If demand becomes broad and sustained, a future
+request can be reassessed with evidence of user adoption and a maintainable integration shape.
+
 If you’re not sure whether a change crosses these lines, please ask early. We’re happy to help think
 through the shape of a clean interface.
 
@@ -83,9 +94,9 @@ The convention:
    interface before and after when you touch one — signatures, schemas, or event shapes — and
    state the compatibility impact (additive, breaking, or behind a flag).
 2. Commit it under the temporary **`.pr/`** directory, e.g. `.pr/design.html`. This directory is
-   for PR-only artifacts and is **removed automatically** by `.github/workflows/pr-artifacts.yml`:
-   same-repository PRs are cleaned up when the PR is approved, and fork PRs are cleaned up
-   automatically from the base branch right after merge — either way it does not persist in `main`.
+   for PR-only artifacts. `.github/workflows/pr-artifacts.yml` removes it from same-repository PRs
+   when they are approved. If artifacts reach `main`, including through a fork PR, the workflow
+   automatically opens or updates a cleanup PR against `main`.
 3. Link it near the top of the PR description via htmlpreview, pointing at the fork and branch the
    PR is opened from so it renders before the PR is merged:
 

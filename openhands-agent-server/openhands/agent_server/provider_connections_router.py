@@ -34,6 +34,7 @@ from openhands.sdk.llm.provider_connection_store import (
     ProviderConnectionNotFound,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.settings import OpenHandsAgentSettings
 
 
 logger = get_logger(__name__)
@@ -107,7 +108,9 @@ def _linked_profile_names(connection_id: str) -> list[str]:
 
 def _active_settings_references_connection(config, connection_id: str) -> bool:
     settings = get_settings_store(config).load()
-    if settings is None:
+    if settings is None or not isinstance(
+        settings.agent_settings, OpenHandsAgentSettings
+    ):
         return False
     return settings.agent_settings.llm.provider_connection_id == connection_id
 

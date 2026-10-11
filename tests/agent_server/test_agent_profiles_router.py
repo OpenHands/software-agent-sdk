@@ -602,6 +602,182 @@ def test_delete_clears_active_pointer(client, store):
     assert client.get("/api/settings").json()["active_agent_profile_id"] is None
 
 
+def test_delete_active_acp_profile_resets_agent_settings(client, store):
+    """Reproduces bug #5205: agent_settings.agent_kind stays 'acp' after deletion.
+
+    This test demonstrates the bug where agent_settings contains stale ACP configuration
+    after deleting the active ACP profile, then verifies the fix resets it properly.
+    """
+    # Save and activate an ACP profile
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+
+    # Verify the profile is active
+    settings = client.get("/api/settings").json()
+    assert settings["active_agent_profile_id"] == profile_id
+
+    # Manually set agent_settings to ACP state to reproduce the bug scenario
+    # In production, this state can occur from various paths (conversation creation,
+    # manual PATCH /api/settings, etc.)
+    response = client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "acp_model": "gpt-5.5",
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    # Verify agent_settings now has ACP configuration (bug state setup)
+    settings_with_acp = client.get("/api/settings").json()
+    assert settings_with_acp["agent_settings"]["agent_kind"] == "acp"
+    assert settings_with_acp["agent_settings"]["acp_server"] == "codex"
+    assert settings_with_acp["agent_settings"]["acp_model"] == "gpt-5.5"
+
+    # Delete the ACP profile
+    # BUG (before fix): agent_settings would remain unchanged with agent_kind="acp"
+    # FIX (after): agent_settings is reset to default OpenHands
+    response = client.delete("/api/agent-profiles/codex-test")
+    assert response.status_code == 200
+
+    # Verify the fix: agent_settings is reset to default (agent_kind="openhands")
+    settings_after = client.get("/api/settings").json()
+    assert settings_after["active_agent_profile_id"] is None
+    assert settings_after["agent_settings"]["agent_kind"] == "openhands"
+    # Verify ACP-specific fields are cleared
+    assert settings_after["agent_settings"].get("acp_server") is None
+    assert settings_after["agent_settings"].get("acp_model") is None
+
+
+def test_delete_active_openhands_profile_does_not_reset_agent_settings(client, store):
+    """Deleting an active OpenHands profile only clears pointer, not agent_settings."""
+    # Save and activate an OpenHands profile
+    store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))
+    profile_id = client.get("/api/agent-profiles/custom-oh").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+
+    # Non-default state a blanket reset would destroy. ``agent_kind`` alone
+    # cannot detect one, since a full reset also yields "openhands".
+    assert (
+        client.post(
+            "/api/settings/mcp/github",
+            json={"transport": "http", "url": "https://github.example/mcp"},
+        ).status_code
+        == 201
+    )
+    agent_settings_before = client.get("/api/settings").json()["agent_settings"]
+    assert agent_settings_before["mcp_config"].keys() == {"github"}
+
+    # Delete the OpenHands profile
+    client.delete("/api/agent-profiles/custom-oh")
+
+    # Verify pointer is cleared but agent_settings unchanged (still openhands)
+    settings_after = client.get("/api/settings").json()
+    assert settings_after["active_agent_profile_id"] is None
+    assert settings_after["agent_settings"] == agent_settings_before
+
+
+def test_delete_active_acp_profile_keeps_openhands_settings_intact(client, store):
+    """An ACP profile is a pointer; it does not own ``agent_settings``.
+
+    ``activate_agent_profile`` never writes ``agent_settings``, so deleting an
+    ACP profile must not touch a healthy OpenHands configuration.
+    """
+    client.post(
+        "/api/profiles/my-profile",
+        json={
+            "llm": {
+                "model": "anthropic/claude-sonnet-4",
+                "api_key": "sk-secret",
+                "usage_id": "my-profile",
+            },
+            "include_secrets": True,
+        },
+    )
+    client.post("/api/profiles/my-profile/activate")
+    client.post(
+        "/api/settings/mcp/github",
+        json={"transport": "http", "url": "https://github.example/mcp"},
+    )
+
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+
+    before = client.get("/api/settings").json()
+    assert client.delete("/api/agent-profiles/codex-test").status_code == 200
+    after = client.get("/api/settings").json()
+
+    assert after["agent_settings"] == before["agent_settings"]
+    assert after["agent_settings"]["llm"]["model"] == "anthropic/claude-sonnet-4"
+    assert after["agent_settings"]["mcp_config"].keys() == {"github"}
+    assert after["active_profile"] == "my-profile"
+
+
+def test_delete_active_acp_profile_keeps_mcp_registry(client, store):
+    """The reset clears ACP state but not the server-wide MCP registry.
+
+    ``mcp_config`` is what every other profile resolves its ``mcp_server_refs``
+    against, so dropping it would leave unrelated profiles dangling.
+    """
+    store.save(
+        ACPAgentProfile(name="codex-test", acp_server="codex", acp_model="gpt-5.5")
+    )
+    profile_id = client.get("/api/agent-profiles/codex-test").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+    assert (
+        client.post(
+            "/api/settings/mcp/github",
+            json={"transport": "http", "url": "https://github.example/mcp"},
+        ).status_code
+        == 201
+    )
+
+    assert client.delete("/api/agent-profiles/codex-test").status_code == 200
+
+    agent_settings = client.get("/api/settings").json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "openhands"
+    assert agent_settings.get("acp_server") is None
+    assert agent_settings["mcp_config"].keys() == {"github"}
+
+
+def test_delete_active_openhands_profile_clears_stale_acp_settings(client, store):
+    """The reset keys off ``agent_settings``, not the deleted profile's kind."""
+    store.save(OpenHandsAgentProfile(name="custom-oh", llm_profile_ref="x"))
+    profile_id = client.get("/api/agent-profiles/custom-oh").json()["profile"]["id"]
+    client.post(f"/api/agent-profiles/{profile_id}/activate")
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "acp_model": "gpt-5.5",
+            }
+        },
+    )
+    assert client.get("/api/settings").json()["agent_settings"]["agent_kind"] == "acp"
+
+    assert client.delete("/api/agent-profiles/custom-oh").status_code == 200
+
+    assert (
+        client.get("/api/settings").json()["agent_settings"]["agent_kind"]
+        == "openhands"
+    )
+
+
 def test_rename_success(client, store):
     store.save(OpenHandsAgentProfile(name="old-name", llm_profile_ref="x"))
 
@@ -714,8 +890,7 @@ def test_seed_preserves_openhands_fields(client):
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "enable_sub_agents": True,
-                "enable_switch_llm_tool": False,
+                "tools": [{"name": "terminal"}, {"name": "task_tool_set"}],
                 "tool_concurrency_limit": 3,
                 "agent_context": {"system_message_suffix": "be terse"},
                 "verification": {
@@ -728,8 +903,9 @@ def test_seed_preserves_openhands_fields(client):
     client.get("/api/agent-profiles")  # triggers the seed
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
-    assert prof["enable_sub_agents"] is True
-    assert prof["enable_switch_llm_tool"] is False
+    assert [tool["name"] for tool in prof["tools"]] == ["terminal", "task_tool_set"]
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
     # The seed disables nothing — the default profile launches with all
@@ -840,15 +1016,24 @@ def client_with_llm_store(
     monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
+
+    def agent_profiles() -> AgentProfileStore:
+        return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+    def llm_profiles() -> LLMProfileStore:
+        return LLMProfileStore(base_dir=temp_llm_profiles_dir)
+
     with (
         patch(
             "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
-            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+            agent_profiles,
         ),
         patch(
             "openhands.agent_server.agent_profiles_router.get_llm_profile_store",
-            lambda: LLMProfileStore(base_dir=temp_llm_profiles_dir),
+            llm_profiles,
         ),
+        patch("openhands.agent_server.launch.get_agent_profile_store", agent_profiles),
+        patch("openhands.agent_server.launch.get_llm_profile_store", llm_profiles),
     ):
         yield TestClient(app)
     reset_stores()
@@ -875,6 +1060,17 @@ def test_materialize_valid_openhands_profile(client_with_llm_store, store, llm_s
     assert body["errors"] == []
     assert body["resolved_settings"] is not None
     assert body["dangling_mcp_server_refs"] == []
+
+
+def test_materialize_rejects_an_unwrapped_draft(client_with_llm_store, store):
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    response = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize",
+        json={"llm_profile_ref": "other", "tools": []},
+    )
+
+    assert response.status_code == 422
 
 
 def test_materialize_valid_acp_profile(client_with_llm_store, store):
@@ -944,7 +1140,7 @@ def test_materialize_reports_disabled_and_resolved_skills(
     )
 
     with patch(
-        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        "openhands.agent_server.launch.discover_profile_skills",
         return_value=[
             Skill(name="alpha", content="x"),
             Skill(name="beta", content="y"),
@@ -958,6 +1154,99 @@ def test_materialize_reports_disabled_and_resolved_skills(
     assert body["disabled_skills"] == ["beta", "not-in-catalog"]
     assert body["resolved_skills"] == ["alpha"]
     assert body["resolved_settings"] is not None
+
+
+_BROWSER_PROBE = "openhands.agent_server.launch.is_tool_usable"
+_DISCOVER = "openhands.agent_server.launch.discover_profile_skills"
+
+
+def test_materialize_reports_the_tools_a_launch_would_build(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    with (
+        patch(_BROWSER_PROBE, return_value=True),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        body = client_with_llm_store.post("/api/agent-profiles/p/materialize").json()
+
+    assert [t["name"] for t in body["resolved_settings"]["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+        "switch_llm",
+    ]
+
+
+def test_materialize_evaluates_a_draft_without_saving_it(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {
+        "name": "ignored",
+        "agent_kind": "openhands",
+        "llm_profile_ref": "base-llm",
+        "tools": [{"name": "glob"}],
+    }
+
+    with (
+        patch(_BROWSER_PROBE, return_value=True),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        response = client_with_llm_store.post(
+            "/api/agent-profiles/draft/materialize", json={"profile": draft}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert [t["name"] for t in body["resolved_settings"]["tools"]] == ["glob"]
+    assert store.list() == []
+
+
+def test_materialize_draft_takes_precedence_over_the_stored_profile(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    with (
+        patch(_DISCOVER, return_value=[]),
+        patch(_BROWSER_PROBE, return_value=False),
+    ):
+        drafted = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize",
+            json={"profile": {"name": "p", "llm_profile_ref": "base-llm", "tools": []}},
+        ).json()
+        stored = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={}
+        ).json()
+
+    assert drafted["resolved_settings"]["tools"] == []
+    assert [t["name"] for t in stored["resolved_settings"]["tools"]] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "switch_llm",
+    ]
+
+
+def test_materialize_invalid_draft_returns_422(client_with_llm_store):
+    response = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize",
+        json={
+            "profile": {
+                "name": "p",
+                "llm_profile_ref": "base-llm",
+                "tools": "terminal",
+            }
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_materialize_unknown_name_returns_404(client_with_llm_store):
@@ -987,3 +1276,148 @@ def test_materialize_no_raw_secrets_in_resolved_settings(
     body = response.json()
     assert body["valid"] is True
     assert raw_key not in response.text
+
+
+def test_materialize_migrates_an_old_draft_like_save(
+    client_with_llm_store, store, llm_store
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {
+        "schema_version": 2,
+        "agent_kind": "openhands",
+        "llm_profile_ref": "base-llm",
+        "enable_sub_agents": True,
+    }
+
+    with (
+        patch(_BROWSER_PROBE, return_value=False),
+        patch(_DISCOVER, return_value=[]),
+    ):
+        previewed = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={"profile": draft}
+        )
+        saved = client_with_llm_store.post("/api/agent-profiles/p", json=draft)
+
+    assert previewed.status_code == 200
+    assert saved.status_code == 201
+    tools = [t["name"] for t in previewed.json()["resolved_settings"]["tools"]]
+    assert "task_tool_set" in tools
+
+
+def test_materialize_rejects_a_draft_newer_than_save_accepts(client_with_llm_store):
+    draft = {
+        "name": "p",
+        "schema_version": 99,
+        "agent_kind": "openhands",
+        "llm_profile_ref": "x",
+    }
+
+    previewed = client_with_llm_store.post(
+        "/api/agent-profiles/p/materialize", json={"profile": draft}
+    )
+    saved = client_with_llm_store.post("/api/agent-profiles/p", json=draft)
+
+    assert previewed.status_code == 422
+    assert saved.status_code == 422
+
+
+def test_save_migrates_a_v2_profile_carrying_retired_switches(client):
+    response = client.post(
+        "/api/agent-profiles/v2-profile",
+        json={
+            "schema_version": 2,
+            "agent_kind": "openhands",
+            "llm_profile_ref": "default",
+            "enable_sub_agents": False,
+            "enable_switch_llm_tool": True,
+        },
+    )
+
+    assert response.status_code == 201
+    prof = client.get("/api/agent-profiles/v2-profile").json()["profile"]
+    assert prof["tools"] is None
+    assert "enable_sub_agents" not in prof
+    assert "enable_switch_llm_tool" not in prof
+
+
+def test_save_accepts_retired_switches_as_deprecated_input(client):
+    response = client.post(
+        "/api/agent-profiles/p",
+        json={"llm_profile_ref": "default", "enable_switch_llm_tool": False},
+    )
+
+    assert response.status_code == 201
+    assert _tool_names(client, "p") == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+        "browser_tool_set",
+    ]
+    stored = client.get("/api/agent-profiles/p").json()["profile"]
+    assert "enable_switch_llm_tool" not in stored
+
+
+def test_save_rejects_params_on_a_parameterless_builtin(client):
+    response = client.post(
+        "/api/agent-profiles/p",
+        json={
+            "llm_profile_ref": "default",
+            "tools": [{"name": "switch_llm", "params": {"a": 1}}],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def _tool_names(client, name: str) -> list[str]:
+    prof = client.get(f"/api/agent-profiles/{name}").json()["profile"]
+    return [tool["name"] for tool in prof["tools"] or []]
+
+
+def test_saving_a_copy_under_a_new_name_keeps_its_tools(client):
+    client.post("/api/agent-profiles/p", json={"llm_profile_ref": "default"})
+    stored = client.get("/api/agent-profiles/p").json()["profile"]
+
+    client.post(
+        "/api/agent-profiles/copy",
+        json={**stored, "tools": [{"name": "terminal"}, {"name": "glob"}]},
+    )
+
+    assert _tool_names(client, "copy") == ["terminal", "glob"]
+
+
+def test_new_client_spreading_stale_switches_keeps_its_tools_edit(client):
+    client.post(
+        "/api/agent-profiles/p",
+        json={
+            "llm_profile_ref": "default",
+            "tools": [{"name": "terminal"}, {"name": "switch_llm"}],
+        },
+    )
+    stored = client.get("/api/agent-profiles/p").json()["profile"]
+
+    client.post(
+        "/api/agent-profiles/p",
+        json={**stored, "tools": [{"name": "terminal"}, {"name": "task_tool_set"}]},
+    )
+
+    assert _tool_names(client, "p") == ["terminal", "task_tool_set"]
+
+
+@pytest.mark.parametrize(
+    ("tools", "valid"),
+    [([{"name": "terminal"}], True), ([{"name": "not_a_registered_tool"}], False)],
+)
+def test_materialize_is_invalid_when_a_selected_tool_cannot_run(
+    client_with_llm_store, llm_store, tools, valid
+):
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    draft = {"agent_kind": "openhands", "llm_profile_ref": "base-llm", "tools": tools}
+
+    with patch(_DISCOVER, return_value=[]):
+        response = client_with_llm_store.post(
+            "/api/agent-profiles/p/materialize", json={"profile": draft}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is valid

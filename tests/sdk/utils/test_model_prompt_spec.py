@@ -17,13 +17,10 @@ from openhands.sdk.llm.utils.model_prompt_spec import (
         # Codex variants
         ("gpt-5-codex", None, "gpt-5-codex"),
         ("gpt-5.1-codex", None, "gpt-5-codex"),
-        ("gpt-5.2-codex", None, "gpt-5-codex"),
         ("gpt-5.3-codex", None, "gpt-5-codex"),
         # With canonical names
-        ("gpt-5.2-codex", "openai/gpt-5.2-codex", "gpt-5-codex"),
         ("gpt-5.3-codex", "openai/gpt-5.3-codex", "gpt-5-codex"),
         # Provider-prefixed variants
-        ("openai/gpt-5.2-codex-mini", None, "gpt-5-codex"),
         ("openai/gpt-5.3-codex-pro", None, "gpt-5-codex"),
     ],
 )
