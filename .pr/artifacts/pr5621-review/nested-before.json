@@ -1,0 +1,41 @@
+{
+  "ok": false,
+  "file": "F98-nested.md",
+  "summary": {
+    "pass": 0,
+    "fail": 1,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "no-commands": 0
+  },
+  "bullets": [
+    {
+      "bullet": "Nested launch (`F98.nested`).",
+      "ids": [
+        "F98.nested"
+      ],
+      "line": 19,
+      "status": "fail",
+      "exit_code": 1,
+      "elapsed_ms": 8321,
+      "transcript": "/tmp/pr5621-nested-before-runs/20261011-045055-8684-map-f98/evidence/map-run/F98-nested-00-nested-launch-f98-nested.json",
+      "failed_line": 3,
+      "failed_command": "control-agent-server api GET /server_info --run \"$NESTED\" --auth none --check build_git_sha eq 46d1c17f290b1588c47701aabda7c8636441b567 --check sdk_version eq 1.54.0 --save F98.nested/inner",
+      "stdout_tail": "binding_readiness_probe_v1\",\n        \"credential_binding_activation_guard_v1\",\n        \"idempotent_conversation_create_v1\",\n        \"tool_catalog_v1\",\n        \"agent_profile_draft_materialize_v1\"\n      ],\n      \"app_backend_ingress_url\": null,\n      \"max_foreground_terminal_timeout_seconds\": null,\n      \"docs\": \"/docs\",\n      \"redoc\": \"/redoc\"\n    },\n    \"truncated\": false\n  },\n  \"elapsed_ms\": 27,\n  \"checks\": [\n    {\n      \"check\": \"build_git_sha eq 46d1c17f290b1588c47701aabda7c8636441b567\",\n      \"ok\": false,\n      \"actual\": \"cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4\"\n    },\n    {\n      \"check\": \"sdk_version eq 1.54.0\",\n      \"ok\": false,\n      \"actual\": \"1.53.0\"\n    }\n  ],\n  \"saved\": \"/tmp/pr5621-nested-before-runs/20261011-045100-e746-nested-probe/evidence/F98.nested/inner.json\",\n  \"hint\": \"failed check: build_git_sha eq 46d1c17f290b1588c47701aabda7c8636441b567; sdk_version eq 1.54.0\"\n}\n{\n  \"ok\": true,\n  \"run\": \"/tmp/pr5621-nested-before-runs/20261011-045100-e746-nested-probe\",\n  \"helpers\": [],\n  \"server\": \"terminated\",\n  \"port_closed\": true,\n  \"orphans_reaped\": [],\n  \"evidence\": \"/tmp/pr5621-nested-before-runs/20261011-045100-e746-nested-probe/evidence\",\n  \"evidence_files\": 1\n}\n",
+      "stderr_tail": ""
+    }
+  ],
+  "run": "/tmp/pr5621-nested-before-runs/20261011-045055-8684-map-f98",
+  "launch_flags": [
+    "--checkout",
+    "/Users/enyst/repos/agent-sdk"
+  ],
+  "probe_context": {
+    "harness": "/Users/enyst/.codex/worktrees/pr5621-baseline/agent-sdk",
+    "target": "/Users/enyst/repos/agent-sdk",
+    "expected_sha": "46d1c17f290b1588c47701aabda7c8636441b567",
+    "expected_sdk": "1.54.0"
+  }
+}

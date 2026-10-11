@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "file": "F23-llm-catalog-and-connections.md",
+  "summary": {
+    "pass": 2,
+    "fail": 0,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "no-commands": 0
+  },
+  "bullets": [
+    {
+      "bullet": "Preconditions",
+      "ids": [],
+      "line": 109,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 215,
+      "transcript": "/tmp/pr5621-live/20261011-044629-0a49-map-f23/evidence/map-run/F23-llm-catalog-and-connections-00-preconditions.json"
+    },
+    {
+      "bullet": "ACP discovery errors (`F23.acp-discovery-errors`).",
+      "ids": [
+        "F23.acp-discovery-errors"
+      ],
+      "line": 696,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 1262,
+      "transcript": "/tmp/pr5621-live/20261011-044629-0a49-map-f23/evidence/map-run/F23-llm-catalog-and-connections-01-acp-discovery-errors-f23-acp-discovery-e.json"
+    }
+  ],
+  "run": "/tmp/pr5621-live/20261011-044629-0a49-map-f23",
+  "launch_flags": []
+}

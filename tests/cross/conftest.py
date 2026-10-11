@@ -7,6 +7,20 @@ import pytest
 
 
 @pytest.fixture
+def write_verification_family(tmp_path, monkeypatch):
+    feature_map = tmp_path / "map"
+    feature_map.mkdir()
+
+    def write(module, content):
+        monkeypatch.setattr(module, "FEATURE_MAP_DIR", feature_map)
+        path = feature_map / "F98-demo.md"
+        path.write_text(content)
+        return path
+
+    return write
+
+
+@pytest.fixture
 def llm_fixtures_dir():
     """Get the LLM fixtures directory path."""
     return Path(__file__).parent.parent / "fixtures" / "llm_data"

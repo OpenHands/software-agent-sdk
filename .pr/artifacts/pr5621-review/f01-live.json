@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "file": "F01-server-status.md",
+  "summary": {
+    "pass": 6,
+    "fail": 0,
+    "xfail": 0,
+    "xpass": 0,
+    "blocked": 0,
+    "skipped": 0,
+    "no-commands": 0
+  },
+  "bullets": [
+    {
+      "bullet": "Preconditions",
+      "ids": [],
+      "line": 51,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 5,
+      "transcript": "/tmp/pr5621-live/20261011-044057-f09b-map-f01/evidence/map-run/F01-server-status-00-preconditions.json"
+    },
+    {
+      "bullet": "Liveness (`F01.alive`).",
+      "ids": [
+        "F01.alive"
+      ],
+      "line": 68,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 440,
+      "transcript": "/tmp/pr5621-live/20261011-044057-f09b-map-f01/evidence/map-run/F01-server-status-01-liveness-f01-alive.json"
+    },
+    {
+      "bullet": "Health (`F01.health`).",
+      "ids": [
+        "F01.health"
+      ],
+      "line": 76,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 199,
+      "transcript": "/tmp/pr5621-live/20261011-044057-f09b-map-f01/evidence/map-run/F01-server-status-02-health-f01-health.json"
+    },
+    {
+      "bullet": "Readiness (`F01.ready`).",
+      "ids": [
+        "F01.ready"
+      ],
+      "line": 81,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 212,
+      "transcript": "/tmp/pr5621-live/20261011-044057-f09b-map-f01/evidence/map-run/F01-server-status-03-readiness-f01-ready.json"
+    },
+    {
+      "bullet": "Server info (`F01.server-info`).",
+      "ids": [
+        "F01.server-info"
+      ],
+      "line": 86,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 219,
+      "transcript": "/tmp/pr5621-live/20261011-044057-f09b-map-f01/evidence/map-run/F01-server-status-04-server-info-f01-server-info.json"
+    },
+    {
+      "bullet": "OpenAPI document (`F01.openapi`).",
+      "ids": [
+        "F01.openapi"
+      ],
+      "line": 137,
+      "status": "pass",
+      "exit_code": 0,
+      "elapsed_ms": 786,
+      "transcript": "/tmp/pr5621-live/20261011-044057-f09b-map-f01/evidence/map-run/F01-server-status-05-openapi-document-f01-openapi.json"
+    }
+  ],
+  "run": "/tmp/pr5621-live/20261011-044057-f09b-map-f01",
+  "launch_flags": []
+}

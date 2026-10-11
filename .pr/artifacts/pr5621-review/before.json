@@ -1,0 +1,215 @@
+{
+  "checkout": "cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4",
+  "script": "/Users/enyst/.codex/worktrees/pr5621-baseline/agent-sdk/.agents/skills/verify-agent-server/scripts/control_agent_server.py",
+  "field": {
+    "exit": 0,
+    "output": "invented-review-session-key"
+  },
+  "header": {
+    "exit": 0,
+    "output": "invented-review-session-key"
+  },
+  "ws_negative": {
+    "exit": 0,
+    "output": {
+      "ok": true,
+      "path": "/refused",
+      "frames": 0,
+      "kinds": {},
+      "stopped": "error",
+      "close": {
+        "error": "InvalidStatus: server rejected WebSocket connection: HTTP 503",
+        "http_status": 503
+      },
+      "first_frames": []
+    }
+  },
+  "ws_background_open": {
+    "exit": 0,
+    "output": {
+      "ok": true,
+      "capture": "refused",
+      "out": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/captures/refused.jsonl",
+      "frames": 0,
+      "kinds": {},
+      "close": null,
+      "matching": 0,
+      "matching_kinds": [],
+      "frames_shown": []
+    }
+  },
+  "early_exit": {
+    "exit": 0,
+    "output": {
+      "ok": true,
+      "file": "F98-probe.md",
+      "summary": {
+        "pass": 1,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "bullets": [
+        {
+          "bullet": "Preconditions",
+          "ids": [],
+          "line": 15,
+          "status": "pass",
+          "exit_code": 0,
+          "elapsed_ms": 4,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-00-preconditions.json"
+        },
+        {
+          "bullet": "Probe (`F98.probe`), known bug.",
+          "ids": [
+            "F98.probe"
+          ],
+          "line": 23,
+          "status": "xfail",
+          "exit_code": 3,
+          "elapsed_ms": 3,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-01-probe-f98-probe-known-bug.json",
+          "failed_line": null,
+          "failed_command": null,
+          "stdout_tail": "",
+          "stderr_tail": ""
+        }
+      ]
+    }
+  },
+  "setup_timeout": {
+    "exit": 0,
+    "output": {
+      "ok": true,
+      "file": "F98-probe.md",
+      "summary": {
+        "pass": 1,
+        "fail": 0,
+        "xfail": 1,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "bullets": [
+        {
+          "bullet": "Preconditions",
+          "ids": [],
+          "line": 15,
+          "status": "pass",
+          "exit_code": 0,
+          "elapsed_ms": 3,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-00-preconditions-2.json"
+        },
+        {
+          "bullet": "Probe (`F98.probe`), known bug.",
+          "ids": [
+            "F98.probe"
+          ],
+          "line": 23,
+          "status": "xfail",
+          "exit_code": 124,
+          "elapsed_ms": 104,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-01-probe-f98-probe-known-bug-2.json",
+          "failed_line": null,
+          "failed_command": null,
+          "stdout_tail": "",
+          "stderr_tail": "timed out after 0.1s"
+        }
+      ]
+    }
+  },
+  "child_timeout": {
+    "exit": 1,
+    "output": {
+      "ok": false,
+      "file": "F98-probe.md",
+      "summary": {
+        "pass": 1,
+        "fail": 1,
+        "xfail": 0,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "bullets": [
+        {
+          "bullet": "Preconditions",
+          "ids": [],
+          "line": 15,
+          "status": "pass",
+          "exit_code": 0,
+          "elapsed_ms": 5,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-00-preconditions-3.json"
+        },
+        {
+          "bullet": "Child (`F98.probe`).",
+          "ids": [
+            "F98.probe"
+          ],
+          "line": 23,
+          "status": "fail",
+          "exit_code": 124,
+          "elapsed_ms": 105,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-01-child-f98-probe.json",
+          "failed_line": null,
+          "failed_command": null,
+          "stdout_tail": "",
+          "stderr_tail": "timed out after 0.1s"
+        }
+      ]
+    },
+    "child_survived": true
+  },
+  "unknown_selection": {
+    "exit": 0,
+    "output": {
+      "ok": true,
+      "file": "F98-probe.md",
+      "summary": {
+        "pass": 1,
+        "fail": 0,
+        "xfail": 0,
+        "xpass": 0,
+        "blocked": 0,
+        "skipped": 0,
+        "no-commands": 0
+      },
+      "bullets": [
+        {
+          "bullet": "Preconditions",
+          "ids": [],
+          "line": 15,
+          "status": "pass",
+          "exit_code": 0,
+          "elapsed_ms": 6,
+          "transcript": "/var/folders/15/pyrd6jhs3tnd259qd39xsplm0000gn/T/pr5621-probes-ath53cul/runs/20261011-044910-c232-attach/evidence/map-run/F98-probe-00-preconditions-4.json"
+        }
+      ]
+    }
+  },
+  "undriven_coverage": {
+    "exit": 0,
+    "output": {
+      "ok": true,
+      "routes": 203,
+      "owned": 1,
+      "driven": 0,
+      "unowned": [],
+      "owned_but_not_driven": [
+        {
+          "route": "GET /alive",
+          "owner": [
+            "F98-probe.md"
+          ]
+        }
+      ],
+      "multiple_owners": [],
+      "stale_exclusions": []
+    }
+  }
+}
