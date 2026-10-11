@@ -245,6 +245,8 @@ control-agent-server api GET /api/conversations/count --query status=idle --chec
   The socket pushed a `running` frame at iteration 0 and the `complete`
   frame, the same `ConversationStateUpdateEvent` rows the log holds.
 - **Same conversation, no new one (`F11.goal-in-place`).**
+
+  Requires: `F11.goal-complete`
   ```sh
   control-agent-server api GET /api/conversations/count --check . eq "$NCONV" --save F11.goal-in-place/count
   control-agent-server api GET "/api/conversations/$G/events/count" --query source=user --query body='Create a file named qa-goal.txt' --check . ge 1

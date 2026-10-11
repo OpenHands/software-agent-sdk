@@ -215,6 +215,8 @@ Preconditions:
   `<id without dashes>/`, and not under the boot path
   (`server/workspace/conversations`).
 - **Delivered webhooks (`F03.init-delivered-webhooks`).** The init body carried one webhook, `$F03_HOOKS` with header `X-QA-F03: delivered-hook`; the boot config has none.
+
+  Requires: `F03.init-success`
   ```sh
   if grep -q webhooks "$AGENT_SERVER_VERIFY_RUN/private/config.json"; then false; fi
   control-agent-server sink read --name qa-f03-hooks --path /conversations --contains "\"id\": \"$F03_CID\"" --expect-min 1 --wait 15 \

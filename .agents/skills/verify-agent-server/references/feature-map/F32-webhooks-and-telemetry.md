@@ -147,6 +147,8 @@ Preconditions:
   saved evidence shows the header as `<redacted:session-api-key>`.
 - **Conversation created (`F32.conversation-created`).** The run above posted
   its `ConversationInfo` once.
+
+  Requires: `F32.events-post`
   ```sh
   control-agent-server sink read --path /conversations --contains "\"id\": \"$CID\"" --expect-min 1 --expect-max 1 --wait 15 --save F32.conversation-created/info
   control-agent-server sink read --path /conversations --contains '"body": [' --expect-max 0
@@ -159,6 +161,8 @@ Preconditions:
   snapshot is transient: it is sent to subscribers, not stored. After a
   restart, the first route that loads the conversation re-attaches the
   webhook and sends a new one.
+
+  Requires: `F32.events-post`
   ```sh
   control-agent-server sink read --path "/events/$HEX" --contains '"key": "full_state"' --expect-min 2 --expect-max 2 --wait 15
   control-agent-server sink read --path "/events/$HEX" --contains '"api_key": "**********"' --expect-min 1
@@ -235,6 +239,8 @@ Preconditions:
   published while that first batch was being posted, so the buffer (2) is
   full again and they should be posted at once. The stored events come
   first, so the bullet can only fail on the delivery.
+
+  Requires: `F32.custom-headers`
   ```sh
   control-agent-server conversation events "$BID" --kinds MessageEvent --contains QA_F32_BUFFER --expect-count 1
   control-agent-server conversation events "$BID" --key last_user_message_id --expect-count 1
@@ -252,6 +258,8 @@ Preconditions:
   timer the chance to fire (the server's timer is under test). Both restarts
   are shutdowns under test: the first one's graceful stop delivers the
   previous bullet's stranded message (late, not lost).
+
+  Requires: `F32.custom-headers`
   ```sh
   control-agent-server restart --config-json "{\"webhooks\": [{\"base_url\": \"$WH/qa-f32-c\", \"event_buffer_size\": 100, \"flush_delay\": 600}]}"
   control-agent-server sink read --path "/qa-f32-b/events/${BID//-/}" --contains QA_F32_BUFFER --expect-min 1 --save F32.flush-on-close/stranded-after-stop
@@ -361,6 +369,8 @@ Preconditions:
 - **Failed batches are requeued (`F32.requeue`).** Same failing sink, a 1 s
   timer and `num_retries` 1 (2 attempts per flush): a dropped batch would be
   attempted twice, a requeued one again on every flush.
+
+  Requires: `F32.retry`
   ```sh
   control-agent-server restart --config-json "{\"webhooks\": [{\"base_url\": \"$FAIL\", \"event_buffer_size\": 100, \"flush_delay\": 1, \"num_retries\": 1, \"retry_delay\": 0}]}"
   QID=$(control-agent-server conversation start --placeholder-agent --no-run --prompt QA_F32_REQUEUE --no-autotitle --print-id)
@@ -402,6 +412,8 @@ Preconditions:
 - **Webhooks from the environment (`F32.env-config`).** Put the failing sink
   with a 1 s timer in the config file and override only `base_url` and
   `headers` of `webhooks[0]` through the environment.
+
+  Requires: `F32.retry`
   ```sh
   control-agent-server restart --config-json "{\"webhooks\": [{\"base_url\": \"$FAIL\", \"flush_delay\": 1}]}" --env "OH_WEBHOOKS_0_BASE_URL=$WH/qa-f32-env" --env 'OH_WEBHOOKS_0_HEADERS={"X-QA-F32-Env": "qa-f32-env"}'
   EID=$(control-agent-server conversation start --placeholder-agent --no-run --prompt QA_F32_ENV --no-autotitle --print-id)
@@ -494,6 +506,8 @@ Preconditions:
   unhandled exception: an `HTTPException` 5xx is not reported.
 - **Token and cost buckets from real usage (`F32.telemetry-usage-buckets`), known bug.**
   The run above used tokens; its outcome event should say so.
+
+  Requires: `F32.telemetry-conversation`
   ```sh
   control-agent-server api GET "/api/conversations/$UCID" --check stats.usage_to_metrics.default.accumulated_token_usage.prompt_tokens gt 0
   control-agent-server sink read --name qa-f32-telemetry --contains '"total_tokens_bucket": "' --expect-min 1
@@ -592,6 +606,8 @@ Preconditions:
   id's 16 bytes, 16-byte digest, keyed by the salt, or by a 32-byte
   `blake2s` of a key longer than 32 bytes). The run's secret key is read
   from its private file inside the one-liner and never printed.
+
+  Requires: `F32.telemetry-conversation-failed`
   ```sh
   FREF=$(python3 -c 'import hashlib, os, sys, uuid; k = open(os.environ["AGENT_SERVER_VERIFY_RUN"] + "/private/secret_key").read().strip().encode(); k = k if len(k) <= 32 else hashlib.blake2s(k, digest_size=32).digest(); print(hashlib.blake2s(uuid.UUID(sys.argv[1]).bytes, key=k, digest_size=16).hexdigest())' "$FAILID")
   SREF=$(python3 -c 'import hashlib, sys, uuid; print(hashlib.blake2s(uuid.UUID(sys.argv[1]).bytes, key=b"qa-f32-salt", digest_size=16).hexdigest())' "$FAILID")

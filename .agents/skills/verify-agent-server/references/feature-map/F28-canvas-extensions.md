@@ -536,6 +536,8 @@ Preconditions:
   sha256, and a second prepare answers at once without a second extraction.
 - **Start (`F28.backend-start`).** Start the prepared revision of the
   (still disabled) app and look at the process it runs.
+
+  Requires: `F28.install-local`
   ```sh
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/start --json "{\"revision\": \"$BHEAD\"}" \
     --expect 200 --check state eq ready --check pid exists --check port exists --check detail eq null \
@@ -569,6 +571,8 @@ Preconditions:
   is 409, and a forced install of any app and a data deletion are 409 while
   it runs. Starting does not require the app to be enabled.
 - **Stop (`F28.backend-stop`).** Stop the running backend twice.
+
+  Requires: `F28.backend-start`
   ```sh
   control-agent-server api POST /api/canvas-extensions/installed/qa-backend/backend/stop --expect 200 \
     --check state eq stopped --check pid eq null --check port eq null --expect-max-ms 7000 --save F28.backend-stop/stop
@@ -598,6 +602,8 @@ Preconditions:
 - **Reinstall (`F28.force-reinstall`).** Enable the browser-only app,
   install it again without `force`, then change its bundle at the source and
   reinstall both apps with `force`.
+
+  Requires: `F28.install-local`, `F28.bundle`
   ```sh
   control-agent-server api PATCH /api/canvas-extensions/installed/qa-canvas --json '{"enabled": true}' --expect 200
   control-agent-server api POST /api/canvas-extensions/install --json "{\"source\": \"$FX\"}" \

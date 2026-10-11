@@ -218,6 +218,8 @@ KID=$(control-agent-server api POST /api/conversations \
   observation and no file; the socket pushed `execution_status`
   `waiting_for_confirmation`.
 - **Accept (`F08.confirm-accept`).** Approve the pending command.
+
+  Requires: `F08.always-confirm-wait`
   ```sh
   control-agent-server api POST "/api/conversations/$AID/events/respond_to_confirmation" --json '{"accept": true}' \
     --expect 200 --check success eq true --save F08.confirm-accept/accept
@@ -257,6 +259,8 @@ KID=$(control-agent-server api POST /api/conversations \
   nothing. The later accept has nothing pending either, so it just runs the
   agent, which finishes; the rejected command never runs.
 - **Confirmation errors (`F08.confirm-errors`).** Bad bodies, ids and auth.
+
+  Requires: `F08.confirm-reject`
   ```sh
   control-agent-server api POST "/api/conversations/$RJ/events/respond_to_confirmation" --json '{}' \
     --expect 422 --check detail.0.loc contains accept --save F08.confirm-errors/missing-accept
@@ -654,6 +658,8 @@ KID=$(control-agent-server api POST /api/conversations \
 - **Restart with a saved secret (`F08.secrets-restart`).** `$SID` got
   `QA_F08_TOKEN` at runtime and ran a command (which saved the state) in the
   terminal bullet; restart and run the same command again.
+
+  Requires: `F08.secrets-terminal`
   ```sh
   rm "$W/secret/qa-f08-token.txt"
   control-agent-server restart

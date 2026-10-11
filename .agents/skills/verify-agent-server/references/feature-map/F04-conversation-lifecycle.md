@@ -220,6 +220,8 @@ EOF
   The conversation records the profile id and runs the profile's model.
 - **Create validation (`F04.create-validation`).** Every bad request is
   refused and nothing is created.
+
+  Requires: `F04.create-agent-profile`
   ```sh
   N2=$(control-agent-server api GET /api/conversations/count --field .)
   control-agent-server api POST /api/conversations --json "{\"workspace\": {\"working_dir\": \"$W\"}}" \
@@ -246,6 +248,8 @@ EOF
 - **422 bodies keep the LLM key out (`F04.create-validation-redaction`).** A
   wrongly typed `num_retries` next to a sentinel key, once in an inline
   `agent.llm` and once in `agent_settings.llm`.
+
+  Requires: `F04.create-validation`
   ```sh
   control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": {\"llm\": {\"model\": \"openai/qa\", \"api_key\": \"QA-F04-KEY-SIBLING\", \"num_retries\": \"many\"}, \"tools\": []}}" \
@@ -300,6 +304,8 @@ EOF
   (whose default is `false`). The fix may instead remove the field from the
   create schema; then rewrite this bullet.
 - **Parent and child (`F04.create-parent`).** Links within one workspace.
+
+  Requires: `F04.create-inline-agent`
   ```sh
   CHILD=$(control-agent-server api POST /api/conversations \
     --json "{\"workspace\": {\"working_dir\": \"$W\"}, \"agent\": $OFFLINE_AGENT, \"autotitle\": false, \"parent_conversation_id\": \"$IID\"}" \
@@ -388,6 +394,8 @@ EOF
   encrypted.
 - **Start-time secret visible to GET (`F04.create-secrets-get`), known bug.**
   Read the conversation created in the previous bullet.
+
+  Requires: `F04.create-secrets`
   ```sh
   control-agent-server api GET "/api/conversations/$SECID" --expect 200 \
     --check secret_registry.secret_sources.QA_F04_TOKEN.kind eq StaticSecret --save F04.create-secrets-get/get  # bug
@@ -466,6 +474,8 @@ EOF
   the title (its stub now holds a title request). A title no stub wrote would
   mean the truncation fallback (the message text itself).
 - **Read one conversation (`F04.get`).** Skills trimming, id forms and errors.
+
+  Requires: `F04.create-parent`
   ```sh
   control-agent-server api GET "/api/conversations/$IID" --expect 200 --check id eq "$IID" \
     --check runtime_info.runtime_status eq available --check runtime_info.can_resume eq true \
@@ -481,6 +491,8 @@ EOF
   The default response trims the inline skill; `include_skills=true` returns
   it. The 32-hex form resolves to the dashed id.
 - **Batch get (`F04.batch-get`).** Results are aligned with the ids.
+
+  Requires: `F04.create-inline-agent`, `F04.final-response`
   ```sh
   control-agent-server api GET /api/conversations --query ids="$IID" --expect 200 --check . len-eq 1 \
     --check 0.id eq "$IID" --check 0.runtime_info.runtime_status eq available --check 0.agent.agent_context.skills len-eq 0 --save F04.batch-get/one
@@ -527,6 +539,8 @@ EOF
   absent from the listing unless `include_skills=true`.
 - **Status filter (`F04.search-filter`).** Finished and idle conversations
   from the bullets above.
+
+  Requires: `F04.create-inline-agent`, `F04.create-agent-profile`, `F04.create-idempotent`, `F04.final-response`
   ```sh
   control-agent-server api GET /api/conversations/search --query status=finished --check items contains "$FID" \
     --check items contains "$QID" --check items not-contains "$IID" --check items.0.execution_status eq finished --save F04.search-filter/finished
@@ -548,6 +562,8 @@ EOF
   ```
   Count grows on create (first bullets) and shrinks on delete (Delete bullet).
 - **Rename (`F04.patch-title`).** The SDK's `set_title()` request.
+
+  Requires: `F04.create-settings`
   ```sh
   U0=$(control-agent-server api GET "/api/conversations/$CID" --field updated_at)
   control-agent-server api PATCH "/api/conversations/$CID" --json '{"title": "  QA F04 title  "}' --expect 200 --check success eq true --save F04.patch-title/patch
@@ -559,6 +575,8 @@ EOF
   is now the most recently updated.
 - **Retag (`F04.patch-tags`).** Tags replace the whole map; the socket sees it
   live.
+
+  Requires: `F04.create-settings`
   ```sh
   control-agent-server ws start "/sockets/events/$CID" --name qa-f04-tags --duration 120
   control-agent-server api PATCH "/api/conversations/$CID" --json '{"tags": {"env": "qa", "run": "one"}}' --check success eq true
@@ -575,6 +593,8 @@ EOF
   Only `env=prod` remains, in both files; the live capture and the replay both
   carry the `tags` state update.
 - **PATCH errors (`F04.patch-errors`).** Nothing changes on a refused update.
+
+  Requires: `F04.create-settings`
   ```sh
   control-agent-server api PATCH "/api/conversations/$CID" --json '{"title": ""}' --expect 422
   LONG=$(python3 -c 'print("x" * 201)')
@@ -588,6 +608,8 @@ EOF
   unknown-id case is `F04.patch-unknown-id`.
 - **Whitespace-only title (`F04.patch-whitespace-title`), known bug.** On the
   child conversation, so the bug cannot leak into later bullets.
+
+  Requires: `F04.create-parent`
   ```sh
   control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "QA F04 child"}' --check success eq true
   control-agent-server api PATCH "/api/conversations/$CHILD" --json '{"title": "   "}' --expect 422 --save F04.patch-whitespace-title/patch  # bug
@@ -609,6 +631,8 @@ EOF
   it), so a client that checks only the status believes the rename worked.
 - **Delete (`F04.delete`).** A running conversation (the hanging stub) with a
   child and a file in its workspace, plus the worktree conversation.
+
+  Requires: `F04.create-worktree`
   ```sh
   mkdir -p "$W/qa-del" && echo keep > "$W/qa-del/qa-f04-keep.txt"
   DEL=$(control-agent-server api POST /api/conversations \
@@ -645,6 +669,8 @@ EOF
 - **DELETE on an unknown id (`F04.delete-unknown-id`), known bug.** The
   OpenAPI document declares 404 for this route; the deleted `$DEL` and the
   never-created `$NOPE` are both 404 on GET.
+
+  Requires: `F04.delete`
   ```sh
   control-agent-server api GET /openapi.json --check 'paths./api/conversations/{conversation_id}.delete.responses.404' exists --quiet
   control-agent-server api GET "/api/conversations/$DEL" --expect 404
@@ -658,6 +684,8 @@ EOF
   tell "already gone" from a malformed request. `/pause` and `/interrupt`
   share the pattern (run family).
 - **Restart (`F04.restart-persist`).** A graceful restart of the same run.
+
+  Requires: `F04.create-settings`, `F04.create-idempotent`, `F04.create-parent`, `F04.run-real`, `F04.final-response`, `F04.delete`
   ```sh
   N5=$(control-agent-server api GET /api/conversations/count --field .)
   control-agent-server restart
@@ -675,6 +703,8 @@ EOF
   finished conversation's events replay up to its `finish` action.
 - **Cold reads do not load a conversation (`F04.read-no-hydrate`).** The
   inline-agent conversation `$IID`, which only GET touched since the restart.
+
+  Requires: `F04.create-inline-agent`
   ```sh
   LEASE="$AGENT_SERVER_VERIFY_RUN/server/workspace/conversations/${IID//-/}/owner_lease.json"
   test ! -e "$LEASE"

@@ -666,6 +666,8 @@ Preconditions:
 - **Persistence across a restart (`F26.restart-persist`).** Disable
   `qa-f26-inst` (a no-op after the previous bullets), restart, read the store
   back, then re-enable the plugin.
+
+  Requires: `F26.refresh`
   ```sh
   control-agent-server api PATCH /api/plugins/installed/qa-f26-inst --json '{"enabled": false}' --expect 200
   control-agent-server restart

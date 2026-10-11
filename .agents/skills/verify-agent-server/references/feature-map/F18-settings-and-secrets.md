@@ -430,6 +430,8 @@ Preconditions:
   pointer (both GETs agree, the profile itself stays) and keeps the LLM. The
   LLM and profile list are restored.
 - **Agent kind switch (`F18.agent-kind-switch`).** To ACP and back.
+
+  Requires: `F18.get-defaults`
   ```sh
   control-agent-server api PATCH /api/settings --json '{"agent_settings_diff": {"agent_kind": "acp", "acp_server": "claude-code"}}' \
     --expect 200 --check agent_settings.agent_kind eq acp --check agent_settings.acp_server eq claude-code \
@@ -625,6 +627,8 @@ Preconditions:
   Every value written before the restart reads back unchanged.
 - **Corrupted files (`F18.corrupted-files`).** Back up both files, overwrite
   them with broken JSON, drive every route, restore.
+
+  Requires: `F18.get-defaults`
   ```sh
   P="$AGENT_SERVER_VERIFY_RUN/home/.openhands"
   cp "$P/settings.json" "$F18/settings.json.bak"

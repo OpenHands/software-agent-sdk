@@ -249,6 +249,8 @@ Preconditions:
   404 and batch-get documents "null for any missing item"; the TypeScript
   `getEvents()` relies on that 404. The known id `E2` is found by both
   routes first.
+
+  Requires: `F06.get-one`
   ```sh
   control-agent-server api GET "/api/conversations/$CID/events/$E2" --expect 200 --check id eq "$E2"
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\"]" --expect 200 \
@@ -264,6 +266,8 @@ Preconditions:
   (`event_service.py` `_get_event_sync`), and one missing id fails the whole
   batch.
 - **Batch get (`F06.batch-get`).** A GET with a JSON array body.
+
+  Requires: `F06.search-time-window`, `F06.get-one`
   ```sh
   control-agent-server api GET "/api/conversations/$CID/events" --json "[\"$E2\", \"$E1\"]" --expect 200 \
     --check . len-eq 2 --check 0.id eq "$E2" --check 1.id eq "$E1" --save F06.batch-get/two
@@ -272,6 +276,8 @@ Preconditions:
   Events come back in request order, not log order; without a body the
   route answers 422 `body: Field required`.
 - **Unknown conversation, bad id, no key (`F06.not-found-auth`).**
+
+  Requires: `F06.get-one`
   ```sh
   control-agent-server api GET "/api/conversations/$QA_UNKNOWN/events/search" --expect 404 \
     --check detail contains 'Conversation not found' --save F06.not-found-auth/search-404
@@ -540,6 +546,8 @@ Preconditions:
   documented for "REST fetches history, the socket continues from that
   point". `LIVE` from the previous bullet has at least one tool step, so
   its first `ObservationEvent` has later events after it.
+
+  Requires: `F06.send-run`
   ```sh
   OBS_ID=$(control-agent-server api GET "/api/conversations/$LIVE/events/search" \
     --query kind=openhands.sdk.event.llm_convertible.observation.ObservationEvent --check items len-ge 1 --field items.0.id)
@@ -564,6 +572,8 @@ Preconditions:
   `event_service.py`). A client that loads history over REST and then
   reconnects with `resend_mode=since` silently misses that update.
 - **A message reopens a finished conversation (`F06.send-resets-finished`).**
+
+  Requires: `F06.send-run`
   ```sh
   control-agent-server api GET "/api/conversations/$LIVE" --check execution_status eq finished
   control-agent-server api POST "/api/conversations/$LIVE/events" \
@@ -627,6 +637,8 @@ Preconditions:
 - **A message while the agent runs (`F06.send-while-running`).** Last
   bullet. `HOLD` from the previous bullet is `running`, stuck in its first
   model call on the hanging stub, so the stub's request log counts runs.
+
+  Requires: `F06.send-run-limit`
   ```sh
   control-agent-server api GET "/api/conversations/$HOLD" --check execution_status eq running
   control-agent-server sink read --name qa-f06-hang --path /v1/chat/completions --expect-min 1 --expect-max 1

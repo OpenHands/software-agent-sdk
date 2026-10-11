@@ -435,6 +435,8 @@ Preconditions:
   whose `event.id` is the `item_id` (the agent's reply). `ITEM` is that id.
 - **Progress is never replayed (`F07.progress-not-replayed`).** Reconnect to
   the streamed conversation with the full history.
+
+  Requires: `F07.progress-frames`
   ```sh
   test -n "$ITEM"
   control-agent-server ws listen "/sockets/session/$SID" --query after_seq=-1 --duration 3 \

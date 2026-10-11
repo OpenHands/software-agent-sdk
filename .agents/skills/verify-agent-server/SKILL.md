@@ -127,6 +127,9 @@ control-agent-server stop                       # stops only this run; evidence 
   server's real LLM client. Use it only for provider behavior a real model
   cannot produce on demand (a 401, a 500, a hang, an exact tool call such as
   `finish` or a risky command); every happy path runs on a real model.
+  A recipe-local process that later bullets use (an HTTP fixture server, a
+  proxy) runs under `helper start --name NAME -- CMD`, not `CMD &`: `map run`
+  ends each bullet's process group when the bullet ends.
 - **State control** reaches states a happy path never shows, without mocks:
   `restart` (same state after a restart: persistence, restore, reconnection),
   `restart --hard` (SIGKILL: crash recovery), `restart --rotate-key` (stale
@@ -147,8 +150,8 @@ control-agent-server stop                       # stops only this run; evidence 
   Evidence is not automatically public: read it before publishing it.
 - **Cleanup** with `control-agent-server stop` (add `--purge-private` to delete
   keys, state and fixtures once the evidence is checked). It signals only the
-  process groups this run started (server, HTTP sinks, background captures)
-  and verifies the port closed.
+  process groups this run started (server, HTTP sinks, background captures,
+  helpers) and verifies the port closed.
 
 ## LLM budget
 
@@ -209,8 +212,9 @@ missing prerequisite; never substitute a mock and call it a pass.
   and the route you attempted. Unreachable is never a pass.
   `control-agent-server capabilities` says what this machine can drive and
   which families' `Needs:` are unmet.
-  `Needs:` is a family-wide bound for `--all`; use `--file --only` for a
-  subset that does not need every capability. Its Preconditions still run.
+  A family's `Needs:` line gates the whole family under `--all`; a recipe's
+  own `Needs:` line blocks only that recipe and the ones that require it, so
+  the rest of the family still runs on a machine without it.
 
 ## How this fits with the tests
 

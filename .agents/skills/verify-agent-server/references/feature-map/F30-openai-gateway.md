@@ -213,6 +213,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   exactly the conversation's `agent_final_response`; never assert its words.
 - **System text goes to the system prompt (`F30.chat-system-suffix`).** Read
   back the chat-basic conversation.
+
+  Requires: `F30.chat-basic`
   ```sh
   control-agent-server api GET "/api/conversations/$CID" \
     --check agent.agent_context.system_message_suffix eq "$(printf 'QA_F30_SYS: answer in one short sentence and never use tools.\n\nQA_F30_DEV: plain text only.')" \
@@ -234,6 +236,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   results are not a filter that matches nothing).
 - **Only the latest user turn (`F30.chat-latest-user-only`).** Look for the
   dropped turns everywhere the server stores the conversation.
+
+  Requires: `F30.chat-basic`
   ```sh
   control-agent-server api GET "/api/conversations/$CID/events/search" --query source=user \
     --check items len-eq 1 --check items.0.llm_message.content len-eq 1 \
@@ -284,6 +288,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   error frame.
 - **Continue with the header (`F30.chat-reuse-header`).** Send the header
   back while the conversation's events socket is captured.
+
+  Requires: `F30.chat-basic`
   ```sh
   control-agent-server ws start "/sockets/events/$CID" --name qa-f30-reuse --duration 300
   R=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $CID" \
@@ -315,6 +321,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   returned text as its final response.
 - **Continue after a restart (`F30.chat-reuse-after-restart`).** Restart the
   server and continue the same conversation.
+
+  Requires: `F30.chat-basic`
   ```sh
   control-agent-server restart
   R=$(control-agent-server api POST /v1/chat/completions --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $CID" \
@@ -353,6 +361,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 - **Continuing keeps the conversation's LLM (`F30.chat-reuse-keeps-llm`).**
   Continue `CID` naming another profile (a stub that must never be called) and
   a new system message, then name a model that does not exist.
+
+  Requires: `F30.chat-basic`
   ```sh
   UNUSED=$(control-agent-server fixture llm-stub --name qa-f30-unused --step reply:QA_F30_UNUSED_REPLY --print-path)
   control-agent-server llm set --profile qa-f30-unused --model openai/qa-stub --base-url "$UNUSED/v1" \
@@ -667,6 +677,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
   OpenAI SDK does when it retries a 429 (`max_retries` defaults to 2). A trap
   frees the slot and restores the default capacity even when the bullet
   fails.
+
+  Requires: `F30.chat-basic`
   ```sh
   trap 'control-agent-server api DELETE "/api/conversations/$HOLD2" >/dev/null || true; control-agent-server restart --reset-config >/dev/null || true' EXIT
   control-agent-server restart --config-json '{"max_concurrent_runs": 1}'
@@ -759,6 +771,8 @@ control-agent-server api GET /api/settings --check conversation_settings.confirm
 - **Stateless replay (`F30.responses-stateless-replay`).** Replay a
   developer item, a user turn, the earlier assistant output and a new user
   turn, sending `RID` in the conversation header.
+
+  Requires: `F30.responses-basic`
   ```sh
   R2=$(control-agent-server api POST /v1/responses --auth bearer --timeout 180 --header "X-OpenHands-ServerConversation-ID: $RID" \
     --json '{"model": "openhands_deepseek-flash", "input": [{"role": "developer", "content": "QA_F30_R_DEV: answer in plain text and use no tools."}, {"role": "user", "content": "QA_F30_R1: remember the word apple."}, {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "QA_F30_R_PREV", "annotations": []}]}, {"role": "user", "content": [{"type": "input_text", "text": "QA_F30_R2: reply with one short word."}]}]}' \

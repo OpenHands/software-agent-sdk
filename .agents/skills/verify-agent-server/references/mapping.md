@@ -96,7 +96,9 @@ behavior, then:
   vocabulary (`llm`, `tmux`, `git`, `node`, `uvx`, `docker`, `chromium`,
   `vscode`, `network` for outbound HTTPS to github.com or a provider), so
   `control-agent-server capabilities` and `map run --all` can tell a blocked
-  family from a failing one,
+  family from a failing one. List only what Preconditions or most recipes
+  need; a capability that only some recipes need goes on those recipes'
+  own `Needs:` lines (see below),
 - an optional `Launch:` line with the `launch --new` flags the family needs
   (`` Launch: `--deferred-init` `` or `` Launch: `--webhook-sink --config-json '{"max_concurrent_runs": 1}'` ``);
   `map run --fresh` and `map run --all --fresh` launch the family's run with
@@ -146,14 +148,31 @@ Then exactly four H2 sections, in this order:
    `Preconditions:` is executed first.
 
    A recipe that consumes another bullet's variables or files declares them
-   immediately below its bold label: `Requires:` followed by the earlier
-   sub-feature IDs in backticks. For example, a dependency on
-   `F33.conversation-streaming` makes `--only F33.conversation-token-callbacks`
-   run streaming first. Selection
-   includes these prerequisites transitively in family order. `map check` rejects
-   dependencies that do not name earlier recipes; `map run` rejects unknown
-   selected IDs before starting a server. Keep dependencies on ordinary recipes
-   that successfully produce their fixtures.
+   on its own line in the bullet, just before its first `sh` block:
+   `Requires:` followed by the earlier sub-feature IDs in backticks. For
+   example, a dependency on `F33.conversation-streaming` makes
+   `--only F33.conversation-token-callbacks` run streaming first. Selection
+   includes these prerequisites transitively in family order. `map check`
+   rejects dependencies that do not name earlier recipes, and it flags a
+   recipe that reads a variable whose last assignment is in an earlier
+   recipe it does not require (`map run` carries line-start assignments from
+   bullet to bullet, so an unselected producer leaves the variable empty).
+   Files are not traced: declare those dependencies by hand. `map run`
+   rejects unknown selected IDs before starting a server. Keep dependencies
+   on ordinary recipes that successfully produce their fixtures.
+
+   A recipe that alone needs a machine capability says so on a `Needs:` line
+   next to `Requires:` (same vocabulary as the family line). When this
+   machine lacks it, `map run` reports that recipe, and every recipe that
+   requires it, as `blocked` without running them, and drives the rest of
+   the family; `capabilities` lists them per family.
+
+   Each bullet runs in its own process group, which `map run` stops when the
+   bullet ends, so a plain `cmd &` lives only as long as its bullet. A
+   background process that later bullets use (a fixture server, a proxy)
+   starts with `control-agent-server helper start --name NAME -- CMD ...`:
+   it runs in its own session, is registered with the run, and ends with
+   `helper stop NAME` or `stop`.
 
    Two label markers keep the map honest without turning it red forever:
    a bullet whose bold label says **known bug** (for example

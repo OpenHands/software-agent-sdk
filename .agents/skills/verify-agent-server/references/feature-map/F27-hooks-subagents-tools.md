@@ -735,6 +735,8 @@ Preconditions:
 - **Tool module gone on resume (`F27.custom-tool-missing-on-resume`), known bug.**
   Restart the run without `OH_EXTRA_PYTHON_PATH` and use the conversation of
   `F27.custom-tool-modules`, whose events include `qa_f27_echo` calls.
+
+  Requires: `F27.custom-tool-modules`
   ```sh
   W0=$(control-agent-server logs --grep 'Failed to import module' | jq -r .total_matching)
   control-agent-server restart --reset-config

@@ -135,6 +135,8 @@ Preconditions:
   about 45 s after the create.
 - **Lease renewed (`F31.lease-renewed`).** The server's renewal timer
   (every 15 s) is under test, so this bullet polls the file once a second.
+
+  Requires: `F31.lease-claimed`
   ```sh
   E1=$(control-agent-server state cat owner_lease.json --conversation "$L" | jq -r .content.expires_at)
   OWNER=$(control-agent-server state cat owner_lease.json --conversation "$L" | jq -r .content.owner_instance_id)
@@ -150,6 +152,8 @@ Preconditions:
   and the generation stay.
 - **Graceful release (`F31.lease-released-graceful`).** Restart, read the
   conversation from the catalog, then load it.
+
+  Requires: `F31.lease-claimed`
   ```sh
   PID1=$(jq -r .pid "$AGENT_SERVER_VERIFY_RUN/run.json")
   control-agent-server restart
@@ -166,6 +170,8 @@ Preconditions:
   pid.
 - **Dead owner takeover (`F31.lease-dead-owner-takeover`).** SIGKILL the
   owner; nothing releases the lease.
+
+  Requires: `F31.lease-claimed`
   ```sh
   DEAD=$(jq -r .pid "$AGENT_SERVER_VERIFY_RUN/run.json")
   NT=$(control-agent-server logs --grep 'Taking over conversation' | jq .total_matching)
@@ -289,6 +295,8 @@ Preconditions:
   server, and `COLD` (unloaded since the restart) still has no lease.
 - **Second server refused while the owner lives (`F31.second-instance-lease-held`).**
   A fresh `B` tries every way of loading `X`.
+
+  Requires: `F31.second-instance-catalog`
   ```sh
   B=$(control-agent-server launch --new --name f31-held --share-conversations-from "$AGENT_SERVER_VERIFY_RUN" --print-run)
   trap 'control-agent-server stop --run "$B" >/dev/null 2>&1 || true' EXIT
@@ -322,6 +330,8 @@ Preconditions:
   owner are unchanged, and `X` was not deleted.
 - **Takeover after the owner dies (`F31.second-instance-takeover`).** `B`
   waits while this server is SIGKILLed and restarted.
+
+  Requires: `F31.second-instance-catalog`
   ```sh
   B=$(control-agent-server launch --new --name f31-takeover --share-conversations-from "$AGENT_SERVER_VERIFY_RUN" --print-run)
   trap 'control-agent-server stop --run "$B" >/dev/null 2>&1 || true' EXIT
@@ -416,6 +426,8 @@ Preconditions:
   is `F31.fenced-write-no-trace`. `B`'s stop releases the lease.
 - **Refused write leaves no trace (`F31.fenced-write-no-trace`), known bug.**
   The old owner from the previous bullet tries to rename `F`.
+
+  Requires: `F31.lease-expiry-fencing`
   ```sh
   PS=$(control-agent-server api PATCH "/api/conversations/$F" --json '{"title": "QA F31 stale owner"}' --expect 4xx,5xx \
     --save F31.fenced-write-no-trace/patch | jq .status)
@@ -498,6 +510,8 @@ Preconditions:
 - **Busy conversations are kept (`F31.eviction-skips-busy`).** Right after
   the pass that unloaded `I`; then both are released and the next pass
   (up to about 60 s later) is awaited.
+
+  Requires: `F31.idle-eviction`
   ```sh
   control-agent-server state ls --conversation "$WB" owner_lease.json --expect-count 1
   control-agent-server state ls --conversation "$R" owner_lease.json --expect-count 1

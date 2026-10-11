@@ -385,6 +385,8 @@ Preconditions:
   observation; no classifier is registered and the agent stays on
   `deepseek-flash`. `qa-route` is restored afterwards (still active).
 - **Restart (`F22.persist-restart`).** Restart and read everything back.
+
+  Requires: `F22.route-classes`
   ```sh
   control-agent-server restart
   control-agent-server api GET /api/meta-profiles --expect 200 --check active_meta_profile eq qa-route --check meta_profiles len-eq 3 \

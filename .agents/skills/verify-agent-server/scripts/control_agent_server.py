@@ -3137,6 +3137,103 @@ def cmd_fixture(args: argparse.Namespace) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# helper (recipe-local processes that outlive one bullet)
+# --------------------------------------------------------------------------
+
+
+def _helper_entry(run: Run, name: str) -> dict[str, Any] | None:
+    for proc in run.data.get("processes", []):
+        if proc.get("name") == name and proc.get("kind") == "helper":
+            return proc
+    return None
+
+
+def cmd_helper_start(args: argparse.Namespace) -> dict[str, Any]:
+    run = resolve_run(args.run, require_alive=False)
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        usage_error(
+            "helper start needs a command after --",
+            example=f"{CLI} helper start --name qa-http -- python3 server.py 8123",
+        )
+    existing = _helper_entry(run, args.name)
+    if existing and not existing.get("stopped_at"):
+        usage_error(
+            f"helper {args.name} is already running (pid {existing['pid']})",
+            example=f"{CLI} helper stop {args.name}",
+        )
+    log_path = (
+        Path(args.log).resolve()
+        if args.log
+        else run.fixtures / "helpers" / f"{args.name}.log"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab") as log:
+        # Its own session: the map runner stops each bullet's process group
+        # when the bullet ends, and `stop` stops registered helpers.
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    entry = {
+        "name": args.name,
+        "kind": "helper",
+        "pid": process.pid,
+        "pgid": os.getpgid(process.pid),
+        "command": REDACT.text(shlex.join(command))[:500],
+        "log": str(log_path),
+        "started_at": now_iso(),
+    }
+    processes = run.data.setdefault("processes", [])
+    if existing:
+        processes.remove(existing)
+    processes.append(entry)
+    run.save()
+    time.sleep(args.settle)
+    code = process.poll()
+    if code is not None:
+        entry["stopped_at"] = now_iso()
+        run.save()
+        raise CliError(
+            f"helper {args.name} exited with {code} within {args.settle}s",
+            exit_code=1,
+            hint=f"read its log: {log_path}",
+        )
+    if args.print_pid:
+        print(process.pid)
+        raise SystemExit(0)
+    return {"ok": True, "helper": args.name, "pid": process.pid, "log": str(log_path)}
+
+
+def cmd_helper_stop(args: argparse.Namespace) -> dict[str, Any]:
+    run = resolve_run(args.run, require_alive=False)
+    entries = []
+    for name in args.names:
+        entry = _helper_entry(run, name)
+        if entry is None:
+            usage_error(
+                f"No helper named {name}",
+                example=f"{CLI} helper start --name {name} -- <command>",
+            )
+        entries.append(entry)
+    stopped = []
+    for entry in entries:
+        if entry.get("stopped_at"):
+            outcome = "already-stopped"
+        else:
+            outcome = stop_process_group(int(entry["pgid"]), grace=5.0)
+            entry["stopped_at"] = now_iso()
+        stopped.append({"name": entry["name"], "outcome": outcome})
+    run.save()
+    return {"ok": True, "stopped": stopped}
+
+
+# --------------------------------------------------------------------------
 # exec (SDK / TypeScript client lanes)
 # --------------------------------------------------------------------------
 
@@ -3665,6 +3762,17 @@ def check_family(path: Path, routes: Sequence[dict[str, Any]] | None) -> list[st
         select_bullets(bullets, None)
     except CliError as exc:
         problems.append(str(exc))
+    problems.extend(undeclared_dependencies(bullets))
+    for bullet in bullets:
+        unknown = [n for n in bullet.needs if n not in NEEDS]
+        if unknown:
+            problems.append(
+                f"{bullet.label}: Needs: unknown tokens {unknown}; use {', '.join(NEEDS)}"
+            )
+        if bullet.label == "Preconditions" and bullet.needs:
+            problems.append(
+                "Preconditions: put family-wide needs on the family's Needs: line"
+            )
     for bullet in bullets:
         blocked = "blocked" in bullet.label.lower()
         if (
@@ -3877,6 +3985,7 @@ class Bullet:
     script: str
     line: int
     requires: list[str] = field(default_factory=list)
+    needs: list[str] = field(default_factory=list)
 
 
 def bug_ranges(script: str) -> list[tuple[int, int]]:
@@ -3941,6 +4050,8 @@ def driving_bullets(path: Path) -> list[Bullet]:
             )
         elif line.strip().startswith("Requires:"):
             current.requires += re.findall(r"F\d{2}\.[a-z0-9-]+", line)
+        elif line.strip().startswith("Needs:"):
+            current.needs += needs_tokens(line.strip()[len("Needs:") :])
     if current.script or current.label != "Preconditions":
         bullets.append(current)
     return bullets
@@ -3969,6 +4080,84 @@ def select_bullets(bullets: list[Bullet], only: str | None) -> list[Bullet]:
             selected.append(bullet)
             wanted.update(bullet.requires)
     return list(reversed(selected))
+
+
+VAR_USE_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+LOCAL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\+?=")
+LOCAL_BIND_RE = re.compile(
+    r"\b(?:for|local|export|declare(?:\s+-\w+)*)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+READ_RE = re.compile(
+    r"\bread\b((?:\s+-\w+(?:\s+'[^']*'|\s+\S+)?)*)((?:\s+[A-Za-z_]\w*)+)"
+)
+QUOTED_HEREDOC_RE = re.compile(r"<<-?\s*(?:'(\w+)'|\"(\w+)\"|\\(\w+))")
+
+
+def shell_expansions(script: str) -> tuple[set[str], set[str]]:
+    """Variables a bullet expands and the ones it binds itself.
+
+    Quoted heredoc bodies (`<<'EOF'`) are program text, not shell, and are
+    skipped.
+    """
+    used: set[str] = set()
+    bound: set[str] = set()
+    terminator: str | None = None
+    for line in script.splitlines():
+        if terminator is not None:
+            if line.strip() == terminator:
+                terminator = None
+            continue
+        used.update(VAR_USE_RE.findall(line))
+        bound.update(LOCAL_ASSIGN_RE.findall(line))
+        bound.update(LOCAL_BIND_RE.findall(line))
+        for match in READ_RE.finditer(line):
+            bound.update(match.group(2).split())
+        heredoc = QUOTED_HEREDOC_RE.search(line)
+        if heredoc:
+            terminator = next(g for g in heredoc.groups() if g)
+    return used, bound
+
+
+def undeclared_dependencies(bullets: list[Bullet]) -> list[str]:
+    """Recipes that read a variable an earlier recipe sets, without `Requires:`.
+
+    `map run` carries line-start assignments from one bullet to the next, so in
+    a full replay a bullet sees the value set by the last earlier bullet that
+    assigned it. `--only` runs Preconditions, the selected bullets and their
+    `Requires:` closure; anything else leaves the variable empty, and an empty
+    id or path can fail the `# bug` line for the wrong reason. Blocked and
+    known-bug bullets never save their variables, so they are not producers.
+    """
+    by_id = {feature: bullet for bullet in bullets for feature in bullet.ids}
+    problems = []
+    for index, bullet in enumerate(bullets):
+        if bullet.label == "Preconditions" or not bullet.ids:
+            continue
+        closure: set[str] = set()
+        stack = list(bullet.requires)
+        while stack:
+            feature = stack.pop()
+            if feature in closure or feature not in by_id:
+                continue
+            closure.add(feature)
+            stack.extend(by_id[feature].requires)
+        used, bound = shell_expansions(bullet.script)
+        missing: dict[str, list[str]] = {}
+        for name in sorted(used - bound):
+            for producer in reversed(bullets[:index]):
+                marker = producer.label.lower()
+                if "blocked" in marker or "known bug" in marker:
+                    continue
+                if name in ASSIGN_RE.findall(producer.script):
+                    if producer.ids and not closure.intersection(producer.ids):
+                        missing.setdefault(producer.ids[0], []).append(f"${name}")
+                    break
+        for producer, names in missing.items():
+            problems.append(
+                f"{bullet.ids[0]} reads {', '.join(names)}, last set by "
+                f"{producer}; add Requires: `{producer}` so --only runs it"
+            )
+    return problems
 
 
 def execute_recipe(
@@ -4015,12 +4204,46 @@ NEEDS = (
 )
 
 
+def needs_tokens(text: str) -> list[str]:
+    return [t for t in re.split(r"[\s,`]+", text) if t]
+
+
 def family_needs(path: Path) -> list[str]:
     """Tokens from the family's optional `Needs:` line."""
     for line in path.read_text().splitlines():
         if line.startswith("Needs:"):
-            return [t for t in re.split(r"[\s,`]+", line[len("Needs:") :]) if t]
+            return needs_tokens(line[len("Needs:") :])
     return []
+
+
+def recipe_needs(bullets: list[Bullet]) -> dict[int, list[str]]:
+    """Each bullet's own `Needs:` plus those of its `Requires:` closure."""
+    by_id = {feature: bullet for bullet in bullets for feature in bullet.ids}
+    needs: dict[int, list[str]] = {}
+    for index, bullet in enumerate(bullets):
+        seen: set[str] = set()
+        stack = list(bullet.requires)
+        wanted = list(bullet.needs)
+        while stack:
+            feature = stack.pop()
+            if feature in seen or feature not in by_id:
+                continue
+            seen.add(feature)
+            wanted += by_id[feature].needs
+            stack.extend(by_id[feature].requires)
+        needs[index] = sorted(set(wanted))
+    return needs
+
+
+def blocked_recipes(
+    bullets: list[Bullet], machine: dict[str, dict[str, Any]]
+) -> dict[int, list[str]]:
+    """Bullets whose recipe needs a capability this machine lacks."""
+    return {
+        index: missing
+        for index, wanted in recipe_needs(bullets).items()
+        if (missing := [n for n in wanted if not machine.get(n, {}).get("available")])
+    }
 
 
 def network_reachable(url: str) -> tuple[bool, str]:
@@ -4075,12 +4298,18 @@ def cmd_capabilities(args: argparse.Namespace) -> dict[str, Any]:
     for path in family_files():
         needs = family_needs(path)
         missing = [n for n in needs if not machine.get(n, {}).get("available")]
+        bullets = driving_bullets(path)
+        blocked = [
+            {"ids": bullets[index].ids, "missing": lacking}
+            for index, lacking in blocked_recipes(bullets, machine).items()
+        ]
         families.append(
             {
                 "file": path.name,
                 "needs": needs,
                 "missing": missing,
                 "drivable": not missing,
+                "blocked_recipes": [] if missing else blocked,
             }
         )
     return {
@@ -4088,6 +4317,9 @@ def cmd_capabilities(args: argparse.Namespace) -> dict[str, Any]:
         "machine": machine,
         "families": families,
         "blocked_families": [f["file"] for f in families if f["missing"]],
+        "families_with_blocked_recipes": [
+            f["file"] for f in families if f["blocked_recipes"]
+        ],
     }
 
 
@@ -4230,8 +4462,36 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -> dict[str, A
     results = []
     failed = False
     xpassed = False
+    unavailable: dict[int, list[str]] = {}
+    if not args.dry_run and any(recipe_needs(bullets).values()):
+        unavailable = blocked_recipes(bullets, machine_capabilities())
     for index, bullet in enumerate(bullets):
         marker = bullet.label.lower()
+        if index in unavailable:
+            missing = unavailable[index]
+            results.append(
+                {
+                    "bullet": bullet.label,
+                    "ids": bullet.ids,
+                    "status": "blocked",
+                    "missing": missing,
+                    "hint": f"this machine lacks {', '.join(missing)} "
+                    "(`control-agent-server capabilities`)",
+                }
+            )
+            if args.record:
+                for feature in bullet.ids:
+                    append_ledger(
+                        run,
+                        feature,
+                        "blocked",
+                        f"map run {path.name}: {bullet.label}",
+                        "prerequisite available",
+                        f"blocked: needs {', '.join(missing)}",
+                        [],
+                        "the recipe's Needs: (or a Requires: recipe's) is unmet",
+                    )
+            continue
         if "blocked" in marker:
             results.append(
                 {"bullet": bullet.label, "ids": bullet.ids, "status": "blocked"}
@@ -4529,6 +4789,7 @@ Driving:
   conversation  start | wait | send | events: the essential agent pathways
   fixture       git-repo | project | skill | plugin | git-source | marketplace |
                 canvas-app | mcp-server | http-sink | llm-stub | list: run-owned fixtures
+  helper        start | stop: recipe-local background processes that outlive a bullet
   sink          read: what an HTTP sink (webhooks, telemetry, credentials) received
   state         ls | cat | grep: files the server persisted (settings, secrets, conversations)
   config        the run's config file and server environment, secrets masked
@@ -5289,6 +5550,50 @@ readable with `sink read --name <stub>`.""",
         help="llm-stub script step: reply:TEXT[@usage=P,C] | tool:NAME:JSON | status:CODE | hang:SECONDS",
     )
 
+    hp = commands.add_parser(
+        "helper",
+        help="recipe-local background processes that outlive one bullet",
+        description="Recipe-local helpers: start | stop",
+        formatter_class=Formatter,
+        epilog=f"""Examples:
+  {CLI} helper start --name qa-http --log "$F/http.log" -- python3 "$F/server.py" 8123
+  PID=$({CLI} helper start --name qa-http --print-pid -- python3 "$F/server.py" 8123)
+  {CLI} helper stop qa-http
+
+`map run` stops each bullet's process group when the bullet ends, so a plain
+`cmd &` lives only as long as its bullet. A helper runs in its own session and
+is registered with the run: it survives later bullets and `restart`, and
+`stop` (or `helper stop`) ends it. Keep `cmd &` for work that finishes, or is
+waited for, within one bullet.""",
+    )
+    add_run_flag(hp)
+    hp_sub = hp.add_subparsers(dest="helper_command", metavar="<start|stop>")
+    hps = hp_sub.add_parser(
+        "start",
+        help="start a command in the background and register it with the run",
+        formatter_class=Formatter,
+    )
+    add_run_flag(hps)
+    hps.set_defaults(func=cmd_helper_start)
+    hps.add_argument("--name", required=True)
+    hps.add_argument(
+        "--log", help="stdout and stderr (default: fixtures/helpers/NAME.log)"
+    )
+    hps.add_argument(
+        "--settle",
+        type=float,
+        default=0.2,
+        help="seconds to wait before checking that it is still running",
+    )
+    hps.add_argument("--print-pid", action="store_true")
+    hps.add_argument("command", nargs=argparse.REMAINDER)
+    hpt = hp_sub.add_parser(
+        "stop", help="stop helpers by name", formatter_class=Formatter
+    )
+    add_run_flag(hpt)
+    hpt.set_defaults(func=cmd_helper_stop)
+    hpt.add_argument("names", nargs="+", metavar="NAME")
+
     sk = commands.add_parser(
         "sink",
         help="read what an HTTP sink (webhooks, telemetry, credential source) received",
@@ -5414,7 +5719,9 @@ never searched.""",
 
 Families declare their prerequisites on a `Needs:` line ({", ".join(NEEDS)});
 `map run --all --fresh` reports families with unmet needs as blocked instead
-of running them.""",
+of running them. A recipe that alone needs a capability declares its own
+`Needs:` line; `map run` reports it, and every recipe that requires it,
+as blocked while the rest of the family runs.""",
         cmd_capabilities,
     )
     sub(

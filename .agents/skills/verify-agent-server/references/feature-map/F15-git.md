@@ -473,6 +473,8 @@ Preconditions:
   `limit=2` (exactly the history's length) `has_more: false`; the feature
   branch's history includes its own commit; 0 and 201 are 422.
 - **Files of one commit (`F15.commit-changes`).**
+
+  Requires: `F15.diff-commit`
   ```sh
   control-agent-server api GET "/api/git/commits/$C1/changes" --query path="$REPO" --expect 200 --check . len-eq 2 \
     --check 0.status eq ADDED --check 0.path eq README.md --check 1.status eq ADDED --check 1.path eq src/app.py \

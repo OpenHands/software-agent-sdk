@@ -189,6 +189,8 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   `stats.usage_to_metrics` is `{}`.
 - **Fork and source diverge (`F10.fork-independent`).** Append to each side
   and replay the fork's socket.
+
+  Requires: `F10.fork-whole`
   ```sh
   control-agent-server api POST "/api/conversations/$FW/events" --json '{"role": "user", "content": [{"type": "text", "text": "QA_F10_ONLY_FORK"}], "run": false}' --expect 200 --quiet
   control-agent-server api POST "/api/conversations/$S/events" --json '{"role": "user", "content": [{"type": "text", "text": "QA_F10_ONLY_SOURCE"}], "run": false}' --expect 200 --quiet
@@ -205,6 +207,8 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   copied `QA_F10_M1` and its own `QA_F10_ONLY_FORK`, never the source's.
 - **Unknown, taken and invalid input (`F10.fork-errors`).** Count
   conversations first; none of these may create one.
+
+  Requires: `F10.fork-named`
   ```sh
   C0=$(control-agent-server api GET /api/conversations/count --field .)
   LONG=$(python3 -c 'print("x" * 201)')
@@ -513,6 +517,8 @@ SIDE_AGENT="{\"llm\": {\"model\": \"openai/qa-stub\", \"api_key\": \"qa-stub-key
   router turns `None` into a bare 500.
 - **State after a restart (`F10.restart-persist`).** Restart, then read the
   forks and `S`'s empty HEAD back.
+
+  Requires: `F10.fork-whole`, `F10.fork-named`, `F10.fork-from-event`
   ```sh
   control-agent-server restart
   control-agent-server api POST "/api/conversations/$S/fork" --json "{\"id\": \"$FE\"}" --expect 409 \
