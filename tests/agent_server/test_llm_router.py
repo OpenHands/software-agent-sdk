@@ -164,10 +164,16 @@ def test_openai_subscription_models_endpoint_integration(client):
     assert response.status_code == 200
     data = response.json()
     assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
-    assert "gpt-5.6-sol" in data["models"]
-    assert "gpt-5.6-terra" in data["models"]
-    assert "gpt-5.6-luna" in data["models"]
-    assert "gpt-5.5" in data["models"]
+    assert {
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+    } <= set(data["models"])
 
 
 def test_openai_subscription_status_endpoint_does_not_return_tokens(
