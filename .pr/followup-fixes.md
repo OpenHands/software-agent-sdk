@@ -1,8 +1,10 @@
 # Follow-up fixes after the second review pass
 
-Three gaps were still open after `2f1aa08`. This commit closes them. All runs
-below used this checkout on fresh servers launched by `map run --fresh`, on a
-machine with tmux, git, node and network but no model key.
+Four gaps were still open after `2f1aa08`: three from the earlier reviews and
+one from the bot's review of `5c34e09`. `fc01624` closes the first three and the
+commit after it closes the fourth. All runs below used this checkout on fresh
+servers launched by `map run --fresh`, on a machine with tmux, git, node and
+network but no model key.
 
 ## 1. Background fixtures died at the end of their bullet
 
@@ -58,6 +60,32 @@ them.
 (`F25.conversation-activation` and `F25.invoke-skill`, missing `llm`), 0 fail.
 Before this commit, `capabilities` and `map run --all` reported all of F25 as
 blocked on such a machine.
+
+## 4. Encrypted round trips in F09 and F19 lost their token
+
+Since `2f1aa08`, `--field` redacts by default, so a recipe that reads a
+`gAAAAA` token to post it back gets `<redacted:encrypted>` instead. F18 and
+F20 opted in with `--unsafe-unredacted`; F09 and F19 did not. The review on
+`5c34e09` named four reads (F09 `config.api_key`, `config`, `agent_settings`
+and F19's `QA_F19_TOKEN`). Two more in F19 read the `oauth_state` of a
+finished OAuth job, whose tokens are also `gAAAA` ciphertext. The two
+`plaintext` reads of the stored OAuth access token opt in too: redacted, a
+regression that returned ciphertext would turn into `<redacted:encrypted>`
+and slip past the `test "${TOKEN#gAAAA}" = "$TOKEN"` check. Evidence stays
+redacted (no raw token in any saved file of these runs).
+
+Paired runs with `--fresh` and the same temporary preset edit as in 1:
+
+| Recipe (`--only`) | `fc01624` (before) | this commit |
+|---|---|---|
+| `F09.auth-required` | Preconditions **fail** at `test "${ENC#gAAAAA}" != "$ENC"` | pass |
+| `F19.test-encrypted-env` | **fail** at `test "${ENC#gAAAA}" != "$ENC"` | pass |
+| `F19.oauth-stored-state` | **fail**: `/api/mcp/test` with the redacted state times out on tool listing | pass |
+
+Also passing after the change: `F09.load-plugin` (posts the encrypted
+settings back with `secrets_encrypted: true`), `F09.switch-llm-registered-usage-id`
+(xfail at its marked line), and `F19.oauth-inline-writeback` and
+`F19.oauth-refresh-writeback`.
 
 ## Checks
 

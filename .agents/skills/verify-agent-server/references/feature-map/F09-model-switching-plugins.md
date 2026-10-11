@@ -108,7 +108,7 @@ Preconditions:
 
   ```sh
   control-agent-server llm preset deepseek
-  ENC=$(control-agent-server api GET /api/profiles/deepseek-flash --header 'X-Expose-Secrets: encrypted' --field config.api_key)
+  ENC=$(control-agent-server api GET /api/profiles/deepseek-flash --header 'X-Expose-Secrets: encrypted' --field config.api_key --unsafe-unredacted)
   test "${ENC#gAAAAA}" != "$ENC"
   MKT=$(control-agent-server fixture marketplace --name qa-f09-mkt --print-path)
   CID=$(control-agent-server conversation start --tools none --no-autotitle --print-id)
@@ -299,7 +299,7 @@ Preconditions:
   route's docstring describes), to two offline conversations: one fresh, one
   whose agent was initialized by a queued message.
   ```sh
-  PRO=$(control-agent-server api GET /api/profiles/deepseek-pro --header 'X-Expose-Secrets: encrypted' --check config.usage_id eq default --field config)
+  PRO=$(control-agent-server api GET /api/profiles/deepseek-pro --header 'X-Expose-Secrets: encrypted' --check config.usage_id eq default --field config --unsafe-unredacted)
   FID=$(control-agent-server conversation start --placeholder-agent --tools none --no-autotitle --print-id)
   control-agent-server api POST "/api/conversations/$FID/switch_llm" --json "{\"llm\": $PRO}" --expect 200
   control-agent-server api GET "/api/conversations/$FID" --quiet --check agent.llm.model eq deepseek/deepseek-v4-pro
@@ -616,7 +616,7 @@ Preconditions:
   with the `qa-f09-mkt` marketplace registered on its `agent_context` (not
   auto-loaded), then load the plugin while capturing the socket.
   ```sh
-  AS=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings \
+  AS=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings --unsafe-unredacted \
     | jq -c --arg m "$MKT" '.tools = [] | .agent_context.registered_marketplaces = [{"name": "qa-f09-mkt", "source": $m}]')
   PID=$(control-agent-server conversation start --no-autotitle --body-json "{\"agent_settings\": $AS, \"secrets_encrypted\": true}" --print-id)
   control-agent-server api GET "/api/conversations/$PID" --query include_skills=true --quiet \

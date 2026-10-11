@@ -430,7 +430,7 @@ Preconditions:
   control-agent-server api POST /api/settings/mcp/qa-env --expect 201 \
     --json "$(jq -nc --argjson s "$TOOLS_SRV" '$s + {env: {QA_F19_TOKEN: "qa-f19-env-secret"}}')" \
     --check agent_settings.mcp_config.qa-env.env.QA_F19_TOKEN eq '**********'
-  ENC=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings.mcp_config.qa-env.env.QA_F19_TOKEN)
+  ENC=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: encrypted' --field agent_settings.mcp_config.qa-env.env.QA_F19_TOKEN --unsafe-unredacted)
   test "${ENC#gAAAA}" != "$ENC"
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.test-encrypted-env/decrypted \
     --json "$(jq -nc --argjson s "$TOOLS_SRV" --arg enc "$ENC" '{server: ($s + {env: {QA_F19_TOKEN: $enc}}), timeout: 30, tool_call: {name: "qa_env", arguments: {name: "QA_F19_TOKEN"}}}')" \
@@ -629,7 +629,7 @@ Preconditions:
 
   Requires: `F19.oauth-callback-validation`
   ```sh
-  ISTATE=$(control-agent-server api GET "/api/mcp/oauth/status/$JV" --check oauth_state.tokens.refresh_token exists --field oauth_state)
+  ISTATE=$(control-agent-server api GET "/api/mcp/oauth/status/$JV" --check oauth_state.tokens.refresh_token exists --field oauth_state --unsafe-unredacted)
   INLINE=$(jq -nc --argjson s "$OAUTH_SRV" --argjson st "$ISTATE" '$s | .auth.state = ($st | .token_expires_at = 1) | .transport = .type | del(.type)')
   IBODY=$(jq -nc --argjson srv "$INLINE" '{agent_settings: {agent_kind: "openhands", llm: {model: "openai/qa-placeholder", api_key: "qa-placeholder", base_url: "http://127.0.0.1:9/v1", num_retries: 0}, tools: [], mcp_config: {"qa-inline": $srv}}, secrets_encrypted: true}')
   control-agent-server sink read --path /mcp-oauth-state --expect-max 0
@@ -655,7 +655,7 @@ Preconditions:
 
   Requires: `F19.oauth-flow`
   ```sh
-  STATE=$(control-agent-server api GET "/api/mcp/oauth/status/$J" --field oauth_state)
+  STATE=$(control-agent-server api GET "/api/mcp/oauth/status/$J" --field oauth_state --unsafe-unredacted)
   OSTATE_SRV=$(jq -nc --argjson s "$OAUTH_SRV" --argjson st "$STATE" '$s | .auth.state = $st')
   control-agent-server api POST /api/mcp/test --expect 200 --save F19.oauth-stored-state/test \
     --json "$(jq -nc --argjson s "$OSTATE_SRV" '{server: $s, timeout: 15, tool_call: {name: "read_subject", arguments: {subject: "again"}}}')" \
@@ -667,7 +667,7 @@ Preconditions:
     --json "$(jq -nc --argjson s "$OSTATE_SRV" '$s | .transport = .type | del(.type)')" \
     --check agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token eq '**********' \
     --check agent_settings.mcp_config.qa-oauth.auth.state.client_info.client_id exists
-  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token)
+  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token --unsafe-unredacted)
   test -n "$TOKEN"
   test "${TOKEN#gAAAA}" = "$TOKEN"
   control-agent-server state cat home/.openhands/settings.json --not-contains "$TOKEN" \
@@ -734,7 +734,7 @@ Preconditions:
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --until-ok 15 --save F19.oauth-refresh-writeback/refreshed \
     --check agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token ne "$TOKEN" \
     --check agent_settings.mcp_config.qa-oauth.auth.state.token_expires_at gt "$(date +%s)"
-  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token)
+  TOKEN=$(control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --field agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token --unsafe-unredacted)
   test -n "$TOKEN"
   control-agent-server state cat home/.openhands/settings.json --not-contains "$TOKEN" \
     --check agent_settings.mcp_config.qa-oauth.auth.state.tokens.access_token matches '^gAAAA' \
