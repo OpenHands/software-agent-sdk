@@ -1,0 +1,15 @@
+Traceback (most recent call last):
+  File "/workspace/probes/stub_llm.py", line 64, in <module>
+    ThreadingHTTPServer(("0.0.0.0", int(sys.argv[1])), Handler).serve_forever()
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/socketserver.py", line 457, in __init__
+    self.server_bind()
+    ~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3.13/http/server.py", line 136, in server_bind
+    socketserver.TCPServer.server_bind(self)
+    ~~~~~~~~~~~~/v1/chat/completions tools=[] done=False
+10.0.0.237 - - [11/Oct/2026 10:09:40] "POST /v1/chat/completions HTTP/1.1" 200 -
+/v1/chat/completions tools=['file_editor', 'finish', 'task_tracker', 'terminal', 'think'] done=False
+10.0.0.237 - - [11/Oct/2026 10:09:40] "POST /v1/chat/completions HTTP/1.1" 200 -
+/v1/chat/completions tools=['file_editor', 'finish', 'task_tracker', 'terminal', 'think'] done=True
+10.0.0.237 - - [11/Oct/2026 10:09:41] "POST /v1/chat/completions HTTP/1.1" 200 -
