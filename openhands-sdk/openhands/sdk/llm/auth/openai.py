@@ -129,18 +129,10 @@ DEVICE_CODE_TIMEOUT_SECONDS = 900  # 15 minutes
 JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
-def _get_current_codex_model_ids() -> frozenset[str]:
-    from openhands.sdk.settings.acp_providers import get_acp_provider
-
-    provider = get_acp_provider("codex")
-    if provider is None:
-        return frozenset()
-    return frozenset(model.id for model in provider.available_models)
-
-
-# Models available via ChatGPT subscription (not API). Keep these aligned with
-# the current Codex ACP registry, which is the shared picker source.
-OPENAI_CODEX_MODELS = _get_current_codex_model_ids()
+# Models available via ChatGPT subscription (not API).
+OPENAI_CODEX_MODELS = frozenset(
+    {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"}
+)
 
 
 # Thread-safe JWKS cache

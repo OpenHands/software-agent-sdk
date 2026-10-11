@@ -288,12 +288,13 @@ class EventService:
     async def save_meta(self):
         with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
-            meta_file.write_text(
+            atomic_write_text(
+                meta_file,
                 self.stored.model_dump_json(
                     context={
                         "cipher": self.cipher,
                     }
-                )
+                ),
             )
 
     def _without_stored_secret(self, secret_name: str) -> StoredConversation:

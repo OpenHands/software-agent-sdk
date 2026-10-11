@@ -20,6 +20,7 @@ from openhands.agent_server.api import (
     create_app,
 )
 from openhands.agent_server.config import Config
+from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
 
 
 @pytest.fixture(autouse=True)
@@ -29,31 +30,98 @@ def clear_web_url_env(monkeypatch):
     monkeypatch.delenv("TMUX_TMPDIR", raising=False)
 
 
-def test_default_server_tmux_tmpdir_uses_current_pid(tmp_path, monkeypatch):
+@pytest.fixture
+def short_tmp_path(tmp_path):
+    """A directory shallow enough for tmux sockets; pytest's tmp_path is not."""
+    if os.name != "posix":
+        yield tmp_path
+        return
+    with tempfile.TemporaryDirectory(prefix="oh-", dir="/tmp") as path:
+        yield Path(path)
+
+
+@pytest.fixture
+def deep_tmp_path(tmp_path):
+    """A directory too deep for tmux sockets, like a repo-local CI state dir."""
+    path = tmp_path / ("d" * 64)
+    path.mkdir()
+    return path
+
+
+def test_default_server_tmux_tmpdir_uses_current_pid(monkeypatch):
+    # Path selection does not require a real directory. Avoid adding a random
+    # fixture directory above the production per-process name.
     monkeypatch.setattr(
-        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: "/tmp"
     )
 
     assert _default_server_tmux_tmpdir() == (
-        tmp_path / f"openhands-agent-server-{os.getpid()}"
+        Path("/tmp") / f"openhands-agent-server-{os.getpid()}"
     )
 
 
-def test_ensure_server_tmux_tmpdir_defaults_per_process_dir(tmp_path, monkeypatch):
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+def test_default_server_tmux_tmpdir_avoids_deep_tempdir(deep_tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(deep_tmp_path)
+    )
+
+    assert _default_server_tmux_tmpdir() == (
+        Path("/tmp") / f"openhands-agent-server-{os.getpid()}"
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Unix socket paths")
+@pytest.mark.parametrize(
+    "socket_limit, expected_root",
+    [(103, "/tmp"), (107, "/tmp/oh-abcdefgh")],
+    ids=["macos", "linux"],
+)
+def test_default_server_tmux_tmpdir_counts_canonical_socket_bytes(
+    socket_limit, expected_root, monkeypatch
+):
+    # Model macOS's /tmp -> /private/tmp, with a fixed UID/PID. The original
+    # test fixture produced a 105-byte socket path; the fallback is 93.
+    # Replace the module's os reference, not global os.getpid/getuid.
+    monkeypatch.setattr(
+        "openhands.agent_server.api.os",
+        SimpleNamespace(
+            name="posix",
+            getpid=lambda: 12345,
+            getuid=lambda: 501,
+            fsencode=os.fsencode,
+            path=SimpleNamespace(realpath=lambda path: f"/private{path}"),
+        ),
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.api._MAX_TMUX_SOCKET_PATH", socket_limit
+    )
+    monkeypatch.setattr(
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: "/tmp/oh-abcdefgh"
+    )
+
+    assert _default_server_tmux_tmpdir() == (
+        Path(expected_root) / "openhands-agent-server-12345"
+    )
+
+
+def test_ensure_server_tmux_tmpdir_creates_default_dir(short_tmp_path, monkeypatch):
+    # Test directory creation independently of path selection above.
+    expected = short_tmp_path / "tmux"
+    monkeypatch.setattr(
+        "openhands.agent_server.api._default_server_tmux_tmpdir", lambda: expected
     )
 
     tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
 
     assert was_defaulted is True
-    assert tmux_tmpdir == tmp_path / f"openhands-agent-server-{os.getpid()}"
+    assert tmux_tmpdir == expected
     assert tmux_tmpdir.is_dir()
     assert os.environ["TMUX_TMPDIR"] == str(tmux_tmpdir)
 
 
-def test_ensure_server_tmux_tmpdir_respects_existing_env(tmp_path, monkeypatch):
-    existing = tmp_path / "custom-tmux"
+def test_ensure_server_tmux_tmpdir_respects_existing_env(short_tmp_path, monkeypatch):
+    existing = short_tmp_path / "custom-tmux"
     monkeypatch.setenv("TMUX_TMPDIR", str(existing))
 
     tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
@@ -61,6 +129,29 @@ def test_ensure_server_tmux_tmpdir_respects_existing_env(tmp_path, monkeypatch):
     assert was_defaulted is False
     assert tmux_tmpdir == existing
     assert not existing.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
+def test_ensure_server_tmux_tmpdir_replaces_too_deep_env(
+    tmp_path, deep_tmp_path, short_tmp_path, monkeypatch
+):
+    monkeypatch.setenv("TMUX_TMPDIR", str(deep_tmp_path))
+    # Use a genuinely short final directory for the real tmux integration test.
+    expected = short_tmp_path / "tmux"
+    monkeypatch.setattr(
+        "openhands.agent_server.api._default_server_tmux_tmpdir", lambda: expected
+    )
+
+    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+
+    assert was_defaulted is True
+    assert tmux_tmpdir == expected
+    assert os.environ["TMUX_TMPDIR"] == str(tmux_tmpdir)
+    pool = TmuxPanePool(str(tmp_path))
+    try:
+        pool.initialize()
+    finally:
+        pool.close()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="tmux requires Unix")
@@ -447,11 +538,13 @@ class TestServiceParallelization:
         assert events[:3] == ["configure", "registry", "service"]
 
     async def test_lifespan_defaults_and_restores_tmux_tmpdir(
-        self, tmp_path, monkeypatch
+        self, short_tmp_path, monkeypatch
     ):
         """Test that lifespan defaults TMUX_TMPDIR per server instance."""
+        expected_tmux_tmpdir = short_tmp_path / "tmux"
         monkeypatch.setattr(
-            "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+            "openhands.agent_server.api._default_server_tmux_tmpdir",
+            lambda: expected_tmux_tmpdir,
         )
         mock_conversation_service = AsyncMock()
 
@@ -467,8 +560,6 @@ class TestServiceParallelization:
         ):
             mock_app = AsyncMock()
             mock_app.state = SimpleNamespace(config=Config())
-            expected_tmux_tmpdir = tmp_path / f"openhands-agent-server-{os.getpid()}"
-
             async with api_lifespan(mock_app):
                 assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
 
