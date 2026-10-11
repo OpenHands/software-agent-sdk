@@ -724,6 +724,13 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("claude-3-5-sonnet", False),
         ("o1", False),
         ("unknown-model", False),
+        # Positive Qwen cases (matching substring & provider prefix)
+        ("qwen3.6-plus", True),
+        ("ollama/qwen3.7-coder", True),
+        ("together_ai/qwen3.8-max", True),
+        # Negative cases (older Qwen models & non-reasoning models)
+        ("qwen2.5-coder-32b", False),
+        ("qwen2-72b", False),
     ],
 )
 def test_send_reasoning_content_support(model, expected_send_reasoning):

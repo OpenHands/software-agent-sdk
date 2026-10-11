@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 from litellm.types.utils import Message as LiteLLMMessage
 
-from openhands.sdk.llm.message import Message
+from openhands.sdk.llm.message import Message, MessageToolCall, TextContent
 
 
 # Default serialization options for to_chat_dict() - tests can override as needed
@@ -691,3 +691,51 @@ def test_text_content_both_old_and_new_format_in_sequence():
     assert loaded_contents[2].cache_prompt is True
     assert loaded_contents[3].text == "New event 2"
     assert loaded_contents[3].cache_prompt is True
+
+
+def test_qwen_preserve_thinking_tool_call_turn():
+    """Verify that Qwen 3.6+ models retain reasoning_content across tool-call turns."""
+    assistant_msg = Message(
+        role="assistant",
+        content=[TextContent(text="Calling bash command")],
+        reasoning_content="I should check the current directory contents first.",
+        tool_calls=[
+            MessageToolCall(
+                id="call_123",
+                name="bash",
+                arguments='{"command": "ls -la"}',
+                origin="completion",
+            )
+        ],
+    )
+
+    # Serialize for outbound Chat Completions request using DEFAULT_SERIALIZATION_OPTS
+    chat_dict = assistant_msg.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "send_reasoning_content": True,
+        }
+    )
+
+    # Assert reasoning_content is preserved in outbound payload
+    assert "reasoning_content" in chat_dict
+    assert (
+        chat_dict["reasoning_content"]
+        == "I should check the current directory contents first."
+    )
+    assert "tool_calls" in chat_dict
+
+    # Verify negative case: assistant message without reasoning_content
+    # does not include the key in the serialized output
+    assistant_no_reasoning = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content=None,
+    )
+    chat_dict_no_reasoning = assistant_no_reasoning.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "send_reasoning_content": True,
+        }
+    )
+    assert "reasoning_content" not in chat_dict_no_reasoning
