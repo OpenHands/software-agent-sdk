@@ -19,6 +19,7 @@ from openhands.sdk.llm.auth.openai import (
     CLIENT_ID,
     CONSENT_BANNER,
     ISSUER,
+    OPENAI_CODEX_MODELS,
     DeviceCode,
     OpenAISubscriptionAuth,
     _build_authorize_url,
@@ -200,10 +201,7 @@ def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
         auth.create_llm(model="gpt-5.6-sol")
 
 
-@pytest.mark.parametrize(
-    "model",
-    ["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"],
-)
+@pytest.mark.parametrize("model", sorted(OPENAI_CODEX_MODELS))
 def test_openai_subscription_auth_create_llm_success(tmp_path, model):
     """Test create_llm creates LLM with correct configuration."""
     store = CredentialStore(credentials_dir=tmp_path)
