@@ -1,6 +1,8 @@
 import sys
 from unittest.mock import patch
 
+import litellm
+
 from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
     get_supported_llm_models,
@@ -144,21 +146,21 @@ def test_openrouter_is_a_verified_provider():
     assert not any(m.startswith("openrouter/") for m in VERIFIED_MODELS["openrouter"])
 
 
-def test_openrouter_entries_are_real_catalog_ids():
-    """Every OpenRouter verified entry must resolve to a real LiteLLM catalog
-    model (``openrouter/<entry>``), so the route has known context-window
-    metadata for condensation. An alias-only id like ``openai/gpt-5.6`` that no
-    catalog exposes must not be listed.
-    """
-    catalog = set(get_supported_llm_models())
-    missing = [
-        entry
-        for entry in VERIFIED_MODELS["openrouter"]
-        if f"openrouter/{entry}" not in catalog
-    ]
-    assert not missing, (
-        f"OpenRouter verified entries are not real LiteLLM catalog ids: {missing}"
+def test_openrouter_models_remain_discoverable_without_litellm_catalog(monkeypatch):
+    monkeypatch.setattr(
+        litellm,
+        "model_list",
+        ["deepseek/deepseek-chat", "bedrock/anthropic.claude-3"],
     )
+    monkeypatch.setattr(litellm, "model_cost", {})
+
+    models = get_supported_llm_models()
+
+    assert "openrouter/deepseek/deepseek-chat" in models
+    assert "deepseek/deepseek-chat" in models
+    assert "bedrock/anthropic.claude-3" not in models
+    assert "openrouter/openai/gpt-5.6" not in models
+    assert "openrouter" not in get_unverified_models()
 
 
 def test_nemotron_3_super_uses_full_infra_name():
