@@ -4,11 +4,13 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_registry import ConversationRegistry
 from openhands.agent_server.conversation_router import conversation_router
@@ -1560,6 +1562,183 @@ def test_switch_acp_model_timeout_returns_504(
         assert response.status_code == 504
     finally:
         client.app.dependency_overrides.clear()
+
+
+def _make_route_test_app(tmp_path) -> tuple[Config, FastAPI]:
+    """Build an app over the real conversation routes for a tmp workspace.
+
+    Uses ``create_app`` with a real ``ConversationService`` so the
+    conversation, event and switch_llm endpoints all run against the real
+    stack (no mocked services), mirroring the agent-server workflow.
+    """
+    config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=None,
+        conversations_path=tmp_path / "conversations",
+    )
+    return config, create_app(config)
+
+
+def _placeholder_llm_config() -> dict:
+    return {
+        "model": "openai/qa-placeholder",
+        "api_key": "placeholder",
+        "base_url": "http://127.0.0.1:9/v1",
+        "num_retries": 0,
+    }
+
+
+async def test_switch_llm_route_installs_posted_llm_on_initialized_conversation(
+    tmp_path,
+):
+    """Regression for #5636 end-to-end: once the agent has initialized (its
+    LLM is registered under ``default``), ``POST /switch_llm`` with
+    ``usage_id: "default"`` must install the posted LLM — ``GET`` reads the
+    posted model back instead of 200 with the placeholder still installed.
+    """
+    config, app = _make_route_test_app(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    async with ConversationService(
+        conversations_dir=config.conversations_path
+    ) as service:
+        app.state.conversation_service = service
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/conversations",
+                json={
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": _placeholder_llm_config(),
+                        "tools": [],
+                    },
+                    "autotitle": False,
+                    "workspace": {
+                        "kind": "LocalWorkspace",
+                        "working_dir": str(workspace),
+                    },
+                },
+            )
+            assert response.status_code == 201, response.text
+            conversation_id = response.json()["id"]
+
+            # Queue a message without running it: this initializes the agent
+            # and registers its LLM under "default".
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/events",
+                json={
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "run": False,
+                },
+            )
+            assert response.status_code == 200, response.text
+
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/switch_llm",
+                json={
+                    "llm": {
+                        "model": "openai/qa-switched",
+                        "api_key": "placeholder",
+                        "usage_id": "default",
+                    }
+                },
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {"success": True}
+
+            response = await client.get(f"/api/conversations/{conversation_id}")
+            assert response.status_code == 200, response.text
+            assert response.json()["agent"]["llm"]["model"] == "openai/qa-switched"
+
+
+async def test_switch_llm_route_controls_still_install_and_repeat(tmp_path):
+    """Control group for #5636: an unused ``usage_id`` swaps as before, and
+    re-posting the identical config under the registered usage_id is
+    idempotent (200, model unchanged, no error).
+    """
+    config, app = _make_route_test_app(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    async with ConversationService(
+        conversations_dir=config.conversations_path
+    ) as service:
+        app.state.conversation_service = service
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/conversations",
+                json={
+                    "agent": {
+                        "kind": "Agent",
+                        "llm": _placeholder_llm_config(),
+                        "tools": [],
+                    },
+                    "autotitle": False,
+                    "workspace": {
+                        "kind": "LocalWorkspace",
+                        "working_dir": str(workspace),
+                    },
+                },
+            )
+            assert response.status_code == 201, response.text
+            conversation_id = response.json()["id"]
+
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/events",
+                json={
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "run": False,
+                },
+            )
+            assert response.status_code == 200, response.text
+
+            # Control: an unused usage_id has always switched correctly.
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/switch_llm",
+                json={
+                    "llm": {
+                        "model": "openai/qa-unused-slot",
+                        "api_key": "placeholder",
+                        "usage_id": "qa-switch-1",
+                    }
+                },
+            )
+            assert response.status_code == 200, response.text
+            response = await client.get(f"/api/conversations/{conversation_id}")
+            assert response.json()["agent"]["llm"]["model"] == "openai/qa-unused-slot"
+
+            # Control: re-posting an identical registered config keeps working.
+            posted = {
+                "llm": {
+                    "model": "openai/qa-repeat",
+                    "api_key": "placeholder",
+                    "usage_id": "default",
+                }
+            }
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/switch_llm", json=posted
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {"success": True}
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/switch_llm", json=posted
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == {"success": True}
+            response = await client.get(f"/api/conversations/{conversation_id}")
+            assert response.json()["agent"]["llm"]["model"] == "openai/qa-repeat"
+
+            # Control: unknown conversations still answer 404.
+            response = await client.post(
+                f"/api/conversations/{uuid4()}/switch_llm", json=posted
+            )
+            assert response.status_code == 404
 
 
 def test_run_conversation_already_running(
