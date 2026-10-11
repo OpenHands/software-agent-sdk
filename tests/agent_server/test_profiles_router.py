@@ -1792,6 +1792,82 @@ def test_patch_provider_connection_rejects_null_provider(client):
     assert response.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "rejected_key", ["", "   ", "**********"], ids=["empty", "whitespace", "redacted"]
+)
+def test_patch_provider_connection_rejects_blank_or_redacted_api_key(
+    client, temp_profiles_dir, rejected_key
+):
+    """PATCH api_key that is blank or the redacted placeholder is a 422 and
+    leaves both the stored key and ``updated_at`` untouched."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+
+    before = client.get("/api/llm/provider-connections").json()[0]
+    # Advance the clock so a PATCH that (wrongly) reached the handler would
+    # visibly bump updated_at.
+    time.sleep(1.1)
+
+    response = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": rejected_key},
+    )
+
+    assert response.status_code == 422
+    # The rejection must not echo secret material.
+    assert "sk-ant-old" not in response.text
+
+    after = client.get("/api/llm/provider-connections").json()[0]
+    assert after["updated_at"] == before["updated_at"]
+
+    stored = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    ).get(connection_id)
+    assert stored is not None
+    assert stored.api_key_value() == "sk-ant-old"
+
+
+def test_patch_provider_connection_rotates_key_with_valid_value(
+    client, temp_profiles_dir
+):
+    """A valid key still rotates (200) while api_key: null keeps its own 422."""
+    connection_id = client.post(
+        "/api/llm/provider-connections",
+        json={
+            "display_name": "Anthropic",
+            "provider": "anthropic",
+            "api_key": "sk-ant-old",
+        },
+    ).json()["id"]
+
+    rotated = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": "sk-ant-new"},
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["api_key_set"] is True
+
+    store = ProviderConnectionStore(
+        base_dir=temp_profiles_dir.parent / "provider-connections"
+    )
+    stored = store.get(connection_id)
+    assert stored is not None
+    assert stored.api_key_value() == "sk-ant-new"
+
+    cleared = client.patch(
+        f"/api/llm/provider-connections/{connection_id}",
+        json={"api_key": None},
+    )
+    assert cleared.status_code == 422
+    assert "api_key cannot be cleared" in cleared.json()["detail"]
+
+
 def test_list_provider_connections_maps_corrupted_file(client, temp_profiles_dir):
     """GET provider-connections maps a corrupted file to 400, not 500."""
     client.post(
