@@ -872,6 +872,7 @@ class LocalConversation(BaseConversation):
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
+                cipher=self._cipher,
                 tags=tags,
                 _parent_llm_call_context=self._llm_call_context,
             )

@@ -1,5 +1,6 @@
 """Tests for Conversation.fork() primitive."""
 
+import json
 import tempfile
 import threading
 import uuid
@@ -347,3 +348,38 @@ def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
         )
         assert fork.get_llm_call_context().prompt_cache_key == str(fork.id)
         assert fork.agent.llm is not src.agent.llm
+
+
+def test_fork_inherits_cipher_for_secret_encryption():
+    """Forked conversation keeps encrypting secrets at rest (#5465).
+
+    The fork resumes from its own base_state.json. If ``fork()`` dropped the
+    source cipher, the fork's LLM api_key would serialize redacted
+    (``**********``) instead of encrypted, and its first resumed turn would
+    fail with LLMAuthenticationError.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cipher = Cipher(secret_key="fork-cipher-key")
+        src = LocalConversation(
+            agent=_agent(),
+            workspace=tmpdir,
+            persistence_dir=tmpdir,
+            cipher=cipher,
+        )
+
+        fork = src.fork()
+
+        # The fork must carry the cipher forward so at-rest secrets stay
+        # encrypted, not redacted, in its own base_state.
+        assert fork._state._cipher is src._state._cipher
+        assert fork._state._cipher is not None
+
+        fork._state._save_base_state(fork._state._fs)
+        base = json.loads(
+            (Path(fork._state.persistence_dir) / "base_state.json").read_text()
+        )
+        api_key = base["agent"]["llm"]["api_key"]
+        assert api_key != "**********"
+        assert cipher.try_decrypt_str(api_key) == "test-key"
