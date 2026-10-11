@@ -1543,7 +1543,10 @@ class EventService:
                         worker.add_done_callback(settle)
                         await asyncio.shield(worker)
                 except Exception as exc:
-                    logger.exception("Error during conversation run")
+                    logger.error(
+                        "Error during conversation run: %s: %s", type(exc).__name__, exc
+                    )
+                    logger.debug("Conversation run traceback", exc_info=True)
                     # Backstop: a run that raised before reaching its own error
                     # handling (e.g. an ACP cold-start failure in init_state,
                     # which runs outside run()/arun()'s try-block) can leave the

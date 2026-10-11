@@ -1358,7 +1358,10 @@ class TestEventServiceSendMessage:
         assert event_service._acp_internal_rerun_requested is False
 
     @pytest.mark.asyncio
-    async def test_send_message_with_run_true_logs_exception(self, event_service):
+    @pytest.mark.parametrize("log_level", ["ERROR", "DEBUG"])
+    async def test_send_message_with_run_true_logs_exception(
+        self, event_service, caplog, log_level
+    ):
         """Test that exceptions from conversation.run() are caught and logged."""
         # Mock conversation and its methods
         conversation = MagicMock()
@@ -1375,8 +1378,7 @@ class TestEventServiceSendMessage:
         event_service._publish_state_update = AsyncMock()
         message = Message(role="user", content=[])
 
-        # Patch the logger to verify exception logging
-        with patch("openhands.agent_server.event_service.logger") as mock_logger:
+        with caplog.at_level(log_level, logger="openhands.agent_server.event_service"):
             # Call send_message with run=True
             await event_service.send_message(message, run=True)
 
@@ -1384,11 +1386,24 @@ class TestEventServiceSendMessage:
             assert event_service._run_task is not None
             await event_service._run_task
 
-            # Verify the exception was logged via logger.exception()
-            # (logged by run()'s _run_and_publish handler)
-            mock_logger.exception.assert_called_once_with(
-                "Error during conversation run"
-            )
+        records = [
+            record
+            for record in caplog.records
+            if record.name == "openhands.agent_server.event_service"
+        ]
+        errors = [record for record in records if record.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert "RuntimeError: Test error" in errors[0].getMessage()
+        assert errors[0].exc_info is None
+        tracebacks = [record for record in records if record.exc_info is not None]
+        if log_level == "DEBUG":
+            assert len(tracebacks) == 1
+            assert tracebacks[0].levelname == "DEBUG"
+            assert tracebacks[0].exc_info is not None
+            assert isinstance(tracebacks[0].exc_info[1], RuntimeError)
+            assert tracebacks[0].exc_info[2] is not None
+        else:
+            assert not tracebacks
 
         # Verify send_message was still called
         conversation.send_message.assert_called_once_with(message)
