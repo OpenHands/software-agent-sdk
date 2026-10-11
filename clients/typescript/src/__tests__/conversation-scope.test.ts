@@ -168,3 +168,42 @@ describe('conversation-scoped requests', () => {
     expect(urls.pop()).toBe('/api/conversations/created/bash/execute_bash_command');
   });
 });
+  it('passes maxIterations and stuckDetection through to the create payload (#5649)', async () => {
+    const bodies: string[] = [];
+    const server = createServer((req, res) => {
+      if (req.method === 'POST' && req.url === '/api/conversations') {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk) => chunks.push(chunk as Buffer));
+        req.on('end', () => {
+          bodies.push(Buffer.concat(chunks).toString('utf-8'));
+          res.setHeader('content-type', 'application/json');
+          res.end(
+            JSON.stringify({
+              id: 'created',
+              agent: { kind: 'Agent' },
+              workspace: { working_dir: '/workspace' },
+            })
+          );
+        });
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ version: '1.47.0', capabilities: ['conversation_runtime_routes_v1'] }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const host = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const manager = new ConversationManager({ host });
+      await manager.createConversation({ kind: 'Agent' } as AgentBase, {
+        maxIterations: 7,
+        stuckDetection: false,
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(bodies).toHaveLength(1);
+    const payload = JSON.parse(bodies[0]);
+    expect(payload.max_iterations).toBe(7);
+    expect(payload.stuck_detection).toBe(false);
+  });
