@@ -105,11 +105,8 @@ VERIFIED_QWEN_MODELS = [
 
 # OpenRouter routes other vendors' models. Entries are the OpenRouter id with
 # the ``openrouter/`` prefix stripped (so ``anthropic/claude-opus-5`` here
-# corresponds to ``openrouter/anthropic/claude-opus-5``), and every entry must
-# be a real LiteLLM catalog id (``openrouter/<entry>`` must resolve in
-# ``get_supported_llm_models()``) so the route has known context-window
-# metadata. Only the frontier routes the OpenHands proxy itself serves are
-# kept; the long tail stays in the unverified catalog.
+# corresponds to ``openrouter/anthropic/claude-opus-5``). Keep only the frontier
+# routes the OpenHands proxy serves, using OpenRouter's actual model ids.
 VERIFIED_OPENROUTER_MODELS = [
     "anthropic/claude-opus-5",
     "anthropic/claude-sonnet-5",
@@ -132,6 +129,24 @@ VERIFIED_OPENROUTER_MODELS = [
     "z-ai/glm-5.3-flash",
     "z-ai/glm-5.2",
     "minimax/minimax-m3",
+]
+
+# DigitalOcean Inference ids (``GET https://inference.do-ai.run/v1/models``).
+# Chat Completions models with tool calling only: the gpt-6 line needs the
+# Responses API for tools, so it is left out.
+VERIFIED_DIGITALOCEAN_MODELS = [
+    "anthropic-claude-opus-5.5",
+    "anthropic-claude-opus-5",
+    "anthropic-claude-sonnet-5.5",
+    "anthropic-claude-5-sonnet",
+    "openai-gpt-5.6-sol",
+    "openai-gpt-5.6-terra",
+    "openai-gpt-5.6-luna",
+    "deepseek-v4-pro",
+    "glm-5.3",
+    "glm-5.2",
+    "kimi-k3",
+    "qwen3.8-max",
 ]
 
 # What the ``openhands/`` provider serves. Same rule; every entry must also be in
@@ -200,4 +215,5 @@ VERIFIED_MODELS = {
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
     "openrouter": VERIFIED_OPENROUTER_MODELS,
+    "digitalocean": VERIFIED_DIGITALOCEAN_MODELS,
 }

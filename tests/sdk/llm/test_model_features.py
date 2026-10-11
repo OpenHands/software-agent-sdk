@@ -12,6 +12,7 @@ day it does (#4877).
 """
 
 import pytest
+from litellm import get_supported_openai_params
 from litellm.utils import supports_vision
 
 from openhands.sdk.llm.utils.model_features import (
@@ -66,17 +67,6 @@ def test_model_matches(name, pattern, expected):
         ("moonshot/kimi-k2.5", False),
         ("moonshot/kimi-k2-thinking", False),
         ("litellm_proxy/moonshot/kimi-k2-thinking", False),
-        # Route-dependent, and both directions are correct: OpenRouter accepts
-        # `reasoning_effort` and translates it, while Moonshot's own API does
-        # not take the parameter at all (see the two rows above). These follow
-        # LiteLLM's per-route `supported_openai_params` rather than an SDK
-        # override, so a value here tracks upstream and may move again (#4877).
-        ("openrouter/moonshotai/kimi-k2.5", True),
-        ("openrouter/moonshotai/kimi-k2-thinking", True),
-        # OpenRouter reasoning-capable models per LiteLLM metadata
-        ("openrouter/deepseek/deepseek-r1", True),
-        ("openrouter/anthropic/claude-opus-4.5", True),
-        ("openrouter/openai/gpt-5", True),
         # Eval LiteLLM proxy wrapper should not affect capability detection.
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
@@ -107,6 +97,24 @@ def test_model_matches(name, pattern, expected):
 def test_reasoning_effort_support(model, expected_reasoning):
     features = get_features(model)
     assert features.supports_reasoning_effort == expected_reasoning
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openrouter/moonshotai/kimi-k2.5",
+        "openrouter/moonshotai/kimi-k2-thinking",
+        "openrouter/deepseek/deepseek-r1",
+        "openrouter/anthropic/claude-opus-4.5",
+        "openrouter/openai/gpt-5",
+    ],
+)
+def test_openrouter_reasoning_effort_follows_supported_params(model):
+    supported_params = get_supported_openai_params(model=model) or []
+    expected = "reasoning_effort" in supported_params
+
+    assert get_features(model).supports_reasoning_effort == expected
+    assert get_features(f"litellm_proxy/{model}").supports_reasoning_effort == expected
 
 
 @pytest.mark.parametrize(
@@ -196,6 +204,7 @@ def test_prompt_cache_support(model, expected_cache):
         ("gemini-1.5-pro", True),
         ("llama-3.1-70b", True),
         ("unknown-model", True),  # Most models support stop words
+        ("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0", True),
         # Models that don't support stop words
         ("o1", False),
         ("o1-2024-12-17", False),
@@ -467,6 +476,11 @@ def test_stop_words_grok_provider_prefixed():
         "o1-2024-12-17",
         "xai/grok-4-0709",
         "xai/grok-code-fast-1",
+        "bedrock/openai.gpt-oss-120b-1:0",
+        "bedrock/us.openai.gpt-5.6-sol",
+        "bedrock/us.openai.gpt-6-sol",
+        "bedrock/global.openai.gpt-6-luna",
+        "bedrock/us.openai.gpt-6-astra",
     ],
 )
 def test_supports_stop_words_false_models(model):
