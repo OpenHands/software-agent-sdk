@@ -424,6 +424,37 @@ def test_container_command_is_hardened_and_mounts_only_its_state(tmp_path, monke
     assert env["OH_SECRET_KEY"] != "outer-key"
 
 
+def test_container_command_does_not_forward_unset_observability_vars(
+    tmp_path, monkeypatch
+):
+    runtime = registry(tmp_path, monkeypatch)
+    for name in (
+        "LMNR_PROJECT_API_KEY",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "OPENHANDS_OBSERVABILITY_METADATA",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert "LMNR_PROJECT_API_KEY" not in env
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+
+
+def test_container_command_forwards_observability_vars(tmp_path, monkeypatch):
+    runtime = registry(tmp_path, monkeypatch)
+    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "laminar-key")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://localhost:4317")
+
+    _, command, env = _build_container(runtime, monkeypatch, uuid4())
+
+    assert env["LMNR_PROJECT_API_KEY"] == "laminar-key"
+    assert env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://localhost:4317"
+    for name in ("LMNR_PROJECT_API_KEY", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
+        index = command.index(name)
+        assert ["-e", name] == command[index - 1 : index + 1]
+
+
 def seed_runtime(
     runtime: DockerConversationRegistry,
     status: ConversationExecutionStatus | None = ConversationExecutionStatus.FINISHED,
