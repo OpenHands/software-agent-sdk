@@ -1,0 +1,574 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 5621 · Verification that can be trusted</title><style>
+:root{--fg:#20221f;--muted:#5b6058;--subtle:#858a82;--bg:#fdfcf8;--card:#fff;--rule:#dfdfd6;--code-bg:#f2f1ea;--accent:#315b83;--accent-soft:#edf3f8;--warn:#b76019;--mono:ui-monospace,SFMono-Regular,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 var(--sans)}.wrap{display:grid;grid-template-columns:190px minmax(0,1fr);gap:42px;max-width:1180px;margin:auto;padding:42px 28px 80px}nav{position:sticky;top:28px;align-self:start;font-size:14px}nav a{display:block;margin:10px 0}a{color:var(--accent);text-underline-offset:3px}h1{font-size:38px;letter-spacing:-.03em;line-height:1.15;margin:12px 0 18px}h2{font-size:24px;margin:36px 0 12px}h3{font-size:18px;margin:25px 0 8px}.eyebrow{font:600 14px var(--mono);letter-spacing:.05em;color:var(--accent)}header{border-bottom:1px solid var(--rule);padding-bottom:22px}.lead{font-size:19px;line-height:1.5}.muted,figcaption{color:var(--muted)}.callout{border-left:3px solid var(--accent);padding:12px 16px;background:var(--accent-soft);margin:20px 0}.src{font:14px var(--mono)}.sources{font-size:14px;color:var(--muted)}code{font:14px var(--mono);background:var(--code-bg);padding:2px 4px;border-radius:3px}pre{font:14px/1.6 var(--mono);background:var(--code-bg);padding:16px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}table{border-collapse:collapse;width:100%;font-size:14px;margin:18px 0}th,td{padding:10px 9px;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}th{background:var(--code-bg)}details{border:1px solid var(--rule);margin:14px 0;padding:10px 12px;font-size:14px}summary{cursor:pointer}.ba{display:grid;grid-template-columns:1fr 1fr;gap:20px}.panel{border:1px solid var(--rule);padding:12px 16px;background:var(--card)}figure{margin:22px 0;overflow-x:auto}svg{display:block;width:100%;min-width:820px;height:auto;background:var(--card);border:1px solid var(--rule)}figcaption{font-size:14px;margin-top:8px}.existing{fill:var(--code-bg);stroke:var(--subtle);stroke-width:1.4;stroke-dasharray:5 3}.new{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2}.node-title{font:600 14px var(--mono);fill:var(--fg)}.node-detail{font:14px var(--mono);fill:var(--muted)}.lane{font:600 14px var(--mono);fill:var(--muted)}.edge{fill:none;stroke:var(--subtle);stroke-width:1.5;stroke-dasharray:5 3}.edge-chg{fill:none;stroke:var(--warn);stroke-width:2;stroke-dasharray:5 3}.small{font-size:14px}footer{border-top:1px solid var(--rule);margin-top:38px;padding-top:18px;font-size:14px}@media(max-width:800px){.wrap{grid-template-columns:1fr;padding:24px 18px;gap:12px}nav{position:static;display:flex;flex-wrap:wrap;gap:15px}nav a{margin:0}.ba{grid-template-columns:1fr}h1{font-size:31px}table{font-size:14px}td,th{padding:8px 5px}}
+</style></head><body><div class="wrap"><nav aria-label="Document sections"><strong>PR #5621 · Review fixes</strong><a href="#verdicts">1. Honest verdicts</a><a href="#interfaces">2. CLI &amp; recipe changes</a><a href="#checkouts">3. Consistent checkouts</a><a href="#files">4. Changed files</a><a href="#evidence">5. Evidence &amp; limits</a></nav><main><header><div class="eyebrow">REVIEW FIXES · 11 OCTOBER 2026</div><h1>Verification that can be trusted</h1><p class="lead">The harness now rejects failed transport, failed setup, unknown selections and undriven routes. A known bug requires a failure at its marked assertion. Selected recipes include their declared setup, and baseline checkouts stay consistent across nested servers and SDK programs.</p><p class="sources">Reviewed: <code>cee9a8bb</code> · Fix: <a href="https://github.com/OpenHands/software-agent-sdk/commit/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded">2f1aa080</a> · <a href="https://github.com/enyst/agent-sdk/issues/31">Cloud review, issue #31</a></p></header>
+<div class="callout">★ These are fixes to contributor verification tooling. No SDK or Agent Server runtime API is changed by this fix commit. Main was merged first; its new ACP discovery route is now owned and driven by the map. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F23-llm-catalog-and-connections.md#L1">F23-llm-catalog-and-connections.md:1</a></div>
+<section id="verdicts"><h2>1. Passes require the intended workflow</h2><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1225">cmd_api:1225</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1564">cmd_ws_listen:1564</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1770">capture_verdict:1770</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218">replay_family:4218</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3820">cmd_map_coverage:3820</a></details><figure><svg viewBox="0 0 820 240" role="img" aria-labelledby="verdict-title verdict-desc"><title id="verdict-title">Expected failure verdicts before and after</title><desc id="verdict-desc">The original replay_family accepted early exits and timeouts as expected failures. The fixed replay_family requires a recorded failure inside a marked assertion range, and rejects timeouts.</desc><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="var(--subtle)"/></marker><marker id="change" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="var(--warn)"/></marker></defs><text class="lane" x="20" y="25">BEFORE · REVIEWED COMMIT</text><a href="https://github.com/OpenHands/software-agent-sdk/blob/cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4110"><g><rect class="existing" x="20" y="42" width="230" height="68" rx="5"/><text class="node-title" x="135" y="68" text-anchor="middle">replay_family</text><text class="node-detail" text-anchor="middle"><tspan x="135" y="88">nonzero + unknown line</tspan><tspan x="135" y="104">L4110</tspan></text></g></a><path class="edge" d="M250 76H340" marker-end="url(#arrow)"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4110"><g><rect class="existing" x="344" y="42" width="210" height="68" rx="5"/><text class="node-title" x="449" y="68" text-anchor="middle">xfail</text><text class="node-detail" text-anchor="middle"><tspan x="449" y="88">bug may never run</tspan><tspan x="449" y="104">L4110</tspan></text></g></a><text class="lane" x="20" y="140">AFTER · FIX COMMIT</text><a href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3974"><g><rect class="new" x="20" y="158" width="230" height="68" rx="5"/><text class="node-title" x="135" y="184" text-anchor="middle">execute_recipe</text><text class="node-detail" text-anchor="middle"><tspan x="135" y="204">timeout + group cleanup</tspan><tspan x="135" y="220">L3974</tspan></text></g></a><path class="edge-chg" d="M250 192H300" marker-end="url(#change)"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218"><g><rect class="new" x="304" y="158" width="240" height="68" rx="5"/><text class="node-title" x="424" y="184" text-anchor="middle">replay_family</text><text class="node-detail" text-anchor="middle"><tspan x="424" y="204">confirmed marked line</tspan><tspan x="424" y="220">L4218</tspan></text></g></a><path class="edge-chg" d="M544 192H594" marker-end="url(#change)"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218"><g><rect class="new" x="598" y="158" width="202" height="68" rx="5"/><text class="node-title" x="699" y="184" text-anchor="middle">xfail / fail</text><text class="node-detail" text-anchor="middle"><tspan x="699" y="204">assertion / setup</tspan><tspan x="699" y="220">L4218</tspan></text></g></a></svg><figcaption>Fig 1 · A failed setup becomes a failure; only the marked assertion can reproduce a known bug. Every node links to its source.</figcaption></figure>
+<table><thead><tr><th>Failure being reviewed</th><th>Before</th><th>After / source</th></tr></thead><tbody>
+<tr><td>Field and header output</td><td>Printed an invented session key directly.</td><td>Registered keys and encrypted tokens are redacted by default. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1225">cmd_api:1225</a></td></tr>
+<tr><td>Setup exit or timeout</td><td>Reported <code>xfail</code> without reaching the bug assertion.</td><td>Reports <code>fail</code> unless the marked assertion's line is confirmed; a timeout never qualifies. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218">replay_family:4218</a></td></tr>
+<tr><td>WebSocket handshake refusal</td><td>Passed absence and open-connection checks after HTTP 503.</td><td>Records opened/ended state and transport errors. Refusal passes only when explicitly expected. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1734">summarize_capture:1734</a>, <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1770">capture_verdict:1770</a></td></tr>
+<tr><td>Recipe timeout</td><td>The shell died while its sleep child kept running.</td><td>The owned process group stops on completion, timeout or interruption; SIGTERM cleanup is covered. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3974">execute_recipe:3974</a></td></tr>
+<tr><td>Unknown selection</td><td>A typo could run only Preconditions and report success.</td><td>Usage error before launch or setup. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3949">select_bullets:3949</a></td></tr>
+<tr><td>Owned route without a driver</td><td>Coverage returned exit 0 with a nonempty undriven list.</td><td>The undriven list makes the verdict fail. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3820">cmd_map_coverage:3820</a></td></tr>
+</tbody></table><p class="small">Matching loopback and temporary-map probes: <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/before.json">before results</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/after.json">after results</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/reproduce-verification-gaps.py">reproduction script</a>. The key in the before evidence is invented.</p></section>
+<section id="interfaces"><h2>2. Raw output is explicit; setup is declared</h2><div class="ba"><div class="panel"><h3>Before</h3><pre>api GET /info --field echo_key
+→ raw key
+
+map run --only F33.conversation-token-callbacks
+→ drops the streaming producer</pre><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1355">raw output:1355</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/cee9a8bb8a392bd382a8d742b76d5b1c856fb2b4/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4110">replay_family:4110</a></div><div class="panel"><h3>After</h3><pre>api GET /info --field echo_key
+→ &lt;redacted:session-api-key&gt;
+
+--unsafe-unredacted
+→ explicit raw field/header output
+
+Requires: &#96;F33.conversation-streaming&#96;
+→ selected before token-callback probe</pre><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1225">cmd_api:1225</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3949">select_bullets:3949</a></div></div>
+<p>The new unsafe flag applies only to <code>--field</code> or <code>--print-header</code>; saved evidence remains redacted. The three encrypted settings/profile round trips opt in deliberately. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F18-settings-and-secrets.md#L326">F18-settings-and-secrets.md:326</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F20-llm-profiles.md#L292">F20-llm-profiles.md:292</a></p>
+<figure><svg viewBox="0 0 820 174" role="img" aria-labelledby="selection-title selection-desc"><title id="selection-title">Selected recipes retain their declared producers</title><desc id="selection-desc">driving_bullets reads Requires IDs into Bullet. select_bullets expands dependencies in family order. replay_family executes the producers before the selected assertion.</desc><defs><marker id="dependency-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="var(--warn)"/></marker></defs><text class="lane" x="20" y="29">NEW DECLARED SETUP PATH</text><a href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3899"><g><rect class="new" x="20" y="55" width="226" height="68" rx="5"/><text class="node-title" x="133" y="81" text-anchor="middle">driving_bullets</text><text class="node-detail" text-anchor="middle"><tspan x="133" y="101">Bullet.requires</tspan><tspan x="133" y="117">L3899</tspan></text></g></a><path class="edge-chg" d="M246 89H294" marker-end="url(#dependency-arrow)"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3949"><g><rect class="new" x="298" y="55" width="226" height="68" rx="5"/><text class="node-title" x="411" y="81" text-anchor="middle">select_bullets</text><text class="node-detail" text-anchor="middle"><tspan x="411" y="101">expand earlier producers</tspan><tspan x="411" y="117">L3949</tspan></text></g></a><path class="edge-chg" d="M524 89H572" marker-end="url(#dependency-arrow)"/><a href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218"><g><rect class="new" x="576" y="55" width="224" height="68" rx="5"/><text class="node-title" x="688" y="81" text-anchor="middle">replay_family</text><text class="node-detail" text-anchor="middle"><tspan x="688" y="101">producer then assertion</tspan><tspan x="688" y="117">L4218</tspan></text></g></a></svg><figcaption>Fig 2 · The F33 consumers named in the review declare their producers; transitive setup executes once, in family order.</figcaption></figure>
+<p><code>map check</code> rejects unknown or forward dependencies. F33's token, streaming-state, state-reread and missing-tool probes declare their producers. F25's cached-ref probe declares its initial git install; its offline setup no longer calls DeepSeek. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F33-sdk-remote-client.md#L873">F33-sdk-remote-client.md:873</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F25-skills.md#L469">F25-skills.md:469</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3595">check_family:3595</a></p>
+<p class="small"><code>Needs:</code> remains a whole-family capability bound for <code>--all</code>. An explicit <code>--file --only</code> selection can exercise an available subset; its Preconditions still execute. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/SKILL.md#L174">SKILL.md:174</a></p></section>
+<section id="checkouts"><h2>3. One selected checkout across the workflow</h2><details><summary>Source manifest</summary><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L620">cmd_launch:620</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3144">cmd_exec:3144</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218">replay_family:4218</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3276">cmd_evidence_report:3276</a></details>
+<div class="ba"><div class="panel"><h3>Observed before</h3><p>The outer server ran SDK 1.54 from the requested checkout. A nested launch fell back to the harness checkout, SDK 1.53 at <code>cee9a8bb</code>.</p><a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/nested-before-transcript.json">Both /server_info responses</a></div><div class="panel"><h3>Observed after</h3><p>With the reviewed 1.53 checkout selected from the current harness, the outer server, nested server, recipe directory and SDK program all used that checkout.</p><a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/nested-after-transcript.json">Server responses and SDK version</a></div></div>
+<p><code>AGENT_SERVER_VERIFY_CHECKOUT</code> carries the recipe's checkout into nested launches, and an explicit <code>--checkout</code> still overrides it. Recipe and SDK-program working directories also use the run's checkout. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L620">cmd_launch:620</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3144">cmd_exec:3144</a> · <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L4218">replay_family:4218</a></p>
+<p>Combined reports now retain the latest row for each <em>run and feature</em>, showing the run, checkout and full evidence path. A newer observation within one run still replaces that run's earlier observation. <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L3276">cmd_evidence_report:3276</a></p></section>
+<section id="files"><h2>4. Changes by review area</h2><table><thead><tr><th>Files</th><th>Concrete change</th></tr></thead><tbody>
+<tr><td>✏️ <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/scripts/control_agent_server.py#L1225">control_agent_server.py:1225</a></td><td>Output, WebSocket verdicts, marked failures, process groups, selection, checkout propagation and reports.</td></tr>
+<tr><td>✏️ <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F18-settings-and-secrets.md#L326">F18-settings-and-secrets.md:326</a><br><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F20-llm-profiles.md#L292">F20-llm-profiles.md:292</a></td><td>Explicit opt-in for the encrypted token values needed in round trips.</td></tr>
+<tr><td>✏️ <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F33-sdk-remote-client.md#L873">F33-sdk-remote-client.md:873</a><br><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F25-skills.md#L469">F25-skills.md:469</a></td><td>Declared producer dependencies and offline setup for the reviewed probes.</td></tr>
+<tr><td>✏️ <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/F23-llm-catalog-and-connections.md#L1">F23-llm-catalog-and-connections.md:1</a><br><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.agents/skills/verify-agent-server/references/feature-map/README.md#L1">README.md:1</a></td><td>Own and drive the ACP route added by main: auth, request validation, structured spawn error, refresh and unchanged conversation count. Total: 931 feature IDs.</td></tr>
+<tr><td>✏️ <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/tests/cross/test_verify_agent_server_skill.py#L1">test_verify_agent_server_skill.py:1</a><br><a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/tests/cross/conftest.py#L1">conftest.py:1</a></td><td>34 cases using local HTTP/WebSocket servers, actual shell processes, temporary maps and CLI evidence reports.</td></tr>
+</tbody></table><details><summary>CLI diff against the reviewed revision</summary><pre>diff --git a/.agents/skills/verify-agent-server/scripts/control_agent_server.py b/.agents/skills/verify-agent-server/scripts/control_agent_server.py
+index cdbb334f7..d122ae829 100644
+--- a/.agents/skills/verify-agent-server/scripts/control_agent_server.py
++++ b/.agents/skills/verify-agent-server/scripts/control_agent_server.py
+@@ -51,6 +51,7 @@ FEATURE_MAP_DIR = SKILL_DIR / &quot;references&quot; / &quot;feature-map&quot;
+ CLI = &quot;control-agent-server&quot;
+ RUN_ENV = &quot;AGENT_SERVER_VERIFY_RUN&quot;
+ HOME_ENV = &quot;AGENT_SERVER_VERIFY_HOME&quot;
++CHECKOUT_ENV = &quot;AGENT_SERVER_VERIFY_CHECKOUT&quot;
+ SESSION_HEADER = &quot;X-Session-API-Key&quot;
+ FAMILY_FILE_RE = re.compile(r&quot;^F(\d{2})-[a-z0-9-]+\.md$&quot;)
+ SUB_FEATURE_RE = re.compile(r&quot;^- `(F\d{2}\.[a-z0-9][a-z0-9-]*)`: \S&quot;)
+@@ -633,7 +634,7 @@ def cmd_launch(args: argparse.Namespace) -&gt; dict[str, Any]:
+                 &quot;run&quot;: str(run.dir),
+                 &quot;url&quot;: run.url,
+             }
+-    checkout = Path(args.checkout).resolve() if args.checkout else REPO_ROOT
++    checkout = Path(args.checkout or os.environ.get(CHECKOUT_ENV, REPO_ROOT)).resolve()
+     if not (checkout / &quot;openhands-agent-server&quot;).is_dir():
+         usage_error(f&quot;{checkout} is not an agent-sdk checkout&quot;)
+     available = psutil.virtual_memory().available
+@@ -735,17 +736,26 @@ def cmd_attach(args: argparse.Namespace) -&gt; dict[str, Any]:
+ 
+ 
+ def stop_process_group(pgid: int, grace: float = 15.0) -&gt; str:
++    with contextlib.suppress(ChildProcessError):
++        os.waitpid(pgid, os.WNOHANG)
+     try:
+         os.killpg(pgid, signal.SIGTERM)
+     except ProcessLookupError:
+         return &quot;already-exited&quot;
+     deadline = time.monotonic() + grace
+     while time.monotonic() &lt; deadline:
++        # Reap an owned leader before probing; macOS rejects zombie-only groups.
++        with contextlib.suppress(ChildProcessError):
++            os.waitpid(pgid, os.WNOHANG)
+         try:
+             os.killpg(pgid, 0)
+         except ProcessLookupError:
+             return &quot;terminated&quot;
++        except PermissionError:
++            pass
+         time.sleep(0.2)
++    with contextlib.suppress(ChildProcessError):
++        os.waitpid(pgid, os.WNOHANG)
+     with contextlib.suppress(ProcessLookupError):
+         os.killpg(pgid, signal.SIGKILL)
+     return &quot;killed&quot;
+@@ -1213,6 +1223,8 @@ def evaluate_check(body: Any, spec: Sequence[str]) -&gt; dict[str, Any]:
+ 
+ 
+ def cmd_api(args: argparse.Namespace) -&gt; dict[str, Any]:
++    if args.unsafe_unredacted and args.field is None and args.print_header is None:
++        usage_error(&quot;--unsafe-unredacted requires --field or --print-header&quot;)
+     run = resolve_run(args.run)
+     if not args.path.startswith(&quot;/&quot;):
+         usage_error(
+@@ -1352,13 +1364,14 @@ def cmd_api(args: argparse.Namespace) -&gt; dict[str, Any]:
+         if header is None or not ok:
+             emit(result)
+             raise SystemExit(1)
+-        print(header)
++        print(header if args.unsafe_unredacted else REDACT.text(header))
+         raise SystemExit(0)
+     if args.field is not None:
+         value = dig(decoded, args.field)
+         if value is None or not ok:
+             emit(result)
+             raise SystemExit(1)
++        value = value if args.unsafe_unredacted else REDACT.obj(value)
+         print(value if isinstance(value, str) else json.dumps(value))
+         raise SystemExit(0)
+     return result
+@@ -1477,6 +1490,7 @@ def ws_session(
+     frames = 0
+     kinds: dict[str, int] = {}
+     close: dict[str, Any] | None = None
++    opened = False
+     reason = &quot;duration&quot;
+     deadline = time.monotonic() + duration
+     try:
+@@ -1487,6 +1501,8 @@ def ws_session(
+             additional_headers=headers,
+             max_size=None,
+         ) as ws:
++            opened = True
++            sink({&quot;direction&quot;: &quot;opened&quot;, &quot;at&quot;: now_iso()})
+             if auth == &quot;first-frame&quot; and (key or explicit_key is not None):
+                 ws.send(json.dumps({&quot;type&quot;: &quot;auth&quot;, &quot;session_api_key&quot;: key}))
+             elif auth == &quot;bad&quot;:
+@@ -1536,7 +1552,13 @@ def ws_session(
+         if isinstance(exc, InvalidStatus):
+             close[&quot;http_status&quot;] = exc.response.status_code
+         reason = &quot;error&quot;
+-    return {&quot;frames&quot;: frames, &quot;kinds&quot;: kinds, &quot;stopped&quot;: reason, &quot;close&quot;: close}
++    return {
++        &quot;opened&quot;: opened,
++        &quot;frames&quot;: frames,
++        &quot;kinds&quot;: kinds,
++        &quot;stopped&quot;: reason,
++        &quot;close&quot;: close,
++    }
+ 
+ 
+ def cmd_ws_listen(args: argparse.Namespace) -&gt; dict[str, Any]:
+@@ -1586,7 +1608,10 @@ def cmd_ws_listen(args: argparse.Namespace) -&gt; dict[str, Any]:
+         raise SystemExit(0) from None
+     if out_file:
+         out_file.close()
+-    result: dict[str, Any] = {&quot;ok&quot;: True, &quot;path&quot;: args.path, **summary}
++    transport_ok = summary[&quot;opened&quot;] and summary[&quot;stopped&quot;] != &quot;error&quot;
++    if args.expect_reject is not None:
++        transport_ok = (summary[&quot;close&quot;] or {}).get(&quot;http_status&quot;) == args.expect_reject
++    result: dict[str, Any] = {&quot;ok&quot;: transport_ok, &quot;path&quot;: args.path, **summary}
+     if args.until_kind and not summary[&quot;stopped&quot;].startswith(&quot;until&quot;):
+         result[&quot;ok&quot;] = False
+         result[&quot;hint&quot;] = f&quot;no {args.until_kind} frame within {args.duration}s&quot;
+@@ -1713,7 +1738,7 @@ def summarize_capture(
+     show: int,
+ ) -&gt; dict[str, Any]:
+     received = [e for e in entries if e.get(&quot;direction&quot;) == &quot;received&quot;]
+-    closed = [e for e in entries if e.get(&quot;direction&quot;) == &quot;closed&quot;]
++    ended = [e for e in entries if e.get(&quot;direction&quot;) in {&quot;closed&quot;, &quot;ended&quot;, &quot;stopped&quot;}]
+     kinds: dict[str, int] = {}
+     for e in received:
+         kinds[str(e.get(&quot;kind&quot;))] = kinds.get(str(e.get(&quot;kind&quot;)), 0) + 1
+@@ -1726,9 +1751,13 @@ def summarize_capture(
+             e for e in selected if contains in json.dumps(e.get(&quot;frame&quot;), default=str)
+         ]
+     return {
++        &quot;opened&quot;: any(
++            e.get(&quot;direction&quot;) in {&quot;opened&quot;, &quot;received&quot;, &quot;closed&quot;} for e in entries
++        ),
++        &quot;stopped&quot;: ended[-1].get(&quot;stopped&quot;, &quot;stopped&quot;) if ended else None,
+         &quot;frames&quot;: len(received),
+         &quot;kinds&quot;: kinds,
+-        &quot;close&quot;: closed[-1].get(&quot;close&quot;) if closed else None,
++        &quot;close&quot;: ended[-1].get(&quot;close&quot;) if ended else None,
+         &quot;matching&quot;: len(selected),
+         &quot;matching_kinds&quot;: sorted({str(e.get(&quot;kind&quot;)) for e in selected}),
+         &quot;frames_shown&quot;: [
+@@ -1739,22 +1768,24 @@ def summarize_capture(
+ 
+ 
+ def capture_verdict(args: argparse.Namespace, summary: dict[str, Any]) -&gt; bool:
+-    ok = True
++    close = summary.get(&quot;close&quot;)
++    ok = summary[&quot;opened&quot;] and not (close or {}).get(&quot;error&quot;)
++    if args.expect_reject is not None:
++        ok = (close or {}).get(&quot;http_status&quot;) == args.expect_reject
+     filtered = bool(args.kinds or args.contains)
+     if args.expect_kind:
+         pool = summary[&quot;matching_kinds&quot;] if filtered else summary[&quot;kinds&quot;]
+-        ok = args.expect_kind in pool
++        ok = ok and args.expect_kind in pool
+     if args.expect_none:
+         ok = ok and summary[&quot;matching&quot;] == 0
+     elif args.expect_min is not None:
+         ok = ok and summary[&quot;matching&quot;] &gt;= args.expect_min
+     elif filtered and args.expect_kind is None:
+         ok = ok and summary[&quot;matching&quot;] &gt; 0
+-    close = summary.get(&quot;close&quot;)
+     if args.expect_close is not None:
+         ok = ok and (close or {}).get(&quot;code&quot;) == args.expect_close
+     if args.expect_open:
+-        ok = ok and close is None
++        ok = ok and summary[&quot;opened&quot;] and close is None
+     return ok
+ 
+ 
+@@ -3112,6 +3143,7 @@ def cmd_fixture(args: argparse.Namespace) -&gt; dict[str, Any]:
+ 
+ def cmd_exec(args: argparse.Namespace) -&gt; dict[str, Any]:
+     run = resolve_run(args.run)
++    cwd = args.cwd or Path(run.data.get(&quot;checkout&quot;, REPO_ROOT))
+     command = list(args.command)
+     if command and command[0] == &quot;--&quot;:
+         command = command[1:]
+@@ -3138,7 +3170,7 @@ def cmd_exec(args: argparse.Namespace) -&gt; dict[str, Any]:
+     try:
+         completed = subprocess.run(
+             command,
+-            cwd=args.cwd or REPO_ROOT,
++            cwd=cwd,
+             env=env,
+             capture_output=True,
+             text=True,
+@@ -3160,7 +3192,7 @@ def cmd_exec(args: argparse.Namespace) -&gt; dict[str, Any]:
+     elapsed = int((time.monotonic() - started) * 1000)
+     transcript = {
+         &quot;command&quot;: command,
+-        &quot;cwd&quot;: str(args.cwd or REPO_ROOT),
++        &quot;cwd&quot;: str(cwd),
+         &quot;exit_code&quot;: code,
+         &quot;elapsed_ms&quot;: elapsed,
+         &quot;stdout&quot;: stdout,
+@@ -3232,10 +3264,12 @@ def cmd_evidence_add(args: argparse.Namespace) -&gt; dict[str, Any]:
+     return {&quot;ok&quot;: True, &quot;ledger&quot;: str(ledger_path(run)), &quot;row&quot;: row}
+ 
+ 
+-def latest_rows(rows: Iterable[dict[str, Any]]) -&gt; dict[str, dict[str, Any]]:
+-    latest: dict[str, dict[str, Any]] = {}
++def latest_rows(
++    rows: Iterable[dict[str, Any]],
++) -&gt; dict[tuple[str, str], dict[str, Any]]:
++    latest: dict[tuple[str, str], dict[str, Any]] = {}
+     for row in rows:
+-        latest[row[&quot;feature&quot;]] = row
++        latest[(row[&quot;run&quot;], row[&quot;feature&quot;])] = row
+     return latest
+ 
+ 
+@@ -3249,25 +3283,31 @@ def cmd_evidence_report(args: argparse.Namespace) -&gt; dict[str, Any]:
+     latest = latest_rows(rows)
+     order = {&quot;fail&quot;: 0, &quot;xpass&quot;: 1, &quot;blocked&quot;: 2, &quot;not-run&quot;: 3, &quot;xfail&quot;: 4, &quot;pass&quot;: 5}
+     ordered = sorted(
+-        latest.values(), key=lambda r: (order.get(r[&quot;result&quot;], 9), r[&quot;feature&quot;])
++        latest.values(),
++        key=lambda r: (order.get(r[&quot;result&quot;], 9), r[&quot;feature&quot;], r[&quot;run&quot;]),
+     )
+     counts: dict[str, int] = {}
+     for row in ordered:
+         counts[row[&quot;result&quot;]] = counts.get(row[&quot;result&quot;], 0) + 1
+     all_ids = [row[&quot;id&quot;] for row in collect_ids()]
+-    missing = [i for i in all_ids if i not in latest]
++    features = {r[&quot;feature&quot;] for r in ordered}
++    missing = [i for i in all_ids if i not in features]
+     lines = [
+-        &quot;| Feature | Result | Entry point | Expected | Actual | Evidence |&quot;,
+-        &quot;|---|---|---|---|---|---|&quot;,
++        &quot;| Feature | Run | Checkout | Result | Entry point | Expected | Actual | Evidence |&quot;,
++        &quot;|---|---|---|---|---|---|---|---|&quot;,
+     ]
+     for row in ordered:
+         cells = [
+             row[&quot;feature&quot;],
++            row[&quot;run&quot;],
++            row.get(&quot;checkout_sha&quot;) or &quot;unknown&quot;,
+             row[&quot;result&quot;],
+             row.get(&quot;entry&quot;) or &quot;&quot;,
+             row.get(&quot;expected&quot;) or &quot;&quot;,
+             row.get(&quot;actual&quot;) or &quot;&quot;,
+-            &quot;, &quot;.join(row.get(&quot;artifacts&quot;) or []),
++            &quot;, &quot;.join(
++                str(Path(row[&quot;run_dir&quot;]) / a) for a in row.get(&quot;artifacts&quot;) or []
++            ),
+         ]
+         lines.append(
+             &quot;| &quot;
+@@ -3280,7 +3320,8 @@ def cmd_evidence_report(args: argparse.Namespace) -&gt; dict[str, Any]:
+     return {
+         &quot;ok&quot;: True,
+         &quot;counts&quot;: counts,
+-        &quot;features_with_evidence&quot;: len(latest),
++        &quot;features_with_evidence&quot;: len(features),
++        &quot;attempts_with_evidence&quot;: len(ordered),
+         &quot;map_ids_without_evidence&quot;: len(missing),
+         &quot;missing_sample&quot;: missing[:50],
+         &quot;markdown&quot;: markdown if args.print_markdown else None,
+@@ -3619,7 +3660,12 @@ def check_family(path: Path, routes: Sequence[dict[str, Any]] | None) -&gt; list[st
+                 f&quot;line {number}: bold bullet label is not closed on its own line; &quot;
+                 &quot;map run would merge this bullet into the previous one&quot;
+             )
+-    for bullet in driving_bullets(path):
++    bullets = driving_bullets(path)
++    try:
++        select_bullets(bullets, None)
++    except CliError as exc:
++        problems.append(str(exc))
++    for bullet in bullets:
+         blocked = &quot;blocked&quot; in bullet.label.lower()
+         if (
+             bullet.label != &quot;Preconditions&quot;
+@@ -3796,7 +3842,7 @@ def cmd_map_coverage(args: argparse.Namespace) -&gt; dict[str, Any]:
+         if not any(f&quot;{r['method']} {r['path']}&quot; == e for r in routes)
+     ]
+     return {
+-        &quot;ok&quot;: not unowned and not multi and not stale,
++        &quot;ok&quot;: not unowned and not undriven and not multi and not stale,
+         &quot;routes&quot;: len(routes),
+         &quot;owned&quot;: len([r for r in routes if (r[&quot;method&quot;], r[&quot;path&quot;]) in owners]),
+         &quot;driven&quot;: len(driven),
+@@ -3830,6 +3876,7 @@ class Bullet:
+     ids: list[str]
+     script: str
+     line: int
++    requires: list[str] = field(default_factory=list)
+ 
+ 
+ def bug_ranges(script: str) -&gt; list[tuple[int, int]]:
+@@ -3892,11 +3939,69 @@ def driving_bullets(path: Path) -&gt; list[Bullet]:
+             current = Bullet(
+                 label, re.findall(r&quot;F\d{2}\.[a-z0-9-]+&quot;, label), &quot;&quot;, number
+             )
++        elif line.strip().startswith(&quot;Requires:&quot;):
++            current.requires += re.findall(r&quot;F\d{2}\.[a-z0-9-]+&quot;, line)
+     if current.script or current.label != &quot;Preconditions&quot;:
+         bullets.append(current)
+     return bullets
+ 
+ 
++def select_bullets(bullets: list[Bullet], only: str | None) -&gt; list[Bullet]:
++    available: set[str] = set()
++    for bullet in bullets:
++        missing = set(bullet.requires) - available
++        if missing:
++            usage_error(
++                f&quot;{bullet.label}: Requires must name earlier recipes: {', '.join(sorted(missing))}&quot;
++            )
++        available.update(bullet.ids)
++    if only is None:
++        return bullets
++    wanted = {feature.strip() for feature in only.split(&quot;,&quot;)}
++    missing = wanted - available
++    if missing:
++        usage_error(
++            f&quot;--only IDs have no recipe in this family: {', '.join(sorted(missing))}&quot;
++        )
++    selected = []
++    for bullet in reversed(bullets):
++        if wanted.intersection(bullet.ids) or bullet.label == &quot;Preconditions&quot;:
++            selected.append(bullet)
++            wanted.update(bullet.requires)
++    return list(reversed(selected))
++
++
++def execute_recipe(
++    path: Path, env: dict[str, str], timeout: float
++) -&gt; tuple[int, str, str, bool]:
++    def interrupt(_signum: int, _frame: Any) -&gt; NoReturn:
++        raise KeyboardInterrupt
++
++    previous = signal.signal(signal.SIGTERM, interrupt)
++    try:
++        with subprocess.Popen(
++            [&quot;bash&quot;, str(path)],
++            env=env,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            text=True,
++            start_new_session=True,
++        ) as process:
++            timed_out = False
++            try:
++                process.communicate(timeout=timeout)
++            except subprocess.TimeoutExpired:
++                timed_out = True
++            finally:
++                stop_process_group(process.pid, grace=0.5)
++                out, err = process.communicate()
++            if timed_out:
++                return 124, out, f&quot;{err}\ntimed out after {timeout}s&quot;, True
++            return process.returncode, out, err, False
++    finally:
++        signal.signal(signal.SIGTERM, previous)
++
++
+ NEEDS = (
+     &quot;llm&quot;,
+     &quot;tmux&quot;,
+@@ -4015,6 +4120,8 @@ def self_command(*argv: str) -&gt; dict[str, Any]:
+ 
+ def cmd_map_run(args: argparse.Namespace) -&gt; dict[str, Any]:
+     if args.all:
++        if args.only is not None:
++            usage_error(&quot;--only needs --file; it cannot be combined with --all&quot;)
+         if not args.fresh:
+             usage_error(
+                 &quot;--all needs --fresh (one fresh run per family)&quot;,
+@@ -4068,6 +4175,7 @@ def cmd_map_run(args: argparse.Namespace) -&gt; dict[str, Any]:
+             &quot;map run needs exactly one --file&quot;, example=f&quot;{CLI} map run --file F01&quot;
+         )
+     path = files[0]
++    select_bullets(driving_bullets(path), args.only)
+     if not args.fresh:
+         return replay_family(resolve_run(args.run), path, args)
+     flags = launch_flags(path)
+@@ -4108,18 +4216,15 @@ def cmd_map_run(args: argparse.Namespace) -&gt; dict[str, Any]:
+ 
+ 
+ def replay_family(run: Run, path: Path, args: argparse.Namespace) -&gt; dict[str, Any]:
+-    bullets = driving_bullets(path)
+-    if args.only:
+-        wanted = set(args.only.split(&quot;,&quot;))
+-        bullets = [
+-            b for b in bullets if wanted &amp; set(b.ids) or b.label == &quot;Preconditions&quot;
+-        ]
++    bullets = select_bullets(driving_bullets(path), args.only)
++    checkout = Path(run.data.get(&quot;checkout&quot;, REPO_ROOT))
+     state = run.dir / &quot;map-run&quot; / f&quot;{path.stem}.state.sh&quot;
+     state.parent.mkdir(exist_ok=True)
+     state.write_text(&quot;&quot;)
+     env = {
+         **os.environ,
+         RUN_ENV: str(run.dir),
++        CHECKOUT_ENV: str(checkout),
+         &quot;PATH&quot;: f&quot;{SCRIPT_DIR}{os.pathsep}{os.environ.get('PATH', '')}&quot;,
+     }
+     results = []
+@@ -4165,7 +4270,7 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -&gt; dict[str, A
+         preamble = [
+             &quot;set -eo pipefail&quot;,
+             f&quot;source {shlex_quote(str(state))}&quot;,
+-            f&quot;cd {shlex_quote(str(REPO_ROOT))}&quot;,
++            f&quot;cd {shlex_quote(str(checkout))}&quot;,
+             'trap \'printf &quot;%s\\t%s\\n&quot; &quot;$LINENO&quot; &quot;$BASH_COMMAND&quot; &gt; '
+             + shlex_quote(str(failure))
+             + &quot;' ERR&quot;,
+@@ -4177,17 +4282,9 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -&gt; dict[str, A
+             )
+             continue
+         started = time.monotonic()
+-        try:
+-            completed = subprocess.run(
+-                [&quot;bash&quot;, &quot;-c&quot;, script],
+-                env=env,
+-                capture_output=True,
+-                text=True,
+-                timeout=args.timeout,
+-            )
+-            code, out, err = completed.returncode, completed.stdout, completed.stderr
+-        except subprocess.TimeoutExpired:
+-            code, out, err = 124, &quot;&quot;, f&quot;timed out after {args.timeout}s&quot;
++        recipe_path = run.private / f&quot;{path.stem}.recipe.sh&quot;
++        recipe_path.write_text(script)
++        code, out, err, timed_out = execute_recipe(recipe_path, env, args.timeout)
+         elapsed = int((time.monotonic() - started) * 1000)
+         failed_line: int | None = None
+         failed_command: str | None = None
+@@ -4217,18 +4314,16 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -&gt; dict[str, A
+         )
+         known_bug = &quot;known bug&quot; in marker
+         ranges = bug_ranges(bullet.script)
+-        outside = (
+-            code != 0
++        assertion_failed = (
++            not timed_out
+             and failed_line is not None
+-            and bool(ranges)
+-            and not any(first &lt;= failed_line &lt;= last for first, last in ranges)
++            and any(first &lt;= failed_line &lt;= last for first, last in ranges)
+         )
+-        if known_bug and outside:
+-            status = &quot;fail&quot;
+-            failed = True
+-        elif known_bug:
+-            status = &quot;xfail&quot; if code != 0 else &quot;xpass&quot;
+-            xpassed = xpassed or code == 0
++        if known_bug and code == 0:
++            status = &quot;xpass&quot;
++            xpassed = True
++        elif known_bug and code != 0 and assertion_failed:
++            status = &quot;xfail&quot;
+         else:
+             status = &quot;pass&quot; if code == 0 else &quot;fail&quot;
+             failed = failed or code != 0
+@@ -4246,10 +4341,10 @@ def replay_family(run: Run, path: Path, args: argparse.Namespace) -&gt; dict[str, A
+             row[&quot;failed_command&quot;] = failed_command
+             row[&quot;stdout_tail&quot;] = REDACT.text(out[-1200:])
+             row[&quot;stderr_tail&quot;] = REDACT.text(err[-1200:])
+-        if outside:
++        if known_bug and status == &quot;fail&quot;:
+             row[&quot;hint&quot;] = (
+-                &quot;a known-bug bullet failed outside its `# bug` assertion: &quot;
+-                &quot;the arrange steps broke, so the bug was not reproduced&quot;
++                &quot;no failure was confirmed at the `# bug` assertion; &quot;
++                &quot;the bug was not reproduced&quot;
+             )
+         if status == &quot;xpass&quot;:
+             row[&quot;hint&quot;] = &quot;the known bug no longer reproduces: update the map&quot;
+@@ -4741,9 +4836,16 @@ under &lt;run&gt;/evidence/FEATURE/NAME.json.&quot;&quot;&quot;,
+         metavar=&quot;SECONDS&quot;,
+         help=&quot;repeat the request every 0.5 s until --expect/--check hold (or time runs out)&quot;,
+     )
+-    p.add_argument(&quot;--field&quot;, help=&quot;print only this dotted field of the JSON body&quot;)
++    p.add_argument(&quot;--field&quot;, help=&quot;print only this dotted field (secrets redacted)&quot;)
+     p.add_argument(
+-        &quot;--print-header&quot;, metavar=&quot;NAME&quot;, help=&quot;print only this response header&quot;
++        &quot;--print-header&quot;,
++        metavar=&quot;NAME&quot;,
++        help=&quot;print only this response header (secrets redacted)&quot;,
++    )
++    p.add_argument(
++        &quot;--unsafe-unredacted&quot;,
++        action=&quot;store_true&quot;,
++        help=&quot;with --field/--print-header: print raw secrets for a round trip; output is unsafe to publish&quot;,
+     )
+     p.add_argument(
+         &quot;--sse&quot;,
+@@ -4937,6 +5039,12 @@ under &lt;run&gt;/evidence/FEATURE/NAME.json.&quot;&quot;&quot;,
+             metavar=&quot;SECONDS&quot;,
+             help=&quot;poll up to SECONDS until the expectations hold&quot;,
+         )
++        wr.add_argument(
++            &quot;--expect-reject&quot;,
++            type=int,
++            metavar=&quot;STATUS&quot;,
++            help=&quot;expect a handshake rejection with this HTTP status&quot;,
++        )
+         wr.add_argument(&quot;--show&quot;, type=int, default=5)
+         wr.add_argument(&quot;--save&quot;, metavar=&quot;FEATURE/NAME&quot;)
+ 
+@@ -5442,7 +5550,7 @@ of running them.&quot;&quot;&quot;,
+   {CLI} map run --all --fresh --record         # the whole map, one fresh run per family
+   {CLI} map run --file F08 --only F08.x --fresh --repeat 2 --checkout ../base   # baseline of a fix
+ 
+-Each bullet's ```sh blocks run in `bash -c` with `set -eo pipefail`, from the
++Each bullet's ```sh blocks run in Bash with `set -eo pipefail`, from the
+ repository root, with this run exported. Shell variables assigned in one
+ bullet (CID=..., export X=...) are carried into later bullets. A bullet fails
+ when any command exits non-zero, so recipes encode their expectations with
+@@ -5469,7 +5577,10 @@ reported and not executed. Transcripts are saved under &lt;run&gt;/evidence/map-run/.&quot;
+         default=1,
+         help=&quot;with --fresh: replay N times, each on its own fresh run&quot;,
+     )
+-    mrun.add_argument(&quot;--only&quot;, help=&quot;comma-separated sub-feature IDs&quot;)
++    mrun.add_argument(
++        &quot;--only&quot;,
++        help=&quot;comma-separated sub-feature IDs, with their declared Requires recipes&quot;,
++    )
+     mrun.add_argument(
+         &quot;--keep-going&quot;, action=&quot;store_true&quot;, help=&quot;run later bullets after a failure&quot;
+     )
+</pre></details></section>
+<section id="evidence"><h2>5. Verification and practical limits</h2><table><thead><tr><th>Check</th><th>Result / saved evidence</th></tr></thead><tbody>
+<tr><td>Required pre-commit hooks</td><td>Passed on every changed implementation/test file, including Ruff, pyright and repository gates.</td></tr>
+<tr><td>CLI regression suite</td><td>34 passed. <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/tests.log">Test log</a></td></tr>
+<tr><td>Real route table and map structure</td><td>34 families, 931 IDs; 194 owned and driven of 204 routes, 10 exclusions, no ownership gaps or undriven routes. <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/map-check.json">Map check</a> · <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/map-coverage.json">Coverage</a></td></tr>
+<tr><td>Fresh server: F01</td><td>Liveness, health, readiness, server info and OpenAPI passed. <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/f01-live.json">Replay summary</a></td></tr>
+<tr><td>Fresh server: ACP</td><td>Authentication, validation and the actual missing-executable path passed; no provider or model was contacted. <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/acp-live.json">Replay summary</a></td></tr>
+<tr><td>Selected cached-skill bug</td><td>Two fresh runs completed Preconditions and the required git install, then failed at the marked assertion. Both correctly reported xfail. <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/artifacts/pr5621-review/f25-live.json">Both attempts</a></td></tr>
+<tr><td>Different-checkout workflow</td><td>Original mismatch reproduced; fixed server, recipe and SDK paths agree. <a href="https://github.com/OpenHands/software-agent-sdk/blob/79144dee91d660a81d5633c9b3701f4835129e01/.pr/prove-nested-checkout.py">Runnable proof</a></td></tr>
+</tbody></table><p>This is focused verification of the harness fixes, not a full replay of all 34 families. No DeepSeek key was available, so the model-backed streaming recipes and successful ACP-provider discovery were not rerun. The committed original 771-pass replay remains author evidence for its earlier revision.</p><p class="small">Reproduce the paired defect probes with the checkout's Python and <code>reproduce-verification-gaps.py &lt;control_agent_server.py&gt; &lt;output.json&gt;</code>. The small protocol servers are loopback substitutes for failed HTTP/WebSocket transport; the status, ACP, skill-install and checkout runs use real Agent Server processes.</p></section>
+<footer>Temporary reviewer context under <code>.pr/</code>. The active <a class="src" href="https://github.com/OpenHands/software-agent-sdk/blob/2f1aa080f1ee4179c4891e0e161023a5b7cb6ded/.github/workflows/pr-artifacts.yml#L20">pr-artifacts.yml:20</a> removes these artifacts after approval on this same-repository PR. Essential behavior and validation also belong in the PR description.</footer></main></div></body></html>
