@@ -581,6 +581,26 @@ def test_map_check_flags_variables_from_unrequired_recipes(
     assert not [p for p in problems if p.startswith("F98.second")], out
 
 
+def test_outside_reads_counts_reads_before_the_bullets_own_binding():
+    script = "\n".join(
+        [
+            'test "$OLD" != x',
+            "OLD=$(echo new)",
+            'echo "$OLD"',
+            'cli exec --env CID="$CID" -- true',
+            'NEXT=$(cli get "$NEXT")',
+            'for f in a b; do echo "$f"; done',
+            'while read -r line; do echo "$line"; done < /dev/null',
+            "LOCAL=1",
+            'echo "$LOCAL"',
+            "cat > prog.py <<'PY'",
+            "print('$INSIDE')",
+            "PY",
+        ]
+    )
+    assert cas.outside_reads(script) == {"OLD", "CID", "NEXT"}
+
+
 def test_recipe_needs_block_that_recipe_and_its_dependents(
     run_dir, write_verification_family, monkeypatch, capsys
 ):

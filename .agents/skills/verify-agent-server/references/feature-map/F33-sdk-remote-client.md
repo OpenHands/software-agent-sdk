@@ -943,6 +943,8 @@ Preconditions:
   makes one more logged call on the agent's LLM, often after `run()`
   returned.)
 - **Reattach from a second program (`F33.conversation-attach`).**
+
+  Requires: `F33.conversation-run`
   ```sh
   N0=$(control-agent-server api GET /api/conversations/count --field .)
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-attach/probe -- .venv/bin/python - <<'PY'
@@ -1095,6 +1097,8 @@ Preconditions:
   `is_confirmation_mode_active` is `False`. A full-state socket snapshot or
   `state.refresh_from_server()` restores the cache until the next read.
 - **Ask, generate and set a title (`F33.conversation-ask-title`).**
+
+  Requires: `F33.conversation-run`
   ```sh
   E0=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-ask-title/probe -- .venv/bin/python - <<'PY'
@@ -1120,6 +1124,8 @@ Preconditions:
   The answer and the generated title are non-empty; the event count is
   unchanged and the server's title is the one set.
 - **Fork (`F33.conversation-fork`).**
+
+  Requires: `F33.conversation-run`
   ```sh
   E0=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-fork/probe -- .venv/bin/python - <<'PY'
@@ -1154,6 +1160,8 @@ Preconditions:
   and the tag; the source keeps its own id and its event count.
 - **Fork from an event, then move HEAD (`F33.conversation-fork-branch`).**
   Fork `CID` at its first user message, keeping the metrics.
+
+  Requires: `F33.conversation-run`
   ```sh
   E0=$(control-agent-server api GET "/api/conversations/$CID/events/count" --field .)
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-fork-branch/probe -- .venv/bin/python - <<'PY'
@@ -1732,6 +1740,8 @@ Preconditions:
   `F33.conversation-reconnect`'s client also reconnects through `reconcile`
   only.
 - **Reattach after a restart and continue (`F33.conversation-restart`).**
+
+  Requires: `F33.conversation-run`
   ```sh
   control-agent-server restart
   control-agent-server exec --env PYTHONPATH="$F33" --env CID="$CID" --save F33.conversation-restart/probe -- .venv/bin/python - <<'PY'

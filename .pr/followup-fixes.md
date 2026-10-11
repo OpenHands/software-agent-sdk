@@ -46,6 +46,18 @@ not traced; F25's are declared by hand (`F25.sync`, `F25.public-repo`,
 `map run --file F25 --only F25.sync-offline --fresh` now runs Preconditions,
 `F25.sync` (pass) and `F25.sync-offline` (xfail at its marked line).
 
+A full F19 replay then showed the check missed a recipe that reads a variable
+before assigning it itself (`F19.oauth-refresh-writeback` checks `$TOKEN`,
+then sets it), and `--env CID="$CID"` looked like a local assignment. The
+check now counts a read as outside when it comes before the recipe's own
+binding. That found six more (`F19.oauth-refresh-writeback` and five F33
+recipes that pass `$CID` to a program), now declared. F19 also had
+server-state dependencies (the stored `qa-env`, `qa-oauth` and `qa-f19`
+servers and the OAuth webhook sink), declared by hand:
+`map run --file F19 --only F19.conversation-secrets-at-rest,F19.restart --fresh`
+runs 10 recipes, all pass. Before, the same selection failed at
+`F19.oauth-refresh-writeback`.
+
 ## 3. Machine needs were family-wide
 
 A recipe can declare its own `Needs:` line next to `Requires:`. `map run`
@@ -87,11 +99,26 @@ settings back with `secrets_encrypted: true`), `F09.switch-llm-registered-usage-
 (xfail at its marked line), and `F19.oauth-inline-writeback` and
 `F19.oauth-refresh-writeback`.
 
+Full replays without a model key (`--keep-going`): F19 has 24 pass, 3 xfail
+and 2 fail, and F09 has 13 pass, 6 xfail and 10 fail. Every failure is a
+recipe that needs a model turn (or an ACP session), or one that reuses such a
+recipe's conversation. F19's `F19.restart` failed in that full run only:
+after the restart, the stored `qa-oauth` state had no tokens.
+`F19.conversation-tool` had stopped mid-turn and left its conversation
+open. The server log shows MCP OAuth flow errors ("OAuth client not found")
+right after SIGTERM, and `settings.json` was rewritten at that moment, so
+shutting down with that conversation open appears to have written the state
+back without its tokens (inferred from the log and the file's write time,
+not reproduced on its own). With a working key the recipe deletes its
+conversation first, and without that conversation the same restart passes
+(the selection above). It may deserve its own recipe later.
+
 ## Checks
 
-- `uv run pytest tests/cross/test_verify_agent_server_skill.py`: 38 passed
-  (4 new: helpers outlive their bullet until `stop`; helper errors; the
-  dependency check; recipe-level needs and `capabilities`).
+- `uv run pytest tests/cross/test_verify_agent_server_skill.py`: 39 passed
+  (5 new: helpers outlive their bullet until `stop`; helper errors; the
+  dependency check; reads before a recipe's own binding; recipe-level needs
+  and `capabilities`).
 - `pre-commit` on the changed Python files: ruff format and lint,
   pycodestyle, pyright all pass.
 - `map check`: ok, 34 families, 931 IDs. `map coverage`: ok, 194 of 204

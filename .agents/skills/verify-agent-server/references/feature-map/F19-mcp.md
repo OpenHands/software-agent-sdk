@@ -682,6 +682,8 @@ Preconditions:
   without running the model: the conversation starts with a queued prompt
   (`--no-run`), because the agent, and with it every MCP connection, is
   initialized on the first message, not at creation.
+
+  Requires: `F19.test-encrypted-env`, `F19.oauth-stored-state`
   ```sh
   control-agent-server api POST /api/settings/mcp/qa-f19 --json "$MCP" --expect 201
   control-agent-server api PATCH /api/settings/mcp/qa-env --json '{"enabled":false}' --expect 200 --check agent_settings.mcp_config.qa-env.enabled eq false
@@ -701,6 +703,8 @@ Preconditions:
   starts, and deleting the conversation stops the child.
 - **The agent uses the MCP tool (`F19.conversation-tool`).** A DeepSeek turn,
   captured live on the event socket.
+
+  Requires: `F19.disabled-server`
   ```sh
   CID=$(control-agent-server conversation start --tools none --no-autotitle --no-run --print-id)
   control-agent-server ws start "/sockets/events/$CID" --name f19-live --duration 300
@@ -719,6 +723,8 @@ Preconditions:
 - **Stored OAuth token refresh (`F19.oauth-refresh-writeback`).** Expire the
   stored `qa-oauth` token with a sparse patch (client-side expiry only), then
   let a new conversation connect.
+
+  Requires: `F19.oauth-stored-state`, `F19.oauth-inline-writeback`
   ```sh
   N0=$(control-agent-server sink read --path /mcp-oauth-state --expect-min 1 | jq .requests)
   control-agent-server api PATCH /api/settings/mcp/qa-oauth --json '{"auth":{"strategy":"oauth2","state":{"token_expires_at":1}}}' --expect 200 \
@@ -753,7 +759,7 @@ Preconditions:
   A new conversation from the current settings (`qa-f19`, disabled `qa-env` with its `env` secret, `qa-oauth` with
   its tokens), then a search of everything the server wrote.
 
-  Requires: `F19.oauth-refresh-writeback`
+  Requires: `F19.oauth-refresh-writeback`, `F19.disabled-server`
   ```sh
   SCID=$(control-agent-server conversation start --tools none --no-autotitle --prompt 'Say hi' --no-run --print-id)
   control-agent-server api GET "/api/conversations/$SCID/events/search" --query limit=1 --max-chars 300 --until-ok 30 \
@@ -780,7 +786,7 @@ Preconditions:
   log (which does hold the OAuth job lines).
 - **Restart (`F19.restart`).** Settings are durable, OAuth jobs are not.
 
-  Requires: `F19.oauth-flow`, `F19.oauth-refresh-writeback`
+  Requires: `F19.oauth-flow`, `F19.oauth-refresh-writeback`, `F19.disabled-server`
   ```sh
   control-agent-server restart
   control-agent-server api GET /api/settings --header 'X-Expose-Secrets: plaintext' --save F19.restart/after-restart \
